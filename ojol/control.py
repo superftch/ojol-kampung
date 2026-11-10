@@ -4,11 +4,13 @@ import asyncio
 import json
 import os
 import re
+import shutil
 import sys
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from math import ceil
+from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
@@ -42,11 +44,38 @@ class ControlService:
         self.browser = browser or BrowserRuntime(settings)
         self.access = LoginAccess(settings.runtime_dir)
         self.worker = None
+        self.tunnel_process = None
         self.expected_stop = False
         self.awaiting_date = False
         self.closing = False
         self.tasks = []
         self.lock = asyncio.Lock()
+
+    def tunnel_alive(self):
+        return bool(self.tunnel_process and self.tunnel_process.returncode is None)
+
+    async def start_tunnel(self):
+        if not self.settings.tunnel_enabled or self.tunnel_alive():
+            return
+        if not self.settings.managed_browser or not Path("/.dockerenv").is_file():
+            raise RuntimeError("Tunnel terkelola hanya boleh dijalankan dalam container Docker")
+        token_file = self.settings.runtime_dir.parent / "cloudflared-token"
+        binary = shutil.which("cloudflared")
+        if not binary or not token_file.is_file() or not token_file.stat().st_size:
+            raise RuntimeError("Binary cloudflared atau secret cloudflared_token tidak tersedia")
+        # Keep credentials out of argv/environment; Docker rotates connector stdout.
+        self.tunnel_process = await asyncio.create_subprocess_exec(
+            binary,
+            "tunnel",
+            "--no-autoupdate",
+            "--metrics",
+            "127.0.0.1:2000",
+            "run",
+            "--token-file",
+            str(token_file),
+            stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
+        )
 
     def public_url(self):
         if self.settings.env == "production":
@@ -88,6 +117,11 @@ class ControlService:
             f"Bensin {state.get('fuel', '?')}% | Kondisi {state.get('condition', '?')}% | Kuota {state.get('data', '?')}%\n"
             f"Saldo utama: {state.get('wallet', '?')} koin · minimum {self.settings.min_balance}\n"
             f"Notifikasi event: {'ON' if notifications_enabled(self.settings) else 'OFF'}"
+            + (
+                f"\nTunnel: proses {'aktif' if self.tunnel_alive() else 'berhenti'}"
+                if self.settings.tunnel_enabled
+                else ""
+            )
         )
 
     def profit(self, day=None):
@@ -148,6 +182,7 @@ class ControlService:
     async def cookie_link(self):
         async with self.lock:
             await self.stop_worker()
+            await self.start_tunnel()
             self.access.revoke()
             await self.browser.switch("headless")
             ticket = self.access.issue("ticket")
@@ -189,6 +224,7 @@ class ControlService:
                     raise RuntimeError("Izin operator belum dikonfigurasi")
                 self.access.revoke()
                 await self.browser.switch("headless")
+                await self.start_tunnel()
                 config_file = os.environ.get("OJOL_CONFIG_FILE")
                 args = [sys.executable, str(ROOT / "main.py")]
                 if config_file:
@@ -275,6 +311,19 @@ class ControlService:
 
     async def supervise(self):
         while not self.closing:
+            if (
+                self.tunnel_process
+                and self.tunnel_process.returncode is not None
+                and not self.lock.locked()
+            ):
+                code = self.tunnel_process.returncode
+                self.tunnel_process = None
+                queue_error(
+                    self.settings,
+                    RuntimeError(f"Cloudflared exit code {code}"),
+                    "tunnel.process_exit",
+                )
+                await self.stop_worker()
             if self.worker and self.worker.returncode is not None:
                 code, pid = self.worker.returncode, self.worker.pid
                 self.worker = None
@@ -345,6 +394,11 @@ class ControlService:
             queue_error(self.settings, exc, "control.startup.browser")
             await self.browser.close()
             await flush_notices(self.settings)
+        try:
+            await self.start_tunnel()
+        except Exception as exc:
+            queue_error(self.settings, exc, "control.startup.tunnel")
+            await flush_notices(self.settings)
         if self.settings.telegram_bot_token.get_secret_value() and self.settings.telegram_chat_id:
             self.tasks.append(
                 asyncio.create_task(self.guard_task(self.poll_telegram, "telegram.poll"))
@@ -356,8 +410,15 @@ class ControlService:
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
-        await self.stop_worker()
-        await self.browser.close()
+        try:
+            await self.stop_worker()
+        finally:
+            try:
+                await self.browser.close()
+            finally:
+                if self.tunnel_process:
+                    await self.browser.terminate(self.tunnel_process)
+                    self.tunnel_process = None
 
 
 def create_app(settings, service=None):
@@ -397,6 +458,8 @@ def create_app(settings, service=None):
             "service": "ok",
             "browser_mode": service.browser.mode,
             "browser_alive": service.browser.alive(),
+            "tunnel_enabled": settings.tunnel_enabled,
+            "tunnel_process_alive": service.tunnel_alive(),
         }
 
     @app.get("/access/{ticket}")

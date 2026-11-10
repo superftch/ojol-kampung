@@ -13,6 +13,7 @@ services:
       - state:/data
     secrets:
       - ojol_env
+      - cloudflared_token
     shm_size: 512mb
     mem_limit: 2g
     cpus: 2
@@ -38,3 +39,5 @@ volumes:
 secrets:
   ojol_env:
     file: .env
+  cloudflared_token:
+    file: .secrets/cloudflared-token

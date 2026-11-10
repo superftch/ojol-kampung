@@ -28,11 +28,13 @@ Telegram memvalidasi chat private, Chat ID dan sender ID. Callback tanggal diaku
 
 Cookie Google, password, bearer provider dan secret Telegram tidak diteruskan ke subprocess MCP. Token bot dikecualikan dari serialisasi Settings. Nilai cookie dibawa lewat body HTTPS atau pipe stdin lokal, tidak masuk argv/ledger/log.
 
-Production membutuhkan HTTPS, Telegram lengkap, browser terkelola dan saldo minimum20. Domain production dari konfigurasi mengalahkan override Quick Tunnel lokal yang mungkin tertinggal di volume. Compose hanya menerbitkan gateway loopback6080; TLS berada di tunnel/proxy.
+Production membutuhkan HTTPS, Telegram lengkap, browser terkelola dan saldo minimum20. Domain production dari konfigurasi mengalahkan override Quick Tunnel lokal yang mungkin tertinggal di volume. Compose hanya menerbitkan gateway loopback6080; TLS berada di Cloudflare. Satu container juga memuat cloudflared yang dipin digest; connector mengarah ke HTTP localhost6080. Secret token dimuat lewat file privat, tidak masuk argv/image/Git. Metrics/readiness hanya loopback2000.
 
 ## Lifecycle dan operasi
 
-Error worker/browser/control menulis STOP dan antrean error dengan stage/action/run. Hasil timeout tidak diputar ulang. Notifikasi rutin bisa ON/OFF dan persist setelah restart; mandatory error tetap aktif. Outage Telegram menghasilkan satu notice per outage, bukan ribuan error sama. Pengiriman pending dipertahankan sampai jaringan pulih; retry dapat menggandakan notifikasi, bukan transaksi.
+Control service memiliki child cloudflared dan memantaunya bersama browser/worker. Connector exit menghasilkan stage `tunnel.process_exit` dan menghentikan worker, sementara bot tetap bisa melaporkan error. Import Cookie/Jalankan Ojol dapat memulai connector kembali. Restart container menghentikan seluruh proses; shutdown membersihkan child tunnel sekalipun worker gagal berhenti.
+
+Error worker/browser/control/tunnel menulis STOP dan antrean error dengan stage/action/run. Hasil timeout tidak diputar ulang. Notifikasi rutin bisa ON/OFF dan persist setelah restart; mandatory error tetap aktif. Outage Telegram menghasilkan satu notice per outage, bukan ribuan error sama. Pengiriman pending dipertahankan sampai jaringan pulih; retry dapat menggandakan notifikasi, bukan transaksi.
 
 Log stdout dikelola rotasi Docker. Salinan delivery `.sent`/`.muted` kedaluwarsa7hari; file pending tidak dipangkas. Shutdown menunggu worker sebelum menutup browser. Restart service tidak menjalankan gameplay otomatis. Volume/browser lease juga mencegah dua controller berbagi profil aktif.
 

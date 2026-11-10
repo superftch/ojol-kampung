@@ -35,6 +35,7 @@ class Settings(Model):
     telegram_chat_id: int | None = Field(default=None, gt=0)
     login_public_url: str = "http://localhost:6080"
     managed_browser: bool = False
+    tunnel_enabled: bool = False
 
     @field_validator("telegram_chat_id", mode="before")
     @classmethod
@@ -115,6 +116,7 @@ class Settings(Model):
             raise ValueError("Testing wajib resource lokal khusus dan tidak boleh authorized live")
         if self.env == "testing" and (
             self.managed_browser
+            or self.tunnel_enabled
             or self.telegram_bot_token.get_secret_value()
             or self.telegram_chat_id
         ):

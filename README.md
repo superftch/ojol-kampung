@@ -12,13 +12,15 @@ Gunakan hanya dengan izin operator game. Satu akun, satu worker dan satu volume 
 
 ## Deploy server
 
-Prasyarat: Linux amd64/arm64, Docker Engine dengan Compose, koneksi keluar untuk game/Telegram, dan origin HTTPS untuk form import. Container dibatasi 2 CPU / 2 GiB RAM; sisakan resource untuk OS dan proxy.
+Prasyarat: Linux amd64/arm64, Docker Engine dengan Compose, koneksi keluar untuk game/Telegram, dan domain Cloudflare untuk form import. Container dibatasi 2 CPU / 2 GiB RAM; sisakan resource untuk OS dan proxy.
 
 ```sh
 git clone git@github.com:superftch/ojol-kampung.git
 cd ojol-kampung
 cp .env.example .env
 chmod 600 .env
+mkdir -p .secrets
+chmod 700 .secrets
 ```
 
 Isi `.env` langsung di server:
@@ -30,9 +32,12 @@ Isi `.env` langsung di server:
 | `OJOL_MANAGED_BROWSER` | `true` |
 | `OJOL_TELEGRAM_BOT_TOKEN` | Token BotFather |
 | `OJOL_TELEGRAM_CHAT_ID` | ID chat pribadi; buka bot dan tekan Start dahulu |
-| `OJOL_LOGIN_PUBLIC_URL` | Origin domain sendiri, misalnya `https://ojol.example.com` |
+| `OJOL_LOGIN_PUBLIC_URL` | `https://ojolkampung.sftch.web.id` |
+| `OJOL_TUNNEL_ENABLED` | `true` untuk connector dalam container |
 | `OJOL_MIN_BALANCE` | `20` atau lebih |
 | `OJOL_MAX_JOBS`, `OJOL_MAX_MINUTES`, `OJOL_MAX_SPEND` | Kosong untuk tanpa batas |
+
+Simpan token connector dari dashboard Cloudflare ke `.secrets/cloudflared-token` melalui editor di server, lalu `chmod 600 .secrets/cloudflared-token`. File ini wajib untuk Compose; tidak masuk image/Git.
 
 ```sh
 docker compose build app
@@ -43,13 +48,31 @@ docker compose logs --tail 50 app
 
 Konfigurasi production ditolak jika Telegram belum lengkap, origin bukan HTTPS atau saldo minimum di bawah 20. Konfigurasi dipasang sebagai Compose secret saat runtime; tidak disertakan dalam image. Browser dan proses aplikasi berjalan sebagai UID1000 setelah bootstrap permission volume.
 
-Hanya `127.0.0.1:6080` dipublikasikan. Letakkan reverse proxy HTTPS atau Cloudflare Tunnel di depannya; CDP9222 tidak dipublikasikan.
+Satu service Compose, satu container: control service, Chromium, worker/bot dan cloudflared. Hanya `127.0.0.1:6080` dipublikasikan; CDP9222 dan metrics2000 tetap internal. Restart container ikut me-restart seluruh proses.
 
 ### Domain Cloudflare permanen
 
-Buat [remotely-managed Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/get-started/) di akun/domain milikmu, lalu jalankan connector sebagai service pada server mengikuti perintah instalasi dari dashboard. Atur route hostname ke `http://127.0.0.1:6080` jika connector berjalan di host.
+Connector sudah berada dalam image, versi2026.10.7 dipin dengan digest. Tidak perlu menjalankan container cloudflared kedua. Pada dashboard tunnel, tambahkan Published application route:
 
-Isi origin hostname yang sama pada `OJOL_LOGIN_PUBLIC_URL`. Untuk production, nilai `.env` ini menjadi sumber utama; URL Quick Tunnel lama di volume diabaikan. Jangan menyimpan token tunnel di Git. Quick Tunnel `trycloudflare.com` ditujukan untuk tes lokal, bukan alamat deploy tetap.
+| Pengaturan | Nilai |
+|---|---|
+| Public hostname | `ojolkampung.sftch.web.id` |
+| Service type | **HTTP** |
+| Service URL | **`http://localhost:6080`** |
+
+`localhost` menunjuk app karena connector dan app berada dalam container yang sama. TLS publik disediakan Cloudflare. Token connector tidak mengatur route/DNS; simpan route hostname tersebut pada dashboard.
+
+Token dimuat lewat [parameter resmi `--token-file`](https://developers.cloudflare.com/cloudflare-one/networks/connectors/cloudflare-tunnel/configure-tunnels/run-parameters/#token-file), bukan nilai token pada argv/environment. Bootstrap menyalinnya ke file UID1000 mode0600 di volume. Jangan membagikan volume atau file token.
+
+Control service memantau proses connector. Jika cloudflared keluar, worker STOP dan bot melaporkan stage `tunnel.process_exit`. Tombol Import Cookie atau Jalankan Ojol mencoba memulai connector kembali; gameplay tidak diulang otomatis. Reconnect jaringan sementara ditangani cloudflared selama prosesnya hidup.
+
+`/health` mencatat proses tunnel hidup, bukan bukti koneksi edge. Periksa koneksi connector:
+
+```sh
+docker compose exec -u app app python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:2000/ready',timeout=3).status)"
+```
+
+Domain production dari `.env` mengalahkan URL Quick Tunnel lama di volume. Setelah ganti `.env` atau token, jalankan `docker compose up -d --force-recreate app`. Jangan aktifkan connector atau worker akun yang sama pada dua server saat migrasi.
 
 ### Mulai lewat Telegram
 
