@@ -6,7 +6,7 @@ Automation Ojol dengan browser **headless**, Google ADK dan **Browser Harness MC
 - Mengikuti countdown game, mengambil ongkos, lalu melanjutkan order.
 - Mengisi bensin/kuota/kondisi lewat tombol **mata**, memilih produk berdasarkan biaya per poin tanpa overflow.
 - Laporan harian WIB: payout diterima, biaya dan laba bersih; tanggal bisa dipilih.
-- Notifikasi event ON/OFF persisten. Error selalu STOP dan dilaporkan; klik yang belum pasti tidak diulang.
+- Notifikasi event ON/OFF persisten. Timeout baca dipulihkan otomatis; error yang tidak pulih selalu STOP dan dilaporkan. Klik yang belum pasti tidak diulang.
 
 Gunakan hanya dengan izin operator game. Satu akun, satu worker dan satu volume aktif. Login Google/noVNC tidak diperlukan.
 
@@ -108,6 +108,17 @@ docker compose exec -u app app python main.py reconcile
 ```
 
 Jika error terjadi pada `observe.ojol` setelah log `aksi_job_terverifikasi`, aksi terakhir tetap terverifikasi; `last_action` di pesan error adalah referensi aksi terakhir. Payout yang sudah tercatat tidak diulang. Status aksi pada `history` menentukan apakah rekonsiliasi diperlukan. Error timeout MCP ditampilkan dengan sebab asli dari ADK; batas waktu daemon15detik, request MCP25detik dan batas luar30detik tidak saling mendahului. Tidak ada retry klik saat timeout.
+
+Pembacaan DOM yang mengalami timeout/koneksi terputus dicoba maksimal3kali, dengan jeda1dan3detik. Jika masih gagal, worker mencoba refresh tab sendiri sekali, lalu meminta controller me-restart Chromium terkelola bila refresh gagal. Worker, run, ledger dan penghitung batas belanja/trip tetap sama; sesi memakai profil tersimpan. Setelah browser siap, worker membaca state saat ini dan melanjutkan verifikasi, tanpa replay klik Beli/Terima/Sampai. Maksimal3episode recovery berat per15menit; di atas batas, sesi kedaluwarsa, atau recovery gagal, worker STOP dan melapor. Tombol Hentikan Ojol tetap berlaku selama recovery. Browser desktop tidak boleh di-restart melalui jalur ini.
+
+Viewport960×640 mengurangi luas render SwiftShader dibanding1365×900; snapshot panel yang sudah terbuka memakai satu RPC. Timer/game loop tetap berjalan normal. Pada server tanpa GPU, SwiftShader merender melalui CPU. Beban GPU-process tinggi merupakan bukti bottleneck rendering, bukan bukti tunggal penyebab setiap timeout. Penurunan CPU perlu diukur setelah deploy.
+
+Timeout baca menyimpan diagnostik privat: respons browser-level, tipe native dialog bila tersedia, counter CPU/memori cgroup dan tipe/state/CPU ticks proses Chromium. Tidak menyimpan argv lengkap, body halaman atau cookie. Maksimal20file di `runtime/diagnostics`; perintah berikut membaca5terbaru tanpa membuka browser:
+
+```sh
+docker compose exec -u app app python main.py diagnostics
+docker stats --no-stream $(docker compose ps -q app)
+```
 
 Timeout klik menghasilkan aksi `uncertain` dan memblokir start baru. Rekonsiliasi hanya mengubah ledger bila bukti memadai; tidak mengirim ulang klik. Klaim lama bisa dipulihkan dari satu receipt dengan rute, menit dan kenaikan payout yang cocok. Bila bukti tidak cukup, tetap STOP; jangan menghapus database untuk memaksa replay.
 

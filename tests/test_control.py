@@ -275,6 +275,7 @@ async def test_managed_browser_volume_lease_and_stale_profile_locks(settings, mo
         )
         await browser.switch("headless")
         assert "--headless=new" in browser.spawn.call_args.args
+        assert "--window-size=960,640" in browser.spawn.call_args.args
         assert browser.spawn.call_args.args[-1] == "about:blank"
         assert not (browser.profile / "SingletonLock").is_symlink()
         await browser.close()

@@ -38,7 +38,10 @@ class BrowserRuntime:
 
     async def terminate(self, process):
         if process and process.returncode is None:
-            os.killpg(process.pid, signal.SIGTERM)
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                return
             try:
                 await asyncio.wait_for(process.wait(), 10)
             except TimeoutError:
@@ -87,7 +90,7 @@ class BrowserRuntime:
             "--remote-debugging-address=127.0.0.1",
             "--remote-debugging-port=9222",
             f"--user-data-dir={self.profile}",
-            "--window-size=1365,900",
+            "--window-size=960,640",
             "--use-gl=angle",
             "--use-angle=swiftshader",
             "--enable-unsafe-swiftshader",

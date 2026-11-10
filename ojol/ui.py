@@ -9,7 +9,8 @@ from .planner import decimal_id, parse_snapshot
 SNAPSHOT_JS = """(() => {
  const root=document.querySelector('#ks-ojol');
  const wallet=document.querySelector('button[title="Koin cash (di dompet)"]');
- if(!root || !wallet) return {error:'Panel Ojol atau dompet cash tidak tersedia'};
+ if(!root || document.querySelector('[aria-controls="fold-kerja-ojol"]')?.getAttribute('aria-expanded')==='false') return {needs_work:true};
+ if(!wallet) return {error:'Dompet cash tidak tersedia'};
  const tiles={};
  for(const label of root.querySelectorAll('span')) {
    if(['Bensin','Kondisi','Kuota HP','Hasil hari ini'].includes(label.textContent.trim()))
@@ -39,23 +40,31 @@ class GameUI:
         )
 
     async def close_views(self):
-        if await self.browser.js("!!document.querySelector('[data-testid=\"tujuan-cari\"]')"):
+        if await self.browser.js(
+            "!!document.querySelector('[data-testid=\"tujuan-cari\"]')", read_only=True
+        ):
             await self.click_selector('#tujuan-title + button[aria-label="Tutup"]')
             await self.pause()
-        if await self.browser.js("!!document.querySelector('[data-testid=\"panel\"]')"):
+        if await self.browser.js(
+            "!!document.querySelector('[data-testid=\"panel\"]')", read_only=True
+        ):
             await self.click_selector('[data-testid="panel"] [aria-label="Tutup panel"]')
             await self.pause()
-        if await self.browser.js("!!document.querySelector('[data-testid=\"rumah-keluar\"]')"):
+        if await self.browser.js(
+            "!!document.querySelector('[data-testid=\"rumah-keluar\"]')", read_only=True
+        ):
             await self.click_selector('[data-testid="rumah-keluar"]')
             await self.pause()
 
     async def work(self):
-        if not await self.browser.js("!!document.querySelector('#ks-ojol')"):
+        if not await self.browser.js("!!document.querySelector('#ks-ojol')", read_only=True):
             await self.close_views()
             await self.click_selector('[data-tour="nav-kerja"]')
             await self.pause()
         for _ in range(20):
-            found = await self.browser.js("!!document.querySelector('[data-testid=\"ojol-fold\"]')")
+            found = await self.browser.js(
+                "!!document.querySelector('[data-testid=\"ojol-fold\"]')", read_only=True
+            )
             if found:
                 break
             await self.pause()
@@ -64,15 +73,19 @@ class GameUI:
                 "Ojol desa belum tersedia; login, kepemilikan kendaraan, atau sesi perlu diperiksa manual"
             )
         collapsed = await self.browser.js(
-            "document.querySelector('[aria-controls=\"fold-kerja-ojol\"]')?.getAttribute('aria-expanded')==='false'"
+            "document.querySelector('[aria-controls=\"fold-kerja-ojol\"]')?.getAttribute('aria-expanded')==='false'",
+            read_only=True,
         )
         if collapsed:
             await self.click_selector('[aria-controls="fold-kerja-ojol"]')
             await self.pause()
 
     async def snapshot(self):
-        await self.work()
-        return parse_snapshot(await self.browser.js(SNAPSHOT_JS))
+        data = await self.browser.js(SNAPSHOT_JS, read_only=True)
+        if data.get("needs_work"):
+            await self.work()
+            data = await self.browser.js(SNAPSHOT_JS, read_only=True)
+        return parse_snapshot(data)
 
     async def open_shop(self, resource):
         queries = {"fuel": "spbu", "condition": "bengkel", "data": "konter"}
@@ -94,12 +107,14 @@ class GameUI:
         )
         await self.pause()
         if await self.browser.js(
-            "document.querySelector('[data-testid=\"tujuan-buka-saja\"]')?.getAttribute('aria-checked')==='false'"
+            "document.querySelector('[data-testid=\"tujuan-buka-saja\"]')?.getAttribute('aria-checked')==='false'",
+            read_only=True,
         ):
             await self.click_selector('[data-testid="tujuan-buka-saja"]')
             await self.pause()
         rows = await self.browser.js(
-            "[...document.querySelectorAll('[data-testid=\"tujuan-item\"]')].map(row=>({name:row.querySelector('b')?.textContent.trim(),text:row.textContent.replace(/\\s+/g,' ').trim(),hours:row.querySelector('[data-testid=\"tujuan-jam\"]')?.textContent}))"
+            "[...document.querySelectorAll('[data-testid=\"tujuan-item\"]')].map(row=>({name:row.querySelector('b')?.textContent.trim(),text:row.textContent.replace(/\\s+/g,' ').trim(),hours:row.querySelector('[data-testid=\"tujuan-jam\"]')?.textContent}))",
+            read_only=True,
         )
         valid = [
             row
@@ -125,7 +140,8 @@ class GameUI:
             identity_verified = await self.browser.js(
                 "!!document.querySelector('[data-testid=\"panel\"]')?.textContent.includes("
                 + json.dumps(selected["name"])
-                + ")"
+                + ")",
+                read_only=True,
             )
             if identity_verified:
                 break
@@ -149,7 +165,8 @@ class GameUI:
         rows = await self.browser.js(
             "(() => {const p=document.querySelector('[data-testid=\"panel\"]');if(!p)return {error:'Panel toko tidak tersedia'};"
             "return [...p.querySelectorAll('button')].filter(b=>b.textContent.trim()==='Beli').map(b=>({name:b.parentElement.querySelector('strong')?.textContent.trim(),"
-            "details:b.parentElement.querySelector('small')?.textContent.trim(),row_text:b.parentElement.textContent.replace(/\\s+/g,' ').trim(),enabled:!b.disabled}));})()"
+            "details:b.parentElement.querySelector('small')?.textContent.trim(),row_text:b.parentElement.textContent.replace(/\\s+/g,' ').trim(),enabled:!b.disabled}));})()",
+            read_only=True,
         )
         products = []
         for row in rows:

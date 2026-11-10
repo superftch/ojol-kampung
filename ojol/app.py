@@ -31,6 +31,20 @@ class OjolAutomationAgent(BaseAgent):
         async with McpBrowser(
             self.settings.runtime_dir / "harness", ToolContext(ctx), self.settings.cdp_url
         ) as browser:
+
+            def check_startup_cancel():
+                if (self.cancel and self.cancel.is_set()) or (
+                    self.command == "run" and (self.settings.runtime_dir / "STOP").exists()
+                ):
+                    raise StopRequested("Dihentikan pengguna")
+
+            browser.check_cancel = check_startup_cancel
+            if self.settings.managed_browser:
+                from .healing import request_browser_restart
+
+                browser.recover_browser = lambda: request_browser_restart(
+                    self.settings, browser.check_cancel
+                )
             await browser.open_owned_tab(refresh=True)
             ui = GameUI(browser)
             if self.command in {"inspect", "doctor"}:
@@ -228,6 +242,8 @@ async def run_app(settings, command, live=False, shop=None):
             ),
         ):
             pass
+    except StopRequested:
+        print("Worker dihentikan sebelum startup selesai.", flush=True)
     finally:
         await runner.close()
         for sig in (signal.SIGINT, signal.SIGTERM):

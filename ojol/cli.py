@@ -63,7 +63,7 @@ def parser():
         choices=["fuel", "condition", "data"],
         help="Periksa harga toko melalui tombol mata, tanpa beli",
     )
-    for name in ("doctor", "status", "stop", "history", "reconcile"):
+    for name in ("doctor", "status", "stop", "history", "reconcile", "diagnostics"):
         commands.add_parser(name)
     profit = commands.add_parser("profit")
     period = profit.add_mutually_exclusive_group()
@@ -117,6 +117,13 @@ def main(argv=None):
                     "Estimasi dari countdown DOM terakhir; snapshot tetap memuat waktu observasi aslinya."
                 )
             print(json.dumps(data, ensure_ascii=False, indent=2))
+        elif args.command == "diagnostics":
+            files = sorted((directory / "diagnostics").glob("browser-*.json"))[-5:]
+            print(
+                json.dumps(
+                    [json.loads(path.read_text()) for path in files], ensure_ascii=False, indent=2
+                )
+            )
         elif args.command == "stop":
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             (directory / "STOP").touch(mode=0o600)

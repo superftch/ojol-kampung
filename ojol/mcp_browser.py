@@ -3,6 +3,7 @@ import json
 import os
 import shutil
 import sys
+import time
 from pathlib import Path
 
 from google.adk.tools.mcp_tool import McpToolset
@@ -18,6 +19,7 @@ TOOLS = [
     "browser_close_tab",
     "browser_cdp",
     "browser_goto",
+    "browser_page_info",
 ]
 
 DAEMON_RESPONSE_TIMEOUT = 15
@@ -29,6 +31,23 @@ class BrowserError(RuntimeError):
     def __init__(self, message, stage="browser.mcp", operation=None):
         super().__init__(message)
         self.stage, self.operation = stage, operation
+        self.transient = (
+            (stage.startswith("mcp.") or stage == "browser.mcp")
+            and operation in TOOLS
+            and any(
+                term in message.lower()
+                for term in (
+                    "timed out",
+                    "timeout",
+                    "connection closed",
+                    "connection reset",
+                    "session with given id not found",
+                    "cdp_disconnected",
+                    "brokenresourceerror",
+                    "closedresourceerror",
+                )
+            )
+        )
 
 
 class McpBrowser:
@@ -48,6 +67,10 @@ class McpBrowser:
         self.session_id = None
         self.session_tab = None
         self.allow_session_transfer = allow_session_transfer
+        self.check_cancel = lambda: None
+        self.on_recovery = lambda event, **data: None
+        self.recover_browser = None
+        self.heal_times = []
         env = {
             key: os.environ[key]
             for key in ("PATH", "HOME", "TMPDIR", "SYSTEMROOT", "LANG")
@@ -211,7 +234,10 @@ class McpBrowser:
         if (
             isinstance(primary, BrowserError)
             and primary.operation
-            and any(term in str(primary).lower() for term in ("timed out", "timeout"))
+            and (
+                primary.stage == "browser.self_heal"
+                or any(term in str(primary).lower() for term in ("timed out", "timeout"))
+            )
         ):
             # Do not send another blocking command into a transport/renderer that just timed out.
             return
@@ -288,6 +314,7 @@ class McpBrowser:
         try:
             async with asyncio.timeout(30):
                 for _ in range(60):
+                    self.check_cancel()
                     await asyncio.sleep(0.5)
                     try:
                         if await self.js(ready, require_game=False):
@@ -307,7 +334,78 @@ class McpBrowser:
             await self.reset_focus()
         raise BrowserError("Halaman tab automation belum selesai dimuat")
 
-    async def js(self, expression: str, require_game=True):
+    async def read_js(self, expression, require_game=True):
+        from .healing import capture_diagnostics
+
+        for attempt in range(3):
+            self.check_cancel()
+            try:
+                value = await self.js(expression, require_game=require_game)
+                if attempt:
+                    self.on_recovery("browser_read_recovered", attempt=attempt + 1)
+                return value
+            except BrowserError as exc:
+                if not exc.transient:
+                    raise
+                if attempt == 0:
+                    probe = {"browser_level": "unresponsive", "dialog_type": None}
+                    try:
+                        await asyncio.wait_for(self.call("browser_list_tabs"), 3)
+                        probe["browser_level"] = "responsive"
+                        info = await asyncio.wait_for(self.call("browser_page_info"), 3)
+                        dialog = info.get("dialog") if isinstance(info, dict) else None
+                        if isinstance(dialog, dict):
+                            kind = dialog.get("type")
+                            probe["dialog_type"] = (
+                                kind
+                                if kind in {"alert", "confirm", "prompt", "beforeunload"}
+                                else "unknown"
+                            )
+                    except (BrowserError, TimeoutError):
+                        pass
+                    try:
+                        diagnostic = capture_diagnostics(self.home.parent, "read_timeout", probe)
+                    except OSError:
+                        diagnostic = "unavailable"
+                    self.on_recovery("browser_diagnostic", file=diagnostic, probe=probe)
+                if attempt < 2:
+                    delay = (1, 3)[attempt]
+                    self.on_recovery("browser_read_retry", attempt=attempt + 2, delay=delay)
+                    for _ in range(delay * 4):
+                        self.check_cancel()
+                        await asyncio.sleep(0.25)
+        self.check_cancel()
+        self.heal_times = [stamp for stamp in self.heal_times if time.monotonic() - stamp < 900]
+        if len(self.heal_times) >= 3:
+            raise BrowserError(
+                "Batas self-healing timeout tercapai (3 per 15 menit)",
+                stage="browser.self_heal",
+                operation="browser_cdp",
+            )
+        self.heal_times.append(time.monotonic())
+        self.on_recovery("browser_self_heal", mode="refresh")
+        try:
+            await self.refresh_owned_tab()
+            self.check_cancel()
+            value = await self.js(expression, require_game=require_game)
+        except BrowserError as exc:
+            if not exc.transient and exc.stage != "browser.page_load":
+                raise
+            if self.recover_browser is None:
+                raise
+            self.check_cancel()
+            self.on_recovery("browser_self_heal", mode="restart_owned_chromium")
+            await self.recover_browser()
+            self.check_cancel()
+            self.tab_id = self.session_id = self.session_tab = None
+            await self.open_owned_tab()
+            value = await self.js(expression, require_game=require_game)
+        self.on_recovery("browser_read_recovered", mode="self_heal")
+        return value
+
+    async def js(self, expression: str, require_game=True, read_only=False):
+        if read_only:
+            return await self.read_js(expression, require_game=require_game)
         if not self.tab_id or not self.session_id or self.session_tab != self.tab_id:
             raise BrowserError("Tab automation belum tersedia")
         if require_game:

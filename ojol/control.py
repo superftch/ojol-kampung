@@ -22,6 +22,7 @@ from .browser_runtime import BrowserRuntime
 from .cli import running
 from .config import load_settings
 from .finance import WIB, report_date
+from .healing import write_private
 from .journal import Journal
 from .login_access import LoginAccess
 from .models import ROOT, Settings
@@ -50,6 +51,51 @@ class ControlService:
         self.closing = False
         self.tasks = []
         self.lock = asyncio.Lock()
+        self.browser_recovering = False
+        self.browser_restarts = []
+
+    async def handle_browser_recovery(self):
+        request = self.settings.runtime_dir / "browser-recovery-request.json"
+        if not request.is_file() or self.lock.locked():
+            return
+        payload = json.loads(request.read_text())
+        request.unlink(missing_ok=True)
+        identifier = payload.get("id")
+        if not isinstance(identifier, str) or not re.fullmatch(r"[a-f0-9]{32}", identifier):
+            return
+        ok = False
+        async with self.lock:
+            try:
+                if (
+                    not self.settings.managed_browser
+                    or not self.worker
+                    or self.worker.returncode is not None
+                    or self.worker.pid != payload.get("pid")
+                    or payload.get("parent_pid") != os.getpid()
+                    or self.expected_stop
+                    or (self.settings.runtime_dir / "STOP").exists()
+                    or not isinstance(payload.get("created"), (int, float))
+                    or not 0 <= time.time() - payload["created"] < 60
+                ):
+                    return
+                self.browser_restarts = [
+                    stamp for stamp in self.browser_restarts if time.monotonic() - stamp < 900
+                ]
+                if len(self.browser_restarts) >= 3:
+                    return
+                self.browser_restarts.append(time.monotonic())
+                self.browser_recovering = True
+                await self.browser.close()
+                await self.browser.switch("headless")
+                ok = not self.expected_stop and not (self.settings.runtime_dir / "STOP").exists()
+            except Exception:
+                ok = False
+            finally:
+                self.browser_recovering = False
+                write_private(
+                    self.settings.runtime_dir / "browser-recovery-reply.json",
+                    {"id": identifier, "ok": ok},
+                )
 
     def tunnel_alive(self):
         return bool(self.tunnel_process and self.tunnel_process.returncode is None)
@@ -117,6 +163,7 @@ class ControlService:
             f"Bensin {state.get('fuel', '?')}% | Kondisi {state.get('condition', '?')}% | Kuota {state.get('data', '?')}%\n"
             f"Saldo utama: {state.get('wallet', '?')} koin · minimum {self.settings.min_balance}\n"
             f"Notifikasi event: {'ON' if notifications_enabled(self.settings) else 'OFF'}"
+            + ("\nSelf-healing: restart browser berlangsung" if self.browser_recovering else "")
             + (
                 f"\nTunnel: proses {'aktif' if self.tunnel_alive() else 'berhenti'}"
                 if self.settings.tunnel_enabled
@@ -231,11 +278,12 @@ class ControlService:
                     args += ["--env-file", config_file]
                 args += ["run", "--live"]
                 self.expected_stop = False
+                self.browser_restarts = []
                 # Docker owns stdout rotation; journal and status remain persistent in the volume.
                 self.worker = await asyncio.create_subprocess_exec(
                     *args, stderr=asyncio.subprocess.STDOUT, start_new_session=True
                 )
-                return "▶️ Worker dimulai dalam Chrome headless melalui Browser Harness MCP, tanpa batas trip/durasi pada konfigurasi default. Saldo utama dijaga ≥20 koin. Jika sesi/error, worker stop dan melapor."
+                return "▶️ Worker dimulai dalam Chrome headless melalui Browser Harness MCP, tanpa batas trip/durasi pada konfigurasi default. Saldo utama dijaga ≥20 koin. Timeout baca dipulihkan otomatis tanpa mengulang klik transaksi. Sesi kedaluwarsa atau recovery gagal: worker stop dan melapor."
         return "Pilih tombol: Import Cookie, Jalankan Ojol, Hentikan Ojol, Status, Laba Bersih, Notifikasi ON/OFF."
 
     async def execute(self, command):
@@ -311,6 +359,7 @@ class ControlService:
 
     async def supervise(self):
         while not self.closing:
+            await self.handle_browser_recovery()
             if (
                 self.tunnel_process
                 and self.tunnel_process.returncode is not None
@@ -340,7 +389,12 @@ class ControlService:
                         )
                 else:
                     queue_notice(self.settings, "Worker berhenti. " + self.status())
-            if self.browser.mode and not self.browser.alive() and not self.lock.locked():
+            if (
+                self.browser.mode
+                and not self.browser.alive()
+                and not self.lock.locked()
+                and not (self.worker and self.worker.returncode is None)
+            ):
                 queue_error(
                     self.settings,
                     RuntimeError("Chromium berhenti di luar pergantian mode"),

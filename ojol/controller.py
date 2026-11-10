@@ -42,6 +42,10 @@ class Controller:
         self.last_action = None
         self.busy_since = None
         self.catalog = load_catalog(settings.runtime_dir)
+        browser = getattr(ui, "browser", None)
+        if browser is not None:
+            browser.check_cancel = self.check_cancel
+            browser.on_recovery = self.report
 
     def check_cancel(self):
         if self.cancel.is_set() or (self.settings.runtime_dir / "STOP").exists():
