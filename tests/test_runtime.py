@@ -414,6 +414,73 @@ async def test_cookie_import_prepares_blank_owned_tab_before_loading_game(settin
     assert browser.call.await_args_list[1].kwargs["target"] == "owned-old"
 
 
+async def test_refresh_reuses_only_owned_tab_and_waits_for_a_new_document(settings, monkeypatch):
+    home = settings.runtime_dir / "harness"
+    home.mkdir()
+    (home / "owned-tab.json").write_text(json.dumps({"target_id": "owned"}))
+    browser = McpBrowser(home, None)
+    browser.call = AsyncMock(
+        side_effect=[
+            [
+                {"targetId": "owned", "url": "https://www.kampungsebelah.com/kampung"},
+                {"targetId": "foreign", "url": "https://example.com"},
+            ],
+            {"sessionId": "owned-session"},
+            {},
+            {},
+            {},
+        ]
+    )
+    browser.js = AsyncMock(side_effect=[1234.5, False, True])
+    monkeypatch.setattr("ojol.mcp_browser.asyncio.sleep", AsyncMock())
+    assert await browser.open_owned_tab(refresh=True) == "owned"
+    calls = browser.call.await_args_list
+    assert [call.args[0] for call in calls] == [
+        "browser_list_tabs",
+        "browser_switch_tab",
+        "browser_cdp",
+        "browser_cdp",
+        "browser_cdp",
+    ]
+    assert calls[1].kwargs == {"target": "owned"}
+    assert calls[2].kwargs == {
+        "method": "Page.reload",
+        "params": {"session_id": "owned-session", "ignoreCache": True, "_response_timeout": 15},
+    }
+    ready = browser.js.await_args_list[1].args[0]
+    assert "performance.timeOrigin !== 1234.5" in ready
+    assert "nav-kerja" in ready and "readyState" in ready
+    assert browser.js.await_count == 3
+
+
+async def test_page_reload_requires_owned_session_and_has_no_timeout_replay(settings):
+    browser = McpBrowser(settings.runtime_dir / "harness", None)
+    browser.tab_id = browser.session_tab = "owned"
+    browser.session_id = "owned-session"
+    params = {"session_id": "foreign", "ignoreCache": True, "_response_timeout": 15}
+    with pytest.raises(BrowserError):
+        await browser.call("browser_cdp", method="Page.reload", params=params)
+    tool = SimpleNamespace(run_async=AsyncMock(side_effect=TimeoutError))
+    browser.tools = {"browser_cdp": tool}
+    params["session_id"] = "owned-session"
+    with pytest.raises(BrowserError, match="tanpa mengulang"):
+        await browser.call("browser_cdp", method="Page.reload", params=params)
+    tool.run_async.assert_awaited_once()
+
+
+async def test_refresh_readiness_failure_never_reloads_twice(settings):
+    browser = McpBrowser(settings.runtime_dir / "harness", None)
+    browser.tab_id = browser.session_tab = "owned"
+    browser.session_id = "owned-session"
+    browser.js = AsyncMock(return_value=1234.5)
+    browser.call = AsyncMock(return_value={})
+    browser.wait_ready = AsyncMock(side_effect=BrowserError("Dokumen baru belum siap"))
+    with pytest.raises(BrowserError, match="Dokumen baru"):
+        await browser.refresh_owned_tab()
+    browser.call.assert_awaited_once()
+    assert browser.call.call_args.kwargs["method"] == "Page.reload"
+
+
 async def test_unlimited_run_passes_old_trip_and_duration_limits_but_manual_stop_works(
     settings, state
 ):

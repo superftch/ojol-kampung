@@ -138,6 +138,15 @@ class McpBrowser:
                     and params["awaitPromise"] is False
                     and params["_response_timeout"] == 15
                 )
+            if method == "Page.reload":
+                permitted = (
+                    self.session_id
+                    and self.session_tab == self.tab_id
+                    and params.get("session_id") == self.session_id
+                    and set(params) == {"session_id", "ignoreCache", "_response_timeout"}
+                    and params["ignoreCache"] is True
+                    and params["_response_timeout"] == 15
+                )
             if self.allow_session_transfer:
                 if method == "Network.getCookies":
                     permitted = params == {"urls": ["https://www.kampungsebelah.com/kampung"]}
@@ -198,7 +207,7 @@ class McpBrowser:
             # Preserve the actual failed action instead of replacing it with a cleanup timeout.
             primary.add_note(f"Focus cleanup also failed: {type(cleanup).__name__}")
 
-    async def open_owned_tab(self, prepare_session=False):
+    async def open_owned_tab(self, prepare_session=False, refresh=False):
         self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
         marker = self.home / "owned-tab.json"
         tabs = await self.call("browser_list_tabs")
@@ -213,6 +222,8 @@ class McpBrowser:
                     await self.call("browser_close_tab", target=self.tab_id)
                 else:
                     await self.bind_session()
+                    if refresh:
+                        await self.refresh_owned_tab()
                     return self.tab_id
         # about:blank forces Harness to create a new background target; it cannot reuse a user's blank tab.
         created = await self.call("browser_new_tab", url="about:blank")
@@ -225,15 +236,41 @@ class McpBrowser:
         if prepare_session:
             return self.tab_id
         await self.call("browser_goto", url="https://www.kampungsebelah.com/kampung")
+        return await self.wait_ready()
+
+    async def refresh_owned_tab(self):
+        previous_origin = await self.js("performance.timeOrigin")
+        if isinstance(previous_origin, bool) or not isinstance(previous_origin, (int, float)):
+            raise BrowserError("Identitas dokumen tab automation tidak terbaca")
+        await self.call(
+            "browser_cdp",
+            method="Page.reload",
+            params={
+                "session_id": self.session_id,
+                "ignoreCache": True,
+                "_response_timeout": 15,
+            },
+        )
+        return await self.wait_ready(previous_origin)
+
+    async def wait_ready(self, previous_origin=None):
+        ready = (
+            "document.readyState === 'complete' && "
+            "(!/^\\/kampung(?:\\/|$)/.test(location.pathname) || "
+            "!!document.querySelector('[data-tour=\"nav-kerja\"]'))"
+        )
+        if previous_origin is not None:
+            # A slow reload can leave the old document complete until the response arrives.
+            ready = f"performance.timeOrigin !== {json.dumps(previous_origin)} && ({ready})"
         await self.call(
             "browser_cdp", method="Emulation.setFocusEmulationEnabled", params={"enabled": True}
         )
         try:
             async with asyncio.timeout(30):
-                for _ in range(30):
+                for _ in range(60):
                     await asyncio.sleep(0.5)
                     try:
-                        if await self.js("document.readyState === 'complete'", require_game=False):
+                        if await self.js(ready, require_game=False):
                             return self.tab_id
                     except BrowserError as exc:
                         if (

@@ -31,7 +31,7 @@ class OjolAutomationAgent(BaseAgent):
         async with McpBrowser(
             self.settings.runtime_dir / "harness", ToolContext(ctx), self.settings.cdp_url
         ) as browser:
-            await browser.open_owned_tab()
+            await browser.open_owned_tab(refresh=True)
             ui = GameUI(browser)
             if self.command in {"inspect", "doctor"}:
                 state = await ui.snapshot()

@@ -8,6 +8,8 @@ Tidak ada model yang menghasilkan kode klik atau request game langsung. Controll
 
 BrowserRuntime memegang file lock volume. Worker memegang lock terpisah; start ganda ditolak, termasuk ketika child baru dimulai dan belum memperoleh lock. Stop dicek selama countdown dan sebelum tindakan. Browser selalu boot ke about:blank; hanya Harness memuat satu dunia game.
 
+Saat start/inspect/reconcile menggunakan kembali tab miliknya, agent mengirim Page.reload dengan sesi CDP eksplisit dan deadline15detik. Readiness menunggu performance.timeOrigin berubah, dokumen complete dan navigasi Kerja tersedia; dokumen lama tidak dianggap siap selama reload lambat. Timeout tidak menyebabkan reload kedua atau replay aksi game.
+
 ## Browser dan transaksi
 
 Target ID yang dibuat sendiri disimpan dan diverifikasi sebelum reuse. Evaluasi DOM dan focus emulation memakai sesi CDP persisten yang terikat pada target itu, melalui tool MCP resmi `browser_cdp`. Timeout IPC15detik berada di bawah timeout panggilan MCP20detik. Kegagalan reset focus saat cleanup tidak menggantikan exception aksi yang sedang gagal; tanpa exception sebelumnya, kegagalan cleanup tetap dilaporkan. Origin/path game diperiksa di setiap ekspresi. Tidak mengaktifkan tab desktop atau memakai input OS.

@@ -58,6 +58,8 @@ async def test_reconcile_sleep_rejection_before_or_after_waking_never_clicks_or_
             async for _ in agent._run_async_impl(None):
                 pass
         assert journal.history()["actions"][0]["status"] == "rejected"
+        assert browser.open_owned_tab.await_count == 2
+        browser.open_owned_tab.assert_awaited_with(refresh=True)
         assert journal.profit()["trip_tercatat"] == 0
         assert journal.profit()["pengeluaran"] == "0"
         assert journal.start(settings) > run
@@ -180,6 +182,7 @@ async def test_reconcile_claim_requires_exact_receipt_and_never_replays_or_doubl
                 pass
         row = journal.history()["actions"][0]
         assert row["status"] == ("verified" if matching_route else "uncertain")
+        browser.open_owned_tab.assert_awaited_with(refresh=True)
         assert journal.profit()["trip_tercatat"] == int(matching_route)
         assert journal.profit()["pendapatan_ojol"] == ("0.72" if matching_route else "0")
         ui.job_click.assert_not_awaited()

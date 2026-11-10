@@ -113,6 +113,8 @@ Jika STOP pada `job.complete.verify`, tekan Hentikan Ojol, update image, lalu ja
 
 Saat pesan game menyatakan karakter tidur, worker berhenti sebelum mencari order atau belanja. Bangunkan karakter melalui game. Untuk pencarian lama yang terlanjur diklik saat tidur, `reconcile` dapat memberi status `rejected` tanpa klik ulang, termasuk setelah bangun: snapshot sebelum klik harus memuat pesan tidur, pada hari WIB yang sama saldo/resource/hasil/history harus tetap sama, dan tidak boleh ada order aktif atau ditawarkan. Tidak ada pendapatan/biaya yang dicatat untuk penolakan ini. Bila syarat tidak cocok, aksi tetap diblokir. Status `Mencari…` diterima sebagai pencarian sedang diproses; worker menunggu paling lama30detik tanpa klik duplikat.
 
+Start worker, `inspect`/`doctor` dan `reconcile` menyegarkan tab automation yang digunakan kembali melalui MCP. Pembacaan menunggu dokumen baru dan navigasi Kerja siap, sehingga perubahan seperti Bangun dari browser lain tidak tertahan di UI lama. Tab baru cukup dimuat sekali. Refresh tidak diulang saat timeout dan tidak mengirim ulang klik order/pembelian.
+
 ### Backup dan update
 
 Backup konsisten seluruh profil/ledger, tanpa worker aktif:
