@@ -77,8 +77,8 @@ class OjolAutomationAgent(BaseAgent):
                         elif action["kind"] in {"take", "search"}:
                             valid = state.phase == "delivering"
                         elif action["kind"] == "complete":
-                            valid = state.history != before.history and state.phase != "complete"
                             evidence = completion_evidence(before, state)
+                            valid = evidence is not None
                         from .models import now
 
                         if (now() - before.observed_at).total_seconds() > 300 and not evidence:
@@ -142,11 +142,7 @@ class OjolAutomationAgent(BaseAgent):
                     raise
                 finally:
                     try:
-                        await browser.call(
-                            "browser_cdp",
-                            method="Emulation.setFocusEmulationEnabled",
-                            params={"enabled": False},
-                        )
+                        await browser.reset_focus()
                     finally:
                         journal.close()
         yield Event(author=self.name)

@@ -474,3 +474,67 @@ async def test_runtime_timeout_does_not_expose_javascript_expression(settings):
     with pytest.raises(BrowserError) as error:
         await browser.js("true")
     assert str(error.value) == "Runtime.evaluate timed out"
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_focus_uses_owned_persistent_session_and_15_second_daemon_deadline(settings, enabled):
+    browser = McpBrowser(settings.runtime_dir / "harness", None)
+    browser.tab_id = browser.session_tab = "owned"
+    browser.session_id = "owned-session"
+    tool = SimpleNamespace(
+        run_async=AsyncMock(return_value={"content": [{"type": "text", "text": "{}"}]})
+    )
+    browser.tools = {"browser_cdp": tool}
+    await browser.call(
+        "browser_cdp", method="Emulation.setFocusEmulationEnabled", params={"enabled": enabled}
+    )
+    assert tool.run_async.call_args.kwargs["args"]["params"] == {
+        "enabled": enabled,
+        "session_id": "owned-session",
+        "_response_timeout": 15,
+    }
+    browser.session_tab = "foreign"
+    with pytest.raises(BrowserError, match="di luar izin"):
+        await browser.call(
+            "browser_cdp", method="Emulation.setFocusEmulationEnabled", params={"enabled": enabled}
+        )
+    tool.run_async.assert_awaited_once()
+
+
+async def test_focus_cleanup_timeout_preserves_primary_verification_error(settings):
+    browser = McpBrowser(settings.runtime_dir / "harness", None)
+    browser.call = AsyncMock(side_effect=BrowserError("Focus daemon timed out"))
+    primary = BrowserError("Runtime.evaluate timed out", operation="browser_cdp")
+    with pytest.raises(BrowserError) as error:
+        try:
+            raise primary
+        finally:
+            await browser.reset_focus()
+    assert error.value is primary
+    assert primary.__notes__ == ["Focus cleanup also failed: BrowserError"]
+    browser.call.assert_awaited_once()
+
+
+async def test_focus_cleanup_failure_without_primary_is_not_swallowed(settings):
+    browser = McpBrowser(settings.runtime_dir / "harness", None)
+    browser.call = AsyncMock(side_effect=BrowserError("Focus daemon timed out"))
+    with pytest.raises(BrowserError, match="Focus daemon timed out"):
+        await browser.reset_focus()
+
+
+def test_start_error_does_not_inherit_previous_process_verification_stage(settings, monkeypatch):
+    import ojol.app as app
+    import ojol.cli as cli
+
+    isolated = settings.model_copy(update={"env": "local"})
+    (settings.runtime_dir / "status.json").write_text(
+        json.dumps({"pid": -1, "event": "gagal", "stage": "job.complete.verify", "run_id": 1})
+    )
+    monkeypatch.setattr(cli, "load_settings", lambda path: isolated)
+    monkeypatch.setattr(
+        app, "run_app", AsyncMock(side_effect=RuntimeError("Aksi belum terverifikasi"))
+    )
+    monkeypatch.setattr("ojol.telegram.flush_notices", AsyncMock())
+    assert cli.main(["--env-file", str(ROOT / ".env.testing"), "run"]) == 2
+    error = json.loads((settings.runtime_dir / "last-error.json").read_text())
+    assert error["stage"] == "cli.run"

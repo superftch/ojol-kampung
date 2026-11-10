@@ -198,7 +198,9 @@ def main(argv=None):
             context["mcp_tool"] = getattr(exc, "operation", None)
             stage = (
                 status.get("stage")
-                if args.command == "run" and status.get("event") == "gagal"
+                if args.command == "run"
+                and status.get("event") == "gagal"
+                and status.get("pid") == os.getpid()
                 else getattr(exc, "stage", f"cli.{args.command}")
             )
             queue_error(settings, exc, stage or f"cli.{args.command}", context)

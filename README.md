@@ -109,6 +109,8 @@ docker compose exec -u app app python main.py reconcile
 
 Timeout klik menghasilkan aksi `uncertain` dan memblokir start baru. Rekonsiliasi hanya mengubah ledger bila bukti memadai; tidak mengirim ulang klik. Klaim lama bisa dipulihkan dari satu receipt dengan rute, menit dan kenaikan payout yang cocok. Bila bukti tidak cukup, tetap STOP; jangan menghapus database untuk memaksa replay.
 
+Jika STOP pada `job.complete.verify`, tekan Hentikan Ojol, update image, lalu jalankan `docker compose exec -u app app python main.py reconcile`. Untuk klaim ongkos, perubahan history saja tidak cukup: receipt, rute, waktu dan kenaikan hasil harian harus cocok. Setelah aksi terverifikasi, tekan Jalankan Ojol. Jika masih belum pasti, simpan output rekonsiliasi dan log; jangan paksa status database. Error start yang diblokir ditandai `cli.run`, tidak memakai stage verifikasi dari PID worker sebelumnya.
+
 ### Backup dan update
 
 Backup konsisten seluruh profil/ledger, tanpa worker aktif:

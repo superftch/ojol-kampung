@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 
 from google.adk.tools.mcp_tool import McpToolset
@@ -105,9 +106,20 @@ class McpBrowser:
             method, params = args.get("method"), args.get("params", {})
             permitted = (
                 method == "Emulation.setFocusEmulationEnabled"
+                and self.session_id
+                and self.session_tab == self.tab_id
                 and set(params) == {"enabled"}
                 and isinstance(params.get("enabled"), bool)
             )
+            if permitted:
+                args = {
+                    **args,
+                    "params": {
+                        **params,
+                        "session_id": self.session_id,
+                        "_response_timeout": 15,
+                    },
+                }
             if method == "Runtime.evaluate":
                 permitted = (
                     self.session_id
@@ -172,6 +184,20 @@ class McpBrowser:
             raise BrowserError(message, stage=f"mcp.{name}", operation=name)
         return data
 
+    async def reset_focus(self):
+        primary = sys.exception()
+        try:
+            await self.call(
+                "browser_cdp",
+                method="Emulation.setFocusEmulationEnabled",
+                params={"enabled": False},
+            )
+        except Exception as cleanup:
+            if primary is None:
+                raise
+            # Preserve the actual failed action instead of replacing it with a cleanup timeout.
+            primary.add_note(f"Focus cleanup also failed: {type(cleanup).__name__}")
+
     async def open_owned_tab(self, prepare_session=False):
         self.home.mkdir(parents=True, exist_ok=True, mode=0o700)
         marker = self.home / "owned-tab.json"
@@ -221,11 +247,7 @@ class McpBrowser:
                 "Halaman tab automation belum siap setelah 30 detik", stage="browser.page_load"
             ) from None
         finally:
-            await self.call(
-                "browser_cdp",
-                method="Emulation.setFocusEmulationEnabled",
-                params={"enabled": False},
-            )
+            await self.reset_focus()
         raise BrowserError("Halaman tab automation belum selesai dimuat")
 
     async def js(self, expression: str, require_game=True):

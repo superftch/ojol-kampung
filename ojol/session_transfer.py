@@ -168,11 +168,7 @@ async def import_session(settings, payload):
                 STAGE = "session.import.snapshot"
                 snapshot = await GameUI(browser).snapshot()
             finally:
-                await browser.call(
-                    "browser_cdp",
-                    method="Emulation.setFocusEmulationEnabled",
-                    params={"enabled": False},
-                )
+                await browser.reset_focus()
         print(
             json.dumps(
                 {

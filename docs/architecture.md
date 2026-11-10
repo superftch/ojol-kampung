@@ -10,7 +10,7 @@ BrowserRuntime memegang file lock volume. Worker memegang lock terpisah; start g
 
 ## Browser dan transaksi
 
-Target ID yang dibuat sendiri disimpan dan diverifikasi sebelum reuse. Evaluasi DOM memakai sesi CDP persisten yang terikat pada target itu, melalui tool MCP resmi `browser_cdp`. Timeout IPC15detik berada di bawah timeout panggilan MCP20detik. Origin/path game diperiksa di setiap ekspresi. Tidak mengaktifkan tab desktop atau memakai input OS.
+Target ID yang dibuat sendiri disimpan dan diverifikasi sebelum reuse. Evaluasi DOM dan focus emulation memakai sesi CDP persisten yang terikat pada target itu, melalui tool MCP resmi `browser_cdp`. Timeout IPC15detik berada di bawah timeout panggilan MCP20detik. Kegagalan reset focus saat cleanup tidak menggantikan exception aksi yang sedang gagal; tanpa exception sebelumnya, kegagalan cleanup tetap dilaporkan. Origin/path game diperiksa di setiap ekspresi. Tidak mengaktifkan tab desktop atau memakai input OS.
 
 Sebelum klik berakibat, SQLite meng-commit aksi pending beserta state awal. Setelah klik, controller memverifikasi resource/dompet atau receipt/countdown. Timeout menjadi uncertain; tidak ada retry klik. Rekonsiliasi tidak mengubah game. Receipt spesifik bisa mengonfirmasi klaim lama berdasarkan rute, waktu dan payout; source_key unik menjaga pencatatan idempoten.
 
