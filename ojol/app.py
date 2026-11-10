@@ -68,10 +68,17 @@ class OjolAutomationAgent(BaseAgent):
                             observed = state
                             await asyncio.sleep(1)
                             state = await ui.snapshot()
-                            closed = journal.resolve_idle_search(action["id"], observed, state)
+                            closed = journal.resolve_search(action["id"], observed, state)
                             if closed:
+                                if closed["status"] == "handed_off":
+                                    print(
+                                        f"Aksi #{action['id']}: pencarian diserahkan ke state {state.phase}; klik tidak diulang, ongkos belum diklaim. Tekan Jalankan Ojol untuk melanjutkan."
+                                    )
+                                else:
+                                    print(
+                                        f"Aksi #{action['id']}: ditutup, tidak ada order aktif; klik tidak diulang."
+                                    )
                                 print(
-                                    f"Aksi #{action['id']}: ditutup, tidak ada order aktif; klik tidak diulang. "
                                     f"Selisih resource {closed['resource_delta']} dicatat tanpa atribusi penyebab."
                                 )
                                 continue

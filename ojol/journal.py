@@ -52,29 +52,15 @@ class Journal:
                 "UPDATE runs SET ended=?,outcome=? WHERE id=?", (now().isoformat(), outcome, run_id)
             )
 
-    def resolve_idle_search(self, action_id, observed, after):
+    def resolve_search(self, action_id, observed, after):
         row = self.db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
         if not row or row["kind"] != "search" or row["status"] not in {"pending", "uncertain"}:
             return None
         before = Snapshot.model_validate_json(row["before_state"])
-        # Close the current idle search lifecycle; do not claim the original click had no effects.
+        # Hand off the currently proven state without attributing it to the original click.
         if (
             before.phase not in {"idle", "sleeping"}
-            or after.phase not in {"idle", "sleeping"}
-            or observed.model_dump(exclude={"observed_at"})
-            != after.model_dump(exclude={"observed_at"})
             or observed.observed_at >= after.observed_at
-            or after.remaining_seconds is not None
-            or sum("Cari order" in button for button in after.buttons) != 1
-            or any(
-                re.search(
-                    r"Mencari|Terima|Ambil|Antar sekarang|Mengantar|Sampai|Selesai",
-                    button,
-                    re.IGNORECASE,
-                )
-                for button in after.buttons
-            )
-            or re.search(r"📍|🏁|→", after.trip or "")
             or observed.observed_at < before.observed_at
             or before.observed_at.astimezone(WIB).date() != after.observed_at.astimezone(WIB).date()
             or before.today_income is None
@@ -88,9 +74,69 @@ class Journal:
             )
         ):
             return None
+        exclude = {"observed_at"}
+        if after.phase == "delivering":
+            exclude.update({"remaining_seconds", "buttons", "raw_text"})
+            if (
+                observed.remaining_seconds is None
+                or after.remaining_seconds is None
+                or not 0 < after.remaining_seconds <= observed.remaining_seconds
+                or [re.sub(r"\d+:[0-5]\d", "<timer>", b) for b in observed.buttons]
+                != [re.sub(r"\d+:[0-5]\d", "<timer>", b) for b in after.buttons]
+            ):
+                return None
+        if observed.model_dump(exclude=exclude) != after.model_dump(exclude=exclude):
+            return None
+        count = lambda pattern: sum(
+            bool(re.search(pattern, b, re.IGNORECASE)) for b in after.buttons
+        )
+        route = bool(re.search(r"📍\s*\S.*?🏁\s*\S", after.trip or "", re.DOTALL))
+        no_search = count(r"Cari order|Mencari") == 0
+        if (
+            after.phase in {"idle", "sleeping"}
+            and after.remaining_seconds is None
+            and count(r"Cari order") == 1
+            and count(r"Mencari|Terima|Ambil|Antar sekarang|Mengantar|Sampai|Selesai") == 0
+            and not re.search(r"📍|🏁|→", after.trip or "")
+        ):
+            status, handoff = "closed_idle", "no_active_order"
+        elif (
+            route
+            and no_search
+            and (
+                after.phase == "complete"
+                and after.remaining_seconds == 0
+                and count(r"Selesaikan|Sampai|Selesai") == 1
+                and count(r"Mengantar") == 0
+                and count(r"Ambil|Antar sekarang|^\W*Terima\b") == 0
+            )
+        ):
+            status, handoff = "handed_off", "ready_to_claim"
+        elif (
+            route
+            and no_search
+            and after.phase == "delivering"
+            and count(r"Mengantar") == 1
+            and count(r"Selesaikan|Sampai|Selesai|Ambil|Antar sekarang|^\W*Terima\b") == 0
+        ):
+            status, handoff = "handed_off", "delivery_in_progress"
+        elif (
+            route
+            and no_search
+            and after.phase == "idle"
+            and after.remaining_seconds is None
+            and count(r"Terima|Ambil|Antar sekarang") == 1
+            and count(r"Mengantar|Selesaikan|Sampai|Selesai") == 0
+        ):
+            status, handoff = "handed_off", "offer_available"
+        else:
+            return None
         evidence = {
             "action_id": action_id,
-            "method": "two_stable_idle_observations_after_refresh",
+            "method": "two_consistent_observations_after_refresh",
+            "status": status,
+            "handoff": handoff,
+            "observation_times": [observed.observed_at.isoformat(), after.observed_at.isoformat()],
             "resource_delta": {
                 field: getattr(after, field) - getattr(before, field)
                 for field in ("fuel", "condition", "data")
@@ -100,8 +146,8 @@ class Journal:
         }
         with self.db:
             result = self.db.execute(
-                "UPDATE actions SET status='closed_idle',after_state=? WHERE id=? AND kind='search' AND status IN ('pending','uncertain')",
-                (after.model_dump_json(), action_id),
+                "UPDATE actions SET status=?,after_state=? WHERE id=? AND kind='search' AND status IN ('pending','uncertain')",
+                (status, after.model_dump_json(), action_id),
             )
             if result.rowcount != 1:
                 return None
@@ -110,7 +156,9 @@ class Journal:
                 (
                     row["run_id"],
                     now().isoformat(),
-                    "pencarian_ditutup_tanpa_order_aktif",
+                    "pencarian_ditutup_tanpa_order_aktif"
+                    if status == "closed_idle"
+                    else "pencarian_diserahkan_ke_state_teramati",
                     json.dumps(evidence),
                 ),
             )
