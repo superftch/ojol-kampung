@@ -64,16 +64,17 @@ class OjolAutomationAgent(BaseAgent):
                     for action in pending:
                         before = Snapshot.model_validate_json(action["before_state"])
                         state = await ui.snapshot()
-                        if journal.reject_sleeping_search(action["id"], state):
-                            journal.event(
-                                action["run_id"],
-                                "pencarian_ditolak_saat_tidur",
-                                {"action_id": action["id"], "effects_unchanged": True},
-                            )
-                            print(
-                                f"Aksi #{action['id']}: ditolak saat tidur, tanpa efek teramati; tidak diklik ulang."
-                            )
-                            continue
+                        if action["kind"] == "search":
+                            observed = state
+                            await asyncio.sleep(1)
+                            state = await ui.snapshot()
+                            closed = journal.resolve_idle_search(action["id"], observed, state)
+                            if closed:
+                                print(
+                                    f"Aksi #{action['id']}: ditutup, tidak ada order aktif; klik tidak diulang. "
+                                    f"Selisih resource {closed['resource_delta']} dicatat tanpa atribusi penyebab."
+                                )
+                                continue
                         payload = json.loads(action["payload"])
                         from decimal import Decimal
 
@@ -108,6 +109,33 @@ class OjolAutomationAgent(BaseAgent):
                                 else "belum dapat dipastikan; automation tetap diblokir"
                             )
                         )
+                        if action["kind"] == "search" and not valid:
+                            fields = {
+                                "observed_at",
+                                "phase",
+                                "wallet",
+                                "fuel",
+                                "condition",
+                                "data",
+                                "today_income",
+                                "trip",
+                                "buttons",
+                            }
+                            print(
+                                "Bukti pencarian: "
+                                + json.dumps(
+                                    {
+                                        "before": before.model_dump(mode="json", include=fields),
+                                        "current": state.model_dump(mode="json", include=fields),
+                                        "history_changed": before.history != state.history,
+                                        "observations_stable": observed.model_dump(
+                                            exclude={"observed_at"}
+                                        )
+                                        == state.model_dump(exclude={"observed_at"}),
+                                    },
+                                    ensure_ascii=False,
+                                )
+                            )
                 finally:
                     journal.close()
             else:

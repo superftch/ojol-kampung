@@ -7,7 +7,6 @@ from pathlib import Path
 
 from .finance import WIB, day_bounds, received_income, report_date
 from .models import Snapshot, now
-from .planner import SLEEPING_NOTICE
 
 
 class Journal:
@@ -53,16 +52,18 @@ class Journal:
                 "UPDATE runs SET ended=?,outcome=? WHERE id=?", (now().isoformat(), outcome, run_id)
             )
 
-    def reject_sleeping_search(self, action_id, after):
+    def resolve_idle_search(self, action_id, observed, after):
         row = self.db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
         if not row or row["kind"] != "search" or row["status"] not in {"pending", "uncertain"}:
-            return False
+            return None
         before = Snapshot.model_validate_json(row["before_state"])
-        # Waking changes the notice/trip text, so require unchanged effects and no active order.
+        # Close the current idle search lifecycle; do not claim the original click had no effects.
         if (
-            not SLEEPING_NOTICE.search(before.raw_text)
-            or before.phase not in {"idle", "sleeping"}
+            before.phase not in {"idle", "sleeping"}
             or after.phase not in {"idle", "sleeping"}
+            or observed.model_dump(exclude={"observed_at"})
+            != after.model_dump(exclude={"observed_at"})
+            or observed.observed_at >= after.observed_at
             or after.remaining_seconds is not None
             or sum("Cari order" in button for button in after.buttons) != 1
             or any(
@@ -74,20 +75,46 @@ class Journal:
                 for button in after.buttons
             )
             or re.search(r"📍|🏁|→", after.trip or "")
-            or after.observed_at < before.observed_at
+            or observed.observed_at < before.observed_at
             or before.observed_at.astimezone(WIB).date() != after.observed_at.astimezone(WIB).date()
+            or before.today_income is None
             or any(
                 getattr(before, field) != getattr(after, field)
-                for field in ("wallet", "fuel", "condition", "data", "today_income", "history")
+                for field in ("wallet", "today_income", "history")
+            )
+            or any(
+                getattr(after, field) > getattr(before, field)
+                for field in ("fuel", "condition", "data")
             )
         ):
-            return False
+            return None
+        evidence = {
+            "action_id": action_id,
+            "method": "two_stable_idle_observations_after_refresh",
+            "resource_delta": {
+                field: getattr(after, field) - getattr(before, field)
+                for field in ("fuel", "condition", "data")
+            },
+            "resource_delta_cause": "not_attributed",
+            "original_outcome": "uncertain",
+        }
         with self.db:
             result = self.db.execute(
-                "UPDATE actions SET status='rejected',after_state=? WHERE id=? AND kind='search' AND status IN ('pending','uncertain')",
+                "UPDATE actions SET status='closed_idle',after_state=? WHERE id=? AND kind='search' AND status IN ('pending','uncertain')",
                 (after.model_dump_json(), action_id),
             )
-        return result.rowcount == 1
+            if result.rowcount != 1:
+                return None
+            self.db.execute(
+                "INSERT INTO events(run_id,created,event,data) VALUES(?,?,?,?)",
+                (
+                    row["run_id"],
+                    now().isoformat(),
+                    "pencarian_ditutup_tanpa_order_aktif",
+                    json.dumps(evidence),
+                ),
+            )
+        return evidence
 
     def begin(self, run_id, kind, state, payload):
         with self.db:

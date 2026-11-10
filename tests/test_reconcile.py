@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
@@ -9,34 +10,49 @@ from ojol.journal import Journal
 
 
 @pytest.fixture
-def sleeping_search(state):
+def search_before(state):
     return state.model_copy(
         update={
-            "observed_at": datetime.fromisoformat("2030-01-02T01:10:31+00:00"),
+            "observed_at": datetime.fromisoformat("2030-01-02T15:12:12+00:00"),
             "phase": "idle",
-            "raw_text": "Kamu sedang tidur. Tekan ☀ Bangun dulu.\n📲 Cari order",
-            "trip": "Kamu sedang tidur. Tekan ☀ Bangun dulu. | undefined",
+            "wallet": Decimal("45.09"),
+            "fuel": 48,
+            "condition": 71,
+            "data": 97,
+            "today_income": Decimal("26.399"),
+            "raw_text": "Narik pakai motor\n📲 Cari order",
+            "trip": "undefined | undefined",
             "buttons": ["📲 Cari order", "Berhenti jadi mitra ojol"],
-            "today_income": Decimal("3.00"),
         }
     )
 
 
-@pytest.mark.parametrize("awake", [False, True])
-async def test_reconcile_sleep_rejection_before_or_after_waking_never_clicks_or_books_income(
-    settings, sleeping_search, monkeypatch, awake
+@pytest.mark.parametrize("asleep", [False, True])
+@pytest.mark.parametrize("drain", [0, 1])
+@pytest.mark.parametrize("unstable", [False, True])
+async def test_reconcile_idle_search_records_unknown_resource_deltas_without_replay_or_money(
+    settings, search_before, monkeypatch, capsys, asleep, drain, unstable
 ):
     import ojol.app as module
 
-    before = sleeping_search
-    after = before.model_copy(
+    before = search_before
+    if asleep:
+        before = before.model_copy(
+            update={
+                "raw_text": "Kamu sedang tidur. Tekan ☀ Bangun dulu.",
+                "trip": "Kamu sedang tidur. Tekan ☀ Bangun dulu. | undefined",
+            }
+        )
+    after = search_before.model_copy(
         update={
-            "observed_at": before.observed_at + timedelta(minutes=20),
-            "phase": "idle" if awake else "sleeping",
-            "raw_text": "Narik pakai motor\n📲 Cari order" if awake else before.raw_text,
-            "trip": "Narik pakai motor | undefined" if awake else before.trip,
+            "observed_at": before.observed_at + timedelta(minutes=26),
+            "fuel": before.fuel - drain,
+            "data": before.data - drain,
         }
     )
+    confirmed = after.model_copy(update={"observed_at": after.observed_at + timedelta(seconds=2)})
+    if unstable:
+        confirmed = confirmed.model_copy(update={"data": confirmed.data - 1})
     journal = Journal(settings.runtime_dir)
     try:
         run = journal.start(settings)
@@ -47,28 +63,52 @@ async def test_reconcile_sleep_rejection_before_or_after_waking_never_clicks_or_
         context.__aenter__.return_value = browser
         monkeypatch.setattr(module, "McpBrowser", lambda *args: context)
         monkeypatch.setattr(module, "ToolContext", lambda ctx: None)
-        ui = SimpleNamespace(snapshot=AsyncMock(return_value=after), job_click=AsyncMock())
+        monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
+        ui = SimpleNamespace(
+            snapshot=AsyncMock(side_effect=[after, confirmed, after, confirmed]),
+            job_click=AsyncMock(),
+        )
         monkeypatch.setattr(module, "GameUI", lambda browser: ui)
         agent = module.OjolAutomationAgent(
-            name="IsolatedSleepReconcile",
+            name="IsolatedSearchReconcile",
             settings=settings.model_copy(update={"env": "local"}),
             command="reconcile",
         )
         for _ in range(2):
             async for _ in agent._run_async_impl(None):
                 pass
-        assert journal.history()["actions"][0]["status"] == "rejected"
-        assert browser.open_owned_tab.await_count == 2
-        browser.open_owned_tab.assert_awaited_with(refresh=True)
+        row = journal.history()["actions"][0]
+        assert row["status"] == ("uncertain" if unstable else "closed_idle")
+        assert row["before_state"] == before.model_dump_json()
         assert journal.profit()["trip_tercatat"] == 0
         assert journal.profit()["pengeluaran"] == "0"
-        assert journal.start(settings) > run
-        assert (
-            journal.db.execute(
-                "SELECT count(*) FROM events WHERE event='pencarian_ditolak_saat_tidur'"
-            ).fetchone()[0]
-            == 1
-        )
+        if unstable:
+            with pytest.raises(RuntimeError, match="belum terverifikasi"):
+                journal.start(settings)
+        else:
+            assert journal.start(settings) > run
+        events = journal.db.execute(
+            "SELECT data FROM events WHERE event='pencarian_ditutup_tanpa_order_aktif'"
+        ).fetchall()
+        assert len(events) == (0 if unstable else 1)
+        if events:
+            proof = json.loads(events[0]["data"])
+            assert proof["resource_delta"] == {"fuel": -drain, "condition": 0, "data": -drain}
+            assert proof["resource_delta_cause"] == "not_attributed"
+            assert proof["original_outcome"] == "uncertain"
+        else:
+            line = next(
+                line
+                for line in capsys.readouterr().out.splitlines()
+                if line.startswith("Bukti pencarian: ")
+            )
+            diagnostic = json.loads(line.removeprefix("Bukti pencarian: "))
+            assert not diagnostic["observations_stable"]
+            assert not diagnostic["history_changed"]
+            assert diagnostic["current"]["data"] == confirmed.data
+        ui.snapshot.assert_awaited()
+        assert ui.snapshot.await_count == (4 if unstable else 2)
+        browser.open_owned_tab.assert_awaited_with(refresh=True)
         browser.call.assert_not_awaited()
         browser.js.assert_not_awaited()
         ui.job_click.assert_not_awaited()
@@ -79,38 +119,35 @@ async def test_reconcile_sleep_rejection_before_or_after_waking_never_clicks_or_
 @pytest.mark.parametrize(
     "change",
     [
-        {"wallet": Decimal("99.00")},
-        {"fuel": 1},
-        {"condition": 1},
-        {"data": 1},
-        {"today_income": Decimal("3.72")},
-        {"history": ["08.11 New → Route · +0,72"]},
+        {"wallet": Decimal("45.08")},
+        {"fuel": 49},
+        {"condition": 72},
+        {"data": 98},
+        {"today_income": Decimal("27.00")},
+        {"history": ["22.30 A → B · +0,72"]},
         {"phase": "delivering", "remaining_seconds": 10},
         {"phase": "searching"},
         {"buttons": ["📲 Cari order", "Terima order"]},
         {"buttons": []},
         {"trip": "📍 Toko Contoh 🏁 Rumah Contoh"},
-        {"observed_at": datetime.fromisoformat("2030-01-03T01:30:31+00:00")},
+        {"observed_at": datetime.fromisoformat("2030-01-03T15:30:31+00:00")},
     ],
 )
-def test_sleep_rejection_remains_blocked_with_changed_effects_or_active_order(
-    settings, sleeping_search, change
+def test_idle_search_remains_blocked_with_financial_changes_gains_or_active_orders(
+    settings, search_before, change
 ):
     journal = Journal(settings.runtime_dir)
     try:
         run = journal.start(settings)
-        action = journal.begin(run, "search", sleeping_search, {"label": "📲 Cari order"})
+        action = journal.begin(run, "search", search_before, {"label": "📲 Cari order"})
         journal.settle(action, False)
-        after = sleeping_search.model_copy(
-            update={
-                "phase": "idle",
-                "raw_text": "Narik pakai motor",
-                "trip": "Narik pakai motor | undefined",
-                "observed_at": sleeping_search.observed_at + timedelta(minutes=20),
-                **change,
-            }
+        after = search_before.model_copy(
+            update={"observed_at": search_before.observed_at + timedelta(minutes=20), **change}
         )
-        assert not journal.reject_sleeping_search(action, after)
+        confirmed = after.model_copy(
+            update={"observed_at": after.observed_at + timedelta(seconds=2)}
+        )
+        assert not journal.resolve_idle_search(action, after, confirmed)
         assert journal.history()["actions"][0]["status"] == "uncertain"
         with pytest.raises(RuntimeError, match="belum terverifikasi"):
             journal.start(settings)
@@ -118,18 +155,37 @@ def test_sleep_rejection_remains_blocked_with_changed_effects_or_active_order(
         journal.close()
 
 
-@pytest.mark.parametrize("kind", ["complete", "purchase", "take", "search"])
-def test_sleep_rejection_never_clears_other_kinds_or_an_awake_search(
-    settings, sleeping_search, kind
-):
+@pytest.mark.parametrize("kind", ["complete", "purchase", "take"])
+def test_idle_search_resolution_never_clears_other_action_kinds(settings, search_before, kind):
     journal = Journal(settings.runtime_dir)
     try:
-        before = sleeping_search
-        if kind == "search":
-            before = before.model_copy(update={"raw_text": "Narik pakai motor"})
         run = journal.start(settings)
-        action = journal.begin(run, kind, before, {})
-        assert not journal.reject_sleeping_search(action, sleeping_search)
+        action = journal.begin(run, kind, search_before, {})
+        after = search_before.model_copy(
+            update={"observed_at": search_before.observed_at + timedelta(minutes=20)}
+        )
+        confirmed = after.model_copy(
+            update={"observed_at": after.observed_at + timedelta(seconds=2)}
+        )
+        assert not journal.resolve_idle_search(action, after, confirmed)
+        assert journal.history()["actions"][0]["status"] == "pending"
+    finally:
+        journal.close()
+
+
+def test_idle_search_requires_two_distinct_stable_observations(settings, search_before):
+    journal = Journal(settings.runtime_dir)
+    try:
+        run = journal.start(settings)
+        action = journal.begin(run, "search", search_before, {})
+        after = search_before.model_copy(
+            update={"observed_at": search_before.observed_at + timedelta(minutes=20)}
+        )
+        assert not journal.resolve_idle_search(action, after, after)
+        changed = after.model_copy(
+            update={"observed_at": after.observed_at + timedelta(seconds=2), "data": 96}
+        )
+        assert not journal.resolve_idle_search(action, after, changed)
         assert journal.history()["actions"][0]["status"] == "pending"
     finally:
         journal.close()
