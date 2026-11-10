@@ -20,6 +20,10 @@ TOOLS = [
     "browser_goto",
 ]
 
+DAEMON_RESPONSE_TIMEOUT = 15
+MCP_REQUEST_TIMEOUT = 25
+TOOL_CALL_TIMEOUT = 30
+
 
 class BrowserError(RuntimeError):
     def __init__(self, message, stage="browser.mcp", operation=None):
@@ -70,7 +74,7 @@ class McpBrowser:
                     else ["--from", "browser-harness[mcp]==0.1.13", "browser-harness-mcp"],
                     env=env,
                 ),
-                timeout=15,
+                timeout=MCP_REQUEST_TIMEOUT,
             ),
             tool_filter=TOOLS,
         )
@@ -117,7 +121,7 @@ class McpBrowser:
                     "params": {
                         **params,
                         "session_id": self.session_id,
-                        "_response_timeout": 15,
+                        "_response_timeout": DAEMON_RESPONSE_TIMEOUT,
                     },
                 }
             if method == "Runtime.evaluate":
@@ -136,7 +140,7 @@ class McpBrowser:
                     and isinstance(params["expression"], str)
                     and params["returnByValue"] is True
                     and params["awaitPromise"] is False
-                    and params["_response_timeout"] == 15
+                    and params["_response_timeout"] == DAEMON_RESPONSE_TIMEOUT
                 )
             if method == "Page.reload":
                 permitted = (
@@ -145,7 +149,7 @@ class McpBrowser:
                     and params.get("session_id") == self.session_id
                     and set(params) == {"session_id", "ignoreCache", "_response_timeout"}
                     and params["ignoreCache"] is True
-                    and params["_response_timeout"] == 15
+                    and params["_response_timeout"] == DAEMON_RESPONSE_TIMEOUT
                 )
             if self.allow_session_transfer:
                 if method == "Network.getCookies":
@@ -168,7 +172,7 @@ class McpBrowser:
         # Mutation timeouts are ambiguous: never replay a purchase or trip click.
         try:
             raw = await asyncio.wait_for(
-                self.tools[name].run_async(args=args, tool_context=self.context), 20
+                self.tools[name].run_async(args=args, tool_context=self.context), TOOL_CALL_TIMEOUT
             )
         except TimeoutError:
             raise BrowserError(
@@ -177,17 +181,26 @@ class McpBrowser:
                 operation=name,
             ) from None
         if not isinstance(raw, dict) or raw.get("isError") or raw.get("is_error"):
-            raise BrowserError("MCP gagal")
+            raise BrowserError("MCP gagal", stage=f"mcp.{name}", operation=name)
         try:
-            data = json.loads(
-                "".join(
-                    item.get("text", "")
-                    for item in raw.get("content", [])
-                    if item.get("type") == "text"
+            # ADK can return a direct error object instead of a CallToolResult envelope.
+            data = (
+                raw
+                if raw.get("error")
+                else json.loads(
+                    "".join(
+                        item.get("text", "")
+                        for item in raw.get("content", [])
+                        if item.get("type") == "text"
+                    )
                 )
             )
-        except (ValueError, TypeError):
-            raise BrowserError("Respons MCP tidak valid") from None
+        except (ValueError, TypeError, AttributeError):
+            raise BrowserError(
+                f"Respons MCP tidak valid (content_type={type(raw.get('content')).__name__})",
+                stage=f"mcp.decode.{name}",
+                operation=name,
+            ) from None
         if isinstance(data, dict) and data.get("error"):
             message = str(data["error"]).split("; expression:", 1)[0][:300]
             raise BrowserError(message, stage=f"mcp.{name}", operation=name)
@@ -195,6 +208,13 @@ class McpBrowser:
 
     async def reset_focus(self):
         primary = sys.exception()
+        if (
+            isinstance(primary, BrowserError)
+            and primary.operation
+            and any(term in str(primary).lower() for term in ("timed out", "timeout"))
+        ):
+            # Do not send another blocking command into a transport/renderer that just timed out.
+            return
         try:
             await self.call(
                 "browser_cdp",
@@ -248,7 +268,7 @@ class McpBrowser:
             params={
                 "session_id": self.session_id,
                 "ignoreCache": True,
-                "_response_timeout": 15,
+                "_response_timeout": DAEMON_RESPONSE_TIMEOUT,
             },
         )
         return await self.wait_ready(previous_origin)
@@ -306,9 +326,15 @@ class McpBrowser:
                 "expression": expression,
                 "returnByValue": True,
                 "awaitPromise": False,
-                "_response_timeout": 15,
+                "_response_timeout": DAEMON_RESPONSE_TIMEOUT,
             },
         )
+        if not isinstance(result, dict) or not isinstance(result.get("result"), dict):
+            raise BrowserError(
+                "Respons Runtime.evaluate tidak valid",
+                stage="mcp.decode.Runtime.evaluate",
+                operation="browser_cdp",
+            )
         if result.get("exceptionDetails") or result.get("result", {}).get("subtype") == "error":
             raise BrowserError(
                 "Evaluasi kontrol UI gagal", stage="mcp.Runtime.evaluate", operation="browser_cdp"

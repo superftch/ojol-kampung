@@ -622,7 +622,7 @@ async def test_focus_uses_owned_persistent_session_and_15_second_daemon_deadline
 async def test_focus_cleanup_timeout_preserves_primary_verification_error(settings):
     browser = McpBrowser(settings.runtime_dir / "harness", None)
     browser.call = AsyncMock(side_effect=BrowserError("Focus daemon timed out"))
-    primary = BrowserError("Runtime.evaluate timed out", operation="browser_cdp")
+    primary = BrowserError("Verifikasi receipt gagal", operation="browser_cdp")
     with pytest.raises(BrowserError) as error:
         try:
             raise primary
@@ -656,3 +656,126 @@ def test_start_error_does_not_inherit_previous_process_verification_stage(settin
     assert cli.main(["--env-file", str(ROOT / ".env.testing"), "run"]) == 2
     error = json.loads((settings.runtime_dir / "last-error.json").read_text())
     assert error["stage"] == "cli.run"
+
+
+def test_mcp_request_deadline_exceeds_daemon_deadline_and_outer_call_is_bounded(
+    settings, monkeypatch
+):
+    from unittest.mock import Mock
+
+    import ojol.mcp_browser as module
+
+    factory = Mock()
+    monkeypatch.setattr(module, "McpToolset", factory)
+    McpBrowser(settings.runtime_dir / "harness", None)
+    effective = factory.call_args.kwargs["connection_params"].timeout
+    assert effective == module.MCP_REQUEST_TIMEOUT
+    assert module.DAEMON_RESPONSE_TIMEOUT + 5 < effective < module.TOOL_CALL_TIMEOUT
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+async def test_adk_timeout_error_is_preserved_instead_of_reported_as_invalid_json(
+    settings, monkeypatch, wrapped
+):
+    import ojol.mcp_browser as module
+
+    message = "MCP tool execution failed: Request 'tools/call' timed out"
+    raw = {"error": message}
+    if wrapped:
+        raw = {"content": [{"type": "text", "text": json.dumps(raw)}]}
+    browser = McpBrowser(settings.runtime_dir / "harness", None)
+    browser.tab_id = browser.session_tab = "owned"
+    browser.session_id = "owned-session"
+    tool = SimpleNamespace(run_async=AsyncMock(return_value=raw))
+    browser.tools = {"browser_cdp": tool}
+    original = module.asyncio.wait_for
+
+    async def bounded(call, timeout):
+        assert timeout == module.TOOL_CALL_TIMEOUT
+        return await original(call, timeout)
+
+    monkeypatch.setattr(module.asyncio, "wait_for", bounded)
+    with pytest.raises(BrowserError) as error:
+        await browser.js("true")
+    assert str(error.value) == message
+    assert error.value.operation == "browser_cdp"
+    assert error.value.stage == "mcp.browser_cdp"
+    tool.run_async.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "content", [None, [], ["private payload"], [{"type": "text", "text": "private cookie body"}]]
+)
+async def test_malformed_response_reports_only_shape_and_tool_without_replay(settings, content):
+    browser = McpBrowser(settings.runtime_dir / "harness", None)
+    tool = SimpleNamespace(run_async=AsyncMock(return_value={"content": content}))
+    browser.tools = {"browser_list_tabs": tool}
+    with pytest.raises(BrowserError) as error:
+        await browser.call("browser_list_tabs")
+    assert error.value.operation == "browser_list_tabs"
+    assert error.value.stage == "mcp.decode.browser_list_tabs"
+    assert "private" not in str(error.value)
+    tool.run_async.assert_awaited_once()
+
+
+async def test_known_mcp_timeout_does_not_send_a_second_focus_cleanup_command(settings):
+    browser = McpBrowser(settings.runtime_dir / "harness", None)
+    browser.call = AsyncMock()
+    primary = BrowserError(
+        "MCP tool execution failed: Request 'tools/call' timed out", operation="browser_cdp"
+    )
+    with pytest.raises(BrowserError) as error:
+        try:
+            raise primary
+        finally:
+            await browser.reset_focus()
+    assert error.value is primary
+    browser.call.assert_not_awaited()
+
+
+@pytest.mark.parametrize("payload", [None, True, {}])
+async def test_invalid_cdp_evaluation_shape_stops_without_exposing_payload_or_retry(
+    settings, payload
+):
+    browser = McpBrowser(settings.runtime_dir / "harness", None)
+    browser.tab_id = browser.session_tab = "owned"
+    browser.session_id = "owned-session"
+    tool = SimpleNamespace(
+        run_async=AsyncMock(
+            return_value={"content": [{"type": "text", "text": json.dumps(payload)}]}
+        )
+    )
+    browser.tools = {"browser_cdp": tool}
+    with pytest.raises(BrowserError, match="Respons Runtime.evaluate tidak valid"):
+        await browser.js("true")
+    tool.run_async.assert_awaited_once()
+
+
+async def test_observation_failure_after_verified_claim_does_not_reopen_or_repeat_claim(
+    settings, state
+):
+    before = state.model_copy(update={"phase": "complete", "buttons": ["✅ Sampai! Terima ongkos"]})
+    paid = state.model_copy(
+        update={
+            "history": ["23.03 A → B · +0,401", *before.history],
+            "wallet": before.wallet + Decimal("0.401"),
+        }
+    )
+    failure = BrowserError(
+        "MCP tool execution failed: Request 'tools/call' timed out", operation="browser_cdp"
+    )
+    ui = SimpleNamespace(
+        job_click=AsyncMock(), snapshot=AsyncMock(side_effect=[before, paid, failure])
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        with pytest.raises(BrowserError):
+            await controller.run()
+        ui.job_click.assert_awaited_once()
+        assert journal.history()["actions"][0]["status"] == "verified"
+        assert journal.profit()["pendapatan_ojol"] == "0.401"
+        assert journal.profit()["trip_tercatat"] == 1
+        assert journal.start(settings) > controller.run_id
+    finally:
+        journal.close()
