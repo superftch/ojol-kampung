@@ -48,6 +48,8 @@ docker compose logs --tail 50 app
 
 Konfigurasi production ditolak jika Telegram belum lengkap, origin bukan HTTPS atau saldo minimum di bawah 20. Konfigurasi dipasang sebagai Compose secret saat runtime; tidak disertakan dalam image. Browser dan proses aplikasi berjalan sebagai UID1000 setelah bootstrap permission volume.
 
+Image runtime tidak menyimpan uv atau cache dependency; uv dipakai sementara saat build dan tersedia pada test stage CI. Direktori/permission volume disiapkan entrypoint saat startup.
+
 Satu service Compose, satu container: control service, Chromium, worker/bot dan cloudflared. Hanya `127.0.0.1:6080` dipublikasikan; CDP9222 dan metrics2000 tetap internal. Restart container ikut me-restart seluruh proses.
 
 ### Domain Cloudflare permanen
