@@ -1,0 +1,40 @@
+name: kampung-ojol
+services:
+  app:
+    build:
+      context: .
+      target: runtime
+    image: kampung-ojol:local
+    init: true
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6080:6080"
+    volumes:
+      - state:/data
+    secrets:
+      - ojol_env
+    shm_size: 512mb
+    mem_limit: 2g
+    cpus: 2
+    pids_limit: 512
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, SETUID, SETGID, DAC_OVERRIDE]
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:6080/health',timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    stop_grace_period: 60s
+volumes:
+  state:
+secrets:
+  ojol_env:
+    file: .env

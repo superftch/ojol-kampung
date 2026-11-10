@@ -1,0 +1,515 @@
+"""Private Telegram buttons, daily reports, and one-use HTTPS cookie import."""
+
+import asyncio
+import json
+import os
+import re
+import sys
+import time
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta
+from math import ceil
+from urllib.parse import parse_qs, urlsplit
+from uuid import uuid4
+
+import uvicorn
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse, RedirectResponse
+
+from .browser_runtime import BrowserRuntime
+from .cli import running
+from .config import load_settings
+from .finance import WIB, report_date
+from .journal import Journal
+from .login_access import LoginAccess
+from .models import ROOT, Settings
+from .telegram import (
+    BUTTON_COMMANDS,
+    TelegramClient,
+    TelegramError,
+    authorized_message,
+    flush_notices,
+    notifications_enabled,
+    queue_error,
+    queue_notice,
+    set_notifications,
+)
+
+
+class ControlService:
+    def __init__(self, settings, browser=None):
+        self.settings = settings
+        self.browser = browser or BrowserRuntime(settings)
+        self.access = LoginAccess(settings.runtime_dir)
+        self.worker = None
+        self.expected_stop = False
+        self.awaiting_date = False
+        self.closing = False
+        self.tasks = []
+        self.lock = asyncio.Lock()
+
+    def public_url(self):
+        if self.settings.env == "production":
+            return self.settings.login_public_url
+        path = self.settings.runtime_dir / "public-url"
+        candidate = path.read_text().strip() if path.is_file() else self.settings.login_public_url
+        return Settings.secure_login_origin(candidate)
+
+    async def stop_worker(self):
+        self.expected_stop = True
+        (self.settings.runtime_dir / "STOP").touch(mode=0o600)
+        if self.worker and self.worker.returncode is None:
+            try:
+                self.worker.terminate()
+            except ProcessLookupError:
+                pass
+        for _ in range(120):
+            if not running(self.settings.runtime_dir) and not (
+                self.worker and self.worker.returncode is None
+            ):
+                return
+            await asyncio.sleep(0.25)
+        raise RuntimeError("Worker belum berhenti setelah 30 detik; browser tidak diganti")
+
+    def status(self):
+        path = self.settings.runtime_dir / "status.json"
+        data = json.loads(path.read_text()) if path.is_file() else {}
+        state = data.get("snapshot") or {}
+        remaining = "—"
+        if data.get("wait_until"):
+            seconds = max(
+                0, ceil(datetime.fromisoformat(data["wait_until"]).timestamp() - time.time())
+            )
+            remaining = f"{seconds // 60}:{seconds % 60:02d} (estimasi)"
+        return (
+            f"🛵 Status Ojol\nWorker: {'aktif' if running(self.settings.runtime_dir) else 'berhenti'} · {self.browser.mode or 'browser berhenti'}\n"
+            f"Tahap: {data.get('stage') or data.get('event', 'siap')}\n"
+            f"Perjalanan: {state.get('phase', 'belum terbaca')} · Sisa {remaining}\n"
+            f"Bensin {state.get('fuel', '?')}% | Kondisi {state.get('condition', '?')}% | Kuota {state.get('data', '?')}%\n"
+            f"Saldo utama: {state.get('wallet', '?')} koin · minimum {self.settings.min_balance}\n"
+            f"Notifikasi event: {'ON' if notifications_enabled(self.settings) else 'OFF'}"
+        )
+
+    def profit(self, day=None):
+        journal = Journal(self.settings.runtime_dir)
+        try:
+            report = journal.financial_report(day)
+        finally:
+            journal.close()
+        total = report["total"]
+        money = lambda value: str(value).replace(".", ",")
+        lines = [
+            f"📒 Laba Bersih · {report['tanggal']} (WIB)",
+            f"Pendapatan Ojol: {money(total['pendapatan_ojol'])} koin",
+            f"Pengeluaran: {money(total['pengeluaran'])} koin",
+            f"Laba bersih: {money(total['laba_bersih'])} koin",
+            f"{total['trip_tercatat']} trip · {total['pembelian_tercatat']} pembelian",
+        ]
+        names = {"fuel": "Bensin", "condition": "Bengkel", "data": "Kuota"}
+        lines.extend(
+            f"{names.get(key, key)}: {money(value)} koin"
+            for key, value in total["biaya_per_kategori"].items()
+        )
+        lines.append(
+            "\nTransaksi terakhir:"
+            if report["transaksi_terakhir"]
+            else "\nBelum ada transaksi pada tanggal ini."
+        )
+        for row in report["transaksi_terakhir"][:8]:
+            clock = datetime.fromisoformat(row["created"]).astimezone(WIB).strftime("%H:%M")
+            detail = json.loads(row["detail"])
+            label = detail.get("product", "Payout Ojol")
+            lines.append(
+                f"{clock} {'+' if row['kind'] == 'income' else '−'}{money(row['amount'])} · {label}"
+            )
+        return "\n".join(lines)
+
+    def profit_buttons(self, day=None):
+        day = report_date(day)
+        return {
+            "inline_keyboard": [
+                [
+                    {
+                        "text": "◀ Hari sebelumnya",
+                        "callback_data": f"profit:{day - timedelta(days=1)}",
+                    },
+                    {
+                        "text": "Hari berikutnya ▶",
+                        "callback_data": f"profit:{day + timedelta(days=1)}",
+                    },
+                ],
+                [
+                    {"text": "Hari ini", "callback_data": f"profit:{report_date()}"},
+                    {"text": "Pilih tanggal", "callback_data": "choose_date"},
+                ],
+            ]
+        }
+
+    async def cookie_link(self):
+        async with self.lock:
+            await self.stop_worker()
+            self.access.revoke()
+            await self.browser.switch("headless")
+            ticket = self.access.issue("ticket")
+            return f"{self.public_url()}/access/{ticket}"
+
+    async def command(self, command):
+        if command == "import_cookie":
+            url = await self.cookie_link()
+            return (
+                "🔐 Import Cookie sesi KampungSebelah:\n"
+                + url
+                + "\nLink sekali pakai, 15 menit. Tempel nilai cookie sesi atau JSON cookie pada form HTTPS. Setelah berhasil, tekan Jalankan Ojol."
+            )
+        if command == "status":
+            return self.status()
+        if command == "profit" or command.startswith("profit:"):
+            return self.profit(command.split(":", 1)[1] if ":" in command else None)
+        if command == "choose_date":
+            self.awaiting_date = True
+            return "Ketik tanggal laporan: YYYY-MM-DD atau DD-MM-YYYY. Contoh: 2026-11-10."
+        if command in {"notifications_on", "notifications_off"}:
+            enabled = command == "notifications_on"
+            set_notifications(self.settings, enabled)
+            return (
+                "🔔 Notifikasi ON. Semua event Ojol berikutnya akan dikirim."
+                if enabled
+                else "🔕 Notifikasi OFF. Event rutin tidak dikirim; laporan error + STOP tetap aktif."
+            )
+        if command == "stop":
+            await self.stop_worker()
+            return "🛑 Worker berhenti. Browser dan riwayat disimpan."
+        if command == "run":
+            async with self.lock:
+                if (self.worker and self.worker.returncode is None) or running(
+                    self.settings.runtime_dir
+                ):
+                    return "Worker sudah aktif; tidak membuat worker kedua."
+                if not self.settings.operator_authorized:
+                    raise RuntimeError("Izin operator belum dikonfigurasi")
+                self.access.revoke()
+                await self.browser.switch("headless")
+                config_file = os.environ.get("OJOL_CONFIG_FILE")
+                args = [sys.executable, str(ROOT / "main.py")]
+                if config_file:
+                    args += ["--env-file", config_file]
+                args += ["run", "--live"]
+                self.expected_stop = False
+                # Docker owns stdout rotation; journal and status remain persistent in the volume.
+                self.worker = await asyncio.create_subprocess_exec(
+                    *args, stderr=asyncio.subprocess.STDOUT, start_new_session=True
+                )
+                return "▶️ Worker dimulai dalam Chrome headless melalui Browser Harness MCP, tanpa batas trip/durasi pada konfigurasi default. Saldo utama dijaga ≥20 koin. Jika sesi/error, worker stop dan melapor."
+        return "Pilih tombol: Import Cookie, Jalankan Ojol, Hentikan Ojol, Status, Laba Bersih, Notifikasi ON/OFF."
+
+    async def execute(self, command):
+        try:
+            response = await self.command(command)
+            markup = (
+                self.profit_buttons(command.split(":", 1)[1] if ":" in command else None)
+                if command == "profit" or command.startswith("profit:")
+                else None
+            )
+            queue_notice(self.settings, response, reply_markup=markup)
+        except (ValueError, OverflowError):
+            if command.startswith("profit"):
+                queue_notice(
+                    self.settings, "Tanggal tidak valid. Gunakan YYYY-MM-DD atau DD-MM-YYYY."
+                )
+            else:
+                queue_error(
+                    self.settings,
+                    RuntimeError("Input command tidak valid"),
+                    f"control.command.{command}",
+                )
+        except Exception as exc:
+            queue_error(self.settings, exc, f"control.command.{command}")
+        await flush_notices(self.settings)
+
+    async def poll_telegram(self):
+        cursor_file = self.settings.runtime_dir / "telegram-offset"
+        offset = int(cursor_file.read_text()) if cursor_file.exists() else 0
+        outage = False
+        async with TelegramClient(self.settings) as api:
+            while not self.closing:
+                try:
+                    updates = await api.call(
+                        "getUpdates",
+                        offset=offset,
+                        timeout=20,
+                        allowed_updates=["message", "callback_query"],
+                    )
+                    outage = False
+                    for update in updates:
+                        offset = max(offset, update["update_id"] + 1)
+                        cursor_file.write_text(str(offset))
+                        if authorized_message(update, self.settings):
+                            callback = update.get("callback_query")
+                            if callback:
+                                await api.call(
+                                    "answerCallbackQuery", callback_query_id=callback["id"]
+                                )
+                                command = callback.get("data", "")
+                                if command == "choose_date" or re.fullmatch(
+                                    r"profit:\d{4}-\d{2}-\d{2}", command
+                                ):
+                                    await self.execute(command)
+                            else:
+                                text = update["message"].get("text", "").strip()
+                                if text in BUTTON_COMMANDS:
+                                    self.awaiting_date = False
+                                    await self.execute(BUTTON_COMMANDS[text])
+                                elif self.awaiting_date or re.fullmatch(
+                                    r"\d{4}-\d{2}-\d{2}|\d{2}-\d{2}-\d{4}", text
+                                ):
+                                    self.awaiting_date = False
+                                    await self.execute("profit:" + text)
+                                else:
+                                    await self.execute("help")
+                except (TelegramError, OSError, ValueError) as exc:
+                    if not outage:
+                        queue_error(self.settings, exc, "telegram.poll")
+                    outage = True
+                    await flush_notices(self.settings)
+                    await asyncio.sleep(15)
+
+    async def supervise(self):
+        while not self.closing:
+            if self.worker and self.worker.returncode is not None:
+                code, pid = self.worker.returncode, self.worker.pid
+                self.worker = None
+                if code != 0 and not self.expected_stop:
+                    error_file = self.settings.runtime_dir / "last-error.json"
+                    previous_error = (
+                        json.loads(error_file.read_text()) if error_file.exists() else {}
+                    )
+                    if previous_error.get("pid") != pid:
+                        queue_error(
+                            self.settings,
+                            RuntimeError(f"Worker exit code {code}"),
+                            "worker.process_exit",
+                        )
+                else:
+                    queue_notice(self.settings, "Worker berhenti. " + self.status())
+            if self.browser.mode and not self.browser.alive() and not self.lock.locked():
+                queue_error(
+                    self.settings,
+                    RuntimeError("Chromium berhenti di luar pergantian mode"),
+                    "browser.process_exit",
+                )
+                await self.stop_worker()
+                await self.browser.close()
+                await flush_notices(self.settings)
+            commands = self.settings.runtime_dir / "control-commands"
+            for path in sorted(commands.glob("*.json")):
+                payload = json.loads(path.read_text())
+                path.rename(path.with_suffix(".done"))
+                await self.execute(payload["command"])
+            await flush_notices(self.settings)
+            await asyncio.sleep(2)
+
+    async def guard_task(self, operation, stage):
+        try:
+            await operation()
+        except Exception as exc:
+            queue_error(self.settings, exc, stage)
+            try:
+                await self.stop_worker()
+            finally:
+                await flush_notices(self.settings)
+
+    async def start(self):
+        if self.settings.env == "testing":
+            return
+        status_file = self.settings.runtime_dir / "status.json"
+        if status_file.exists() and not running(self.settings.runtime_dir):
+            previous = json.loads(status_file.read_text())
+            if previous.get("pid") and previous.get("event") not in {
+                "berhenti",
+                "gagal",
+                "dry_run",
+            }:
+                queue_error(
+                    self.settings,
+                    RuntimeError("Sesi worker sebelumnya terputus; tidak dilanjutkan otomatis"),
+                    "worker.interrupted",
+                    {
+                        "run_id": previous.get("run_id"),
+                        "last_stage": previous.get("stage"),
+                        "last_action": previous.get("last_action"),
+                    },
+                )
+        try:
+            await self.browser.switch("headless")
+        except Exception as exc:
+            queue_error(self.settings, exc, "control.startup.browser")
+            await self.browser.close()
+            await flush_notices(self.settings)
+        if self.settings.telegram_bot_token.get_secret_value() and self.settings.telegram_chat_id:
+            self.tasks.append(
+                asyncio.create_task(self.guard_task(self.poll_telegram, "telegram.poll"))
+            )
+        self.tasks.append(asyncio.create_task(self.guard_task(self.supervise, "control.supervise")))
+
+    async def close(self):
+        self.closing = True
+        for task in self.tasks:
+            task.cancel()
+        await asyncio.gather(*self.tasks, return_exceptions=True)
+        await self.stop_worker()
+        await self.browser.close()
+
+
+def create_app(settings, service=None):
+    service = service or ControlService(settings)
+
+    @asynccontextmanager
+    async def lifespan(app):
+        await service.start()
+        try:
+            yield
+        finally:
+            await service.close()
+
+    app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
+    def require_access(request):
+        if not service.access.expiry(request.cookies.get("ojol_import"), "session"):
+            raise HTTPException(403, "Link import diperlukan / sesi kedaluwarsa")
+
+    @app.middleware("http")
+    async def protect(request, call_next):
+        response = await call_next(request)
+        response.headers.update(
+            {
+                "Referrer-Policy": "no-referrer",
+                "Cache-Control": "no-store",
+                "X-Frame-Options": "DENY",
+                "X-Content-Type-Options": "nosniff",
+                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+            }
+        )
+        return response
+
+    @app.get("/health")
+    async def health():
+        return {
+            "service": "ok",
+            "browser_mode": service.browser.mode,
+            "browser_alive": service.browser.alive(),
+        }
+
+    @app.get("/access/{ticket}")
+    async def access(ticket: str):
+        session = service.access.consume_ticket(ticket) if len(ticket) <= 100 else None
+        if not session:
+            raise HTTPException(403, "Link kedaluwarsa/sudah dipakai; tekan Import Cookie di bot")
+        response = RedirectResponse("/import-cookie", status_code=303)
+        response.set_cookie(
+            "ojol_import",
+            session,
+            max_age=900,
+            httponly=True,
+            secure=urlsplit(service.public_url()).scheme == "https",
+            samesite="lax",
+        )
+        return response
+
+    @app.get("/import-cookie", response_class=HTMLResponse)
+    async def form(request: Request):
+        require_access(request)
+        token = service.access.csrf_token(request.cookies.get("ojol_import"))
+        if token is None:
+            raise HTTPException(403, "Sesi import kedaluwarsa; minta link baru di bot")
+        return (ROOT / "ojol/cookie_form.html").read_text().replace("{{CSRF_TOKEN}}", token)
+
+    @app.post("/import-cookie", response_class=HTMLResponse)
+    async def submit(request: Request):
+        require_access(request)
+        if (
+            request.headers.get("content-type", "").split(";")[0]
+            != "application/x-www-form-urlencoded"
+        ):
+            raise HTTPException(415, "Gunakan form import cookie")
+        body = bytearray()
+        async for chunk in request.stream():
+            body.extend(chunk)
+            if len(body) > 16384:
+                raise HTTPException(413, "Cookie terlalu besar")
+        from .session_transfer import import_session, parse_cookie_input
+
+        try:
+            fields = parse_qs(body.decode())
+            if not service.access.valid_csrf(
+                request.cookies.get("ojol_import"), fields.get("csrf", [""])[0]
+            ):
+                raise HTTPException(
+                    403, "Form kedaluwarsa/berubah. Buka ulang link Import Cookie terbaru."
+                )
+            payload = parse_cookie_input(fields.get("cookie", [""])[0])
+        except (ValueError, TypeError, KeyError, UnicodeError):
+            return HTMLResponse(
+                "Cookie tidak valid. Kembali dan masukkan cookie sesi KampungSebelah saja.",
+                status_code=400,
+            )
+        async with service.lock:
+            require_access(request)
+            await service.stop_worker()
+            try:
+                await service.browser.switch("headless")
+                await import_session(settings, json.dumps(payload))
+            except Exception as exc:
+                from .session_transfer import STAGE
+
+                queue_error(
+                    settings,
+                    RuntimeError("Import cookie gagal; sesi tidak dapat diverifikasi"),
+                    STAGE,
+                    {"cause": type(exc).__name__, "mcp_tool": getattr(exc, "operation", None)},
+                )
+                await flush_notices(settings)
+                return HTMLResponse(
+                    "Import gagal. Periksa cookie, lalu minta link baru melalui tombol Import Cookie.",
+                    status_code=400,
+                )
+            service.access.revoke()
+        response = HTMLResponse(
+            "<html lang='id'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Import berhasil</title><h1>Cookie berhasil diimpor</h1><p>Sesi game terverifikasi. Kembali ke Telegram dan tekan <strong>Jalankan Ojol</strong>.</p></html>"
+        )
+        response.delete_cookie("ojol_import")
+        return response
+
+    return app
+
+
+def main():
+    try:
+        settings = load_settings()
+    except ValueError:
+        raise SystemExit(
+            "Konfigurasi tidak valid; periksa file env. Nilai rahasia tidak dicetak."
+        ) from None
+    settings.runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "set-url" and len(sys.argv) == 3:
+            if settings.env == "production":
+                raise SystemExit(
+                    "Ubah OJOL_LOGIN_PUBLIC_URL pada .env lalu recreate service production."
+                )
+            (settings.runtime_dir / "public-url").write_text(
+                Settings.secure_login_origin(sys.argv[2])
+            )
+            print("URL import cookie publik diperbarui; tidak mencetak link akses rahasia")
+            return
+        if sys.argv[1] == "notify-import":
+            directory = settings.runtime_dir / "control-commands"
+            directory.mkdir(exist_ok=True, mode=0o700)
+            (directory / f"{uuid4().hex}.json").write_text(json.dumps({"command": "import_cookie"}))
+            print("Permintaan link import cookie masuk antrean bot")
+            return
+        raise SystemExit("Gunakan set-url URL atau notify-import")
+    uvicorn.run(create_app(settings), host="0.0.0.0", port=6080, access_log=False)
+
+
+if __name__ == "__main__":
+    main()

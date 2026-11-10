@@ -1,0 +1,26 @@
+[project]
+name = "ojol-automation"
+version = "0.1.0"
+description = "Automation Ojol melalui Browser Harness MCP pada tab background khusus."
+requires-python = ">=3.12,<3.13"
+dependencies = ["google-adk==2.14.0", "browser-harness[mcp]==0.1.13", "pydantic>=2,<3", "python-dotenv>=1,<2", "httpx>=0.28", "fastapi>=0.115", "uvicorn>=0.30"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.17.4",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-q"
+
+[tool.ruff]
+extend-exclude = [".local"]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["F", "I", "E9"]

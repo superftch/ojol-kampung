@@ -1,0 +1,17 @@
+.env
+.env.*
+.venv
+.local
+.secrets
+.git
+.github
+.pytest_cache
+.ruff_cache
+__pycache__
+**/__pycache__
+*.pyc
+*.sqlite3*
+*.db*
+*.log*
+*.tar.gz
+.DS_Store
