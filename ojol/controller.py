@@ -7,7 +7,7 @@ from datetime import timedelta
 from decimal import Decimal
 
 from .models import Product, now
-from .planner import best_value_product, next_step, select_product
+from .planner import best_value_product, is_sleeping, next_step, select_product
 
 
 class StopRequested(Exception):
@@ -107,8 +107,10 @@ class Controller:
         while time.monotonic() < deadline:
             self.check_cancel()
             state = await self.ui.snapshot()
+            self.state = state
+            if is_sleeping(state):
+                raise RuntimeError(next_step(state, self.settings).reason)
             if predicate(state):
-                self.state = state
                 return state
             await asyncio.sleep(0.75)
         raise RuntimeError("Perubahan status belum terbukti; berhenti tanpa mengulang aksi")
@@ -245,7 +247,7 @@ class Controller:
             else:
                 after = await self.verify(
                     lambda state: (
-                        state.phase == "delivering"
+                        state.phase in {"searching", "delivering"}
                         or any(
                             re.search(r"Terima|Ambil|Antar sekarang", b, re.IGNORECASE)
                             for b in state.buttons
@@ -291,7 +293,7 @@ class Controller:
             if (
                 previous
                 and previous.phase == "delivering"
-                and self.state.phase == "idle"
+                and self.state.phase in {"idle", "sleeping"}
                 and self.state.history != previous.history
             ):
                 self.completed += 1

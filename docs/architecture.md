@@ -14,6 +14,8 @@ Target ID yang dibuat sendiri disimpan dan diverifikasi sebelum reuse. Evaluasi 
 
 Sebelum klik berakibat, SQLite meng-commit aksi pending beserta state awal. Setelah klik, controller memverifikasi resource/dompet atau receipt/countdown. Timeout menjadi uncertain; tidak ada retry klik. Rekonsiliasi tidak mengubah game. Receipt spesifik bisa mengonfirmasi klaim lama berdasarkan rute, waktu dan payout; source_key unik menjaga pencatatan idempoten.
 
+Pesan tidur mengalahkan tombol Cari order yang masih terlihat. Snapshot verifikasi terakhir dipertahankan meskipun predicate belum terpenuhi. Pencarian yang sudah dimulai dapat masuk status searching, kemudian ditunggu dengan batas30detik. Pencarian legacy saat tidur hanya bisa direkonsiliasi menjadi rejected bila bukti sebelum klik menunjukkan tidur, efek saldo/resource/payout/history tetap sama pada hari WIB yang sama, dan tidak ada order aktif/ditawarkan setelahnya. Bangun boleh mengubah teks trip/notice; tidak melonggarkan pemeriksaan efek. Penolakan bukan transaksi keuangan.
+
 Produk disaring ke kebutuhan motor/data yang didukung. Planner memilih biaya per poin aman, menunda refill yang belum muat, dan mengecek ulang produk/harga/dompet tepat sebelum Beli. Poin tidak boleh melebihi100%; saldo utama dijaga≥20 dengan margin tampilan0,01. Bank tidak dianggap cash.
 
 ## Data dan laporan

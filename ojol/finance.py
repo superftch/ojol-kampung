@@ -47,7 +47,12 @@ def received_income(before: Snapshot, after: Snapshot):
 
 def completion_evidence(before: Snapshot, after: Snapshot):
     """Recover an old ambiguous claim only from one exact route/time/payout receipt."""
-    if before.phase != "complete" or after.phase not in {"idle", "searching", "delivering"}:
+    if before.phase != "complete" or after.phase not in {
+        "idle",
+        "searching",
+        "delivering",
+        "sleeping",
+    }:
         return None
     if before.observed_at.astimezone(WIB).date() != after.observed_at.astimezone(WIB).date():
         return None

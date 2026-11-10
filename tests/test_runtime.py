@@ -105,6 +105,57 @@ async def test_trip_completion_verified_only_after_history_change(settings, stat
     journal.close()
 
 
+async def test_sleeping_worker_stops_before_any_purchase_or_search(settings, state):
+    asleep = state.model_copy(
+        update={"phase": "sleeping", "raw_text": "Kamu sedang tidur. Tekan ☀ Bangun dulu."}
+    )
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(return_value=asleep), job_click=AsyncMock(), buy=AsyncMock()
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        with pytest.raises(RuntimeError, match="Bangun"):
+            await controller.run()
+        assert not journal.history()["actions"]
+        ui.job_click.assert_not_awaited()
+        ui.buy.assert_not_awaited()
+    finally:
+        journal.close()
+
+
+async def test_verification_reports_sleeping_instead_of_stale_before_state(settings, state):
+    asleep = state.model_copy(
+        update={"phase": "sleeping", "raw_text": "Kamu sedang tidur. Tekan ☀ Bangun dulu."}
+    )
+    ui = SimpleNamespace(snapshot=AsyncMock(return_value=asleep))
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        with pytest.raises(RuntimeError, match="Bangun"):
+            await controller.verify(lambda snapshot: False)
+        assert controller.state is asleep
+        ui.snapshot.assert_awaited_once()
+    finally:
+        journal.close()
+
+
+async def test_search_accepts_in_progress_once_without_repeating_click(settings, state):
+    before = state.model_copy(update={"buttons": ["📲 Cari order"]})
+    searching = before.model_copy(update={"phase": "searching", "buttons": ["⏳ Mencari…"]})
+    ui = SimpleNamespace(snapshot=AsyncMock(return_value=searching), job_click=AsyncMock())
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        await controller.job_action(before, "search")
+        ui.job_click.assert_awaited_once_with("📲 Cari order")
+        ui.snapshot.assert_awaited_once()
+        assert journal.history()["actions"][0]["status"] == "verified"
+        assert controller.state.phase == "searching"
+    finally:
+        journal.close()
+
+
 async def test_dry_run_never_performs_gameplay(settings, state):
     ui = SimpleNamespace(
         snapshot=AsyncMock(return_value=state), buy=AsyncMock(), job_click=AsyncMock()

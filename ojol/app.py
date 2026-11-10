@@ -64,6 +64,16 @@ class OjolAutomationAgent(BaseAgent):
                     for action in pending:
                         before = Snapshot.model_validate_json(action["before_state"])
                         state = await ui.snapshot()
+                        if journal.reject_sleeping_search(action["id"], state):
+                            journal.event(
+                                action["run_id"],
+                                "pencarian_ditolak_saat_tidur",
+                                {"action_id": action["id"], "effects_unchanged": True},
+                            )
+                            print(
+                                f"Aksi #{action['id']}: ditolak saat tidur, tanpa efek teramati; tidak diklik ulang."
+                            )
+                            continue
                         payload = json.loads(action["payload"])
                         from decimal import Decimal
 

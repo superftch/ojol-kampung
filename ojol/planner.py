@@ -3,6 +3,12 @@ from decimal import ROUND_CEILING, Decimal
 
 from .models import Product, PurchasePlan, Settings, Snapshot, Step
 
+SLEEPING_NOTICE = re.compile(r"(?:^|\n)\s*Kamu sedang tidur\b", re.IGNORECASE)
+
+
+def is_sleeping(state: Snapshot):
+    return state.phase == "sleeping" or bool(SLEEPING_NOTICE.search(state.raw_text))
+
 
 def decimal_id(text: str) -> Decimal:
     text = text.strip()
@@ -16,7 +22,9 @@ def parse_snapshot(data: dict) -> Snapshot:
     tiles = data["tiles"]
     buttons = [entry["text"].strip() for entry in data["buttons"]]
     countdown = re.search(r"Mengantar[^\d]*(\d+):([0-5]\d)", " ".join(buttons))
-    if countdown:
+    if SLEEPING_NOTICE.search(text):
+        phase, remaining = "sleeping", None
+    elif countdown:
         phase = "delivering"
         remaining = int(countdown[1]) * 60 + int(countdown[2])
     elif any("Mencari" in button for button in buttons):
@@ -52,6 +60,11 @@ def parse_snapshot(data: dict) -> Snapshot:
 def next_step(
     state: Snapshot, settings: Settings, catalog: dict[str, list[Product]] | None = None
 ) -> Step:
+    if is_sleeping(state):
+        return Step(
+            action="stop",
+            reason="Kamu sedang tidur. Tekan ☀ Bangun di game sebelum menjalankan Ojol.",
+        )
     if state.phase == "searching":
         return Step(
             action="wait",

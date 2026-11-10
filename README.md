@@ -111,6 +111,8 @@ Timeout klik menghasilkan aksi `uncertain` dan memblokir start baru. Rekonsilias
 
 Jika STOP pada `job.complete.verify`, tekan Hentikan Ojol, update image, lalu jalankan `docker compose exec -u app app python main.py reconcile`. Untuk klaim ongkos, perubahan history saja tidak cukup: receipt, rute, waktu dan kenaikan hasil harian harus cocok. Setelah aksi terverifikasi, tekan Jalankan Ojol. Jika masih belum pasti, simpan output rekonsiliasi dan log; jangan paksa status database. Error start yang diblokir ditandai `cli.run`, tidak memakai stage verifikasi dari PID worker sebelumnya.
 
+Saat pesan game menyatakan karakter tidur, worker berhenti sebelum mencari order atau belanja. Bangunkan karakter melalui game. Untuk pencarian lama yang terlanjur diklik saat tidur, `reconcile` dapat memberi status `rejected` tanpa klik ulang, termasuk setelah bangun: snapshot sebelum klik harus memuat pesan tidur, pada hari WIB yang sama saldo/resource/hasil/history harus tetap sama, dan tidak boleh ada order aktif atau ditawarkan. Tidak ada pendapatan/biaya yang dicatat untuk penolakan ini. Bila syarat tidak cocok, aksi tetap diblokir. Status `Mencari…` diterima sebagai pencarian sedang diproses; worker menunggu paling lama30detik tanpa klik duplikat.
+
 ### Backup dan update
 
 Backup konsisten seluruh profil/ledger, tanpa worker aktif:

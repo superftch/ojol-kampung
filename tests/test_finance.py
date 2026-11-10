@@ -194,6 +194,7 @@ def test_old_claim_recovers_only_exact_route_minute_and_received_payout(state):
         }
     )
     proof = completion_evidence(before, after)
+    assert completion_evidence(before, after.model_copy(update={"phase": "sleeping"})) == proof
     assert proof["amount"] == "0.72" and proof["receipt_time_wib"].startswith("2030-01-02T08:10:00")
     for changed in [
         after.model_copy(update={"phase": "complete"}),
@@ -215,3 +216,31 @@ def test_old_claim_recovers_only_exact_route_minute_and_received_payout(state):
         ),
     ]:
         assert completion_evidence(before, changed) is None
+
+
+async def test_automatic_payout_is_still_recorded_when_character_sleeps(settings, state):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from ojol.controller import Controller
+
+    before = state.model_copy(update={"phase": "delivering", "remaining_seconds": 1})
+    after = before.model_copy(
+        update={
+            "phase": "sleeping",
+            "remaining_seconds": None,
+            "raw_text": "Kamu sedang tidur. Tekan ☀ Bangun dulu.",
+            "history": ["08.10 Toko Contoh → Rumah Contoh · +0,72", *before.history],
+        }
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        ui = SimpleNamespace(snapshot=AsyncMock(return_value=after))
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.state = before
+        await controller.run(dry_run=True)
+        assert journal.profit()["pendapatan_ojol"] == "0.72"
+        assert journal.profit()["trip_tercatat"] == 1
+        assert not journal.history()["actions"]
+    finally:
+        journal.close()

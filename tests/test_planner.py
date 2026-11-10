@@ -43,6 +43,22 @@ def test_busy_search_waits_without_duplicate_click(state, settings):
     assert step.action == "wait" and step.wait_seconds == 2
 
 
+def test_sleeping_notice_overrides_visible_search_and_prevents_spending(settings):
+    raw = {
+        "text": "Kamu sedang tidur. Tekan ☀ Bangun dulu.\n📲 Cari order",
+        "wallet": "🪙 45,09 koin",
+        "tiles": {"Bensin": "48%", "Kondisi": "71%", "Kuota HP": "57%"},
+        "buttons": [{"text": "📲 Cari order", "disabled": False}],
+    }
+    snapshot = parse_snapshot(raw)
+    assert snapshot.phase == "sleeping"
+    step = next_step(snapshot, settings)
+    assert step.action == "stop" and "Bangun" in step.reason
+    assert next_step(snapshot.model_copy(update={"phase": "idle"}), settings).action == "stop"
+    raw["text"] = "Bisa narik di luar jam kerja dan saat tidak tidur."
+    assert parse_snapshot(raw).phase == "idle"
+
+
 def test_delivering_waits_before_any_replenishment(state, settings):
     state = state.model_copy(update={"phase": "delivering", "remaining_seconds": 175, "fuel": 1})
     step = next_step(state, settings)

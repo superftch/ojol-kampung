@@ -1,11 +1,13 @@
 import json
 import os
+import re
 import sqlite3
 from decimal import Decimal
 from pathlib import Path
 
-from .finance import day_bounds, received_income, report_date
+from .finance import WIB, day_bounds, received_income, report_date
 from .models import Snapshot, now
+from .planner import SLEEPING_NOTICE
 
 
 class Journal:
@@ -50,6 +52,42 @@ class Journal:
             self.db.execute(
                 "UPDATE runs SET ended=?,outcome=? WHERE id=?", (now().isoformat(), outcome, run_id)
             )
+
+    def reject_sleeping_search(self, action_id, after):
+        row = self.db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
+        if not row or row["kind"] != "search" or row["status"] not in {"pending", "uncertain"}:
+            return False
+        before = Snapshot.model_validate_json(row["before_state"])
+        # Waking changes the notice/trip text, so require unchanged effects and no active order.
+        if (
+            not SLEEPING_NOTICE.search(before.raw_text)
+            or before.phase not in {"idle", "sleeping"}
+            or after.phase not in {"idle", "sleeping"}
+            or after.remaining_seconds is not None
+            or sum("Cari order" in button for button in after.buttons) != 1
+            or any(
+                re.search(
+                    r"Mencari|Terima|Ambil|Antar sekarang|Mengantar|Sampai|Selesai",
+                    button,
+                    re.IGNORECASE,
+                )
+                for button in after.buttons
+            )
+            or re.search(r"📍|🏁|→", after.trip or "")
+            or after.observed_at < before.observed_at
+            or before.observed_at.astimezone(WIB).date() != after.observed_at.astimezone(WIB).date()
+            or any(
+                getattr(before, field) != getattr(after, field)
+                for field in ("wallet", "fuel", "condition", "data", "today_income", "history")
+            )
+        ):
+            return False
+        with self.db:
+            result = self.db.execute(
+                "UPDATE actions SET status='rejected',after_state=? WHERE id=? AND kind='search' AND status IN ('pending','uncertain')",
+                (after.model_dump_json(), action_id),
+            )
+        return result.rowcount == 1
 
     def begin(self, run_id, kind, state, payload):
         with self.db:

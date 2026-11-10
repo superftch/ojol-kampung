@@ -130,7 +130,7 @@ class Snapshot(Model):
     fuel: Percent
     condition: Percent
     data: Percent
-    phase: Literal["idle", "searching", "delivering", "complete", "unknown"]
+    phase: Literal["idle", "searching", "delivering", "complete", "sleeping", "unknown"]
     remaining_seconds: int | None = Field(default=None, ge=0)
     trip: str | None = None
     today_income: Coin | None = None
