@@ -28,9 +28,20 @@ class OjolAutomationAgent(BaseAgent):
     async def _run_async_impl(self, ctx):
         if self.settings.env == "testing":
             raise ValueError("Agen live tidak boleh dijalankan dalam testing; gunakan mocked UI")
-        async with McpBrowser(
-            self.settings.runtime_dir / "harness", ToolContext(ctx), self.settings.cdp_url
-        ) as browser:
+        from .http_core import HttpUI, install_browser_session
+
+        session_file = self.settings.runtime_dir / "http-session.json"
+        backend = (
+            HttpUI(self.settings, ToolContext(ctx))
+            if self.settings.core == "http"
+            else McpBrowser(
+                self.settings.runtime_dir / "harness",
+                ToolContext(ctx),
+                self.settings.cdp_url,
+                allow_session_transfer=session_file.is_file(),
+            )
+        )
+        async with backend as browser:
 
             def check_startup_cancel():
                 if (self.cancel and self.cancel.is_set()) or (
@@ -39,19 +50,25 @@ class OjolAutomationAgent(BaseAgent):
                     raise StopRequested("Dihentikan pengguna")
 
             browser.check_cancel = check_startup_cancel
-            if self.settings.managed_browser:
+            if self.settings.managed_browser and self.command == "run":
                 from .healing import request_browser_restart
 
                 browser.recover_browser = lambda: request_browser_restart(
                     self.settings, browser.check_cancel
                 )
-            await browser.open_owned_tab(refresh=True)
-            ui = GameUI(browser)
+            if self.settings.core == "browser" and session_file.is_file():
+                await install_browser_session(browser, session_file)
+            else:
+                await browser.open_owned_tab(refresh=True)
+            ui = browser if self.settings.core == "http" else GameUI(browser)
             if self.command in {"inspect", "doctor"}:
                 state = await ui.snapshot()
                 output = {
-                    "mcp": "Browser Harness stdio via ADK McpToolset",
+                    "mcp": "Ojol HTTP stdio via ADK McpToolset"
+                    if self.settings.core == "http"
+                    else "Browser Harness stdio via ADK McpToolset",
                     "tab_id": browser.tab_id,
+                    "core": getattr(browser, "core_name", "browser"),
                     "snapshot": state.model_dump(mode="json"),
                     "next": next_step(
                         state, self.settings, load_catalog(self.settings.runtime_dir)

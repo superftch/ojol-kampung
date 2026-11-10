@@ -7,9 +7,8 @@ from pathlib import Path
 
 from .cli import exclusive_lock
 from .config import load_settings
-from .mcp_browser import McpBrowser
+from .healing import write_private
 from .telegram import flush_notices, queue_notice
-from .ui import GameUI
 
 COOKIE_NAME = "__Secure-better-auth.session_token"
 DOMAIN = "www.kampungsebelah.com"
@@ -67,6 +66,8 @@ def session_cookie(cookie):
 
 
 async def transfer_to_docker(settings):
+    from .mcp_browser import McpBrowser
+
     global STAGE
     STAGE = "session.export"
     with exclusive_lock(settings.runtime_dir):
@@ -126,6 +127,38 @@ async def import_session(settings, payload):
     if set(data) != {"cookies"} or len(data["cookies"]) != 1:
         raise ValueError("Hanya satu cookie sesi game diizinkan")
     cookies = [session_cookie(item) for item in data["cookies"]]
+    if settings.core == "http":
+        from .http_core import HttpUI
+
+        candidate = settings.runtime_dir / "http-session.pending.json"
+        with exclusive_lock(settings.runtime_dir):
+            write_private(candidate, {"cookies": cookies})
+            try:
+                STAGE = "session.import.http_verify"
+                async with HttpUI(settings, session_file=candidate) as core:
+                    snapshot = await core.snapshot()
+                candidate.replace(settings.runtime_dir / "http-session.json")
+            finally:
+                candidate.unlink(missing_ok=True)
+        print(
+            json.dumps(
+                {
+                    "session_imported": True,
+                    "core": "http_mcp",
+                    "phase": snapshot.phase,
+                    "wallet": str(snapshot.wallet),
+                }
+            )
+        )
+        queue_notice(
+            settings,
+            "✅ Cookie sesi game diverifikasi melalui HTTP MCP. Tekan Jalankan Ojol untuk melanjutkan.",
+        )
+        await flush_notices(settings)
+        return
+    from .mcp_browser import McpBrowser
+    from .ui import GameUI
+
     with exclusive_lock(settings.runtime_dir):
         async with McpBrowser(
             settings.runtime_dir / "harness", None, settings.cdp_url, allow_session_transfer=True
@@ -167,6 +200,7 @@ async def import_session(settings, payload):
                         )
                 STAGE = "session.import.snapshot"
                 snapshot = await GameUI(browser).snapshot()
+                write_private(settings.runtime_dir / "http-session.json", {"cookies": cookies})
             finally:
                 await browser.reset_focus()
         print(
@@ -186,6 +220,28 @@ async def import_session(settings, payload):
         "✅ Cookie sesi game berhasil diimpor dan diverifikasi pada browser headless. Tekan Jalankan Ojol untuk melanjutkan.",
     )
     await flush_notices(settings)
+
+
+async def migrate_browser_session(settings):
+    """One-time owned-profile migration; no page render, order or purchase."""
+    from .mcp_browser import McpBrowser
+
+    async with McpBrowser(
+        settings.runtime_dir / "harness", None, settings.cdp_url, allow_session_transfer=True
+    ) as browser:
+        await browser.open_owned_tab(prepare_session=True)
+        data = await browser.call(
+            "browser_cdp",
+            method="Network.getCookies",
+            params={"urls": ["https://www.kampungsebelah.com/kampung"]},
+        )
+        cookies = [
+            session_cookie(c) for c in data.get("cookies", []) if c.get("name") == COOKIE_NAME
+        ]
+        if len(cookies) != 1:
+            return False
+        write_private(settings.runtime_dir / "http-session.json", {"cookies": cookies})
+        return True
 
 
 def main():

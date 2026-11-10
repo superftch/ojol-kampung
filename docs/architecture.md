@@ -2,11 +2,23 @@
 
 ## Alur runtime
 
-Telegram private chat → ControlService → worker ADK BaseAgent → McpToolset stdio → Browser Harness MCP → Chromium headless.
+Telegram private chat → ControlService → worker ADK BaseAgent → McpToolset stdio → Ojol HTTP MCP → endpoint game.
 
-Tidak ada model yang menghasilkan kode klik atau request game langsung. Controller deterministik membaca DOM pada tab miliknya sendiri. Instance Chrome, profil dan daemon Harness berada dalam container/volume aplikasi; tidak memakai profil desktop.
+Core browser lama tetap tersedia: worker ADK → McpToolset stdio → Browser Harness MCP → Chromium headless. Tidak ada model yang menghasilkan payload atau kode klik. Controller deterministik, planner, journal dan laporan dipakai bersama. Chromium, profil dan daemon Harness hanya milik container; tidak memakai profil desktop.
 
-BrowserRuntime memegang file lock volume. Worker memegang lock terpisah; start ganda ditolak, termasuk ketika child baru dimulai dan belum memperoleh lock. Stop dicek selama countdown dan sebelum tindakan. Browser selalu boot ke about:blank; hanya Harness memuat satu dunia game.
+## Core HTTP
+
+`http_server.py` mengekspos empat tool berparameter terbatas; tidak ada proxy HTTP bebas. `http_api.py` membatasi origin, path dan metode, mematikan redirect/proxy env, memakai cookie host game saja dan tidak mencetak body. GET boleh3percobaan (backoff1/2detik), POST selalu1percobaan, termasuk jika ada requestId. Stdio dibatasi35detik, batas server30detik dan client40detik; Stop dicek ketika menunggu. Testing menolak HTTP live di subprocess MCP; unit test memakai MockTransport dan resources `.env.testing`.
+
+Snapshot membaca Ojol, cash, kebutuhan/tidur dan waktu server. Sisa perjalanan memakai ceil(arriveAt−waktu server), tidak memakai clock host atau flag arrived untuk mempercepat klaim. API memakai milli-koin yang dikonversi Decimal. Receipt diproyeksikan ke format history browser yang sama agar pencatatan laba dan rekonsiliasi lama tetap bekerja.
+
+Preview mata: GET daftar tujuan → GET detail kavling → GET katalog business ID. Hanya kategori motor/SPBU/konter di desa rumah akun; toko terbuka dan bukan milik sendiri. Tidak ada POST tujuan/travel. Harga dibaca ulang sebelum beli; efek produk diekstrak secara inert dari JSON dalam bundle client dan dicache per configVersion. Efek tak dikenal/ambigu atau skema berubah gagal aman. Pembelian memerlukan item dari preview dalam proses MCP yang sama, harga/effect/enabled tetap sama, saldo baru sama dengan snapshot awal, saldo sesudah≥20 dan tanpa overflow. RequestId dicatat bersama aksi pending sebelum POST.
+
+Cookie import HTTP menulis kandidat0600, memverifikasi melalui MCP, lalu mengganti file sesi atomik. Kandidat gagal tidak mengganti sesi lama. Upgrade memigrasikan satu cookie dari profil Docker lewat Harness tanpa memuat game, lalu menutup Chromium. Browser dimulai oleh parent hanya jika mode browser dipilih atau GET HTTP gagal dan fallback diizinkan. Fallback memasang cookie aktif, mempertahankan worker/run/cap/ledger, lalu mengikuti state game saat ini. Tidak replay write ambigu. Auth/kondisi akun memblokir aksi tanpa fallback. Inspect/reconcile tidak mengaktifkan fallback karena bukan child worker terkelola. Browser fallback ditutup setelah worker selesai.
+
+## Core browser lama
+
+BrowserRuntime memegang file lock volume. Worker kedua ditolak oleh lock terpisah, termasuk sebelum child memperoleh lock. Stop dicek selama countdown dan sebelum tindakan. Browser boot ke about:blank; hanya Harness memuat satu dunia game. Default HTTP dengan sesi tersimpan tidak menyalakan Chromium saat startup/idle.
 
 Saat start/inspect/reconcile menggunakan kembali tab miliknya, agent mengirim Page.reload dengan sesi CDP eksplisit dan deadline15detik. Readiness menunggu performance.timeOrigin berubah, dokumen complete dan navigasi Kerja tersedia; dokumen lama tidak dianggap siap selama reload lambat. Timeout tidak menyebabkan reload kedua atau replay aksi game.
 

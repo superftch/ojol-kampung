@@ -61,7 +61,7 @@ async def test_reconcile_idle_search_records_unknown_resource_deltas_without_rep
         browser = SimpleNamespace(open_owned_tab=AsyncMock(), call=AsyncMock(), js=AsyncMock())
         context = AsyncMock()
         context.__aenter__.return_value = browser
-        monkeypatch.setattr(module, "McpBrowser", lambda *args: context)
+        monkeypatch.setattr(module, "McpBrowser", lambda *args, **kwargs: context)
         monkeypatch.setattr(module, "ToolContext", lambda ctx: None)
         monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
         ui = SimpleNamespace(
@@ -224,7 +224,7 @@ async def test_reconcile_claim_requires_exact_receipt_and_never_replays_or_doubl
         browser = SimpleNamespace(open_owned_tab=AsyncMock(), call=AsyncMock(), js=AsyncMock())
         context = AsyncMock()
         context.__aenter__.return_value = browser
-        monkeypatch.setattr(module, "McpBrowser", lambda *args: context)
+        monkeypatch.setattr(module, "McpBrowser", lambda *args, **kwargs: context)
         monkeypatch.setattr(module, "ToolContext", lambda ctx: None)
         ui = SimpleNamespace(snapshot=AsyncMock(return_value=after), job_click=AsyncMock())
         monkeypatch.setattr(module, "GameUI", lambda browser: ui)
@@ -294,7 +294,7 @@ async def test_reconciled_search_hands_off_current_trip_without_claiming_early_o
         browser = SimpleNamespace(open_owned_tab=AsyncMock(), call=AsyncMock(), js=AsyncMock())
         context = AsyncMock()
         context.__aenter__.return_value = browser
-        monkeypatch.setattr(module, "McpBrowser", lambda *args: context)
+        monkeypatch.setattr(module, "McpBrowser", lambda *args, **kwargs: context)
         monkeypatch.setattr(module, "ToolContext", lambda ctx: None)
         monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
         ui = SimpleNamespace(

@@ -1,10 +1,10 @@
 # Ojol KampungSebelah
 
-Automation Ojol dengan browser **headless**, Google ADK dan **Browser Harness MCP**. Kontrol melalui tombol Telegram; login lewat import cookie sesi game. Tidak memakai Chrome desktop, mouse atau keyboard host.
+Automation Ojol dengan core **HTTP melalui MCP khusus Ojol** dan Google ADK. Core **Browser Harness MCP headless** tetap tersedia sebagai fallback. Kontrol melalui tombol Telegram; login lewat import cookie sesi game. Tidak memakai Chrome desktop, mouse atau keyboard host.
 
 - Tanpa batas trip/durasi secara default; saldo utama minimum **20 koin**.
 - Mengikuti countdown game, mengambil ongkos, lalu melanjutkan order.
-- Mengisi bensin/kuota/kondisi lewat tombol **mata**, memilih produk berdasarkan biaya per poin tanpa overflow.
+- Mengisi bensin/kuota/kondisi melalui request **preview mata**, memilih produk berdasarkan biaya per poin tanpa overflow. Mode browser tetap mengklik mata.
 - Laporan harian WIB: payout diterima, biaya dan laba bersih; tanggal bisa dipilih.
 - Notifikasi event ON/OFF persisten. Timeout baca dipulihkan otomatis; error yang tidak pulih selalu STOP dan dilaporkan. Klik yang belum pasti tidak diulang.
 
@@ -30,6 +30,8 @@ Isi `.env` langsung di server:
 | `OJOL_ENV` | `production` |
 | `OJOL_OPERATOR_AUTHORIZED` | `true` setelah izin operator tersedia |
 | `OJOL_MANAGED_BROWSER` | `true` |
+| `OJOL_CORE` | `http` (default baru); `browser` untuk core lama |
+| `OJOL_BROWSER_FALLBACK` | `true` untuk fallback otomatis pada kegagalan baca HTTP |
 | `OJOL_TELEGRAM_BOT_TOKEN` | Token BotFather |
 | `OJOL_TELEGRAM_CHAT_ID` | ID chat pribadi; buka bot dan tekan Start dahulu |
 | `OJOL_LOGIN_PUBLIC_URL` | `https://ojolkampung.sftch.web.id` |
@@ -50,7 +52,17 @@ Konfigurasi production ditolak jika Telegram belum lengkap, origin bukan HTTPS a
 
 Image runtime tidak menyimpan uv atau cache dependency; uv dipakai sementara saat build dan tersedia pada test stage CI. Direktori/permission volume disiapkan entrypoint saat startup.
 
-Satu service Compose, satu container: control service, Chromium, worker/bot dan cloudflared. Hanya `127.0.0.1:6080` dipublikasikan; CDP9222 dan metrics2000 tetap internal. Restart container ikut me-restart seluruh proses.
+Satu service Compose, satu container: control service, worker/bot, MCP dan cloudflared. Chromium tetap terpasang, tetapi hanya dinyalakan saat migrasi profil sekali, mode browser, atau fallback. Core HTTP normal tidak merender peta. Hanya `127.0.0.1:6080` dipublikasikan; CDP9222 dan metrics2000 tetap internal. Restart container ikut me-restart seluruh proses.
+
+### Core HTTP dan fallback
+
+Default `OJOL_CORE=http`. Saat upgrade, cookie dari profil browser lama dipindahkan sekali melalui Browser Harness ke `runtime/http-session.json` mode0600, lalu Chromium ditutup. Jika sesi tidak tersedia/kedaluwarsa, gunakan tombol Import Cookie seperti biasa; verifikasi HTTP MCP tidak membuka browser. Cookie dan cache efek disimpan dalam volume yang sama, tidak dalam image/Git/log.
+
+Empat tool MCP terbatas: snapshot, preview toko, beli satu item, dan aksi ambil/selesai Ojol. Tidak ada tool URL/request bebas, bank, top-up, Pergi, Bangun atau pendaftaran. Snapshot memakai waktu server; harga dibaca dari katalog dan efek dari bundle client sesuai `configVersion`. Preview membaca kavling dan katalog toko di desa yang sama tanpa mengirim request perjalanan. Toko tutup dilewati.
+
+GET sementara gagal dicoba3kali dengan backoff1/2detik. Bila pembacaan tetap gagal atau skema berubah, worker yang sama dapat beralih ke core browser lama; event `core_browser_fallback` dicatat dan mengikuti toggle notifikasi. Browser hanya mulai saat diperlukan, dan ditutup setelah worker selesai. Fallback tidak mengulang transaksi yang timeout; ledger pending/uncertain tetap berlaku. Auth ditolak atau kondisi akun menghalangi Ojol: STOP, bukan fallback. `inspect`/`reconcile` HTTP tidak menyalakan fallback otomatis karena bukan worker terkelola.
+
+Kembali penuh ke core lama: set `OJOL_CORE=browser` dalam `.env`, lalu recreate service. Cookie HTTP terbaru dipasang pada tab browser milik aplikasi. Untuk HTTP tanpa fallback otomatis, set `OJOL_BROWSER_FALLBACK=false`. Telegram, ledger, laporan harian, saldo minimum20, pemilihan produk dan batas sesi memakai controller yang sama pada kedua core.
 
 ### Domain Cloudflare permanen
 
@@ -81,13 +93,13 @@ Domain production dari `.env` mengalahkan URL Quick Tunnel lama di volume. Setel
 | Tombol | Fungsi |
 |---|---|
 | **Import Cookie** | Stop worker dan kirim link form HTTPS sekali pakai, berlaku15menit |
-| **Jalankan Ojol** | Mulai worker headless tanpa batas default |
+| **Jalankan Ojol** | Mulai worker dengan core terpilih, tanpa batas default |
 | **Hentikan Ojol** | Stop worker dengan tetap menyimpan profil dan ledger |
 | **Status** | Resource, saldo, tahap, countdown estimasi dan status notifikasi |
 | **Laba Bersih** | Hari ini WIB; navigasi hari/tanggal dan transaksi terakhir |
 | **Notifikasi ON / OFF** | Aktifkan/nonaktifkan semua event rutin; error+STOP selalu aktif |
 
-Import hanya menerima cookie sesi `__Secure-better-auth.session_token` milik `www.kampungsebelah.com`, sebagai nilai atau JSON cookie. Nilai cookie tidak masuk chat Telegram, argv atau log. Form memerlukan sesi HttpOnly dan CSRF yang terikat ke sesi; akses dicabut setelah import berhasil. Profil browser dalam volume menyimpan sesi tersebut.
+Import hanya menerima cookie sesi `__Secure-better-auth.session_token` milik `www.kampungsebelah.com`, sebagai nilai atau JSON cookie. Nilai cookie tidak masuk chat Telegram, argv atau log. Form memerlukan sesi HttpOnly dan CSRF yang terikat ke sesi; akses dicabut setelah import berhasil. Sesi lama hanya diganti setelah kandidat baru berhasil diverifikasi.
 
 Tanggal laporan bisa dipilih dengan tombol inline atau diketik `YYYY-MM-DD` / `DD-MM-YYYY`, tanpa slash command. Pendapatan berasal dari payout di riwayat game, bukan seluruh selisih dompet. Belanja manual di luar worker tidak otomatis tercatat sebagai biaya automation.
 
@@ -126,7 +138,7 @@ Jika STOP pada `job.complete.verify`, tekan Hentikan Ojol, update image, lalu ja
 
 Saat pesan game menyatakan karakter tidur, worker berhenti sebelum mencari order atau belanja. Bangunkan karakter melalui game. Untuk pencarian lama yang belum pasti, `reconcile` mengambil dua snapshot setelah refresh, terpisah1detik. Jika keduanya konsisten, saldo/hasil/history tetap sama pada hari WIB yang sama dan resource tidak bertambah, pencarian dapat diselesaikan tanpa replay: UI tanpa order menjadi `closed_idle`; tawaran, perjalanan berjalan atau perjalanan selesai menunggu ongkos menjadi `handed_off`, dengan rute dan tombol yang cocok. Countdown berjalan boleh berkurang pada perjalanan yang sama. Rekonsiliasi tidak mengambil ongkos; tekan Jalankan Ojol agar worker melanjutkan state game saat ini dan membuat aksi klaim baru yang tercatat sebelum klik. Penurunan resource dicatat dalam event tanpa menebak penyebabnya; hasil klik lama tetap ditandai tidak diketahui, tanpa klik ulang dan tanpa membuat pendapatan/biaya koin. Ini tidak berlaku untuk klaim ongkos atau pembelian. Bila bukti tidak cocok, aksi tetap diblokir dan output menampilkan perbandingan snapshot. Status `Mencari…` diterima sebagai pencarian sedang diproses; worker menunggu paling lama30detik tanpa klik duplikat.
 
-Start worker, `inspect`/`doctor` dan `reconcile` menyegarkan tab automation yang digunakan kembali melalui MCP. Pembacaan menunggu dokumen baru dan navigasi Kerja siap, sehingga perubahan seperti Bangun dari browser lain tidak tertahan di UI lama. Tab baru cukup dimuat sekali. Refresh tidak diulang saat timeout dan tidak mengirim ulang klik order/pembelian.
+Pada core browser, start worker, `inspect`/`doctor` dan `reconcile` menyegarkan tab automation yang digunakan kembali melalui MCP. Pembacaan menunggu dokumen baru dan navigasi Kerja siap, sehingga perubahan seperti Bangun dari browser lain tidak tertahan di UI lama. Tab baru cukup dimuat sekali. Refresh tidak diulang saat timeout dan tidak mengirim ulang klik order/pembelian.
 
 ### Backup dan update
 

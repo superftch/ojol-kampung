@@ -54,6 +54,24 @@ class ControlService:
         self.browser_recovering = False
         self.browser_restarts = []
 
+    async def ensure_backend(self, require_session=False):
+        if self.settings.core == "browser":
+            await self.browser.switch("headless")
+            return
+        session = self.settings.runtime_dir / "http-session.json"
+        if not session.is_file():
+            from .session_transfer import migrate_browser_session
+
+            try:
+                await self.browser.switch("headless")
+                await migrate_browser_session(self.settings)
+            finally:
+                await self.browser.close()
+        else:
+            await self.browser.close()
+        if require_session and not session.is_file():
+            raise RuntimeError("Sesi HTTP belum tersedia. Gunakan tombol Import Cookie.")
+
     async def handle_browser_recovery(self):
         request = self.settings.runtime_dir / "browser-recovery-request.json"
         if not request.is_file() or self.lock.locked():
@@ -157,7 +175,7 @@ class ControlService:
             )
             remaining = f"{seconds // 60}:{seconds % 60:02d} (estimasi)"
         return (
-            f"🛵 Status Ojol\nWorker: {'aktif' if running(self.settings.runtime_dir) else 'berhenti'} · {self.browser.mode or 'browser berhenti'}\n"
+            f"🛵 Status Ojol\nWorker: {'aktif' if running(self.settings.runtime_dir) else 'berhenti'} · {data.get('core', self.settings.core)}\n"
             f"Tahap: {data.get('stage') or data.get('event', 'siap')}\n"
             f"Perjalanan: {state.get('phase', 'belum terbaca')} · Sisa {remaining}\n"
             f"Bensin {state.get('fuel', '?')}% | Kondisi {state.get('condition', '?')}% | Kuota {state.get('data', '?')}%\n"
@@ -231,7 +249,8 @@ class ControlService:
             await self.stop_worker()
             await self.start_tunnel()
             self.access.revoke()
-            await self.browser.switch("headless")
+            if self.settings.core == "browser":
+                await self.browser.switch("headless")
             ticket = self.access.issue("ticket")
             return f"{self.public_url()}/access/{ticket}"
 
@@ -270,7 +289,7 @@ class ControlService:
                 if not self.settings.operator_authorized:
                     raise RuntimeError("Izin operator belum dikonfigurasi")
                 self.access.revoke()
-                await self.browser.switch("headless")
+                await self.ensure_backend(require_session=True)
                 await self.start_tunnel()
                 config_file = os.environ.get("OJOL_CONFIG_FILE")
                 args = [sys.executable, str(ROOT / "main.py")]
@@ -283,7 +302,13 @@ class ControlService:
                 self.worker = await asyncio.create_subprocess_exec(
                     *args, stderr=asyncio.subprocess.STDOUT, start_new_session=True
                 )
-                return "▶️ Worker dimulai dalam Chrome headless melalui Browser Harness MCP, tanpa batas trip/durasi pada konfigurasi default. Saldo utama dijaga ≥20 koin. Timeout baca dipulihkan otomatis tanpa mengulang klik transaksi. Sesi kedaluwarsa atau recovery gagal: worker stop dan melapor."
+                core = (
+                    "HTTP MCP khusus Ojol"
+                    + (", browser sebagai fallback" if self.settings.browser_fallback else "")
+                    if self.settings.core == "http"
+                    else "Browser Harness MCP headless"
+                )
+                return f"▶️ Worker dimulai melalui {core}. Tanpa batas trip/durasi default; saldo utama ≥20 koin. Pembacaan boleh retry, transaksi tidak diulang. Error yang tidak pulih: STOP dan lapor."
         return "Pilih tombol: Import Cookie, Jalankan Ojol, Hentikan Ojol, Status, Laba Bersih, Notifikasi ON/OFF."
 
     async def execute(self, command):
@@ -389,6 +414,8 @@ class ControlService:
                         )
                 else:
                     queue_notice(self.settings, "Worker berhenti. " + self.status())
+                if self.settings.core == "http" and not self.lock.locked():
+                    await self.browser.close()
             if (
                 self.browser.mode
                 and not self.browser.alive()
@@ -443,7 +470,7 @@ class ControlService:
                     },
                 )
         try:
-            await self.browser.switch("headless")
+            await self.ensure_backend()
         except Exception as exc:
             queue_error(self.settings, exc, "control.startup.browser")
             await self.browser.close()
@@ -573,7 +600,10 @@ def create_app(settings, service=None):
             require_access(request)
             await service.stop_worker()
             try:
-                await service.browser.switch("headless")
+                if settings.core == "browser":
+                    await service.browser.switch("headless")
+                else:
+                    await service.browser.close()
                 await import_session(settings, json.dumps(payload))
             except Exception as exc:
                 from .session_transfer import STAGE

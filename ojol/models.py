@@ -35,6 +35,8 @@ class Settings(Model):
     telegram_chat_id: int | None = Field(default=None, gt=0)
     login_public_url: str = "http://localhost:6080"
     managed_browser: bool = False
+    core: Literal["http", "browser"] = "http"
+    browser_fallback: bool = True
     tunnel_enabled: bool = False
 
     @field_validator("telegram_chat_id", mode="before")

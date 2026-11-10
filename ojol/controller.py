@@ -69,6 +69,7 @@ class Controller:
             "spent": str(self.spent),
             "last_action": self.last_action,
             "tab_id": getattr(getattr(self.ui, "browser", None), "tab_id", None),
+            "core": getattr(getattr(self.ui, "browser", None), "core_name", "browser"),
             "completed": self.completed,
             "wait_until": self.wait_until,
             "profit": self.journal.profit(self.run_id),
@@ -176,6 +177,9 @@ class Controller:
                 "shop": shop,
                 "navigation": navigation,
                 "product": plan.product.model_dump(mode="json"),
+                **(
+                    self.ui.prepare_action("purchase") if hasattr(self.ui, "prepare_action") else {}
+                ),
             },
         )
         self.last_action = {
@@ -230,7 +234,15 @@ class Controller:
         ]
         if len(labels) != 1:
             raise RuntimeError("Tombol Ojol ambigu; tidak memilih sembarang order")
-        action = self.journal.begin(self.run_id, kind, before, {"label": labels[0]})
+        action = self.journal.begin(
+            self.run_id,
+            kind,
+            before,
+            {
+                "label": labels[0],
+                **(self.ui.prepare_action(kind) if hasattr(self.ui, "prepare_action") else {}),
+            },
+        )
         self.last_action = {"action_id": action, "kind": kind, "label": labels[0]}
         try:
             self.check_cancel()
