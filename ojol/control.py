@@ -22,6 +22,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from .cli import exclusive_lock, running
 from .config import load_settings
 from .finance import WIB, report_date
+from .healing import write_private
 from .journal import Journal
 from .login_access import LoginAccess
 from .models import ROOT, Settings
@@ -51,6 +52,13 @@ class ControlService:
         self.lock = asyncio.Lock()
         self.url_prefix = ""
         self.account_id = None
+        self.restart_file = settings.runtime_dir / "worker-restart.json"
+
+    def restart_ready(self):
+        try:
+            return json.loads(self.restart_file.read_text()).get("ready") is True
+        except (OSError, ValueError, AttributeError):
+            return False
 
     async def ensure_backend(self, require_session=False):
         if require_session and not (self.settings.runtime_dir / "http-session.json").is_file():
@@ -89,7 +97,9 @@ class ControlService:
         candidate = path.read_text().strip() if path.is_file() else self.settings.login_public_url
         return Settings.secure_login_origin(candidate)
 
-    async def stop_worker(self):
+    async def stop_worker(self, preserve_restart=False):
+        if not preserve_restart:
+            self.restart_file.unlink(missing_ok=True)
         self.expected_stop = True
         (self.settings.runtime_dir / "STOP").touch(mode=0o600)
         if self.worker and self.worker.returncode is None:
@@ -121,7 +131,8 @@ class ControlService:
             f"Perjalanan: {state.get('phase', 'belum terbaca')} · Sisa {remaining}\n"
             f"Bensin {state.get('fuel', '?')}% | Kondisi {state.get('condition', '?')}% | Kuota {state.get('data', '?')}%\n"
             f"Saldo utama: {state.get('wallet', '?')} koin · minimum {self.settings.min_balance}\n"
-            f"Notifikasi event: {'ON' if notifications_enabled(self.settings) else 'OFF'}"
+            f"Notifikasi event: {'ON' if notifications_enabled(self.settings) else 'OFF'}\n"
+            f"Auto-start setelah deploy: {'ON' if self.restart_file.exists() else 'OFF'}"
             + (
                 f"\nTunnel: proses {'aktif' if self.tunnel_alive() else 'berhenti'}"
                 if self.settings.tunnel_enabled
@@ -236,6 +247,14 @@ class ControlService:
                     args += ["--env-file", config_file]
                 args += ["run", "--live"]
                 self.expected_stop = False
+                (self.settings.runtime_dir / "STOP").unlink(missing_ok=True)
+                if all(
+                    getattr(self.settings, key) is None
+                    for key in ("max_spend", "max_jobs", "max_minutes")
+                ):
+                    write_private(self.restart_file, {"ready": False})
+                else:
+                    self.restart_file.unlink(missing_ok=True)
                 # Docker owns stdout rotation; journal and status remain persistent in the volume.
                 self.worker = await asyncio.create_subprocess_exec(
                     *args,
@@ -340,6 +359,7 @@ class ControlService:
             if self.worker and self.worker.returncode is not None:
                 code, pid = self.worker.returncode, self.worker.pid
                 self.worker = None
+                self.restart_file.unlink(missing_ok=True)
                 if code != 0 and not self.expected_stop:
                     error_file = self.settings.runtime_dir / "last-error.json"
                     previous_error = (
@@ -375,13 +395,17 @@ class ControlService:
         if self.settings.env == "testing":
             return
         status_file = self.settings.runtime_dir / "status.json"
-        if status_file.exists() and not running(self.settings.runtime_dir):
-            previous = json.loads(status_file.read_text())
-            if previous.get("pid") and previous.get("event") not in {
-                "berhenti",
-                "gagal",
-                "dry_run",
-            }:
+        if not self.restart_ready() and not running(self.settings.runtime_dir):
+            previous = json.loads(status_file.read_text()) if status_file.exists() else {}
+            if self.restart_file.exists() or (
+                previous.get("pid")
+                and previous.get("event")
+                not in {
+                    "berhenti",
+                    "gagal",
+                    "dry_run",
+                }
+            ):
                 queue_error(
                     self.settings,
                     RuntimeError("Sesi worker sebelumnya terputus; tidak dilanjutkan otomatis"),
@@ -407,13 +431,37 @@ class ControlService:
             )
         self.tasks.append(asyncio.create_task(self.guard_task(self.supervise, "control.supervise")))
 
-    async def close(self):
+    async def close(self, preserve_restart=False):
+        can_resume = (
+            preserve_restart
+            and not (self.settings.runtime_dir / "STOP").exists()
+            and (
+                self.restart_ready()
+                or (self.worker and self.worker.returncode is None)
+                or running(self.settings.runtime_dir)
+            )
+        )
         self.closing = True
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         try:
-            await self.stop_worker()
+            if preserve_restart:
+                await self.stop_worker(preserve_restart=True)
+            else:
+                await self.stop_worker()
+            if (
+                can_resume
+                and self.restart_file.exists()
+                and (not self.worker or self.worker.returncode == 0)
+            ):
+                (self.settings.runtime_dir / "STOP").unlink(missing_ok=True)
+                write_private(self.restart_file, {"ready": True})
+            else:
+                self.restart_file.unlink(missing_ok=True)
+        except BaseException:
+            self.restart_file.unlink(missing_ok=True)
+            raise
         finally:
             if self.tunnel_process:
                 process = self.tunnel_process

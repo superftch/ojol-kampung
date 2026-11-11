@@ -6,6 +6,7 @@ import re
 from .accounts import Accounts
 from .cli import running
 from .control import ControlService
+from .journal import Journal
 from .telegram import (
     BUTTON_COMMANDS,
     KEYBOARD,
@@ -721,8 +722,58 @@ class MultiAccountService:
                     outage = True
                     await asyncio.sleep(15)
 
+    async def resume_workers(self):
+        if (
+            self.closing
+            or self.settings.env == "testing"
+            or (self.settings.tunnel_enabled and not self.hub.tunnel_alive())
+        ):
+            return
+        async with self.lock:
+            for service in list(self.services.values()):
+                if not service.restart_ready():
+                    continue
+                if (
+                    not self.registry.allowed(service.settings.telegram_chat_id)
+                    or (service.settings.runtime_dir / "STOP").exists()
+                ):
+                    service.restart_file.unlink(missing_ok=True)
+                    continue
+                if (service.worker and service.worker.returncode is None) or running(
+                    service.settings.runtime_dir
+                ):
+                    continue
+                if self.active_workers() >= self.registry.value("max_active_workers"):
+                    return
+                try:
+                    # shortcut: bounded sessions require manual restart so their limits never reset.
+                    if any(
+                        getattr(service.settings, key) is not None
+                        for key in ("max_spend", "max_jobs", "max_minutes")
+                    ):
+                        raise RuntimeError(
+                            "Auto-start diblokir karena batas belanja/trip/durasi aktif. Tekan Jalankan Ojol untuk sesi baru."
+                        )
+                    from .session_transfer import parse_cookie_input
+
+                    parse_cookie_input(
+                        (service.settings.runtime_dir / "http-session.json").read_text()
+                    )
+                    journal = Journal(service.settings.runtime_dir)
+                    try:
+                        journal.ensure_resolved()
+                    finally:
+                        journal.close()
+                    response = await service.command("run")
+                    queue_notice(
+                        service.settings, "♻️ Auto-start setelah deploy/restart.\n" + response
+                    )
+                except Exception as exc:
+                    queue_error(service.settings, exc, "worker.auto_start")
+
     async def supervise(self):
         while not self.closing:
+            await self.resume_workers()
             if self.hub.tunnel_process and self.hub.tunnel_process.returncode is not None:
                 self.hub.tunnel_process = None
                 queue_error(
@@ -757,6 +808,7 @@ class MultiAccountService:
             await self.start_tunnel()
         except Exception as exc:
             queue_error(self.hub.settings, exc, "control.startup.tunnel")
+        await self.resume_workers()
         self.tasks.append(
             asyncio.create_task(self.guard_task(self.supervise, "management.supervise"))
         )
@@ -771,7 +823,9 @@ class MultiAccountService:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         results = await asyncio.gather(
-            *(s.close() for s in self.services.values()), self.hub.close(), return_exceptions=True
+            *(s.close(preserve_restart=True) for s in self.services.values()),
+            self.hub.close(),
+            return_exceptions=True,
         )
         for result in results:
             if isinstance(result, Exception):

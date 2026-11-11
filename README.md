@@ -5,6 +5,7 @@ Automation Ojol multi-account dengan **HTTP MCP + Google ADK**. Satu bot Telegra
 - Default **3 akun per user**, **3 worker aktif global**; admin dapat mengubahnya tanpa restart.
 - **1 akun = 1 subprocess worker**, dengan MCP, cookie, SQLite ledger, status dan pengaturan notifikasi sendiri. Semua berjalan dalam satu container aplikasi.
 - Tanpa batas trip/durasi default; saldo utama production minimal **20 koin**.
+- Akun yang sedang berjalan otomatis dipulihkan setelah shutdown normal/deploy; Stop manual dan error membatalkannya.
 - Pembacaan HTTP sementara gagal dicoba maksimal 3 kali (backoff 1/2 detik). Transaksi dikirim sekali; hasil ambigu menghentikan akun dan memblokir replay.
 - Laporan laba harian WIB dan tombol navigasi tanggal terikat ke akun asal. Notifikasi diberi nama akun dan hanya dikirim ke pemiliknya.
 
@@ -93,7 +94,11 @@ Production menolak Telegram kosong, origin tanpa HTTPS, dan saldo minimum di baw
 
 Saat upgrade dari versi satu akun, **Utama** milik admin otomatis menunjuk direktori runtime lama. Ledger, cookie HTTP, dan pengaturan tidak dipindah/dihapus. Profil Chrome lama dibiarkan sebagai arsip tetapi tidak dibaca; jika hanya profil Chrome yang tersedia, lakukan **Import Cookie** baru. Hapus variabel lama `OJOL_MANAGED_BROWSER`, `OJOL_CDP_URL`, dan `OJOL_BROWSER_FALLBACK` dari konfigurasi; pastikan `OJOL_CORE=http`.
 
-Setelah mengganti konfigurasi/secret atau image, recreate aplikasi. Gameplay tidak otomatis dimulai setelah restart; pilih akun, periksa Status, lalu Jalankan Ojol. Jika connector keluar, seluruh worker dihentikan dan admin diberi laporan `tunnel.process_exit`; tombol Import Cookie/Jalankan Ojol mencoba memulai connector lagi. `/health` membuktikan control service hidup, bukan keberhasilan game atau koneksi edge. Readiness connector:
+Setelah mengganti konfigurasi/secret atau image, recreate aplikasi. **Akun yang sebelumnya berjalan dipulihkan otomatis setelah shutdown normal/deploy**, dengan batas worker global yang sama. Akun yang menunggu kapasitas mulai saat slot tersedia. Status akun menampilkan **Auto-start setelah deploy: ON/OFF**.
+
+**Saat pertama kali memasang fitur ini**, jalankan akun sekali melalui **Jalankan Ojol** untuk menyimpan intent auto-start. Deploy berikutnya tidak perlu menekan Jalankan satu per satu. Hentikan Ojol, Import Cookie, arsip, cabut whitelist, error, atau sesi yang selesai membatalkan auto-start. Crash/kill paksa, cookie tidak tersedia, dan transaksi pending/uncertain tetap membutuhkan pemeriksaan manual; tidak ada replay transaksi. Jika `OJOL_MAX_SPEND`, `OJOL_MAX_JOBS`, atau `OJOL_MAX_MINUTES` berisi batas, sesi perlu dimulai manual supaya batas sesi tidak direset oleh deploy.
+
+Jika connector keluar, seluruh worker dihentikan dan admin diberi laporan `tunnel.process_exit`; tombol Import Cookie/Jalankan Ojol mencoba memulai connector lagi. `/health` membuktikan control service hidup, bukan keberhasilan game atau koneksi edge. Readiness connector:
 
 ```sh
 docker compose exec -u app app python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:2000/ready',timeout=3).status)"
@@ -125,7 +130,7 @@ docker compose run --rm --no-deps -T --entrypoint tar app -C /data -czf - runtim
 docker compose start app
 ```
 
-Arsip memuat sesi akun; simpan privat. Restore saat aplikasi berhenti, pertahankan UID1000, jangan menjalankan akun sama di dua server. `docker compose down` mempertahankan volume; **`down -v` menghapus data**.
+Arsip memuat sesi akun dan marker auto-start; simpan privat. Restore saat aplikasi berhenti, pertahankan UID1000, dan hentikan server asal sebelum menjalankan hasil restore/migrasi supaya akun tidak berjalan di dua server. `docker compose down` mempertahankan volume; **`down -v` menghapus data**.
 
 ## Pengembangan
 

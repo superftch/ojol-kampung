@@ -125,6 +125,7 @@ def main(argv=None):
             print(json.dumps(data, ensure_ascii=False, indent=2))
         elif args.command == "stop":
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            (directory / "worker-restart.json").unlink(missing_ok=True)
             (directory / "STOP").touch(mode=0o600)
             print(
                 "Stop diminta. Tidak ada klik baru setelah permintaan terbaca; transaksi yang sudah terkirim diverifikasi saat tersedia."

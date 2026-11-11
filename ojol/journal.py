@@ -32,7 +32,7 @@ class Journal:
     def close(self):
         self.db.close()
 
-    def start(self, settings):
+    def ensure_resolved(self):
         unresolved = self.db.execute(
             "SELECT id,kind FROM actions WHERE status IN ('pending','uncertain') ORDER BY id DESC LIMIT 1"
         ).fetchone()
@@ -40,6 +40,9 @@ class Journal:
             raise RuntimeError(
                 f"Aksi #{unresolved['id']} ({unresolved['kind']}) belum terverifikasi. Periksa history sebelum menjalankan ulang; klik tidak diulang."
             )
+
+    def start(self, settings):
+        self.ensure_resolved()
         with self.db:
             return self.db.execute(
                 "INSERT INTO runs(started,outcome,settings) VALUES(?,?,?)",

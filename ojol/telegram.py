@@ -216,6 +216,7 @@ async def flush_notices(settings, client=None):
 
 def queue_error(settings, error, stage, context=None):
     settings.runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+    (settings.runtime_dir / "worker-restart.json").unlink(missing_ok=True)
     (settings.runtime_dir / "STOP").touch(mode=0o600)
     details = {
         "stage": stage,
