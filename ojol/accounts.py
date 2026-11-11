@@ -83,13 +83,13 @@ class Accounts:
     @staticmethod
     def limit(value):
         if not re.fullmatch(r"[0-9]{1,3}", str(value)) or not 1 <= int(value) <= 100:
-            raise ValueError("Batas wajib 1–100")
+            raise ValueError("Kirim angka dari 1 sampai 100 untuk batas akun.")
         return int(value)
 
     @staticmethod
     def owner_id(value):
         if not re.fullmatch(r"[0-9]{1,16}", str(value)) or int(value) <= 0:
-            raise ValueError("Telegram ID wajib angka positif")
+            raise ValueError("Kirim ID Telegram berupa angka positif.")
         return int(value)
 
     def quota(self, owner, db=None):
@@ -102,7 +102,7 @@ class Accounts:
     def whitelist(self, owner, enabled=True, maximum=None, db=None):
         owner = self.owner_id(owner)
         if owner == self.admin and not enabled:
-            raise ValueError("Admin dari env tidak bisa dicabut")
+            raise ValueError("Admin utama tidak bisa dicabut lewat bot.")
         maximum = self.limit(maximum) if maximum is not None else None
         if db is None:
             with self.db() as connection:
@@ -128,7 +128,7 @@ class Accounts:
     def request_access(self, owner, name, username):
         owner = self.owner_id(owner)
         if self.allowed(owner):
-            raise ValueError("User sudah diizinkan")
+            raise ValueError("Akses pengguna ini sudah aktif.")
         name = (
             " ".join("".join(c for c in name if c.isprintable() or c.isspace()).split())[:128]
             or "Tanpa nama"
@@ -162,17 +162,19 @@ class Accounts:
         with self.db() as db:
             row = db.execute("SELECT * FROM access_requests WHERE id=?", (identifier,)).fetchone()
         if not row:
-            raise ValueError("Pengajuan tidak tersedia")
+            raise ValueError("Pengajuan belum ditemukan. Buka daftar pengajuan kembali.")
         return dict(row)
 
     def review_request(self, identifier, admin, approve):
         if not self.admin or admin != self.admin:
-            raise ValueError("Pengajuan hanya boleh diproses admin")
+            raise ValueError("Hanya admin yang bisa meninjau pengajuan.")
         with self.db() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT * FROM access_requests WHERE id=?", (identifier,)).fetchone()
             if not row or row["status"] != "pending":
-                raise ValueError("Pengajuan sudah diproses / tidak tersedia")
+                raise ValueError(
+                    "Pengajuan sudah diproses atau belum tersedia. Buka daftar pengajuan kembali."
+                )
             self.whitelist(row["telegram_id"], enabled=approve, db=db)
             return dict(
                 db.execute("SELECT * FROM access_requests WHERE id=?", (identifier,)).fetchone()
@@ -180,7 +182,7 @@ class Accounts:
 
     def set_limit(self, name, value):
         if name not in {"max_accounts_per_user", "max_active_workers"}:
-            raise ValueError("Pengaturan tidak dikenal")
+            raise ValueError("Pilihan pengaturan belum dikenali. Buka menu kembali.")
         with self.db() as db:
             db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (name, self.limit(value)))
 
@@ -203,14 +205,16 @@ class Accounts:
             or bool(row["archived"]) != archived
             or (owner is not None and row["owner"] != owner)
         ):
-            raise ValueError("Akun tidak tersedia / bukan milik Anda")
+            raise ValueError(
+                "Akun belum tersedia atau bukan milik Anda. Pilih lagi lewat Akun Saya."
+            )
         if not self.allowed(row["owner"]):
-            raise ValueError("Pemilik akun tidak masuk whitelist")
+            raise ValueError("Akses pemilik akun belum aktif. Hubungi admin.")
         return dict(row)
 
     def selected(self, owner):
         if not self.allowed(owner):
-            raise ValueError("Telegram ID belum masuk whitelist")
+            raise ValueError("Akses Anda belum aktif. Hubungi admin untuk meminta akses.")
         with self.db() as db:
             row = db.execute("SELECT selected FROM users WHERE telegram_id=?", (owner,)).fetchone()
         return self.get(row[0], owner) if row and row[0] else None
@@ -223,12 +227,12 @@ class Accounts:
     @staticmethod
     def name(value):
         if not 1 <= len(value.strip()) <= 40 or any(ord(c) < 32 for c in value):
-            raise ValueError("Nama akun wajib 1–40 karakter tanpa baris baru")
+            raise ValueError("Nama akun harus 1 sampai 40 karakter dalam satu baris.")
         return value.strip()
 
     def create(self, owner, name):
         if not self.allowed(owner):
-            raise ValueError("Telegram ID belum masuk whitelist")
+            raise ValueError("Akses Anda belum aktif. Hubungi admin untuk meminta akses.")
         name = self.name(name)
         identifier = uuid4().hex
         with self.db() as db:
@@ -238,7 +242,7 @@ class Accounts:
             ).fetchone()[0]
             if count >= self.quota(owner, db):
                 raise ValueError(
-                    "Batas akun tercapai; arsipkan akun atau minta admin menaikkan batas"
+                    "Batas akun tercapai. Arsipkan salah satu akun atau minta admin menambah batas."
                 )
             db.execute(
                 "INSERT INTO accounts(id,owner,name) VALUES(?,?,?)", (identifier, owner, name)
@@ -260,7 +264,9 @@ class Accounts:
                     "SELECT COUNT(*) FROM accounts WHERE owner=? AND archived=0", (owner,)
                 ).fetchone()[0]
                 if count >= self.quota(owner, db):
-                    raise ValueError("Batas akun tercapai")
+                    raise ValueError(
+                        "Batas akun tercapai. Arsipkan salah satu akun sebelum memulihkan akun ini."
+                    )
             db.execute("UPDATE accounts SET archived=? WHERE id=?", (int(archived), identifier))
             db.execute("UPDATE users SET selected=NULL WHERE selected=?", (identifier,))
 
@@ -283,7 +289,9 @@ class Accounts:
                 "SELECT 1 FROM accounts WHERE cookie_hash=? AND id<>?", (digest, identifier)
             ).fetchone()
         if duplicate:
-            raise ValueError("Cookie sudah terhubung ke akun lain; gunakan akun yang sudah ada")
+            raise ValueError(
+                "Cookie sudah terhubung ke akun lain. Pilih akun tersebut lewat Akun Saya."
+            )
         return digest
 
     def bind_cookie(self, identifier, digest):

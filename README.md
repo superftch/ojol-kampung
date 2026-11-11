@@ -32,8 +32,11 @@ Semua operasi bot memakai tombol. Ketik hanya nilai yang diminta: ID Telegram, n
 | Default akun per user | **Management → Batas Akun Default**, lalu ketik angka |
 | Override akun user tertentu | **Daftar User → pilih user → Ubah Batas Akun**, lalu ketik angka |
 | Batas worker aktif global | **Management → Batas Worker**, lalu ketik angka |
+| Jadwal maintenance game | **Management → Maintenance → Atur Jadwal**, lalu ketik waktu mulai dan selesai (WIB) |
 
 Batas valid 1–100. Override management disimpan di `accounts.sqlite3` dan mengalahkan default env setelah restart. Menurunkan batas tidak menghapus akun atau memutus worker yang sudah aktif; batas berlaku pada tambah/pulihkan/start berikutnya. Override user yang sudah dibuat tetap mengalahkan default global. Pencabutan whitelist menghentikan worker user, mencabut tiket/sesi import, dan membatalkan notifikasi pending; data/history tetap disimpan. Aktivasi ulang tidak otomatis menjalankan game.
+
+Contoh jadwal maintenance `2026-11-12 00:30 / 2026-11-12 01:30`. Jadwal berlaku untuk semua akun dan tersimpan setelah restart. Dua menit sebelum mulai, worker menahan aksi baru agar transaksi yang sedang berjalan bisa selesai. Selama jeda, tombol **Jalankan Ojol**, **Import Cookie**, dan **Cari Rumah Kotor** menampilkan waktu selesai. Worker melanjutkan dari status game terbaru setelah waktu selesai, dan antrean auto-start kembali diproses. Admin bisa mengubah jadwal atau memilih **Hapus / Akhiri** jika game dibuka lebih awal.
 
 | Aksi user | Alur tombol |
 |---|---|
@@ -44,13 +47,21 @@ Batas valid 1–100. Override management disimpan di `accounts.sqlite3` dan meng
 | Pulihkan arsip | **Akun Saya → Pulihkan nama akun** |
 | Login akun terpilih | **Import Cookie** |
 | Mulai/hentikan akun terpilih | **Jalankan Ojol** / **Hentikan Ojol** |
+| Pilih fitur yang dijalankan worker | **Auto**, lalu tekan tombol fitur untuk ubah ON/OFF |
 | Resource, saldo dan countdown | **Status** |
 | Laporan harian WIB | **Laba Bersih**, tombol hari atau **Pilih tanggal**, lalu ketik tanggal |
+| Pilih satu kandidat rumah kotor secara acak di sekitar rumah akun | **Cari Rumah Kotor** |
 | Event rutin | **Notifikasi ON / OFF** |
+
+Pesan Telegram memakai judul singkat, baris terpisah untuk angka penting, dan petunjuk tindakan berikutnya. Notifikasi ON mengirim hasil trip, pembelian yang sudah terverifikasi, serta jeda maintenance. Bot tetap mengirim pesan jika perlu tindakan saat notifikasi rutin OFF. Antrean lama juga disesuaikan saat dikirim ulang. Rujukan penulisan memakai [Telegram Bot Guidelines](https://core.telegram.org/bots/guidelines) dan [Material Communication Principles](https://codelabs.developers.google.com/codelabs/material-communication-guidance).
 
 Akun baru atau akun yang dipulihkan langsung terpilih. Ganti pilihan tidak menghentikan akun lain. Arsip menghentikan worker dan mencabut akses import, membebaskan kuota akun, tanpa menghapus ledger/cookie. Daftar akun dan user memiliki tombol halaman berikutnya/sebelumnya; tidak perlu menyalin ID akun. Form input yang belum selesai dibatalkan saat bot restart. Konfirmasi arsip/cabut akses yang sudah dibatalkan tidak berlaku lagi.
 
+Pengaturan **Auto** tersimpan per akun dan berlaku pada worker yang sedang berjalan. Default seluruh fitur ON. **Auto Ojol** satu paket untuk trip, bensin, kondisi mesin, dan kuota. Saat dimatikan, worker menyelesaikan trip yang sedang dipantau dan berhenti mengambil order baru atau mengisi resource Ojol. **Makan**, **Kesehatan**, **Fisik**, **Rekreasi**, **Penampilan**, dan **Kondisi rumah** bisa dimatikan satu per satu. Jika semua fitur OFF, worker menunggu perubahan pengaturan.
+
 Import hanya menerima cookie sesi `__Secure-better-auth.session_token` milik `www.kampungsebelah.com`, sebagai nilai atau JSON cookie. Cookie tidak dikirim melalui Telegram/argv/log. Link HTTPS sekali pakai berlaku 15 menit, memakai cookie HttpOnly dengan path akun dan CSRF terikat sesi. Kandidat sesi diverifikasi lewat HTTP MCP lalu dipasang atomik; kegagalan tidak mengganti sesi lama. Nama akun ditampilkan pada form supaya tujuan import jelas.
+
+Jika JSON cookie menyertakan waktu kedaluwarsa, bot memeriksanya sebelum mulai dan sebelum request berikutnya. Nilai cookie tanpa metadata diperiksa lewat respons server. Jika sesi ditolak atau kedaluwarsa, akun berhenti dan Telegram meminta login ulang, dengan tombol **Login ulang ke game** dan **Import Cookie** untuk akun yang bermasalah. Login di game, impor cookie baru lewat formulir, lalu tekan **Jalankan Ojol**.
 
 ## Deploy dan upgrade
 
@@ -101,6 +112,8 @@ Set `OJOL_AUTO_START=false` di `.env` lalu recreate untuk mematikan seluruh auto
 
 Startup tetap memeriksa izin operator, whitelist, cookie dan ledger pending/uncertain sebelum membuat worker; hasil transaksi yang belum pasti tetap STOP tanpa replay. **Setiap boot membuka sesi baru:** batas belanja/trip/durasi dari env dihitung ulang per sesi, sedangkan saldo minimum production20 tetap berlaku. Marker `worker-restart.json` dari versi lama tidak lagi dipakai.
 
+Telegram memberi tahu pemilik akun saat worker aktif dihentikan oleh shutdown normal, termasuk saat rebuild. Jika pengiriman tertunda, antrean lokal dilanjutkan setelah boot. Notifikasi auto-start berhasil dikirim setelah worker membaca status game dan bisa lanjut. Jika perlu tindakan, pesan menyebut langkah yang sesuai, seperti **Import Cookie**, rekonsiliasi transaksi, atau **Jalankan Ojol**. Notifikasi ini tetap aktif saat notifikasi rutin OFF.
+
 Jika connector keluar, seluruh worker dihentikan dan admin diberi laporan `tunnel.process_exit`; tombol Import Cookie/Jalankan Ojol mencoba memulai connector lagi. `/health` membuktikan control service hidup, bukan keberhasilan game atau koneksi edge. Readiness connector:
 
 ```sh
@@ -113,7 +126,9 @@ Volume `state`: `runtime/accounts.sqlite3` menyimpan whitelist/kuota/ownership; 
 
 Pendapatan berasal dari receipt payout, bukan seluruh kenaikan dompet. Belanja manual di luar worker tidak otomatis menjadi biaya automation. Karakter tidur menghentikan worker sebelum order/belanja; bangunkan lewat game.
 
-Untuk bensin, kondisi motor, dan kuota, worker mengutamakan nama toko yang mengandung **Akademis.ai** tanpa membedakan kapital. Pembelian harus memenuhi target isi ulang, kapasitas, anggaran, dan saldo minimum. Jika tidak ada rencana Akademis.ai yang layak, cadangannya adalah SPBU untuk bensin, bengkel untuk kondisi motor, dan konter untuk kuota. SPBU Akademis.ai juga bisa dipilih untuk kondisi motor jika menjual layanan yang sesuai. Jurnal pembelian mencatat toko dan alasan pemilihan.
+Worker memakai daftar toko tetap per desa dan resource di `ojol/shop_locations.py`. Jika beberapa toko Akademis.ai satu tipe punya produk yang layak dibeli, worker memilih toko yang paling lama belum menerima pembelian terverifikasi dari akun tersebut. Riwayat di jurnal mempertahankan giliran setelah restart. Toko lain menjadi cadangan saat pilihan Akademis.ai tidak memenuhi syarat. Worker membaca katalog untuk mengecek harga, stok, dan kepemilikan. Pembelian tetap mengikuti target isi ulang, kapasitas, anggaran, dan saldo minimum.
+
+**Auto kebutuhan** berjalan di worker yang sama lewat **Jalankan Ojol**. Saat idle, worker menyelesaikan isi ulang Ojol dulu, lalu mengecek makan, kesehatan, fisik, rekreasi, penampilan, dan kondisi rumah di bawah `OJOL_THRESHOLD` (default 60). Untuk setiap kebutuhan, giliran jatuh ke toko Akademis.ai yang paling lama belum menerima pembelian terverifikasi dari akun itu, selama ada item dalam anggaran. Di toko tersebut, worker mengutamakan item yang mencapai ambang kebutuhan utama, membantu lebih banyak kebutuhan sekaligus, dan memberi manfaat sepadan dengan harga. Worker memilih toko cadangan hanya jika semua toko Akademis.ai terdaftar untuk kebutuhan itu melaporkan semua item relevan habis. Worker mengecek lagi sebelum membeli. Toko tutup, katalog kosong, atau pembacaan gagal membuat status stok belum pasti. Untuk fisik, worker memakai fasilitas gratis yang ditawarkan game dan siap dipakai. Jika kebutuhan belum bisa diisi, worker lanjut Ojol dan mencoba lagi setelah lima menit.
 
 CLI lokal server dapat memilih akun dari ID menu Telegram. Hentikan worker akun dahulu sebelum inspect/reconcile. Shell server adalah akses operator tepercaya; gunakan Telegram untuk start dengan pengawasan kuota global.
 

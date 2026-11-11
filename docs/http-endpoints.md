@@ -4,25 +4,107 @@ Inspeksi 11 November 2026 WIB: bundle client dibaca sebagai teks, lalu GET dan P
 
 Bundle awal `0wwcgg-bq-sxa.js` SHA256: `29798a21c5b7a06ea883e76e804e9629f30f07bca625ded74d8356e13352d74e`. Runtime tidak mem-pin nama bundle; halaman dan configVersion aktif menentukan konfigurasi yang dibaca.
 
+## Request KampungSebelah
+
+Tabel ini mencakup seluruh request yang dipanggil adapter Ojol ke `https://www.kampungsebelah.com`. Kolom bukti membedakan hasil probe live sebelumnya dari pemeriksaan kode adapter saat ini.
+
 | Endpoint | Pemakaian | Bukti |
 |---|---|---|
 | GET `/api/ojol` | mitra, kendaraan, resource, trip, tarif, payout/history | HTTP200 dan konsumsi client |
 | GET `/api/game/me` | `balanceMilli`, `configVersion`, rumah/desa | HTTP200 |
-| GET `/api/kebutuhan` | `asleep` | HTTP200 |
+| GET `/api/kebutuhan` | `asleep`, status kebutuhan aktif, nilai per kebutuhan, dan kandidat tempat fisik | HTTP 200 untuk status kebutuhan. Bentuk kandidat fasilitas berasal dari bundle client. |
 | GET `/api/time` | waktu server untuk arrival/countdown | HTTP200 |
-| GET `/api/tujuan` | daftar usaha, plot ID, kategori, koordinat | HTTP200 |
-| GET `/api/world/plots/{plotId}` | business ID dan desa | HTTP200 dan loader panel client |
 | GET `/api/shops/{businessId}` | menu, item ID, priceMilli, open, mine | HTTP200 untuk SPBU/bengkel/konter |
+| GET `/api/world/plots/{plotId}?t={timestamp}` | Cocokkan ID usaha, kategori, dan desa untuk plot cadangan auto kebutuhan | Bundle client dan capture detail plot historis. Plot cadangan berasal dari inventaris tujuan historis. Pemeriksaan live lanjutan mendapat HTTP 503. |
+| GET `/kampung` | baca HTML halaman untuk menemukan bundle yang dirujuk | kode `OjolHttpApi.effects` |
+| GET `/_next/static/{path}.js` | baca efek item dari bundle yang dirujuk halaman | kode `OjolHttpApi.effects` |
 | POST `/api/shops/{businessId}/buy` | `{item, requestId}` | live: Pertalite, Tambal ban, Isi pulsa; perubahan saldo/resource terverifikasi |
 | POST `/api/ojol` | `{action:"ambil", vehicle:"motor"}` | live: trip baru dengan countdown terverifikasi |
 | POST `/api/ojol` | `{action:"selesai"}` | live: receipt payout baru terverifikasi setelah arrival server |
+| GET `/api/facilities/{id}` | Cek status, layanan, tarif, dan cooldown fasilitas fisik yang ditawarkan game | Bundle client; alur adapter diuji dengan mock |
+| POST `/api/facilities/{id}/use` | `{requestId}` untuk fasilitas fisik gratis yang lolos pemeriksaan | Bundle client; belum dieksekusi live oleh adapter |
 
-Tombol mata memanggil onLook → centerOn + pembukaan panel. Panel membaca detail plot lalu katalog. Tombol Pergi memakai POST `/api/tujuan`; core HTTP tidak mengirim endpoint tersebut. Pembelian service sendiri dapat mempunyai efek tampil di toko yang ditentukan server, sama seperti Beli dari preview browser.
+Tombol mata memanggil onLook → centerOn + pembukaan panel. Panel membaca detail plot lalu katalog. Tombol Pergi memakai POST `/api/tujuan`; core HTTP tidak mengirim endpoint tersebut. Adapter membaca katalog berdasarkan ID toko tetap di `ojol/shop_locations.py`. Pembelian service sendiri dapat mempunyai efek tampil di toko yang ditentukan server, sama seperti Beli dari preview browser.
 
-Efek resource tidak ada di response katalog: client menggunakan konfigurasi JSON dalam bundle (misalnya key `pulsa`→`kuota`). Adapter mengunduh bundle yang dirujuk halaman aktif, mengekstrak hanya item yang didukung dan memverifikasi nilai0–100 tanpa mengeksekusi JavaScript. Cache diikat ke configVersion; perubahan versi memuat ulang. Item solar/EV dan transaksi di luar Ojol motor dikecualikan.
+Auto kebutuhan memeriksa semua katalog Akademis.ai yang terdaftar untuk desa dan kebutuhan akun. Cadangan hanya tersedia jika setiap katalog yang cocok berisi produk relevan dan semuanya ditandai habis oleh game. Adapter memeriksa lagi status ini dan detail usaha cadangan sebelum POST. Pergantian stok sebelum POST diuji lewat simulasi HTTP.
+
+Efek resource tidak ada di response katalog. Client memakai konfigurasi JSON dalam bundle, misalnya `pulsa` untuk kuota dan `nasi-goreng` untuk makan. Adapter membaca efek barang kebutuhan dari konfigurasi `barang`. Pembelian kebutuhan memakai katalog toko Akademis.ai terdaftar dan menyaring layanan atau barang yang langsung dipakai menurut client. Cache diikat ke configVersion. Pembelian kebutuhan dan pemakaian fasilitas baru diverifikasi di simulasi HTTP. GET live pada pemeriksaan lanjutan mengembalikan HTTP 503, sehingga konfirmasi live fasilitas masih tertunda.
 
 Client helper memakai JSON body, sesi cookie same-origin dan tidak menambahkan token CSRF khusus pada request game yang teramati. Form import aplikasi tetap memakai CSRF sendiri. HTTP adapter mengirim Origin/Referer game, memvalidasi sesi lewat GET, menolak redirect serta error auth; tidak mencoba melewati login atau challenge.
 
 Keterbatasan: endpoint internal bisa berubah, tidak membuktikan kontrak API publik. Tidak menyimpulkan idempotensi endpoint Ojol dari adanya requestId pada pembelian; semua POST tetap satu kali. Perubahan harga/efek/resource, error auth, dan hasil transaksi yang belum pasti tetap dapat menghentikan worker. Runtime kini hanya HTTP MCP; kegagalan terminal menghentikan akun tanpa fallback browser.
 
 Probe transaksi lokal dilakukan setelah pengguna menghentikan worker production, melalui ADK → stdio MCP → HTTP tanpa Chromium. Lima aksi (klaim, tiga pembelian, ambil) tercatat verified pada ledger lokal, tanpa pending/uncertain. Sesuai instruksi pengguna, probe sementara melewati planner threshold dan mengizinkan efek pembelian terpotong di100%, dengan anggaran maksimal2koin dan saldo minimum20. Pengecualian hanya pada proses probe sementara; guard source production tidak diubah. Script bypass dan salinan cookie dihapus setelah proses berhenti. Bukti finansial/account tetap privat di `.local/live-verification/report.json` dan ledger lokal, tidak dikomit.
+
+## Inventaris Akademis.ai
+
+Inspeksi read-only lewat CDP pada 11 November 2026 mencocokkan nama tanpa membedakan kapital di respons `GET /api/tujuan`. Ada **19 kecocokan dari 782 usaha** yang terlihat oleh sesi. Detail plot dan katalog mengonfirmasi **Akademis.ai Motor** dan **Akademis.ai Konter** di Desa Utara. Pemeriksaan 13 katalog SPBU yang terdaftar tidak menemukan nama Akademis.ai.
+
+| Nama di direktori | Plot | Kategori |
+|---|---|---|
+| Akademis.ai - Kebun Ziraf | `Q42-B2-1` | `kebun-kopi` |
+| Akademis.ai - Ziraf Kopisop | `H35-U03` | `kedai-kopi` |
+| Akademis.ai Bangunan | `K40-U01` | `toko-bangunan` |
+| Akademis.ai Barbershop | `K40-U07` | `barbershop` |
+| Akademis.ai Coffee | `K40-U09` | `coffee-shop` |
+| Akademis.ai Coffee Farm | `C75-B3-1` | `kebun-kopi` |
+| Akademis.ai Farm | `C80-B4-1` | `sapi-perah` |
+| Akademis.ai Farma | `K40-U06` | `toko-obat` |
+| Akademis.ai GamingHouse | `B37-U07` | `warnet` |
+| Akademis.ai iCafe | `K39-U04` | `warnet` |
+| Akademis.ai Konter | `O38-U06` | `konter-pulsa` |
+| Akademis.ai Motor | `K40-U03` | `bengkel-motor` |
+| Akademis.ai MyAnabul | `C08-U07` | `pet-shop` |
+| Akademis.ai Restaurant | `K40-U04` | `restoran` |
+| Akademis.ai Sabe | `C75-B4-1` | `sawah` |
+| Akademis.ai Sembako | `K40-U08` | `warung-sembako` |
+| Akademis.ai Tahu Tempe | `O37-U09` | `pabrik-tahu` |
+| Bidan Akademis.ai | `Q36-U09` | `praktik-bidan` |
+| PT Akademis.ai Sawit | `H77-B4-1` | `kebun-kelapa` |
+
+## Tool MCP Ojol
+
+Adapter tersedia melalui stdio MCP dengan tool yang dideklarasikan di [`ojol/http_server.py`](../ojol/http_server.py).
+
+| Tool | Parameter | Hasil atau aksi |
+|---|---|---|
+| `ojol_snapshot` | Tanpa parameter | Baca saldo, resource, trip, dan riwayat |
+| `ojol_preview_shop` | `resource` (`fuel`, `condition`, `data`, `makan`, `kesehatan`, `fisik`, `rekreasi`, `penampilan`, atau `rumah`) | Baca katalog toko tetap untuk desa dan resource akun, atau fasilitas gratis untuk fisik |
+| `ojol_purchase` | `product`, `expected_wallet`, `expected_resource`, `min_balance`, `request_id` | Validasi katalog dan snapshot terbaru, lalu beli satu item |
+| `ojol_job_action` | `kind` (`search` atau `complete`) | Ambil order atau klaim trip yang sudah tiba |
+
+## HTTP service aplikasi
+
+Route berikut dideklarasikan di [`ojol/control.py`](../ojol/control.py) dan berjalan di host aplikasi Ojol.
+
+| Route | Pemakaian |
+|---|---|
+| GET `/health` | Baca status service, core, dan proses tunnel |
+| GET `/access/{ticket}` atau `/a/{account_id}/access/{ticket}` | Tukarkan tiket sekali pakai dengan sesi import dan redirect ke formulir |
+| GET `/import-cookie` atau `/a/{account_id}/import-cookie` | Tampilkan formulir untuk sesi import aktif |
+| POST `/import-cookie` atau `/a/{account_id}/import-cookie` | Terima formulir import dengan sesi aktif dan validasi CSRF |
+
+## Bantu bersih
+
+| Endpoint | Pemakaian | Bukti |
+|---|---|---|
+| GET `/api/world/plots?v={v}&blocks={blocks}` | Baca plot untuk blok yang diminta tab. JSON berisi `plots[]`, dengan `id`, koordinat `x`/`y`, penanda kotor `kt`, dan data warga `w` pada kandidat rumah kotor. | HTTP 200 dari satu GET dengan URL yang dipakai tab aktif. Respons berisi 260 plot, termasuk 39 kandidat sebelum pengecualian UI. |
+
+Bundle aktif `1ko4eop1xo-dv.js` membuat marker **Bantu bersih** dari data plot. Filter dasarnya `k == "R"`, `s == "O"`, `e` tidak aktif, dan `kt` bernilai truthy. UI juga mengecualikan rumah sendiri dan plot yang sudah tersaring di state UI. Jumlah kandidat di satu respons mengikuti cakupan `blocks` dan bisa berbeda dari jumlah marker di HUD.
+
+Verifikasi tab dan bundle memakai REA lewat CDP WebSocket di `127.0.0.1:9222`. Discovery HTTP pada port tersebut masih merespons 404. Alur penyelesaian pekerjaan lewat API belum diverifikasi.
+
+### Workflow API untuk target 10 rumah
+
+1. Ambil `GET /api/game/me` untuk mengenali plot rumah sendiri dan koordinat awal. Ambil `GET /api/world/plots` dengan `v` dan `blocks` dari request peta yang teramati.
+2. Terapkan filter kandidat di atas, keluarkan rumah sendiri, dan deduplikasi berdasarkan `id`. Urutkan berdasarkan blok saat tersedia dan jarak dari rumah sendiri. Pilih maksimal 10 kandidat pertama dan simpan sisanya sebagai cadangan.
+3. Sebelum memulai tiap kandidat, baca ulang plotnya. Jika status kotor hilang, ambil cadangan. Jalankan pekerjaan hanya setelah API yang mendukung alur normal dan konfirmasi keberhasilannya terverifikasi. Catat progres berdasarkan konfirmasi server untuk akun, karena `kt` bisa berubah setelah rumah dibersihkan pemain lain.
+4. Akhiri sesi saat progres terverifikasi mencapai 10 atau saat kandidat habis. Jika hasil transaksi belum pasti, baca statusnya sebelum mempertimbangkan pengulangan.
+
+Bagian pemetaan sudah diuji lewat GET. Workflow berhenti setelah menghasilkan daftar kandidat sampai kontrak API untuk mengerjakan dan mengonfirmasi pekerjaan tersedia.
+
+Command lokal `cleanup-scan` memakai sesi HTTP akun yang sudah diimpor. Default-nya membaca blok rumah sendiri dan mengeluarkan satu kandidat terdekat sebagai JSON. Gunakan `--blocks` untuk memilih area dan `--limit` untuk mengatur jumlah kandidat.
+
+```sh
+python main.py cleanup-scan --blocks K39 L39 --limit 1
+```

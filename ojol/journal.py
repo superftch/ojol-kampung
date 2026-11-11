@@ -188,12 +188,24 @@ class Journal:
                 ),
             ).lastrowid
 
-    def reject_purchase(self, action_id):
+    def reject(self, action_id):
         with self.db:
             self.db.execute(
-                "UPDATE actions SET status='rejected' WHERE id=? AND kind='purchase' AND status='pending'",
+                "UPDATE actions SET status='rejected' WHERE id=? AND status='pending'",
                 (action_id,),
             )
+
+    def last_purchases_by_shop(self, resource):
+        rows = self.db.execute(
+            """SELECT json_extract(payload, '$.shop_id') AS shop_id, MAX(id)
+               FROM actions
+               WHERE kind='purchase' AND status='verified'
+                 AND json_extract(payload, '$.resource') = ?
+                 AND json_extract(payload, '$.shop_id') IS NOT NULL
+               GROUP BY shop_id""",
+            (resource,),
+        )
+        return {shop_id: action_id for shop_id, action_id in rows}
 
     def settle(self, action_id, verified, after=None):
         with self.db:

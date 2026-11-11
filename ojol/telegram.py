@@ -5,9 +5,13 @@ import json
 import logging
 import re
 import time
+from datetime import datetime
 from uuid import uuid4
 
 import httpx
+
+from .auto_settings import AUTO_LABELS
+from .finance import WIB
 
 BUTTON_COMMANDS = {
     "Import Cookie": "import_cookie",
@@ -15,6 +19,7 @@ BUTTON_COMMANDS = {
     "Hentikan Ojol": "stop",
     "Status": "status",
     "Laba Bersih": "profit",
+    "Cari Rumah Kotor": "cleanup_scan",
     "Notifikasi ON": "notifications_on",
     "Notifikasi OFF": "notifications_off",
 }
@@ -25,6 +30,7 @@ KEYBOARD = {
         [{"text": "Import Cookie"}, {"text": "Jalankan Ojol"}],
         [{"text": "Hentikan Ojol"}, {"text": "Status"}],
         [{"text": "Laba Bersih"}, {"text": "Batal"}],
+        [{"text": "Auto"}, {"text": "Cari Rumah Kotor"}],
         [{"text": "Notifikasi ON"}, {"text": "Notifikasi OFF"}],
     ],
     "resize_keyboard": True,
@@ -114,7 +120,7 @@ class TelegramClient:
             "sendMessage",
             chat_id=self.settings.telegram_chat_id,
             text=(
-                (f"[{self.settings.account_name}]\n" if self.settings.account_name else "")
+                (f"👤 {self.settings.account_name}\n\n" if self.settings.account_name else "")
                 + message
             )[:4000],
             link_preview_options={"is_disabled": True},
@@ -135,6 +141,128 @@ def authorized_message(update, settings):
         and message.get("chat", {}).get("id") == settings.telegram_chat_id
         and message.get("from", {}).get("id") == settings.telegram_chat_id
     )
+
+
+def koin(value):
+    return f"{str(value).replace('.', ',')} koin"
+
+
+def event_text(event, data):
+    if event == "mulai" and data.get("live"):
+        return "▶️ Bot sedang menyiapkan aktivitas sesuai pengaturan Auto akun ini."
+    if event == "berhenti":
+        reason = data.get("reason") or ""
+        if "Batas jumlah trip" in reason:
+            return "⏹ Batas trip sesi ini sudah tercapai. Tekan Jalankan Ojol jika ingin lanjut."
+        if "Batas durasi" in reason:
+            return "⏹ Waktu kerja sesi ini sudah habis. Tekan Jalankan Ojol jika ingin lanjut."
+        return "⏹ Bot sudah berhenti. Tekan Jalankan Ojol jika ingin melanjutkan."
+    if event == "aksi_job_terverifikasi" and data.get("action") != "complete":
+        if data.get("phase") == "delivering":
+            return "🛵 Order diterima. Bot sedang mengantar dan akan mengambil ongkos saat tiba."
+        if data.get("phase") == "searching":
+            return "🔎 Bot sedang mencari order."
+    if event == "pembelian_terverifikasi":
+        resource = data["resource"]
+        label = {"fuel": "Bensin", "condition": "Kondisi mesin", "data": "Kuota HP"}.get(
+            resource, AUTO_LABELS.get(resource, "Kebutuhan")
+        )
+        activity = (
+            f"💪 Latihan gratis di {data['shop']} selesai."
+            if resource == "fisik"
+            else f"🛒 {data['product']} berhasil dibeli di {data['shop']} seharga {koin(data['cost'])}."
+        )
+        return (
+            f"{activity}\n{label} naik dari {data['before']}% ke {data['after']}%. "
+            f"Sisa saldo {koin(data['wallet'])}."
+        )
+    if event == "pendapatan_ojol_tercatat":
+        return f"🏁 Trip selesai. Ongkos {koin(data['amount'])} sudah masuk."
+    if event == "trip_selesai_otomatis_teramati":
+        if data.get("income") is None:
+            return "🏁 Trip selesai."
+        return f"🏁 Trip selesai otomatis. Ongkos {koin(data['income'])} sudah masuk."
+    if event == "maintenance":
+        end = datetime.fromisoformat(data["sampai"]).astimezone(WIB)
+        return f"🛠 Aktivitas game dijeda untuk maintenance sampai {end:%d-%m-%Y pukul %H:%M} WIB."
+    return None
+
+
+def login_required(details):
+    return (
+        details.get("http_category") == "auth"
+        or details["stage"] == "http.auth"
+        or "import cookie" in (details.get("tindakan") or "").casefold()
+    )
+
+
+def error_text(details):
+    stage = details["stage"]
+    diagnostic = (details.get("message") or "").casefold()
+    action = details.get("tindakan")
+    if login_required(details):
+        return (
+            "🔑 Login ulang diperlukan\n\n"
+            "Sesi game sudah tidak bisa digunakan. Buka KampungSebelah dan login ulang.\n\n"
+            "Setelah masuk, tekan Import Cookie untuk menghubungkan cookie baru, "
+            "lalu Jalankan Ojol."
+        )
+    elif (
+        details.get("http_category") == "uncertain"
+        or (
+            ("hasil belum pasti" in diagnostic or "belum terverifikasi" in diagnostic)
+            and (stage.startswith(("purchase.", "job.", "worker.auto_start")))
+        )
+        or stage.startswith("purchase.verify.")
+        or stage.startswith("job.")
+        and ".verify" in stage
+    ):
+        reason = "Hasil aksi terakhir belum bisa dipastikan."
+        action = "Minta admin memeriksa dan melakukan rekonsiliasi transaksi sebelum bot dijalankan kembali."
+    elif "sedang tidur" in diagnostic:
+        reason = "Karakter sedang tidur."
+        action = "Bangunkan karakter di game, lalu tekan Jalankan Ojol."
+    elif "saldo minimum" in diagnostic:
+        reason = "Pembelian tidak bisa dilanjutkan dengan saldo atau anggaran saat ini."
+        action = "Cek saldo lewat Status sebelum melanjutkan."
+    elif stage.startswith("session.import"):
+        return "⚠️ Cookie belum berhasil diverifikasi. Tekan Import Cookie untuk mencoba lagi."
+    elif stage.startswith(("tunnel.", "control.startup.tunnel")):
+        reason = "Koneksi untuk membuka halaman Import Cookie sedang bermasalah."
+        action = "Hubungi admin untuk memeriksa koneksi server."
+    elif stage.startswith("telegram."):
+        return "⚠️ Bot sempat kehilangan koneksi ke Telegram. Cek Status akun sebelum melanjutkan."
+    elif stage == "worker.auto_start":
+        reason = "Bot belum bisa memulai akun ini secara otomatis."
+    elif stage.startswith(("job.", "purchase.", "shop.preview.")):
+        reason = "Bot menemui kendala saat menjalankan aksi di game."
+    else:
+        reason = "Bot menemui kendala saat menjalankan akun ini."
+    return f"⚠️ {reason}\n\n{action or 'Tekan Status untuk memeriksa akun. Hubungi admin jika kendala berulang.'}"
+
+
+def queued_text(data):
+    context = data.get("context") or {}
+    if context.get("stage"):
+        return error_text(context)
+    message = data["text"]
+    event = context.get("event")
+    if context.get("routine_event") and event not in {
+        "mulai",
+        "berhenti",
+        "pembelian_terverifikasi",
+        "pendapatan_ojol_tercatat",
+        "trip_selesai_otomatis_teramati",
+        "maintenance",
+        "aksi_job_terverifikasi",
+    }:
+        return None
+    if context.get("routine_event") and message.startswith(f"📣 {event} · "):
+        try:
+            return event_text(event, json.loads(message.split("\n", 2)[2]))
+        except (IndexError, KeyError, TypeError, ValueError):
+            return None
+    return message
 
 
 def queue_notice(settings, message, context=None, reply_markup=None):
@@ -190,7 +318,10 @@ async def flush_notices(settings, client=None):
                 continue
             if data.get("next_attempt", 0) > time.time():
                 continue
-            if data.get("context", {}).get("routine_event") and not notifications_enabled(settings):
+            message = queued_text(data)
+            if message is None or (
+                data.get("context", {}).get("routine_event") and not notifications_enabled(settings)
+            ):
                 path.rename(path.with_suffix(".muted"))
                 continue
             claimed = path.with_suffix(".sending")
@@ -201,7 +332,10 @@ async def flush_notices(settings, client=None):
             try:
                 if count:
                     await asyncio.sleep(1.05)
-                await api.send(data["text"], data.get("reply_markup"))
+                await api.send(
+                    redact(message, settings) if message != data["text"] else message,
+                    data.get("reply_markup"),
+                )
             except TelegramError:
                 data["attempts"] += 1
                 data["next_attempt"] = time.time() + min(300, 2 ** min(data["attempts"], 8))
@@ -220,13 +354,22 @@ def queue_error(settings, error, stage, context=None):
     details = {
         "stage": stage,
         "category": type(error).__name__,
+        "http_category": getattr(error, "category", None),
         "message": redact(error, settings),
         **(context or {}),
     }
-    message = "🛑 Ojol STOP karena error\n" + "\n".join(
-        f"{key}: {value}" for key, value in details.items() if value is not None
-    )
-    path = queue_notice(settings, message, details)
+    markup = None
+    if login_required(details):
+        buttons = [
+            [{"text": "Login ulang ke game", "url": "https://www.kampungsebelah.com/kampung"}]
+        ]
+        account_id = details.get("account_id")
+        if isinstance(account_id, str) and re.fullmatch(r"[a-f0-9]{32}", account_id):
+            buttons.append(
+                [{"text": "Import Cookie", "callback_data": f"acct:{account_id}:import_cookie"}]
+            )
+        markup = {"inline_keyboard": buttons}
+    path = queue_notice(settings, error_text(details), details, reply_markup=markup)
     latest = settings.runtime_dir / "last-error.json"
     latest.write_text(json.dumps({"notice_id": path.stem, **details}, ensure_ascii=False, indent=2))
     latest.chmod(0o600)

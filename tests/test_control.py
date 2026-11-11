@@ -19,8 +19,11 @@ from ojol.telegram import (
     TelegramClient,
     TelegramError,
     authorized_message,
+    event_text,
     flush_notices,
     queue_error,
+    queue_notice,
+    set_notifications,
 )
 
 
@@ -60,6 +63,7 @@ async def test_telegram_private_message_and_sanitized_network_error(settings):
         "stop",
         "status",
         "profit",
+        "cleanup_scan",
         "notifications_on",
         "notifications_off",
     }
@@ -124,6 +128,64 @@ async def test_error_stops_before_send_retries_and_recovers_interrupted_outbox(s
         )
     assert sum(results) == 1
     assert notice.with_suffix(".sent").exists()
+
+
+async def test_telegram_renders_pending_legacy_notices_without_debug_fields(settings):
+    bot = bot_settings(settings)
+    set_notifications(bot, True)
+    purchase = {
+        "resource": "makan",
+        "shop": "Akademis.ai Restaurant",
+        "product": "Soto",
+        "cost": "0.7",
+        "before": 55,
+        "after": 90,
+        "wallet": "34.3",
+    }
+    queue_notice(
+        bot,
+        "📣 pembelian_terverifikasi · 11-11-2026\nRun 7 · purchase.verify.makan\n"
+        + json.dumps(purchase),
+        {"routine_event": True, "event": "pembelian_terverifikasi", "run_id": 7},
+    )
+    queue_notice(
+        bot,
+        "👀 Cek kondisi · idle",
+        {"routine_event": True, "event": "observasi", "run_id": 7},
+    )
+    notice = queue_error(
+        bot, RuntimeError("internal-fixture"), "purchase.verify.makan", {"pid": 22}
+    )
+    data = json.loads(notice.read_text())
+    data["text"] = "🛑 Ojol STOP karena error\nstage: purchase.verify.makan\npid: 22"
+    notice.write_text(json.dumps(data))
+    sent = []
+
+    def handle(request):
+        sent.append(json.loads(request.content)["text"])
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        assert await flush_notices(bot, client) == 2
+    assert any("rekonsiliasi transaksi" in message for message in sent)
+    assert any("Soto berhasil dibeli" in message and "55% ke 90%" in message for message in sent)
+    assert all(
+        field not in message
+        for message in sent
+        for field in ("purchase.verify", "run_id", "stage:", "pid:", "internal-fixture")
+    )
+    diagnostics = json.loads((settings.runtime_dir / "last-error.json").read_text())
+    assert diagnostics["stage"] == "purchase.verify.makan" and diagnostics["pid"] == 22
+
+
+def test_telegram_only_announces_confirmed_results():
+    assert event_text("observasi", {"phase": "idle"}) is None
+    assert event_text("menunggu", {"seconds": 10}) is None
+    assert event_text("rencana_beli", {"product": "Soto"}) is None
+    assert "Ongkos 0,704 koin sudah masuk" in event_text(
+        "pendapatan_ojol_tercatat", {"amount": "0.704"}
+    )
+    assert "Ongkos" not in event_text("trip_selesai_otomatis_teramati", {"income": None})
 
 
 def test_login_ticket_single_use_expiry_and_revoke(settings):
@@ -302,9 +364,7 @@ async def test_status_profit_and_date_buttons_are_distinct(settings):
     status = await service.command("status")
     profit = await service.command("profit")
     assert (
-        "Saldo utama" in status
-        and "Notifikasi event: OFF" in status
-        and "Pendapatan Ojol" not in status
+        "Saldo utama" in status and "Notifikasi • OFF" in status and "Pendapatan Ojol" not in status
     )
     assert "Pendapatan Ojol" in profit and "Saldo utama" not in profit
     assert report_date().isoformat() in profit
@@ -326,11 +386,24 @@ async def test_notification_toggle_persists_and_mutes_pending_events_but_not_err
     assert not notifications_enabled(settings)
     await service.command("notifications_on")
     assert notifications_enabled(settings)
-    assert "Notifikasi event: ON" in ControlService(settings).status()
+    assert "Notifikasi • ON" in ControlService(settings).status()
     journal = Journal(settings.runtime_dir)
     controller = Controller(None, settings, journal, journal.start(settings))
-    for event in ("observasi", "menunggu", "pembelian_terverifikasi"):
+    for event in ("observasi", "menunggu", "rencana_beli"):
         controller.report(event, fixture=True)
+    assert not list((settings.runtime_dir / "notifications").glob("*.json"))
+    controller.report("mulai", live=True)
+    controller.report(
+        "pembelian_terverifikasi",
+        resource="makan",
+        product="Soto",
+        shop="Akademis.ai Restaurant",
+        cost="0.7",
+        before=55,
+        after=90,
+        wallet="34.3",
+    )
+    controller.report("pendapatan_ojol_tercatat", amount="0.704")
     notices = list((settings.runtime_dir / "notifications").glob("*.json"))
     assert len(notices) == 3
     await service.command("notifications_off")
@@ -348,7 +421,7 @@ async def test_notification_toggle_persists_and_mutes_pending_events_but_not_err
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         assert await flush_notices(bot, client) == 1
-    assert len(calls) == 1 and "fixture.error" in calls[0]
+    assert len(calls) == 1 and "Tekan Status" in calls[0] and "fixture.error" not in calls[0]
     assert len(list((settings.runtime_dir / "notifications").glob("*.muted"))) == 3
 
 

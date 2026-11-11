@@ -1,6 +1,7 @@
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import call as mock_call
@@ -10,14 +11,16 @@ from pydantic import ValidationError
 from starlette.testclient import TestClient
 
 from ojol.accounts import Accounts
+from ojol.auto_settings import AUTO_LABELS, auto_flags
 from ojol.control import create_app
 from ojol.healing import write_private
 from ojol.http_api import HttpCoreError
 from ojol.http_core import HttpUI
+from ojol.maintenance import read_window
 from ojol.management import MultiAccountService
 from ojol.models import Settings
 from ojol.session_transfer import parse_cookie_input
-from ojol.telegram import TelegramClient
+from ojol.telegram import TelegramClient, queue_error
 
 
 async def click(manager, owner, label, profile=None):
@@ -34,6 +37,82 @@ def managed(settings):
     return settings.model_copy(update={"telegram_chat_id": 111})
 
 
+async def test_auto_menu_saves_individual_settings_for_original_account(managed):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    first = manager.registry.selected(111)
+    await manager.dispatch(111, "Auto")
+    assert "Auto · Utama" in manager.reply.call_args.args[1]
+    await click(manager, 111, "Makan ON")
+    assert "Makan OFF" in str(manager.reply.call_args.args[2])
+    old_ojol_button = f"acct:{first['id']}:auto:ojol:0"
+    second = manager.registry.create(111, "Kedua")
+    manager.registry.whitelist(222)
+    await manager.dispatch(222, old_ojol_button, callback=True)
+    first_dir = manager.registry.scoped_settings(first).runtime_dir
+    assert auto_flags(first_dir)["ojol"] is True
+    await manager.dispatch(111, old_ojol_button, callback=True)
+    await manager.dispatch(111, f"acct:{first['id']}:auto:fuel:0", callback=True)
+    restored = MultiAccountService(managed)
+    assert auto_flags(first_dir) == {key: key not in {"ojol", "makan"} for key in AUTO_LABELS}
+    assert all(auto_flags(restored.registry.scoped_settings(second).runtime_dir).values())
+    assert restored.registry.selected(111)["id"] == second["id"]
+
+
+async def test_login_notice_import_button_keeps_original_account(managed):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    manager.start_tunnel = AsyncMock()
+    first = manager.service(manager.registry.selected(111)["id"])
+    second = manager.service(manager.registry.create(111, "Kedua")["id"])
+    first.execute, second.execute = AsyncMock(), AsyncMock()
+    notice = queue_error(
+        first.settings,
+        HttpCoreError("Sesi ditolak", category="auth"),
+        "http.auth",
+        {"account_id": first.account_id},
+    )
+    data = json.loads(notice.read_text())
+    callback = data["reply_markup"]["inline_keyboard"][1][0]["callback_data"]
+    manager.registry.whitelist(222)
+    await manager.dispatch(222, callback, callback=True)
+    first.execute.assert_not_awaited()
+    await manager.dispatch(111, callback, callback=True)
+    first.execute.assert_awaited_once_with("import_cookie")
+    second.execute.assert_not_awaited()
+    assert manager.registry.selected(111)["id"] == second.account_id
+
+
+async def test_maintenance_schedule_is_admin_only_and_persistent(managed, monkeypatch):
+    clock = datetime.fromisoformat("2026-11-11T23:00+07:00")
+    monkeypatch.setattr("ojol.maintenance.now", lambda: clock)
+    manager = MultiAccountService(managed)
+    manager.registry.whitelist(222)
+    manager.reply = AsyncMock()
+    await manager.dispatch(222, "admin:maintenance:set", callback=True)
+    assert "untuk admin" in manager.reply.call_args.args[1]
+    await manager.dispatch(111, "Management")
+    await click(manager, 111, "Maintenance")
+    await click(manager, 111, "Atur Jadwal")
+    await manager.dispatch(111, "2026-11-12 01:30 / 2026-11-12 00:30")
+    assert "Waktu selesai harus setelah" in manager.reply.call_args.args[1]
+    assert not manager.maintenance_file.exists()
+    await manager.dispatch(111, "2026-11-12 00:30 / 2026-11-12 01:30")
+    restored = MultiAccountService(managed)
+    restored.reply = AsyncMock()
+    window = read_window(restored.maintenance_file)
+    assert window.description() == "2026-11-12 00:30 sampai 2026-11-12 01:30 WIB"
+    clock = window.start
+    for command in ("Jalankan Ojol", "Import Cookie", "Cari Rumah Kotor"):
+        await restored.dispatch(111, command)
+        assert "dijeda sampai 2026-11-12 01:30 WIB" in restored.reply.call_args.args[1]
+    await restored.dispatch(222, "admin:maintenance:clear", callback=True)
+    assert restored.maintenance_file.is_file()
+    await restored.dispatch(111, "admin:maintenance", callback=True)
+    await click(restored, 111, "Hapus / Akhiri")
+    assert read_window(restored.maintenance_file) is None
+
+
 def test_whitelist_admin_ownership_and_legacy_preservation(managed):
     legacy = managed.runtime_dir / "history.sqlite3"
     legacy.write_bytes(b"unchanged fixture")
@@ -42,7 +121,7 @@ def test_whitelist_admin_ownership_and_legacy_preservation(managed):
     assert not accounts.allowed(True) and not accounts.allowed(-1)
     with pytest.raises(ValueError, match="Admin"):
         accounts.whitelist(111, False)
-    with pytest.raises(ValueError, match="whitelist"):
+    with pytest.raises(ValueError, match="Akses Anda belum aktif"):
         accounts.create(222, "Forbidden")
     accounts.whitelist(222)
     account = accounts.create(222, "Second user")
@@ -183,7 +262,7 @@ async def test_global_worker_cap_serializes_simultaneous_starts_and_deduplicates
     )
     assert starts == ["a"]
     b.execute.assert_not_awaited()
-    assert "Batas worker" in manager.reply.call_args.args[1]
+    assert "Slot akun berjalan sedang penuh" in manager.reply.call_args.args[1]
     a.execute = AsyncMock()
     await manager.dispatch(111, "Jalankan Ojol")
     a.execute.assert_awaited_once_with("run")
@@ -257,6 +336,29 @@ async def test_finance_buttons_keep_original_account_after_selection_changes(man
     assert a.execute.call_args.args == ("profit:03-01-2030",)
     await manager.dispatch(111, "profit:2030-01-01", callback=True)
     b.execute.assert_not_awaited()
+
+
+async def test_cleanup_button_routes_to_selected_account_without_starting_service(managed):
+    from ojol.telegram import KEYBOARD
+
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    manager.ensure_started = AsyncMock()
+    first = manager.service(manager.registry.selected(111)["id"])
+    second = manager.service(manager.registry.create(111, "Second")["id"])
+    manager.registry.select(111, second.account_id)
+    first.execute, second.execute = AsyncMock(), AsyncMock()
+    label = next(
+        button["text"]
+        for row in KEYBOARD["keyboard"]
+        for button in row
+        if button["text"] == "Cari Rumah Kotor"
+    )
+    await manager.dispatch(111, label)
+    await manager.dispatch(222, label)
+    second.execute.assert_awaited_once_with("cleanup_scan")
+    first.execute.assert_not_awaited()
+    manager.ensure_started.assert_not_awaited()
 
 
 def test_import_routes_account_cookie_path_csrf_isolation_and_revocation(managed, monkeypatch):
@@ -334,7 +436,7 @@ async def test_account_notifications_target_owner_and_include_account_name(manag
     api.call = AsyncMock()
     await api.send("fixture message")
     assert api.call.call_args.kwargs["chat_id"] == 222
-    assert api.call.call_args.kwargs["text"] == "[Night]\nfixture message"
+    assert api.call.call_args.kwargs["text"] == "👤 Night\n\nfixture message"
 
 
 async def test_single_poller_routes_whitelisted_private_users_and_rejects_foreign_callbacks(
@@ -575,7 +677,7 @@ async def test_pending_inputs_are_separate_per_user_and_old_rename_does_not_swit
     await manager.dispatch(111, "Renamed")
     assert manager.registry.get(first["id"])["name"] == "Renamed"
     assert manager.registry.selected(111)["id"] == second["id"]
-    assert "Akun terpilih: Second" in manager.reply.call_args.args[1]
+    assert "Akun terpilih • Second" in manager.reply.call_args.args[1]
     await manager.dispatch(222, "New User Account")
     assert manager.registry.selected(222)["name"] == "New User Account"
     assert manager.pending == {}
@@ -614,7 +716,7 @@ async def test_lists_paginate_without_losing_buttons_or_exposing_account_ids(man
     await click(manager, 111, "Daftar User")
     await click(manager, 111, "Berikutnya ▶")
     await click(manager, 111, "309 · aktif")
-    assert "Telegram ID: 309" in manager.reply.call_args.args[1]
+    assert "Pengguna 309" in manager.reply.call_args.args[1]
     assert all(
         len(b["callback_data"].encode()) <= 64
         for call in manager.reply.call_args_list

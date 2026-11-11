@@ -12,6 +12,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from math import ceil
 from pathlib import Path
+from random import choice
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
@@ -19,11 +20,15 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+from .auto_settings import AUTO_LABELS, auto_flags
+from .cleanup import scan
 from .cli import exclusive_lock, running
 from .config import load_settings
 from .finance import WIB, report_date
+from .http_api import HttpCoreError, OjolHttpApi
 from .journal import Journal
 from .login_access import LoginAccess
+from .maintenance import GAME_COMMANDS, SCHEDULE_FILE, held_window
 from .models import ROOT, Settings
 from .telegram import (
     BUTTON_COMMANDS,
@@ -31,11 +36,14 @@ from .telegram import (
     TelegramError,
     authorized_message,
     flush_notices,
+    koin,
     notifications_enabled,
     queue_error,
     queue_notice,
     set_notifications,
 )
+
+WORKER_SHUTDOWN = "worker-shutdown"
 
 
 class ControlService:
@@ -52,10 +60,22 @@ class ControlService:
         self.url_prefix = ""
         self.account_id = None
         self.auto_start_pending = False
+        self.maintenance_file = settings.runtime_dir / SCHEDULE_FILE
 
     async def ensure_backend(self, require_session=False):
-        if require_session and not (self.settings.runtime_dir / "http-session.json").is_file():
-            raise RuntimeError("Sesi HTTP belum tersedia. Gunakan tombol Import Cookie.")
+        if require_session:
+            from .session_transfer import parse_cookie_input, session_expired
+
+            try:
+                payload = parse_cookie_input(
+                    (self.settings.runtime_dir / "http-session.json").read_text()
+                )
+            except (OSError, ValueError, KeyError, TypeError):
+                raise HttpCoreError(
+                    "Sesi game belum tersedia. Gunakan Import Cookie.", category="auth"
+                ) from None
+            if session_expired(payload):
+                raise HttpCoreError("Cookie sesi game sudah kedaluwarsa.", category="auth")
 
     def tunnel_alive(self):
         return bool(self.tunnel_process and self.tunnel_process.returncode is None)
@@ -111,27 +131,65 @@ class ControlService:
         path = self.settings.runtime_dir / "status.json"
         data = json.loads(path.read_text()) if path.is_file() else {}
         state = data.get("snapshot") or {}
-        remaining = "—"
+        maintenance = held_window(self.maintenance_file)
+        busy = running(self.settings.runtime_dir)
+        starting = self.worker is not None and self.worker.returncode is None and not busy
+        phases = {
+            "idle": "siap beraktivitas",
+            "searching": "sedang mencari order",
+            "delivering": "sedang mengantar",
+            "complete": "ongkos siap diambil",
+            "sleeping": "karakter sedang tidur",
+            "unknown": "kondisi belum terbaca",
+        }
+        lines = [
+            f"🛵 Status akun • {self.settings.account_name or 'Utama'}",
+            "",
+            "Bot sedang memulai."
+            if starting
+            else "Bot sedang berjalan."
+            if busy
+            else "Bot sedang berhenti.",
+            f"Kondisi terakhir • {phases.get(state.get('phase'), 'belum ada data game')}",
+        ]
         if data.get("wait_until"):
             seconds = max(
                 0, ceil(datetime.fromisoformat(data["wait_until"]).timestamp() - time.time())
             )
-            remaining = f"{seconds // 60}:{seconds % 60:02d} (estimasi)"
-        return (
-            f"🛵 Status Ojol\nWorker: {'aktif' if running(self.settings.runtime_dir) else 'berhenti'} · {data.get('core', self.settings.core)}\n"
-            f"Tahap: {data.get('stage') or data.get('event', 'siap')}\n"
-            f"Perjalanan: {state.get('phase', 'belum terbaca')} · Sisa {remaining}\n"
-            f"Bensin {state.get('fuel', '?')}% | Kondisi {state.get('condition', '?')}% | Kuota {state.get('data', '?')}%\n"
-            f"Saldo utama: {state.get('wallet', '?')} koin · minimum {self.settings.min_balance}\n"
-            f"Notifikasi event: {'ON' if notifications_enabled(self.settings) else 'OFF'}\n"
-            f"Auto-start saat boot: {'ON' if self.settings.auto_start else 'OFF'}"
-            + (" · menunggu slot" if self.auto_start_pending else "")
-            + (
-                f"\nTunnel: proses {'aktif' if self.tunnel_alive() else 'berhenti'}"
-                if self.settings.tunnel_enabled
-                else ""
-            )
+            if busy:
+                lines.append(f"Perkiraan menunggu • {seconds // 60}:{seconds % 60:02d}")
+        lines.extend(
+            [
+                "",
+                f"⛽ Bensin {state.get('fuel', '?')}%",
+                f"🔧 Kondisi mesin {state.get('condition', '?')}%",
+                f"📶 Kuota HP {state.get('data', '?')}%",
+                f"💰 Saldo utama {koin(state.get('wallet', '?'))}",
+                "",
+            ]
         )
+        lines.extend(
+            f"{AUTO_LABELS[key]} {value}%"
+            for key, value in state.get("needs", {}).items()
+            if key in AUTO_LABELS
+        )
+        flags = auto_flags(self.settings.runtime_dir)
+        enabled = ", ".join(label for key, label in AUTO_LABELS.items() if flags[key])
+        lines.extend(
+            [
+                "",
+                f"Auto aktif • {enabled or 'semua dimatikan'}",
+                f"Notifikasi • {'ON' if notifications_enabled(self.settings) else 'OFF'}",
+                f"Mulai otomatis setelah restart • {'ON' if self.settings.auto_start else 'OFF'}",
+            ]
+        )
+        if self.auto_start_pending:
+            lines.append(
+                "Menunggu maintenance selesai." if maintenance else "Menunggu slot kosong."
+            )
+        if maintenance:
+            lines.extend(["", maintenance.message()])
+        return "\n".join(lines)
 
     def profit(self, day=None):
         journal = Journal(self.settings.runtime_dir)
@@ -140,30 +198,32 @@ class ControlService:
         finally:
             journal.close()
         total = report["total"]
-        money = lambda value: str(value).replace(".", ",")
         lines = [
             f"📒 Laba Bersih · {report['tanggal']} (WIB)",
-            f"Pendapatan Ojol: {money(total['pendapatan_ojol'])} koin",
-            f"Pengeluaran: {money(total['pengeluaran'])} koin",
-            f"Laba bersih: {money(total['laba_bersih'])} koin",
+            "",
+            f"Pendapatan Ojol • {koin(total['pendapatan_ojol'])}",
+            f"Pengeluaran akun • {koin(total['pengeluaran'])}",
+            f"Laba bersih • {koin(total['laba_bersih'])}",
             f"{total['trip_tercatat']} trip · {total['pembelian_tercatat']} pembelian",
         ]
-        names = {"fuel": "Bensin", "condition": "Bengkel", "data": "Kuota"}
+        names = {"fuel": "Bensin", "condition": "Bengkel", "data": "Kuota", **AUTO_LABELS}
+        if total["biaya_per_kategori"]:
+            lines.extend(["", "Belanja per kebutuhan"])
         lines.extend(
-            f"{names.get(key, key)}: {money(value)} koin"
+            f"{names.get(key, 'Lainnya')} • {koin(value)}"
             for key, value in total["biaya_per_kategori"].items()
         )
         lines.append(
-            "\nTransaksi terakhir:"
+            "\nTransaksi terakhir"
             if report["transaksi_terakhir"]
             else "\nBelum ada transaksi pada tanggal ini."
         )
         for row in report["transaksi_terakhir"][:8]:
             clock = datetime.fromisoformat(row["created"]).astimezone(WIB).strftime("%H:%M")
             detail = json.loads(row["detail"])
-            label = detail.get("product", "Payout Ojol")
+            label = detail.get("product", "Ongkos Ojol")
             lines.append(
-                f"{clock} {'+' if row['kind'] == 'income' else '−'}{money(row['amount'])} · {label}"
+                f"{clock} {'+' if row['kind'] == 'income' else '−'}{koin(row['amount'])} · {label}"
             )
         return "\n".join(lines)
 
@@ -197,43 +257,73 @@ class ControlService:
             ticket = self.access.issue("ticket")
             return f"{self.public_url()}{self.url_prefix}/access/{ticket}"
 
-    async def command(self, command):
+    async def command(self, command, *, auto_start=False):
+        if command in GAME_COMMANDS and (maintenance := held_window(self.maintenance_file)):
+            if auto_start:
+                self.auto_start_pending = True
+            return maintenance.message()
         if command == "import_cookie":
             url = await self.cookie_link()
             return (
-                "🔐 Import Cookie sesi KampungSebelah:\n"
+                "🔐 Hubungkan akun game\n\n"
                 + url
-                + "\nLink sekali pakai, 15 menit. Tempel nilai cookie sesi atau JSON cookie pada form HTTPS. Setelah berhasil, tekan Jalankan Ojol."
+                + "\n\nBuka tautan, lalu tempel cookie sesi KampungSebelah pada formulir.\n"
+                "Tautan berlaku 15 menit dan bisa dipakai satu kali.\n\n"
+                "Setelah berhasil, kembali ke sini dan tekan Jalankan Ojol."
             )
         if command == "status":
             return self.status()
+        if command == "cleanup_scan":
+            if self.settings.env == "testing":
+                return "HTTP live diblokir dalam test environment."
+            try:
+                async with asyncio.timeout(12), OjolHttpApi(self.settings.runtime_dir) as api:
+                    result = await scan(api, None, None, include_neighbors=True)
+            except TimeoutError:
+                return "Pencarian rumah kotor kehabisan waktu. Coba lagi."
+            except (HttpCoreError, ValueError):
+                return "⚠️ Rumah kotor belum bisa diperiksa. Coba lagi beberapa saat lagi."
+            if not result["candidates"]:
+                return "🧹 Belum terlihat rumah kotor di sekitar rumahmu. Coba cek lagi nanti."
+            plot = choice(result["candidates"])
+            return (
+                f"🧹 Rumah kotor ditemukan\n\n"
+                f"Rumah • {plot['plot_id']}\nPosisi • {plot['x']}, {plot['y']}\n\n"
+                "Rumah ini terlihat kotor saat diperiksa. Ketersediaan pekerjaan bisa berubah."
+            )
         if command == "profit" or command.startswith("profit:"):
             return self.profit(command.split(":", 1)[1] if ":" in command else None)
         if command == "choose_date":
             self.awaiting_date = True
-            return "Ketik tanggal laporan: YYYY-MM-DD atau DD-MM-YYYY. Contoh: 2026-11-10."
+            return "📅 Laporan tanggal berapa?\n\nKirim tanggal dengan format YYYY-MM-DD atau DD-MM-YYYY."
         if command in {"notifications_on", "notifications_off"}:
             enabled = command == "notifications_on"
             set_notifications(self.settings, enabled)
             return (
-                "🔔 Notifikasi ON. Semua event Ojol berikutnya akan dikirim."
+                "🔔 Notifikasi ON\n\nBot akan mengabarkan hasil trip, pembelian, dan jeda maintenance."
                 if enabled
-                else "🔕 Notifikasi OFF. Event rutin tidak dikirim; laporan error + STOP tetap aktif."
+                else "🔕 Notifikasi OFF\n\nBot tetap memberi tahu jika berhenti karena masalah atau perlu tindakan."
             )
         if command == "stop":
             await self.stop_worker()
-            return "🛑 Worker berhenti. Sesi HTTP dan riwayat disimpan."
+            return (
+                "⏹ Aktivitas akun sudah dihentikan.\n\nTekan Jalankan Ojol jika ingin melanjutkan."
+            )
         if command == "run":
             async with self.lock:
                 if (self.worker and self.worker.returncode is None) or running(
                     self.settings.runtime_dir
                 ):
-                    return "Worker sudah aktif; tidak membuat worker kedua."
+                    return "🟢 Bot sudah aktif untuk akun ini. Tekan Status untuk melihat perkembangannya."
                 if not self.settings.operator_authorized:
                     raise RuntimeError("Izin operator belum dikonfigurasi")
                 self.access.revoke()
                 await self.ensure_backend(require_session=True)
                 await self.start_tunnel()
+                if maintenance := held_window(self.maintenance_file):
+                    if auto_start:
+                        self.auto_start_pending = True
+                    return maintenance.message()
                 config_file = os.environ.get("OJOL_CONFIG_FILE")
                 args = [sys.executable, str(ROOT / "main.py")]
                 if config_file:
@@ -250,10 +340,13 @@ class ControlService:
                         "OJOL_RUNTIME_DIR": str(self.settings.runtime_dir),
                         "OJOL_TELEGRAM_CHAT_ID": str(self.settings.telegram_chat_id or ""),
                         "OJOL_ACCOUNT_NAME": self.settings.account_name,
+                        "OJOL_ACCOUNT_ID": self.account_id or "",
+                        "OJOL_WORKER_AUTO_START": "1" if auto_start else "0",
+                        "OJOL_MAINTENANCE_FILE": str(self.maintenance_file),
                     },
                 )
-                return "▶️ Worker HTTP MCP dimulai. Tanpa batas trip/durasi default; saldo utama ≥20 koin. Pembacaan boleh retry, transaksi tidak diulang. Error yang tidak pulih: STOP dan lapor."
-        return "Pilih tombol: Import Cookie, Jalankan Ojol, Hentikan Ojol, Status, Laba Bersih, Notifikasi ON/OFF."
+                return "▶️ Bot sedang memulai\n\nAktivitas mengikuti pilihan di menu Auto. Tekan Status untuk melihat perkembangannya."
+        return "Pilih aktivitas lewat tombol di bawah. Buka Akun Saya untuk mengganti akun."
 
     async def execute(self, command):
         try:
@@ -276,7 +369,15 @@ class ControlService:
                     f"control.command.{command}",
                 )
         except Exception as exc:
-            queue_error(self.settings, exc, f"control.command.{command}")
+            if command == "cleanup_scan":
+                queue_notice(self.settings, "Pencarian rumah kotor gagal. Coba lagi.")
+            else:
+                queue_error(
+                    self.settings,
+                    exc,
+                    f"control.command.{command}",
+                    {"account_id": self.account_id},
+                )
         await flush_notices(self.settings)
 
     async def poll_telegram(self):
@@ -356,7 +457,10 @@ class ControlService:
                             "worker.process_exit",
                         )
                 else:
-                    queue_notice(self.settings, "Worker berhenti. " + self.status())
+                    queue_notice(
+                        self.settings,
+                        "⏹ Bot sudah berhenti. Tekan Status untuk melihat kondisi akun.",
+                    )
             commands = self.settings.runtime_dir / "control-commands"
             for path in sorted(commands.glob("*.json")):
                 payload = json.loads(path.read_text())
@@ -415,13 +519,33 @@ class ControlService:
             )
         self.tasks.append(asyncio.create_task(self.guard_task(self.supervise, "control.supervise")))
 
-    async def close(self):
+    async def close(self, *, notify_restart=False):
         self.closing = True
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         try:
+            was_active = (
+                notify_restart
+                and self.settings.env != "testing"
+                and not self.expected_stop
+                and (
+                    (self.worker and self.worker.returncode is None)
+                    or running(self.settings.runtime_dir)
+                )
+            )
             await self.stop_worker()
+            if was_active:
+                marker = self.settings.runtime_dir / WORKER_SHUTDOWN
+                marker.touch(mode=0o600)
+                queue_notice(
+                    self.settings,
+                    "♻️ Aplikasi sedang ditutup\n\nAktivitas akun dijeda. Kabar berikutnya dikirim saat bot kembali siap.",
+                )
+                try:
+                    await asyncio.wait_for(flush_notices(self.settings), timeout=3)
+                except TimeoutError:
+                    pass
         finally:
             if self.tunnel_process:
                 process = self.tunnel_process
@@ -561,6 +685,8 @@ def create_app(settings, service=None):
         # Registry mutations and imports serialize, so revocation cannot race session installation.
         async with manager.lock if manager else asyncio.Lock(), service.lock:
             require_access(request)
+            if maintenance := held_window(service.maintenance_file):
+                return HTMLResponse(maintenance.message(), status_code=503)
             digest = None
             if manager:
                 account = manager.registry.get(service.account_id)
@@ -583,7 +709,12 @@ def create_app(settings, service=None):
                     settings,
                     RuntimeError("Import cookie gagal; sesi tidak dapat diverifikasi"),
                     STAGE,
-                    {"cause": type(exc).__name__, "mcp_tool": getattr(exc, "operation", None)},
+                    {
+                        "cause": type(exc).__name__,
+                        "mcp_tool": getattr(exc, "operation", None),
+                        "http_category": getattr(exc, "category", None),
+                        "account_id": service.account_id,
+                    },
                 )
                 await flush_notices(settings)
                 return HTMLResponse(

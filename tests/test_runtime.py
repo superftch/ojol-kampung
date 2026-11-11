@@ -1,16 +1,20 @@
 import asyncio
 import json
+from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
+from ojol.auto_settings import AUTO_LABELS, set_auto_flag
 from ojol.cli import exclusive_lock, main, running
 from ojol.config import load_settings
 from ojol.controller import Controller, StopRequested
+from ojol.healing import write_private
 from ojol.http_api import HttpCoreError
 from ojol.journal import Journal
+from ojol.maintenance import MaintenanceWindow
 from ojol.models import ROOT, Product
 
 
@@ -89,6 +93,111 @@ async def test_stop_interrupts_long_countdown(settings, state):
         await asyncio.wait_for(controller.wait(100), 1)
     await task
     journal.close()
+
+
+async def test_worker_pauses_before_game_calls_and_resumes(settings, state, monkeypatch):
+    clock = datetime.fromisoformat("2026-11-12T00:29+07:00")
+    monkeypatch.setattr("ojol.maintenance.now", lambda: clock)
+    window = MaintenanceWindow.parse("2026-11-12 00:30 / 2026-11-12 01:30")
+    ui = SimpleNamespace(snapshot=AsyncMock(return_value=state))
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        write_private(controller.maintenance_file, window.payload())
+
+        async def advance(seconds):
+            nonlocal clock
+            ui.snapshot.assert_not_awaited()
+            assert controller.stage == "maintenance"
+            clock = window.end
+
+        monkeypatch.setattr("ojol.controller.asyncio.sleep", advance)
+        await controller.run(dry_run=True)
+        ui.snapshot.assert_awaited_once()
+        assert controller.last_event == "dry_run"
+    finally:
+        journal.close()
+
+
+async def test_needs_only_worker_skips_disabled_need_and_all_ojol_actions(
+    settings, state, shop_preview
+):
+    set_auto_flag(settings.runtime_dir, "ojol", False)
+    set_auto_flag(settings.runtime_dir, "makan", False)
+    before = state.model_copy(update={"fuel": 1, "needs": {"makan": 1, "kesehatan": 45}})
+    after = before.model_copy(
+        update={"wallet": before.wallet - Decimal("0.5"), "needs": {"makan": 1, "kesehatan": 65}}
+    )
+    product = Product(
+        name="Obat", price="0.5", effects={"kesehatan": 20}, row_text="fixture", enabled=True
+    )
+    shop = shop_preview([product]).model_copy(update={"name": "Akademis.ai Farma"})
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[before, after, after]),
+        preview_shops=AsyncMock(return_value=[shop]),
+        buy=AsyncMock(),
+        job_click=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.wait = AsyncMock(side_effect=StopRequested("selesai fixture"))
+        with pytest.raises(StopRequested):
+            await controller.run()
+        ui.preview_shops.assert_awaited_once_with("kesehatan")
+        ui.buy.assert_awaited_once()
+        ui.job_click.assert_not_awaited()
+        assert journal.history()["actions"][0]["status"] == "verified"
+    finally:
+        journal.close()
+
+
+async def test_worker_waits_without_game_calls_until_auto_is_reenabled(settings, state):
+    for key in AUTO_LABELS:
+        set_auto_flag(settings.runtime_dir, key, False)
+    ui = SimpleNamespace(snapshot=AsyncMock(return_value=state))
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+
+        async def enable_during_wait(seconds):
+            ui.snapshot.assert_not_awaited()
+            set_auto_flag(settings.runtime_dir, "makan", True)
+            controller.wait = AsyncMock(side_effect=StopRequested("selesai fixture"))
+
+        controller.wait = enable_during_wait
+        with pytest.raises(StopRequested):
+            await controller.run()
+        ui.snapshot.assert_awaited_once()
+    finally:
+        journal.close()
+
+
+async def test_purchase_does_not_start_if_maintenance_begins_during_preview(
+    settings, state, shop_preview, monkeypatch
+):
+    clock = datetime.fromisoformat("2026-11-12T00:27:59+07:00")
+    monkeypatch.setattr("ojol.maintenance.now", lambda: clock)
+    window = MaintenanceWindow.parse("2026-11-12 00:30 / 2026-11-12 01:30")
+    product = Product(
+        name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
+    )
+
+    async def preview(resource):
+        nonlocal clock
+        clock = datetime.fromisoformat("2026-11-12T00:28:00+07:00")
+        return [shop_preview([product])]
+
+    ui = SimpleNamespace(preview_shops=preview, buy=AsyncMock())
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        write_private(controller.maintenance_file, window.payload())
+        assert await controller.purchase(state, "data") is False
+        ui.buy.assert_not_awaited()
+        assert journal.history()["actions"] == []
+    finally:
+        journal.close()
 
 
 async def test_trip_completion_verified_only_after_history_change(settings, state):
@@ -172,6 +281,8 @@ def test_cli_live_and_http_blocked_in_testing(settings, monkeypatch, capsys):
     assert main(["--env-file", str(ROOT / ".env.testing"), "run", "--live"]) == 2
     assert "izin operator" in capsys.readouterr().err
     assert main(["--env-file", str(ROOT / ".env.testing"), "inspect"]) == 2
+    assert "diblokir" in capsys.readouterr().err
+    assert main(["--env-file", str(ROOT / ".env.testing"), "cleanup-scan"]) == 2
     assert "diblokir" in capsys.readouterr().err
 
 

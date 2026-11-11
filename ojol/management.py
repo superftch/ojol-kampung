@@ -4,9 +4,12 @@ import asyncio
 import re
 
 from .accounts import Accounts
+from .auto_settings import AUTO_LABELS, auto_flags, set_auto_flag
 from .cli import running
-from .control import ControlService
+from .control import WORKER_SHUTDOWN, ControlService
+from .healing import write_private
 from .journal import Journal
+from .maintenance import GAME_COMMANDS, SCHEDULE_FILE, MaintenanceWindow, held_window, read_window
 from .telegram import (
     BUTTON_COMMANDS,
     KEYBOARD,
@@ -18,10 +21,13 @@ from .telegram import (
 )
 
 HELP = (
-    "Pilih Akun Saya untuk memilih, mengubah nama, mengarsipkan atau memulihkan akun. "
-    "Tambah Akun hanya meminta nama.\n"
-    "Import Cookie, Jalankan Ojol, Hentikan Ojol, Status, Laba Bersih dan Notifikasi "
-    "berlaku untuk akun terpilih.\nTekan Batal untuk membatalkan input."
+    "🏠 Menu utama\n\n"
+    "Akun baru? Tekan Tambah Akun, beri nama, lalu Import Cookie.\n"
+    "Sudah siap? Tekan Jalankan Ojol.\n\n"
+    "Auto untuk memilih aktivitas yang berjalan.\n"
+    "Status untuk melihat kondisi akun.\n"
+    "Laba Bersih untuk melihat hasil dan pengeluaran.\n\n"
+    "Akun Saya untuk memilih atau mengelola akun."
 )
 CANCEL = {"inline_keyboard": [[{"text": "Batal", "callback_data": "cancel"}]]}
 PAGE_SIZE = 8
@@ -37,6 +43,7 @@ class MultiAccountService:
     def __init__(self, settings):
         self.settings = settings
         self.registry = Accounts(settings)
+        self.maintenance_file = settings.runtime_dir / SCHEDULE_FILE
         self.services = {}
         self.hub = ControlService(
             settings.model_copy(
@@ -85,6 +92,7 @@ class MultiAccountService:
         account = self.registry.get(identifier)
         if identifier not in self.services:
             service = ControlService(self.registry.scoped_settings(account))
+            service.maintenance_file = self.maintenance_file
             service.url_prefix = f"/a/{identifier}"
             service.public_url = self.public_url
             # Finance buttons retain account identity even after user switches selection.
@@ -118,7 +126,9 @@ class MultiAccountService:
 
     async def home(self, owner):
         self.pending.pop(owner, None)
-        await self.reply(owner, HELP, KEYBOARD)
+        account = self.registry.selected(owner)
+        selected = f"\n\nAkun terpilih • {account['name']}" if account else ""
+        await self.reply(owner, HELP + selected, KEYBOARD)
 
     async def prompt(self, owner, state, text):
         self.pending[owner] = state
@@ -129,11 +139,15 @@ class MultiAccountService:
         active = self.registry.list(owner)
         rows = active + self.registry.list(owner, archived=True)
         page = min(max(0, page), max(0, (len(rows) - 1) // PAGE_SIZE))
-        lines = [f"Akun Anda: {len(active)}/{self.registry.quota(owner)}"]
+        lines = [
+            "👤 Akun Saya",
+            f"{len(active)} dari {self.registry.quota(owner)} slot akun terpakai.",
+            "",
+        ]
         buttons = []
         for row in rows[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]:
             if row["archived"]:
-                lines.append(f"Arsip: {row['name']}")
+                lines.append(f"📁 {row['name']} • diarsipkan")
                 label, action = f"Pulihkan {row['name']}", "restore:"
             else:
                 service = self.service(row["id"])
@@ -142,7 +156,7 @@ class MultiAccountService:
                     or running(service.settings.runtime_dir)
                 )
                 mark = "✓" if selected and selected["id"] == row["id"] else "•"
-                lines.append(f"{mark} {row['name']} · {'aktif' if running_now else 'stop'}")
+                lines.append(f"{mark} {row['name']} • {'berjalan' if running_now else 'berhenti'}")
                 label, action = f"Pilih {row['name']}", "select:"
             buttons.append([{"text": label, "callback_data": action + row["id"]}])
         navigation = []
@@ -164,6 +178,7 @@ class MultiAccountService:
         row = self.registry.get(identifier, owner)
         selected = self.registry.selected(owner)
         buttons = [
+            [{"text": "Auto", "callback_data": f"acct:{identifier}:auto"}],
             [
                 {"text": "Ubah Nama", "callback_data": "rename:" + identifier},
                 {"text": "Arsipkan Akun", "callback_data": "archive:" + identifier},
@@ -177,16 +192,53 @@ class MultiAccountService:
             buttons.insert(0, [{"text": "Pilih Akun Ini", "callback_data": "select:" + identifier}])
         await self.reply(
             owner,
-            f"Akun: {row['name']}\nAkun terpilih: {selected['name'] if selected else 'belum ada'}. "
-            "Tombol utama menjalankan atau menampilkan status akun terpilih.",
+            f"👤 {row['name']}\n\n"
+            f"Akun terpilih • {selected['name'] if selected else 'belum ada'}\n"
+            "Pilih pengaturan akun di bawah.",
             {"inline_keyboard": buttons},
+        )
+
+    async def auto_menu(self, owner, account, action="auto"):
+        directory = self.registry.scoped_settings(account).runtime_dir
+        parts = action.split(":")
+        if len(parts) == 3 and parts[1] in AUTO_LABELS and parts[2] in {"0", "1"}:
+            set_auto_flag(directory, parts[1], parts[2] == "1")
+        elif action != "auto":
+            return
+        flags = auto_flags(directory)
+        identifier = account["id"]
+        buttons = [
+            {
+                "text": f"{label} {'ON' if flags[key] else 'OFF'}",
+                "callback_data": f"acct:{identifier}:auto:{key}:{int(not flags[key])}",
+            }
+            for key, label in AUTO_LABELS.items()
+        ]
+        await self.reply(
+            owner,
+            f"⚙️ Auto · {account['name']}\n\n"
+            "Auto Ojol mengurus trip, kondisi mesin, bensin, dan kuota.\n"
+            "Kebutuhan lain bisa diatur satu per satu.\n\n"
+            "ON berarti aktif. Tekan tombol untuk mengubahnya.\n"
+            "Pilihan tersimpan dan berlaku saat bot berjalan.",
+            {
+                "inline_keyboard": [
+                    [buttons[0]],
+                    buttons[1:3],
+                    buttons[3:5],
+                    buttons[5:],
+                    [{"text": "Akun Saya", "callback_data": "accounts:0"}],
+                ]
+            },
         )
 
     async def admin_menu(self, owner):
         await self.reply(
             owner,
-            f"Management\nDefault akun/user: {self.registry.value('max_accounts_per_user')}"
-            f"\nWorker aktif: {self.active_workers()}/{self.registry.value('max_active_workers')}",
+            "🛠 Management\n\n"
+            f"Batas awal per pengguna • {self.registry.value('max_accounts_per_user')} akun\n"
+            f"Akun berjalan • {self.active_workers()} dari {self.registry.value('max_active_workers')}\n\n"
+            "Kelola akses, batas akun, dan jadwal maintenance.",
             {
                 "inline_keyboard": [
                     [
@@ -196,7 +248,24 @@ class MultiAccountService:
                     [{"text": "Pengajuan Akses", "callback_data": "admin:requests:0"}],
                     [{"text": "Batas Akun Default", "callback_data": "admin:default_limit"}],
                     [{"text": "Batas Worker", "callback_data": "admin:worker_limit"}],
+                    [{"text": "Maintenance", "callback_data": "admin:maintenance"}],
                     [{"text": "Menu Utama", "callback_data": "home"}],
+                ]
+            },
+        )
+
+    async def maintenance_menu(self, owner):
+        window = read_window(self.maintenance_file)
+        status = window.description() if window else "Belum ada jadwal."
+        await self.reply(
+            owner,
+            f"🛠 Maintenance game\n\n{status}\n\n"
+            "Atur waktu mulai dan selesai dalam WIB. Bot akan menjeda aktivitas dua menit sebelumnya.",
+            {
+                "inline_keyboard": [
+                    [{"text": "Atur Jadwal", "callback_data": "admin:maintenance:set"}],
+                    [{"text": "Hapus / Akhiri", "callback_data": "admin:maintenance:clear"}],
+                    [{"text": "Management", "callback_data": "admin:menu"}],
                 ]
             },
         )
@@ -226,7 +295,11 @@ class MultiAccountService:
         if navigation:
             buttons.append(navigation)
         buttons.append([{"text": "Kembali ke Management", "callback_data": "admin:menu"}])
-        await self.reply(owner, f"Pilih user · halaman {page + 1}", {"inline_keyboard": buttons})
+        await self.reply(
+            owner,
+            f"👥 Daftar User • halaman {page + 1}\n\nPilih pengguna untuk mengatur akses dan batas akun.",
+            {"inline_keyboard": buttons},
+        )
 
     async def user_menu(self, owner, identifier):
         user = self.user(identifier)
@@ -247,8 +320,10 @@ class MultiAccountService:
         buttons.append([{"text": "Daftar User", "callback_data": "admin:users:0"}])
         await self.reply(
             owner,
-            f"Telegram ID: {uid}\nAkses: {'admin' if uid == self.registry.admin else 'aktif' if enabled else 'dicabut'}"
-            f"\nAkun: {len(self.registry.list(uid))}/{self.registry.quota(uid)}",
+            f"👤 Pengguna {uid}\n\n"
+            f"Akses • {'admin' if uid == self.registry.admin else 'aktif' if enabled else 'dicabut'}\n"
+            f"Akun • {len(self.registry.list(uid))} dari {self.registry.quota(uid)} slot terpakai\n\n"
+            "Pilih tindakan di bawah.",
             {"inline_keyboard": buttons},
         )
 
@@ -274,19 +349,22 @@ class MultiAccountService:
         if request is None:
             await self.reply(
                 owner,
-                "Anda belum terdaftar. Tekan Ajukan Akses untuk meminta persetujuan admin.",
+                "👋 Selamat datang\n\nAkun Telegram ini belum punya akses. "
+                "Tekan Ajukan Akses untuk meminta persetujuan admin.",
                 ACCESS_REQUEST,
             )
         elif request["status"] == "pending":
             await self.reply(
                 owner,
-                "Pengajuan Anda menunggu persetujuan admin. Tidak perlu mengajukan ulang.",
+                "⏳ Pengajuan sudah diterima\n\nPengajuan Anda menunggu persetujuan admin. "
+                "Tekan Cek Status Pengajuan untuk melihat perkembangannya.",
                 ACCESS_STATUS,
             )
         else:
             await self.reply(
                 owner,
-                "Pengajuan ditolak atau akses dicabut. Hubungi admin untuk mengaktifkan akses.",
+                "🔒 Akses belum aktif\n\nPengajuan ditolak atau akses dicabut. "
+                "Hubungi admin jika ingin mengaktifkan akses.",
                 ACCESS_STATUS,
             )
         if created:
@@ -318,7 +396,8 @@ class MultiAccountService:
         buttons.append([{"text": "Kembali ke Management", "callback_data": "admin:menu"}])
         await self.reply(
             owner,
-            f"Pengajuan menunggu: {len(rows)} · halaman {page + 1}",
+            f"📩 Pengajuan Akses • halaman {page + 1}\n\n"
+            f"{len(rows)} pengajuan menunggu persetujuan. Pilih nama untuk meninjau.",
             {"inline_keyboard": buttons},
         )
 
@@ -338,8 +417,10 @@ class MultiAccountService:
         ]
         await self.reply(
             owner,
-            f"Pengajuan Akses\nNama: {row['name']}\nUsername: {'@' + row['username'] if row['username'] else 'tidak ada'}"
-            f"\nTelegram ID: {row['telegram_id']}\nStatus: {status}",
+            f"📩 Pengajuan Akses\n\n{row['name']}\n"
+            f"Username • {'@' + row['username'] if row['username'] else 'belum diisi'}\n"
+            f"Telegram ID • {row['telegram_id']}\n"
+            f"Status • {status}",
             {"inline_keyboard": buttons},
         )
 
@@ -348,16 +429,16 @@ class MultiAccountService:
             raise ValueError("Aktifkan akses user dahulu.")
         delivered = await self.reply(
             uid,
-            "Akses Anda sudah diaktifkan. Tekan Tambah Akun, ketik nama akun, lalu Import Cookie.\n"
-            + HELP,
+            "✅ Akses Anda sudah diaktifkan\n\n" + HELP,
             KEYBOARD,
         )
         await self.reply(
             owner,
             f"Menu utama dikirim ke {uid}."
             if delivered
-            else f"User {uid} diizinkan, tetapi menu belum terkirim. Minta user membuka chat pribadi bot, "
-            "tekan Start atau kirim pesan menu, dan pastikan ID Telegram benar. Pesan tetap dalam antrean.",
+            else f"Akses untuk {uid} sudah aktif, tetapi menu belum terkirim.\n\n"
+            "Minta pengguna membuka chat pribadi bot dan menekan Start. "
+            "Pastikan ID Telegram sesuai. Bot akan mencoba mengirim menu lagi.",
         )
 
     async def revoke(self, owner):
@@ -382,7 +463,8 @@ class MultiAccountService:
             notice.rename(notice.with_suffix(".revoked"))
         if errors:
             raise RuntimeError(
-                "Akses dicabut; sebagian worker belum terkonfirmasi berhenti. Periksa server."
+                "Akses sudah dicabut, tetapi beberapa aktivitas belum dipastikan berhenti. "
+                "Minta admin memeriksa akun yang masih berjalan."
             )
 
     async def dispatch(self, owner, text, callback=False, profile=None):
@@ -406,12 +488,13 @@ class MultiAccountService:
                 queue_error(self.hub.settings, exc, "management.command")
                 await self.reply(
                     owner,
-                    "Perintah gagal. Periksa status akun atau hubungi admin.",
+                    "⚠️ Permintaan belum berhasil\n\nTekan Status untuk memeriksa akun. "
+                    "Hubungi admin jika kendala berulang.",
                 )
 
     async def admin_action(self, owner, text):
         if owner != self.registry.admin:
-            raise ValueError("Management hanya untuk admin dari env")
+            raise ValueError("Management hanya tersedia untuk admin bot.")
         if text.startswith("revoke_confirm:"):
             uid = self.registry.owner_id(text.split(":", 1)[1])
             if self.pending.get(owner) != {"kind": "revoke", "user": uid}:
@@ -420,13 +503,28 @@ class MultiAccountService:
             await self.revoke(uid)
             await self.reply(
                 owner,
-                "Akses dicabut; seluruh worker user berhenti dan link import dicabut. Data disimpan.",
+                "🔒 Akses sudah dicabut\n\nSemua aktivitas pengguna dihentikan dan tautan "
+                "Import Cookie ditutup. Riwayat akun tetap bisa ditinjau admin.",
             )
             await self.user_menu(owner, uid)
             return
         self.pending.pop(owner, None)
         if text in {"Management", "admin:menu"}:
             await self.admin_menu(owner)
+        elif text == "admin:maintenance":
+            await self.maintenance_menu(owner)
+        elif text == "admin:maintenance:set":
+            await self.prompt(
+                owner,
+                {"kind": "maintenance"},
+                "📅 Kapan maintenance berlangsung?\n\n"
+                "Kirim waktu mulai dan selesai dalam WIB.\n"
+                "Format\nYYYY-MM-DD HH:MM / YYYY-MM-DD HH:MM\n\n"
+                "Bot mulai menjeda aktivitas dua menit sebelumnya.",
+            )
+        elif text == "admin:maintenance:clear":
+            self.maintenance_file.unlink(missing_ok=True)
+            await self.maintenance_menu(owner)
         elif text.startswith("admin:requests:"):
             await self.requests_menu(owner, int(text.rsplit(":", 1)[1]))
         elif text.startswith("request:"):
@@ -451,7 +549,7 @@ class MultiAccountService:
             await self.prompt(
                 owner,
                 {"kind": "add_user"},
-                "Ketik ID Telegram user yang akan diizinkan (angka positif).",
+                "👤 Siapa yang ingin diberi akses?\n\nKirim ID Telegram pengguna berupa angka positif.",
             )
         elif text in {"admin:default_limit", "admin:worker_limit"}:
             name = (
@@ -460,7 +558,8 @@ class MultiAccountService:
             await self.prompt(
                 owner,
                 {"kind": "limit", "setting": name},
-                "Ketik batas baru (1–100). Akun dan worker yang sudah ada tetap; batas berlaku pada tambah atau start berikutnya.",
+                "🔢 Berapa batas barunya?\n\nKirim angka dari 1 sampai 100. "
+                "Batas ini berlaku saat akun ditambahkan atau mulai berjalan berikutnya.",
             )
         elif text.startswith("user:"):
             await self.user_menu(owner, text.split(":", 1)[1])
@@ -471,16 +570,18 @@ class MultiAccountService:
             await self.prompt(
                 owner,
                 {"kind": "user_limit", "user": user["telegram_id"]},
-                f"Ketik batas akun untuk {user['telegram_id']} (1–100).",
+                f"🔢 Atur batas akun untuk {user['telegram_id']}\n\nKirim angka dari 1 sampai 100.",
             )
         elif text.startswith("revoke:"):
             uid = self.user(text.split(":", 1)[1])["telegram_id"]
             if uid == self.registry.admin:
-                raise ValueError("Admin dari env tidak bisa dicabut")
+                raise ValueError("Akses admin utama tidak bisa dicabut lewat bot.")
             self.pending[owner] = {"kind": "revoke", "user": uid}
             await self.reply(
                 owner,
-                f"Cabut akses Telegram ID {uid}? Semua worker user dihentikan dan link import dicabut. Data disimpan.",
+                f"🔒 Cabut akses pengguna {uid}?\n\n"
+                "Semua aktivitasnya akan dihentikan dan tautan Import Cookie ditutup. "
+                "Riwayat akun tetap disimpan.\n\nPilih Ya, Cabut Akses untuk melanjutkan.",
                 {
                     "inline_keyboard": [
                         [{"text": "Ya, Cabut Akses", "callback_data": f"revoke_confirm:{uid}"}],
@@ -501,12 +602,19 @@ class MultiAccountService:
     async def input(self, owner, text):
         state = self.pending[owner]
         kind = state["kind"]
-        if kind in {"add_user", "limit", "user_limit"} and owner != self.registry.admin:
-            raise ValueError("Management hanya untuk admin dari env")
+        if (
+            kind in {"add_user", "limit", "user_limit", "maintenance"}
+            and owner != self.registry.admin
+        ):
+            raise ValueError("Management hanya tersedia untuk admin bot.")
         if kind == "name":
             row = self.registry.create(owner, text)
             self.pending.pop(owner)
-            await self.reply(owner, f"Akun {row['name']} dibuat dan dipilih. Tekan Import Cookie.")
+            await self.reply(
+                owner,
+                f"✅ Akun {row['name']} sudah dibuat\n\nAkun ini sekarang terpilih. "
+                "Tekan Import Cookie untuk menghubungkannya ke game.",
+            )
             await self.account_menu(owner, row["id"])
         elif kind == "rename":
             self.registry.rename(owner, state["account"], text)
@@ -523,10 +631,15 @@ class MultiAccountService:
             self.registry.set_limit(state["setting"], text)
             self.pending.pop(owner)
             await self.admin_menu(owner)
+        elif kind == "maintenance":
+            window = MaintenanceWindow.parse(text)
+            write_private(self.maintenance_file, window.payload())
+            self.pending.pop(owner)
+            await self.maintenance_menu(owner)
         elif kind == "user_limit":
             uid = state["user"]
             if not self.registry.allowed(uid):
-                raise ValueError("User tidak masuk whitelist")
+                raise ValueError("Akses pengguna belum aktif. Aktifkan akses dahulu.")
             self.registry.whitelist(uid, maximum=text)
             self.pending.pop(owner)
             await self.user_menu(owner, uid)
@@ -543,6 +656,16 @@ class MultiAccountService:
     async def _dispatch(self, owner, text, callback):
         if callback and text.startswith("access:"):
             await self.home(owner)
+            return
+        if text == "Auto" and not callback:
+            self.pending.pop(owner, None)
+            account = self.registry.selected(owner)
+            if account is None:
+                await self.reply(
+                    owner, "Belum ada akun terpilih. Tekan Tambah Akun atau Akun Saya."
+                )
+            else:
+                await self.auto_menu(owner, account)
             return
         # Telegram sends /start when Start is pressed; users never need to type a command.
         if (not callback and text in {"/start", "Bantuan", "Menu Utama", "Batal"}) or (
@@ -576,7 +699,11 @@ class MultiAccountService:
             await self.accounts(owner, int(text.split(":", 1)[1]) if callback else 0)
             return
         if text == "Tambah Akun" and not callback or callback and text == "add_account":
-            await self.prompt(owner, {"kind": "name"}, "Ketik nama akun baru (1–40 karakter).")
+            await self.prompt(
+                owner,
+                {"kind": "name"},
+                "👤 Beri nama akun baru\n\nKirim nama sepanjang 1 sampai 40 karakter.",
+            )
             return
         if callback and text.startswith(
             ("select:", "rename:", "archive:", "archive_confirm:", "restore:")
@@ -605,13 +732,14 @@ class MultiAccountService:
                     await self.prompt(
                         owner,
                         {"kind": "rename", "account": identifier},
-                        f"Ketik nama baru untuk {row['name']} (1–40 karakter).",
+                        f"✏️ Ganti nama {row['name']}\n\nKirim nama baru sepanjang 1 sampai 40 karakter.",
                     )
                 elif action == "archive":
                     self.pending[owner] = {"kind": "archive", "account": identifier}
                     await self.reply(
                         owner,
-                        f"Arsipkan {row['name']}? Worker dihentikan dan link import dicabut. Riwayat disimpan; akun bisa dipulihkan.",
+                        f"📁 Arsipkan {row['name']}?\n\nAktivitas akun akan dihentikan dan tautan "
+                        "Import Cookie ditutup. Akun bisa dipulihkan lagi dari Akun Saya.",
                         {
                             "inline_keyboard": [
                                 [
@@ -632,14 +760,19 @@ class MultiAccountService:
                 return
             _, identifier, action = text.split(":", 2)
             account = self.registry.get(identifier, owner)
+            if action == "auto" or action.startswith("auto:"):
+                self.pending.pop(owner, None)
+                await self.auto_menu(owner, account, action)
+                return
             if action == "choose_date":
                 await self.prompt(
                     owner,
                     {"kind": "date", "account": identifier},
-                    f"Ketik tanggal laporan {account['name']}: YYYY-MM-DD atau DD-MM-YYYY.",
+                    f"📅 Laporan {account['name']} tanggal berapa?\n\n"
+                    "Kirim tanggal dengan format YYYY-MM-DD atau DD-MM-YYYY.",
                 )
                 return
-            if not re.fullmatch(r"profit:\d{4}-\d{2}-\d{2}", action):
+            if action != "import_cookie" and not re.fullmatch(r"profit:\d{4}-\d{2}-\d{2}", action):
                 return
             command = action
         else:
@@ -654,12 +787,16 @@ class MultiAccountService:
                     await self.home(owner)
                 return
         self.pending.pop(owner, None)
+        if command in GAME_COMMANDS and (maintenance := held_window(self.maintenance_file)):
+            await self.reply(owner, maintenance.message())
+            return
         account = account or self.registry.selected(owner)
         if account is None:
             await self.reply(owner, "Belum ada akun terpilih. Tekan Tambah Akun atau Akun Saya.")
             return
         service = self.service(account["id"])
-        await self.ensure_started(service)
+        if command != "cleanup_scan":
+            await self.ensure_started(service)
         if command in {"run", "import_cookie"}:
             if command == "run" and not (
                 (service.worker and service.worker.returncode is None)
@@ -667,7 +804,8 @@ class MultiAccountService:
             ):
                 if self.active_workers() >= self.registry.value("max_active_workers"):
                     raise ValueError(
-                        "Batas worker aktif global tercapai. Hentikan akun lain atau hubungi admin."
+                        "Slot akun berjalan sedang penuh. Hentikan aktivitas salah satu akun "
+                        "atau minta admin menambah batasnya."
                     )
             await self.start_tunnel()
         await service.execute(command)
@@ -731,6 +869,8 @@ class MultiAccountService:
         ):
             return
         async with self.lock:
+            if held_window(self.maintenance_file):
+                return
             for service in list(self.services.values()):
                 if not service.auto_start_pending:
                     continue
@@ -748,21 +888,28 @@ class MultiAccountService:
                 if self.active_workers() >= self.registry.value("max_active_workers"):
                     return
                 service.auto_start_pending = False
+                action = "Tekan Import Cookie, lalu Jalankan Ojol."
                 try:
                     from .session_transfer import parse_cookie_input
 
                     parse_cookie_input(
                         (service.settings.runtime_dir / "http-session.json").read_text()
                     )
+                    action = "Minta admin memeriksa riwayat dan rekonsiliasi transaksi, lalu tekan Jalankan Ojol."
                     journal = Journal(service.settings.runtime_dir)
                     try:
                         journal.ensure_resolved()
                     finally:
                         journal.close()
-                    response = await service.command("run")
-                    queue_notice(service.settings, "♻️ Auto-start akun saat boot.\n" + response)
+                    action = "Minta admin memeriksa izin operator dan status server, lalu tekan Jalankan Ojol."
+                    await service.command("run", auto_start=True)
                 except Exception as exc:
-                    queue_error(service.settings, exc, "worker.auto_start")
+                    queue_error(
+                        service.settings,
+                        exc,
+                        "worker.auto_start",
+                        {"tindakan": action, "account_id": service.account_id},
+                    )
 
     async def supervise(self):
         while not self.closing:
@@ -796,20 +943,38 @@ class MultiAccountService:
             if self.registry.allowed(row["owner"]):
                 service = self.service(row["id"])
                 await self.ensure_started(service)
-                if (
-                    self.settings.auto_start
-                    and self.settings.env != "testing"
-                    and (service.settings.runtime_dir / "http-session.json").is_file()
-                ):
+                if self.settings.env == "testing":
+                    continue
+                directory = service.settings.runtime_dir
+                marker = directory / WORKER_SHUTDOWN
+                has_session = (directory / "http-session.json").is_file()
+                if self.settings.auto_start and has_session:
                     # A new boot deliberately starts all eligible accounts, including previously stopped ones.
                     service.auto_start_pending = True
-                    (service.settings.runtime_dir / "STOP").unlink(missing_ok=True)
+                    (directory / "STOP").unlink(missing_ok=True)
+                elif self.settings.auto_start or marker.exists():
+                    action = "Jalankan Ojol" if has_session else "Import Cookie, lalu Jalankan Ojol"
+                    reason = (
+                        "sesi game belum terhubung"
+                        if not has_session
+                        else "mulai otomatis dimatikan"
+                    )
+                    queue_notice(
+                        service.settings,
+                        f"⚠️ Akun belum berjalan karena {reason}.\n\nTekan {action}.",
+                    )
+                marker.unlink(missing_ok=True)
         if self.settings.env == "testing":
             return
         try:
             await self.start_tunnel()
         except Exception as exc:
-            queue_error(self.hub.settings, exc, "control.startup.tunnel")
+            queue_error(
+                self.hub.settings,
+                exc,
+                "control.startup.tunnel",
+                {"tindakan": "Periksa konfigurasi tunnel agar akun yang menunggu bisa auto-start."},
+            )
         await self.resume_workers()
         self.tasks.append(
             asyncio.create_task(self.guard_task(self.supervise, "management.supervise"))
@@ -825,7 +990,10 @@ class MultiAccountService:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         results = await asyncio.gather(
-            *(s.close() for s in self.services.values()),
+            *(
+                s.close(notify_restart=self.registry.allowed(s.settings.telegram_chat_id))
+                for s in self.services.values()
+            ),
             self.hub.close(),
             return_exceptions=True,
         )

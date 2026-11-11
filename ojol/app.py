@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from typing import Any
 
 from google.adk.agents import BaseAgent
@@ -13,7 +14,7 @@ from .controller import Controller, StopRequested
 from .finance import completion_evidence
 from .http_core import HttpUI
 from .journal import Journal
-from .models import Settings, Snapshot
+from .models import NEEDS, Settings, Snapshot
 from .planner import next_step
 
 
@@ -94,9 +95,20 @@ class OjolAutomationAgent(BaseAgent):
                         evidence = None
                         if action["kind"] == "purchase":
                             resource = payload["resource"]
-                            valid = getattr(state, resource) > getattr(before, resource) and abs(
-                                before.wallet - state.wallet - Decimal(payload["product"]["price"])
-                            ) <= Decimal("0.015")
+                            previous = before.resource_value(resource)
+                            current = state.resource_value(resource)
+                            tolerance = Decimal(0) if resource in NEEDS else Decimal("0.015")
+                            valid = (
+                                previous is not None
+                                and current is not None
+                                and current > previous
+                                and abs(
+                                    before.wallet
+                                    - state.wallet
+                                    - Decimal(payload["product"]["price"])
+                                )
+                                <= tolerance
+                            )
                         elif action["kind"] in {"take", "search"}:
                             valid = state.phase == "delivering"
                         elif action["kind"] == "complete":
@@ -167,7 +179,10 @@ class OjolAutomationAgent(BaseAgent):
                         max_jobs=self.settings.max_jobs,
                         max_minutes=self.settings.max_minutes,
                     )
-                    await controller.run(dry_run=not self.live)
+                    await controller.run(
+                        dry_run=not self.live,
+                        auto_start=self.live and os.environ.get("OJOL_WORKER_AUTO_START") == "1",
+                    )
                     journal.finish(run_id, "dry_run")
                 except StopRequested as exc:
                     controller.report("berhenti", reason=str(exc))

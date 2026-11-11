@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
@@ -9,6 +9,8 @@ ROOT = Path(__file__).resolve().parent.parent
 Coin = Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
 Percent = Annotated[int, Field(ge=0, le=100)]
 Resource = Literal["fuel", "condition", "data"]
+Need = Literal["makan", "kesehatan", "fisik", "rekreasi", "penampilan", "rumah"]
+NEEDS = get_args(Need)
 
 
 def now():
@@ -115,12 +117,16 @@ class Snapshot(Model):
     history: list[str] = Field(default_factory=list)
     buttons: list[str] = Field(default_factory=list)
     raw_text: str = ""
+    needs: dict[Need, Percent] = Field(default_factory=dict)
+
+    def resource_value(self, resource: Resource | Need):
+        return self.needs.get(resource) if resource in NEEDS else getattr(self, resource)
 
 
 class Product(Model):
     name: str
     price: Coin
-    effects: dict[Resource, Percent]
+    effects: dict[Resource | Need, Percent]
     row_text: str
     enabled: bool
 
@@ -139,7 +145,7 @@ class ShopPreview(Model):
 
 
 class PurchasePlan(Model):
-    resource: Resource
+    resource: Resource | Need
     product: Product
     quantity: int = Field(gt=0)
     projected_percent: Percent

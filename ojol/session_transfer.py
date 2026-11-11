@@ -2,7 +2,9 @@
 
 import asyncio
 import json
+import math
 import sys
+import time
 
 from .cli import exclusive_lock
 from .config import load_settings
@@ -59,9 +61,16 @@ def session_cookie(cookie):
     result = {key: cookie[key] for key in ("name", "value", "domain", "path", "secure", "httpOnly")}
     if cookie.get("sameSite") in {"Strict", "Lax", "None"}:
         result["sameSite"] = cookie["sameSite"]
-    if isinstance(cookie.get("expires"), (int, float)) and cookie["expires"] > 0:
+    expires = cookie.get("expires")
+    valid_expiry = type(expires) is int or (type(expires) is float and math.isfinite(expires))
+    if valid_expiry and expires > 0:
         result["expires"] = cookie["expires"]
     return result
+
+
+def session_expired(payload):
+    expires = payload["cookies"][0].get("expires")
+    return expires is not None and expires <= time.time()
 
 
 async def import_session(settings, payload):
@@ -73,6 +82,10 @@ async def import_session(settings, payload):
     if set(data) != {"cookies"} or len(data["cookies"]) != 1:
         raise ValueError("Hanya satu cookie sesi game diizinkan")
     cookies = [session_cookie(item) for item in data["cookies"]]
+    if session_expired({"cookies": cookies}):
+        from .http_api import HttpCoreError
+
+        raise HttpCoreError("Cookie sesi game sudah kedaluwarsa.", category="auth")
     from .http_core import HttpUI
 
     candidate = settings.runtime_dir / "http-session.pending.json"
@@ -85,7 +98,10 @@ async def import_session(settings, payload):
             candidate.replace(settings.runtime_dir / "http-session.json")
         finally:
             candidate.unlink(missing_ok=True)
-    queue_notice(settings, "✅ Cookie diverifikasi melalui HTTP MCP. Tekan Jalankan Ojol.")
+    queue_notice(
+        settings,
+        "✅ Akun game sudah terhubung\n\nKembali ke Telegram dan tekan Jalankan Ojol untuk mulai.",
+    )
     await flush_notices(settings)
 
 

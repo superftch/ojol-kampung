@@ -66,6 +66,9 @@ def parser():
         choices=["fuel", "condition", "data"],
         help="Tampilkan katalog kandidat untuk resource melalui API",
     )
+    cleanup = commands.add_parser("cleanup-scan", help="Baca kandidat rumah kotor melalui API")
+    cleanup.add_argument("--blocks", nargs="+", help="Kode blok, default blok rumah sendiri")
+    cleanup.add_argument("--limit", type=int, choices=range(1, 11), default=1)
     for name in ("doctor", "status", "stop", "history", "reconcile"):
         commands.add_parser(name)
     profit = commands.add_parser("profit")
@@ -102,7 +105,18 @@ def main(argv=None):
                 "Mode live memerlukan izin operator pada .env lokal; testing tidak pernah live"
             )
         directory = settings.runtime_dir
-        if args.command == "status":
+        if args.command == "cleanup-scan":
+            if settings.env == "testing":
+                raise ValueError("HTTP live diblokir dalam test environment")
+            from .cleanup import scan
+            from .http_api import OjolHttpApi
+
+            async def read_cleanup():
+                async with OjolHttpApi(directory) as api:
+                    return await scan(api, args.blocks, args.limit)
+
+            print(json.dumps(asyncio.run(read_cleanup()), ensure_ascii=False, indent=2))
+        elif args.command == "status":
             path = directory / "status.json"
             data = json.loads(path.read_text()) if path.is_file() else {"event": "belum dijalankan"}
             data["running"] = running(directory)
@@ -195,7 +209,7 @@ def main(argv=None):
         from pydantic import ValidationError
 
         message = "Konfigurasi/state tidak valid" if isinstance(exc, ValidationError) else str(exc)
-        if "settings" in locals() and settings.env != "testing":
+        if args.command != "cleanup-scan" and "settings" in locals() and settings.env != "testing":
             from .telegram import flush_notices, queue_error, redact
 
             status_path = settings.runtime_dir / "status.json"
@@ -205,7 +219,14 @@ def main(argv=None):
                 status = {}
             context = {key: status.get(key) for key in ("run_id", "last_action", "tab_id")}
             context["pid"] = os.getpid()
+            context["account_id"] = os.environ.get("OJOL_ACCOUNT_ID")
             context["mcp_tool"] = getattr(exc, "operation", None)
+            if args.command == "run" and os.environ.get("OJOL_WORKER_AUTO_START") == "1":
+                context["tindakan"] = (
+                    "Tekan Import Cookie, lalu Jalankan Ojol."
+                    if getattr(exc, "category", None) == "auth"
+                    else "Tekan Status untuk memeriksa kondisi akun sebelum mencoba Jalankan Ojol."
+                )
             stage = (
                 status.get("stage")
                 if args.command == "run"
