@@ -74,19 +74,20 @@ async def ojol_snapshot() -> dict:
 
 @server.tool()
 async def ojol_preview_shop(resource: str) -> dict:
-    """Read the eye-preview catalog without sending a travel request."""
+    """Read verified shop catalogs for a resource without sending a travel request."""
     return await invoke("preview", resource=resource)
 
 
 @server.tool()
 async def ojol_purchase(
-    product: dict, expected_wallet: str, min_balance: str, request_id: str
+    product: dict, expected_wallet: str, expected_resource: int, min_balance: str, request_id: str
 ) -> dict:
     """Buy one observed item once, enforcing fresh price/resources and balance >=20."""
     return await invoke(
         "purchase",
         product=product,
         expected_wallet=expected_wallet,
+        expected_resource=expected_resource,
         min_balance=min_balance,
         request_id=request_id,
     )

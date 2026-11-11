@@ -58,11 +58,13 @@ def parser():
         )
         command.add_argument("--max-jobs", type=int)
         command.add_argument("--max-minutes", type=int)
-    inspect = commands.add_parser("inspect", help="Status dari tab khusus; tanpa pembelian/job")
+    inspect = commands.add_parser(
+        "inspect", help="Baca status melalui API tanpa pembelian atau order"
+    )
     inspect.add_argument(
         "--shop",
         choices=["fuel", "condition", "data"],
-        help="Periksa harga toko melalui tombol mata, tanpa beli",
+        help="Tampilkan katalog kandidat untuk resource melalui API",
     )
     for name in ("doctor", "status", "stop", "history", "reconcile"):
         commands.add_parser(name)

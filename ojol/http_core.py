@@ -11,7 +11,7 @@ from google.adk.tools.mcp_tool.mcp_session_manager import StdioConnectionParams
 from mcp import StdioServerParameters
 
 from .http_api import HttpCoreError
-from .models import Product, Snapshot
+from .models import ShopPreview, Snapshot
 
 HTTP_TOOLS = {"ojol_snapshot", "ojol_preview_shop", "ojol_purchase", "ojol_job_action"}
 
@@ -110,23 +110,21 @@ class HttpUI:
     async def snapshot(self):
         return Snapshot.model_validate(await self.call_tool("ojol_snapshot"))
 
-    async def work(self):
-        self.check_cancel()
-
-    async def open_shop(self, resource):
+    async def preview_shops(self, resource):
         data = await self.call_tool("ojol_preview_shop", resource=resource)
         self.last_navigation = data["navigation"]
-        return data["name"], [Product.model_validate(p) for p in data["products"]]
+        return [ShopPreview.model_validate(shop) for shop in data["shops"]]
 
     def prepare_action(self, kind):
         self.request_id = str(uuid4())
         return {"request_id": self.request_id, "core": self.core_name}
 
-    async def buy(self, product, expected_wallet, min_balance=20):
+    async def buy(self, product, expected_wallet, expected_resource, min_balance=20):
         return await self.call_tool(
             "ojol_purchase",
             product=product.model_dump(mode="json"),
             expected_wallet=str(expected_wallet),
+            expected_resource=expected_resource,
             min_balance=str(min_balance),
             request_id=self.request_id,
         )

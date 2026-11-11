@@ -14,7 +14,7 @@ import httpx
 
 from .finance import WIB
 from .healing import write_private
-from .models import Product, Snapshot
+from .models import Product, ShopPreview, Snapshot
 from .session_transfer import DOMAIN, parse_cookie_input
 
 ORIGIN = "https://www.kampungsebelah.com"
@@ -24,7 +24,6 @@ ITEMS = {
     "data": {"pulsa", "paket-data", "servis-hp", "casing-hp"},
 }
 CATEGORIES = {"fuel": "spbu-pertamina", "condition": "bengkel-motor", "data": "konter-pulsa"}
-PREFERRED = {"fuel": "SPBU Utara 1", "condition": "Akademis.ai Motor", "data": "Konter kang ANU"}
 RESOURCES = {"bensin": "fuel", "kendaraan": "condition", "kuota": "data"}
 KINDS = {
     "PENUMPANG": ("🧍", "Antar penumpang"),
@@ -277,10 +276,11 @@ class OjolHttpApi:
         write_private(cache, {"version": version, "effects": effects})
         return effects
 
-    async def products(self, shop_id, resource):
+    async def products(self, shop_id, resource, effects):
         catalog = await self.request("/api/shops/" + shop_id)
-        effects = await self.effects()
-        if catalog.get("mine") is not False or catalog.get("open") is not True:
+        if type(catalog.get("mine")) is not bool or type(catalog.get("open")) is not bool:
+            raise HttpCoreError("Status atau kepemilikan toko belum dapat diverifikasi")
+        if catalog["mine"] or not catalog["open"]:
             return catalog, []
         products = []
         for row in catalog["menu"]:
@@ -302,74 +302,116 @@ class OjolHttpApi:
             products.append(product)
         return catalog, products
 
+    async def preview_shop(self, row, resource, effects):
+        plot = await self.request("/api/world/plots/" + row["plotId"])
+        business = plot["business"]
+        if business is None or business["desa"] != self.home["desa"]:
+            return None
+        category = business["catalogId"]
+        if category != row["item"]:
+            return None
+        shop_id = str(UUID(business["id"]))
+        catalog, products = await self.products(shop_id, resource, effects)
+        if not any(product.enabled and product.effects[resource] > 0 for product in products):
+            return None
+        shop = ShopPreview(
+            id=shop_id,
+            plot_id=row["plotId"],
+            name=catalog.get("plang") or business["name"],
+            category=category,
+            distance_squared=(row["x"] - self.home["x"]) ** 2 + (row["y"] - self.home["y"]) ** 2,
+            products=products,
+        )
+        if category != CATEGORIES[resource] and not shop.preferred:
+            return None
+        return shop
+
     async def preview(self, resource):
         if resource not in CATEGORIES:
             raise HttpCoreError("Resource tidak didukung", category="blocked")
-        if not getattr(self, "home", None):
-            await self.snapshot()
-        if not self.home:
-            raise HttpCoreError("Rumah akun belum tersedia", category="blocked")
-        places = await self.request("/api/tujuan")
-        matches = [row for row in places["usaha"] if row["item"] == CATEGORIES[resource]]
-        matches.sort(
-            key=lambda row: (
-                row["name"] != PREFERRED[resource],
-                row.get("openHours") not in {"24", "24 jam"},
-                (row["x"] - self.home["x"]) ** 2 + (row["y"] - self.home["y"]) ** 2,
-            )
-        )
-        async with asyncio.timeout(25):
-            for row in matches[:12]:
-                plot = await self.request("/api/world/plots/" + row["plotId"])
-                business = plot.get("business")
-                if not business or business["catalogId"] != CATEGORIES[resource]:
-                    continue
-                if business["desa"] != self.home["desa"]:
-                    continue
-                shop_id = str(UUID(business["id"]))
-                catalog, products = await self.products(shop_id, resource)
-                if not any(product.enabled for product in products):
-                    continue
-                name = catalog.get("plang") or business["name"]
-                self.catalog[shop_id] = products
-                return {
-                    "name": name,
-                    "products": [p.model_dump(mode="json") for p in products],
-                    "navigation": {
-                        "method": "eye_preview_http",
-                        "shop": name,
-                        "plot_id": row["plotId"],
-                        "panel_verified": True,
-                        "travel_request_sent": False,
-                    },
-                }
-        raise HttpCoreError(
-            "Tidak ada toko terbuka dengan produk terverifikasi", category="blocked"
-        )
+        self.catalog.pop(resource, None)
+        categories = {CATEGORIES[resource]}
+        if resource == "condition":
+            categories.add(CATEGORIES["fuel"])
+        shops = {}
+        try:
+            async with asyncio.timeout(25):
+                if not getattr(self, "home", None):
+                    await self.snapshot()
+                if not self.home:
+                    raise HttpCoreError("Rumah akun belum tersedia", category="blocked")
+                places = await self.request("/api/tujuan")
+                matches = [row for row in places["usaha"] if row["item"] in categories]
+                if matches:
+                    effects = await self.effects()
+                    for offset in range(0, len(matches), 4):
+                        results = await asyncio.gather(
+                            *(
+                                self.preview_shop(row, resource, effects)
+                                for row in matches[offset : offset + 4]
+                            ),
+                            return_exceptions=True,
+                        )
+                        for shop in results:
+                            if isinstance(shop, BaseException):
+                                raise shop
+                            if shop is not None:
+                                shops[shop.id] = shop
+        except TimeoutError:
+            raise HttpCoreError(
+                "Deadline preview toko tercapai sebelum katalog terverifikasi",
+                category="transport",
+                recoverable=True,
+            ) from None
+        self.catalog[resource] = shops
+        return {
+            "shops": [
+                shop.model_dump(mode="json")
+                for shop in sorted(
+                    shops.values(), key=lambda shop: (shop.distance_squared, shop.id)
+                )
+            ],
+            "navigation": {
+                "method": "eye_preview_http",
+                "panel_verified": True,
+                "travel_request_sent": False,
+            },
+        }
 
-    async def purchase(self, product, expected_wallet, min_balance, request_id):
+    async def purchase(self, product, expected_wallet, expected_resource, min_balance, request_id):
         request_id = str(UUID(request_id))
         product = Product.model_validate(product)
         identity = json.loads(product.row_text)
         shop_id = str(UUID(identity["shop"]))
         resource = identity["resource"]
+        shop = self.catalog.get(resource, {}).get(shop_id)
         if (
-            resource not in ITEMS
+            shop is None
             or identity["item"] not in ITEMS[resource]
-            or product not in self.catalog.get(shop_id, [])
+            or product not in shop.products
+            or not product.enabled
         ):
             raise HttpCoreError("Produk tidak berasal dari preview sesi ini", category="blocked")
         state = await self.snapshot()
-        _, fresh = await self.products(shop_id, resource)
-        if product not in fresh or not product.enabled:
-            raise HttpCoreError("Harga/item berubah sebelum pembelian", category="blocked")
-        if state.phase == "sleeping" or state.wallet != Decimal(expected_wallet):
-            raise HttpCoreError("State/dompet berubah sebelum pembelian", category="blocked")
+        if (
+            state.phase != "idle"
+            or state.wallet != Decimal(expected_wallet)
+            or getattr(state, resource) != expected_resource
+        ):
+            raise HttpCoreError(
+                "Fase, saldo atau resource berubah sebelum pembelian", category="blocked"
+            )
+        catalog, fresh = await self.products(shop_id, resource, await self.effects())
+        if product not in fresh or (catalog.get("plang") and catalog["plang"] != shop.name):
+            raise HttpCoreError(
+                "Nama toko atau katalog berubah sebelum pembelian", category="blocked"
+            )
         if (
             state.wallet - product.price < max(Decimal(20), Decimal(min_balance))
             or getattr(state, resource) + product.effects[resource] > 100
         ):
             raise HttpCoreError("Pembelian melanggar saldo minimum/overflow", category="blocked")
+        self.catalog.pop(resource)
         return await self.request(
             f"/api/shops/{shop_id}/buy", {"item": identity["item"], "requestId": request_id}
         )

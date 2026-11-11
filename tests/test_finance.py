@@ -3,7 +3,7 @@ from decimal import Decimal
 from ojol.finance import received_income
 from ojol.journal import Journal
 from ojol.models import Product
-from ojol.planner import select_product
+from ojol.planner import select_shop
 
 
 def test_income_is_received_payout_not_wallet_or_gross_fare(state):
@@ -82,34 +82,31 @@ def test_pending_or_uncertain_expense_not_treated_as_paid(settings, state):
     journal.close()
 
 
-def test_unlimited_spend_still_honors_cash_reserve(settings, state):
+def test_unlimited_spend_still_honors_cash_reserve(settings, state, shop_preview):
     settings = settings.model_copy(update={"max_spend": None, "min_balance": Decimal(20)})
-    products = [
-        Product(
-            name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
+    shops = [
+        shop_preview(
+            [
+                Product(
+                    name="Isi pulsa",
+                    price="0.5",
+                    effects={"data": 40},
+                    row_text="fixture",
+                    enabled=True,
+                )
+            ]
         )
     ]
-    assert select_product(state, "data", products, settings, Decimal(9999)) is not None
-    assert (
-        select_product(
-            state.model_copy(update={"wallet": Decimal("20.49")}),
+    for wallet, affordable in [("35.68", True), ("20.49", False), ("20.51", True)]:
+        selection, deferred = select_shop(
+            state.model_copy(update={"wallet": Decimal(wallet)}),
             "data",
-            products,
+            shops,
             settings,
-            Decimal(0),
+            Decimal(9999),
         )
-        is None
-    )
-    assert (
-        select_product(
-            state.model_copy(update={"wallet": Decimal("20.51")}),
-            "data",
-            products,
-            settings,
-            Decimal(0),
-        )
-        is not None
-    )
+        assert (selection is not None) == affordable
+        assert not deferred
 
 
 def test_daily_report_wib_midnight_boundaries_and_decimal(settings, monkeypatch):

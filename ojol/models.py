@@ -125,6 +125,19 @@ class Product(Model):
     enabled: bool
 
 
+class ShopPreview(Model):
+    id: str
+    plot_id: str
+    name: str
+    category: str
+    distance_squared: Annotated[int, Field(ge=0)]
+    products: list[Product]
+
+    @property
+    def preferred(self):
+        return "akademis.ai" in self.name.casefold()
+
+
 class PurchasePlan(Model):
     resource: Resource
     product: Product

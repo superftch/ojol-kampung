@@ -113,12 +113,15 @@ Volume `state`: `runtime/accounts.sqlite3` menyimpan whitelist/kuota/ownership; 
 
 Pendapatan berasal dari receipt payout, bukan seluruh kenaikan dompet. Belanja manual di luar worker tidak otomatis menjadi biaya automation. Karakter tidur menghentikan worker sebelum order/belanja; bangunkan lewat game.
 
+Untuk bensin, kondisi motor, dan kuota, worker mengutamakan nama toko yang mengandung **Akademis.ai** tanpa membedakan kapital. Pembelian harus memenuhi target isi ulang, kapasitas, anggaran, dan saldo minimum. Jika tidak ada rencana Akademis.ai yang layak, cadangannya adalah SPBU untuk bensin, bengkel untuk kondisi motor, dan konter untuk kuota. SPBU Akademis.ai juga bisa dipilih untuk kondisi motor jika menjual layanan yang sesuai. Jurnal pembelian mencatat toko dan alasan pemilihan.
+
 CLI lokal server dapat memilih akun dari ID menu Telegram. Hentikan worker akun dahulu sebelum inspect/reconcile. Shell server adalah akses operator tepercaya; gunakan Telegram untuk start dengan pengawasan kuota global.
 
 ```sh
 docker compose exec -u app app python main.py --account ACCOUNT_ID profit
 docker compose exec -u app app python main.py --account ACCOUNT_ID profit --date 2026-01-02
 docker compose exec -u app app python main.py --account ACCOUNT_ID history
+docker compose exec -u app app python main.py --account ACCOUNT_ID inspect --shop data
 docker compose exec -u app app python main.py --account ACCOUNT_ID reconcile
 ```
 

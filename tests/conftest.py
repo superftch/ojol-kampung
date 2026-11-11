@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from ojol.config import load_settings
-from ojol.models import ROOT, Snapshot
+from ojol.models import ROOT, ShopPreview, Snapshot
 
 
 def pytest_configure(config):
@@ -60,3 +60,18 @@ def state():
         buttons=["🔎 Cari order"],
         history=["17.14 A → B · +0,704"],
     )
+
+
+@pytest.fixture
+def shop_preview():
+    def make(products):
+        return ShopPreview(
+            id="00000000-0000-4000-8000-000000000001",
+            plot_id="K22-U07",
+            name="Konter fixture",
+            category="konter-pulsa",
+            distance_squared=0,
+            products=products,
+        )
+
+    return make

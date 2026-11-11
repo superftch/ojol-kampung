@@ -6,24 +6,12 @@ import time
 from datetime import timedelta
 from decimal import Decimal
 
-from .models import Product, now
-from .planner import best_value_product, is_sleeping, next_step, select_product
+from .models import now
+from .planner import is_sleeping, next_step, select_shop
 
 
 class StopRequested(Exception):
     pass
-
-
-def load_catalog(directory):
-    path = directory / "catalog.json"
-    return (
-        {
-            key: [Product.model_validate(item) for item in items]
-            for key, items in json.loads(path.read_text()).items()
-        }
-        if path.exists()
-        else {}
-    )
 
 
 class Controller:
@@ -41,7 +29,6 @@ class Controller:
         self.stage = "controller.start"
         self.last_action = None
         self.busy_since = None
-        self.catalog = load_catalog(settings.runtime_dir)
         if ui is not None:
             ui.check_cancel = self.check_cancel
             ui.on_recovery = self.report
@@ -121,51 +108,44 @@ class Controller:
     async def purchase(self, before, resource):
         self.check_cancel()
         self.stage = f"shop.preview.{resource}"
-        shop, products = await self.ui.open_shop(resource)
-        self.catalog[resource] = products
-        catalog_file = self.settings.runtime_dir / "catalog.json"
-        catalog_file.write_text(
-            json.dumps(
-                {
-                    key: [item.model_dump(mode="json") for item in items]
-                    for key, items in self.catalog.items()
-                },
-                ensure_ascii=False,
-                indent=2,
+        shops = await self.ui.preview_shops(resource)
+        selection, defer = select_shop(before, resource, shops, self.settings, self.spent)
+        if defer:
+            self.report(
+                "isi_ulang_ditunda",
+                resource=resource,
+                current=getattr(before, resource),
+                reason="Menunggu ruang cukup agar efek tidak terbuang",
             )
-        )
-        catalog_file.chmod(0o600)
-        navigation = getattr(self.ui, "last_navigation", {})
-        self.report("toko_dibuka", shop=shop, navigation=navigation)
-        plan = select_product(before, resource, products, self.settings, self.spent)
-        if not plan:
-            best = best_value_product(resource, products, self.settings)
-            if (
-                best
-                and getattr(before, resource) > self.settings.resource_reserve_percent
-                and getattr(before, resource) + best.effects[resource] > 100
-            ):
-                self.report(
-                    "isi_ulang_ditunda",
-                    resource=resource,
-                    current=getattr(before, resource),
-                    product=best.name,
-                    refill_ceiling=100 - best.effects[resource],
-                    reason="Menunggu ruang cukup agar efek tidak terbuang",
-                )
-                await self.ui.work()
-                return
+            return False
+        if selection is None:
             raise RuntimeError("Tidak ada pembelian sesuai resource, anggaran, dan saldo minimum")
+        supplier, plan = selection
+        shop = supplier.name
+        navigation = {
+            **getattr(self.ui, "last_navigation", {}),
+            "shop": shop,
+            "plot_id": supplier.plot_id,
+        }
+        self.report("toko_dibuka", shop=shop, navigation=navigation)
+        source = "akademis" if supplier.preferred else "cadangan"
+        reason = (
+            "Akademis.ai layak dengan biaya per poin terendah di kelompok prioritas"
+            if supplier.preferred
+            else "Tidak ada rencana Akademis.ai yang memenuhi syarat"
+        )
         self.report(
             "rencana_beli",
             shop=shop,
+            source=source,
+            reason=reason,
             resource=resource,
             product=plan.product.name,
             quantity=plan.quantity,
             cost=str(plan.total_cost),
         )
         self.check_cancel()
-        # Each click is logged and verified separately; later units use a fresh snapshot and price.
+        # A multi-unit plan budgets the refill; the next unit needs a fresh preview.
         action = self.journal.begin(
             self.run_id,
             "purchase",
@@ -173,6 +153,9 @@ class Controller:
             {
                 "resource": resource,
                 "shop": shop,
+                "shop_id": supplier.id,
+                "source": source,
+                "reason": reason,
                 "navigation": navigation,
                 "product": plan.product.model_dump(mode="json"),
                 **(
@@ -190,7 +173,9 @@ class Controller:
         try:
             self.check_cancel()
             self.stage = f"purchase.click.{resource}"
-            await self.ui.buy(plan.product, before.wallet, self.settings.min_balance)
+            await self.ui.buy(
+                plan.product, before.wallet, getattr(before, resource), self.settings.min_balance
+            )
             self.stage = f"purchase.verify.{resource}"
             after = await self.verify(
                 lambda state: (
@@ -219,6 +204,7 @@ class Controller:
                 0, getattr(before, resource) + plan.product.effects[resource] - 100
             ),
         )
+        return True
 
     async def job_action(self, before, kind):
         self.check_cancel()
@@ -318,7 +304,7 @@ class Controller:
                     today_income=str(self.state.today_income),
                     wallet=str(self.state.wallet),
                 )
-            step = next_step(self.state, self.settings, self.catalog)
+            step = next_step(self.state, self.settings)
             if self.state.phase != "searching":
                 self.busy_since = None
             self.report(
@@ -335,6 +321,15 @@ class Controller:
                 return
             if self.settings.max_jobs is not None and self.completed >= self.settings.max_jobs:
                 raise StopRequested("Batas jumlah trip tercapai")
+            if step.action == "maintain":
+                deferred = set()
+                while step.action == "maintain":
+                    if await self.purchase(self.state, step.resource):
+                        break
+                    deferred.add(step.resource)
+                    step = next_step(self.state, self.settings, deferred=deferred)
+                if step.action == "maintain":
+                    continue
             if step.action == "stop":
                 raise RuntimeError(step.reason)
             if step.action == "wait":
@@ -357,8 +352,6 @@ class Controller:
                 await self.wait(
                     max(1, min(step.wait_seconds, max(1, self.trip_due - time.monotonic())))
                 )
-            elif step.action == "maintain":
-                await self.purchase(self.state, step.resource)
             else:
                 self.active_trip = None
                 await self.job_action(self.state, step.action)
