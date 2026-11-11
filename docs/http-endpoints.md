@@ -32,7 +32,15 @@ Sumber historis bertanggal **11 November 2026 WIB**. Bundle gameplay yang dicata
 | GET `/api/shops/{businessId}` | Katalog toko, status buka, dan kepemilikan | `businessId` berupa UUID dari detail kavling. | `open`, `mine`, `plang`, dan `menu[]` dengan `item`, `name`, `priceMilli`, serta `habis` bila ada. | Ya | HTTP 200 untuk SPBU, bengkel, dan konter pada inspeksi historis. [Katalog](../ojol/http_api.py#L279) dan [nama toko](../ojol/http_api.py#L320). |
 | POST `/api/shops/{businessId}/buy` | Membeli satu item dari katalog | `businessId` berupa UUID. JSON `{item, requestId}`. Adapter mengambil ID item dari menu dan mengirim UUID sebagai `requestId`. | Perubahan saldo dan resource diverifikasi dari snapshot berikutnya. Skema body respons POST belum diketahui. | Ya | Pertalite, Tambal ban, dan Isi pulsa diverifikasi live pada inspeksi historis. [Pembelian](../ojol/http_api.py#L381). |
 
+## Bukti laporan harian
+
+Pada 11 November 2026 WIB, pembacaan lokal terotorisasi untuk dua halaman `GET /api/me/koin` berhasil. Respons berisi `items` dan cursor `next`. Query `after` menerima cursor dari halaman sebelumnya. Baris memiliki `id`, `at` dengan zona waktu, `amountMilli` bertanda, `type`, `label`, dan `detail`. Dua halaman yang diperiksa berurutan dari terbaru ke terlama.
+
+Payout Ojol memiliki `type: OJOL_ONGKOS`. Pembelian yang terlihat memakai `SHOP_PURCHASE` dan tidak memberi penanda yang cukup untuk mengaitkan biaya manual ke Ojol. Bot menghitung pendapatan dari penanda payout dan mengestimasi laba dengan mengurangi belanja yang nama produknya cocok persis dengan daftar produk worker setelah normalisasi kapital dan spasi. Estimasi menganggap semua pembelian produk yang cocok sebagai biaya Ojol. Jurnal tetap menyediakan biaya worker terverifikasi. Lihat [rujukan client riwayat koin](http-gameplay-catalog.md#profil-perbankan-dan-pembayaran).
+
 ## Catatan worker
+
+Pada pemeriksaan 11 November 2026 WIB, katalog toko tutup mengembalikan HTTP 409 dengan `error.code = REQUIREMENT_NOT_MET` dan `error.message = Usaha ini belum buka.`. Preview melewati toko hanya jika kedua nilai cocok pada endpoint katalog. Konflik lain tetap menghentikan preview.
 
 Preview toko membaca detail kavling lalu katalog. Tombol **Pergi** di client memakai `POST /api/tujuan`. Worker cukup memakai GET untuk preview. Efek item diambil dari konfigurasi di bundle client, misalnya `pulsa` menambah `kuota`. Worker membaca halaman `/kampung` dan aset JavaScript yang dirujuknya untuk mengekstrak efek. Cache mengikuti `configVersion`. Aset tersebut tidak dihitung sebagai endpoint API di tabel.
 

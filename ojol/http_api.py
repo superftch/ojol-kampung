@@ -12,9 +12,10 @@ from uuid import UUID
 
 import httpx
 
-from .finance import WIB
+from .finance import WIB, day_bounds, report_date
 from .healing import write_private
-from .models import Product, ShopPreview, Snapshot
+from .models import Product, ShopPreview, Snapshot, now
+from .planner import ALLOWED_ITEMS
 from .session_transfer import DOMAIN, parse_cookie_input
 
 ORIGIN = "https://www.kampungsebelah.com"
@@ -22,6 +23,11 @@ ITEMS = {
     "fuel": {"isi-pertalite", "isi-pertamax"},
     "condition": {"servis-motor", "ganti-oli", "tambal-ban", "isi-angin", "cuci-motor"},
     "data": {"pulsa", "paket-data", "servis-hp", "casing-hp"},
+}
+WALLET_PRODUCT_CATEGORIES = {
+    " ".join(name.casefold().split()): resource
+    for resource, names in ALLOWED_ITEMS.items()
+    for name in names
 }
 CATEGORIES = {"fuel": "spbu-pertamina", "condition": "bengkel-motor", "data": "konter-pulsa"}
 RESOURCES = {"bensin": "fuel", "kendaraan": "condition", "kuota": "data"}
@@ -37,6 +43,20 @@ class HttpCoreError(RuntimeError):
         super().__init__(message)
         self.category, self.recoverable = category, recoverable
         self.stage, self.operation = "http." + category, "ojol_http"
+
+
+class ShopClosed(HttpCoreError):
+    pass
+
+
+def is_closed_shop_response(response):
+    try:
+        error = response.json()["error"]
+        return (
+            error["code"] == "REQUIREMENT_NOT_MET" and error["message"] == "Usaha ini belum buka."
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
 
 
 def integer(value):
@@ -170,13 +190,14 @@ class OjolHttpApi:
         if self.owns_client and self.client:
             await self.client.aclose()
 
-    async def request(self, path, payload=None, text=False):
+    async def request(self, path, payload=None, text=False, *, after=None):
         # No caller-provided URLs, redirects, or generic HTTP MCP tool.
         allowed = (
             path
             in {
                 "/api/ojol",
                 "/api/game/me",
+                "/api/me/koin",
                 "/api/kebutuhan",
                 "/api/time",
                 "/api/tujuan",
@@ -188,6 +209,7 @@ class OjolHttpApi:
         )
         if (
             not allowed
+            or (after is not None and (path != "/api/me/koin" or not self.valid_cursor(after)))
             or ".." in path.split("/")
             or "//" in path
             or (payload is not None and path != "/api/ojol" and not path.endswith("/buy"))
@@ -196,7 +218,10 @@ class OjolHttpApi:
         for attempt in range(3 if payload is None else 1):
             try:
                 response = await self.client.request(
-                    "GET" if payload is None else "POST", path, json=payload
+                    "GET" if payload is None else "POST",
+                    path,
+                    json=payload,
+                    **({"params": {"after": after}} if after is not None else {}),
                 )
             except httpx.TransportError:
                 if payload is not None:
@@ -222,6 +247,12 @@ class OjolHttpApi:
                         f"Transaksi ditolak HTTP{response.status_code}; tidak diulang",
                         category="uncertain",
                     )
+                if (
+                    response.status_code == 409
+                    and re.fullmatch(r"/api/shops/[a-f0-9-]{36}", path)
+                    and is_closed_shop_response(response)
+                ):
+                    raise ShopClosed("Toko tutup menurut game", category="blocked")
                 if response.status_code not in {408, 429, 500, 502, 503, 504}:
                     raise HttpCoreError(
                         f"Endpoint Ojol HTTP{response.status_code}", recoverable=True
@@ -232,6 +263,113 @@ class OjolHttpApi:
         raise HttpCoreError(
             "Pembacaan HTTP gagal setelah 3 percobaan", category="transport", recoverable=True
         )
+
+    @staticmethod
+    def valid_cursor(value):
+        return isinstance(value, str) and 0 < len(value) <= 2048
+
+    async def daily_wallet(self, day):
+        day = report_date(day)
+        start, end = map(datetime.fromisoformat, day_bounds(day))
+        read_at = now()
+        result = {
+            "income_milli": 0,
+            "payout_count": 0,
+            "expenses_milli": {},
+            "expense_issue": None,
+            "complete": False,
+            "today_income_milli": None,
+            "issue": "Riwayat belum mencapai awal hari",
+        }
+        if start > read_at:
+            result["issue"] = "Tanggal tersebut belum tiba"
+            return result
+
+        cursor = None
+        seen_cursors = set()
+        seen_entries = {}
+        previous = None
+        try:
+            async with asyncio.timeout(12):
+                if day == read_at.astimezone(WIB).date():
+                    try:
+                        ojol = await self.request("/api/ojol")
+                        result["today_income_milli"] = integer(ojol["earnedTodayMilli"])
+                    except (HttpCoreError, KeyError, TypeError):
+                        pass
+
+                for _ in range(10):
+                    page = await self.request("/api/me/koin", after=cursor)
+                    items, next_cursor = page["items"], page["next"]
+                    if not isinstance(items, list) or (
+                        next_cursor is not None and not self.valid_cursor(next_cursor)
+                    ):
+                        raise ValueError("Invalid wallet page")
+
+                    for row in items:
+                        identifier, kind = row["id"], row["type"]
+                        at, amount = timestamp(row["at"]), row["amountMilli"]
+                        if (
+                            not isinstance(identifier, str)
+                            or not identifier
+                            or not isinstance(kind, str)
+                            or not kind
+                            or type(amount) is not int
+                            or (kind == "OJOL_ONGKOS" and amount < 0)
+                        ):
+                            raise ValueError("Invalid wallet entry")
+
+                        in_day = start <= at < end and at <= read_at
+                        purchase = in_day and kind == "SHOP_PURCHASE" and amount < 0
+                        detail = row.get("detail") if purchase else None
+                        product = (
+                            " ".join(detail.casefold().split()) if isinstance(detail, str) else None
+                        )
+                        entry = (at, kind, amount, product)
+                        if identifier in seen_entries:
+                            if seen_entries[identifier] != entry:
+                                raise ValueError("Conflicting wallet entry")
+                            continue
+                        if previous is not None and at > previous:
+                            raise ValueError("Wallet entries out of order")
+                        previous = at
+                        seen_entries[identifier] = entry
+                        if in_day and kind == "OJOL_ONGKOS":
+                            result["income_milli"] += amount
+                            result["payout_count"] += 1
+                        if purchase:
+                            if not product:
+                                result["expense_issue"] = (
+                                    "Ada belanja tanpa nama produk yang dapat dibaca"
+                                )
+                            elif product in WALLET_PRODUCT_CATEGORIES:
+                                resource = WALLET_PRODUCT_CATEGORIES[product]
+                                expenses = result["expenses_milli"]
+                                expenses[resource] = expenses.get(resource, 0) - amount
+
+                    if next_cursor is not None and next_cursor in seen_cursors:
+                        result["issue"] = "Cursor riwayat berulang"
+                        break
+                    if previous is not None and previous < start:
+                        result.update(complete=True, issue=None)
+                        break
+                    if next_cursor is None:
+                        break
+                    seen_cursors.add(next_cursor)
+                    cursor = next_cursor
+                else:
+                    result["issue"] = "Batas 10 halaman tercapai"
+        except TimeoutError:
+            result["issue"] = "Batas waktu pembacaan riwayat tercapai"
+        except HttpCoreError as exc:
+            result["issue"] = (
+                "Sesi game ditolak atau kedaluwarsa"
+                if exc.category == "auth"
+                else "Riwayat koin tidak dapat dibaca"
+            )
+        except (KeyError, ValueError, TypeError, AttributeError, OverflowError):
+            result["issue"] = "Format atau urutan riwayat koin belum dapat diverifikasi"
+        return result
 
     async def snapshot(self):
         ojol, me, needs, clock = await asyncio.gather(
@@ -311,7 +449,10 @@ class OjolHttpApi:
         if category != row["item"]:
             return None
         shop_id = str(UUID(business["id"]))
-        catalog, products = await self.products(shop_id, resource, effects)
+        try:
+            catalog, products = await self.products(shop_id, resource, effects)
+        except ShopClosed:
+            return None
         if not any(product.enabled and product.effects[resource] > 0 for product in products):
             return None
         shop = ShopPreview(
