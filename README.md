@@ -133,7 +133,11 @@ docker compose exec -u app app python -c "import urllib.request; print(urllib.re
 
 Volume `state`: `runtime/accounts.sqlite3` menyimpan whitelist/kuota/ownership; akun baru berada di `runtime/accounts/<ID>/`; **Utama** memakai `runtime/`. Setiap direktori akun memiliki cookie0600, ledger SQLite WAL, status, lock worker dan outbox notifikasi. Delivery `.sent`/`.muted` kedaluwarsa setelah7hari; event/ledger dan notifikasi pending tetap tersimpan.
 
-Pendapatan berasal dari receipt payout, bukan seluruh kenaikan dompet. Belanja manual di luar worker tidak otomatis menjadi biaya automation. Karakter tidur menghentikan worker sebelum order/belanja; bangunkan lewat game.
+Pendapatan berasal dari receipt payout, bukan seluruh kenaikan dompet. Belanja manual di luar worker tidak otomatis menjadi biaya automation.
+
+Saat status game menunjukkan karakter tidur, seluruh fitur Auto dijeda: tidak ada order, klaim, belanja atau pemakaian fasilitas. Worker hanya membaca status berkala dan tetap bisa dihentikan. Timer durasi sesi, pencarian, perjalanan dan jeda kebutuhan dibekukan selama tidur. Setelah karakter bangun di game, worker melanjutkan dari status terbaru sesuai pengaturan Auto tanpa perlu dijalankan ulang. Aksi yang sudah terkirim sebelum tidur tetap harus terverifikasi sebelum aktivitas berikutnya.
+
+Jam tidur mengikuti pengaturan **per akun** dari game, dalam WIB; **Status** menampilkan ON/OFF serta jam tidur dan bangun yang terbaca. Worker menghitung batas jadwal memakai waktu server, termasuk jadwal melewati tengah malam, lalu membaca ulang status di batas tersebut. Selama tidur, status diperiksa setiap `OJOL_IDLE_POLL_SECONDS` (default 10 detik), atau lebih cepat jika batas jadwal bangun lebih dekat. Tidur manual juga menjeda Auto; bangun manual dihormati meskipun masih dalam rentang jadwal tidur. Lihat [bukti jadwal tidur](docs/http-endpoints.md#bukti-jadwal-tidur).
 
 Worker memakai daftar toko tetap per desa dan resource di `ojol/shop_locations.py`. Jika beberapa toko Akademis.ai satu tipe punya produk yang layak dibeli, worker memilih toko yang paling lama belum menerima pembelian terverifikasi dari akun tersebut. Riwayat di jurnal mempertahankan giliran setelah restart. Toko lain menjadi cadangan saat pilihan Akademis.ai tidak memenuhi syarat. Worker membaca katalog untuk mengecek harga, stok, dan kepemilikan. Pembelian tetap mengikuti target isi ulang, kapasitas, anggaran, dan saldo minimum.
 

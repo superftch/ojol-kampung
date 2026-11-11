@@ -62,8 +62,9 @@ def next_step(
 ) -> Step:
     if is_sleeping(state):
         return Step(
-            action="stop",
-            reason="Kamu sedang tidur. Tekan ☀ Bangun di game sebelum menjalankan Ojol.",
+            action="wait",
+            reason="Karakter sedang tidur. Semua Auto dijeda sampai bangun di game.",
+            wait_seconds=settings.idle_poll_seconds,
         )
     if state.phase == "searching":
         return Step(

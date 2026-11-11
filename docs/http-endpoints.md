@@ -13,7 +13,7 @@ Tabel ini mencakup seluruh request yang dipanggil adapter Ojol ke `https://www.k
 | Endpoint | Pemakaian | Bukti |
 |---|---|---|
 | GET `/api/ojol` | mitra, kendaraan, resource, trip, tarif, payout/history | HTTP200 dan konsumsi client |
-| GET `/api/game/me` | `balanceMilli`, `configVersion`, rumah/desa | HTTP200 |
+| GET `/api/game/me` | `balanceMilli`, `configVersion`, rumah/desa, `profile.resting`, `profile.sleep` | HTTP200 historis; field tidur dicocokkan dengan bundle client tersimpan pada 12 November 2026 |
 | GET `/api/kebutuhan` | `asleep`, status kebutuhan aktif, nilai per kebutuhan, dan kandidat tempat fisik | HTTP 200 untuk status kebutuhan. Bentuk kandidat fasilitas berasal dari bundle client. |
 | GET `/api/time` | waktu server untuk arrival/countdown | HTTP200 |
 | GET `/api/daily/house?plotId={plotId}` | Baca status kunjungan akun ke rumah kandidat; harus `visitedToday: false` | Bundle client dan HTTP200 pada 12 November 2026 |
@@ -29,6 +29,16 @@ Tabel ini mencakup seluruh request yang dipanggil adapter Ojol ke `https://www.k
 | POST `/api/facilities/{id}/use` | `{requestId}` untuk fasilitas fisik gratis yang lolos pemeriksaan | Bundle client; belum dieksekusi live oleh adapter |
 
 Capture historis `/api/ojol` dalam `.local/http-discovery/ojol.json` memuat `todayCount` dan receipt `history[]` dengan `id`, `doneAt`, `kind`, `from.label`, `to.label`, serta `netMilli`. Trip aktif memuat `id` dan `arriveAt`. Adapter memakai ID receipt dan waktu server untuk rekonsiliasi, serta `netMilli` untuk ongkos diterima. Snapshot menyimpan penghitung dan riwayat yang tersedia pada respons, bukan seluruh riwayat akun. Tidak ada endpoint baru atau asumsi idempotensi POST untuk fitur ini.
+
+## Bukti jadwal tidur
+
+Pemeriksaan statis 12 November 2026 pada bundle tersimpan `1xhiowffvsf0w.js` (SHA256 `68d239f92244dcce98cafdb2adc431866082dbab780005a55f0d7370cd266f3e`) menemukan form `ks-sleep-from` / `ks-sleep-to` dan label **Jam tidur (WIB)** / **Jam bangun (WIB)**. Client membaca `me.profile.sleep.{auto,from,to,inSchedule}`; `from` dan `to` adalah menit sejak tengah malam. Nilai awal form 1320 / 300 setara 22.00 / 05.00 dan bukan bukti jadwal aktif setiap akun. Client memakai `me.profile.resting` untuk status tidur aktual dan menawarkan tombol Bangun/Tidur kapan saja. `inSchedule` dapat tetap true saat karakter sudah dibangunkan manual.
+
+Capture historis `.local/http-discovery/me.json` memuat bentuk yang sama: `resting: false` dan `sleep: {auto: false, from: 1320, to: 300, inSchedule: false}`. Capture ini tidak membuktikan konfigurasi akun saat ini.
+
+Verifikasi live read-only 12 November 2026 pukul 02.51–02.53 WIB memakai sesi yang diberikan pengguna. Tiga pembacaan terpisah mengonfirmasi `sleep: {auto: true, from: 120, to: 300, inSchedule: true}`, yaitu **02.00–05.00 WIB** untuk akun yang diperiksa. `profile.resting` dan `kebutuhan.asleep` sama-sama true; parser worker menghasilkan `phase: sleeping` dan batas berikutnya 05.00 WIB. Satu siklus controller dengan dua snapshot live, terpisah sekitar 10 detik, tetap di `stage: sleeping` / `event: tidur` dan tidak membuat aksi ledger. Seluruh verifikasi berisi 20 GET dan nol POST. Cookie sementara dihapus; laporan tanpa cookie disimpan privat di `.local/sleep-inspection/live-verification.json`, diabaikan Git. Pergantian status pada 05.00 belum diamati langsung; batas waktu dan kelanjutan setelah bangun diuji dengan simulasi terisolasi.
+
+Worker membaca jadwal akun pada setiap snapshot dan menghitung batas berikutnya dengan `GET /api/time.now` dalam `Asia/Jakarta`, termasuk lintas tengah malam. Waktu sejak snapshot diterima dihitung dengan jam monotonic agar waktu tunggu tidak melewati batas jadwal yang sudah diketahui. Di batas itu worker membaca ulang status, dan selama tidur memeriksa berkala sesuai `idle_poll_seconds`. Status tidur dari salah satu `kebutuhan.asleep` atau `profile.resting` menahan semua transaksi; jam jadwal sendiri tidak menimpa status bangun manual. Perubahan tepat di antara GET terakhir dan POST tetap tunduk pada keputusan server, dan hasil transaksi belum pasti tetap memerlukan bukti sebelum dilanjutkan.
 
 Tombol mata memanggil onLook → centerOn + pembukaan panel. Panel membaca detail plot lalu katalog. Tombol Pergi memakai POST `/api/tujuan`; core HTTP tidak mengirim endpoint tersebut. Adapter membaca katalog berdasarkan ID toko tetap di `ojol/shop_locations.py`. Pembelian service sendiri dapat mempunyai efek tampil di toko yang ditentukan server, sama seperti Beli dari preview browser.
 

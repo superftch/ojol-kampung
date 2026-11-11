@@ -1,10 +1,58 @@
+from datetime import datetime
 from decimal import Decimal
 
 import pytest
 from pydantic import ValidationError
 
-from ojol.models import Product, Settings, Snapshot
+from ojol.models import Product, Settings, SleepSchedule, Snapshot
 from ojol.planner import decimal_id, next_step, parse_snapshot, select_shop
+
+
+@pytest.mark.parametrize(
+    ("server_now", "boundary"),
+    [
+        ("2026-11-12T14:59:59+00:00", "2026-11-12T22:00:00+07:00"),
+        ("2026-11-12T15:00:00+00:00", "2026-11-13T05:00:00+07:00"),
+        ("2026-11-12T21:59:59+00:00", "2026-11-13T05:00:00+07:00"),
+        ("2026-11-12T22:00:00+00:00", "2026-11-13T22:00:00+07:00"),
+        ("2026-11-12T00:30:00+07:00", "2026-11-12T05:00:00+07:00"),
+        ("2026-11-12T23:59:59+07:00", "2026-11-13T05:00:00+07:00"),
+    ],
+)
+def test_sleep_boundaries_follow_server_time_in_wib_across_midnight(server_now, boundary):
+    schedule = SleepSchedule(auto=True, start=1320, end=300, in_schedule=False)
+    assert schedule.next_transition(datetime.fromisoformat(server_now)) == datetime.fromisoformat(
+        boundary
+    )
+    assert (
+        schedule.model_copy(update={"auto": False}).next_transition(
+            datetime.fromisoformat(server_now)
+        )
+        is None
+    )
+
+
+def test_sleep_boundaries_use_account_hours_and_allow_daytime_schedule():
+    schedule = SleepSchedule(auto=True, start=480, end=960, in_schedule=True)
+    assert schedule.next_transition(
+        datetime.fromisoformat("2026-11-12T10:00:00+07:00")
+    ) == datetime.fromisoformat("2026-11-12T16:00:00+07:00")
+
+
+@pytest.mark.parametrize(
+    ("server_now", "boundary"),
+    [
+        ("2026-11-12T01:59:59+07:00", "2026-11-12T02:00:00+07:00"),
+        ("2026-11-12T02:00:00+07:00", "2026-11-12T05:00:00+07:00"),
+        ("2026-11-12T02:51:56.013+07:00", "2026-11-12T05:00:00+07:00"),
+        ("2026-11-12T05:00:00+07:00", "2026-11-13T02:00:00+07:00"),
+    ],
+)
+def test_live_account_sleep_hours_have_exact_server_boundaries(server_now, boundary):
+    schedule = SleepSchedule(auto=True, start=120, end=300, in_schedule=True)
+    assert schedule.next_transition(datetime.fromisoformat(server_now)) == datetime.fromisoformat(
+        boundary
+    )
 
 
 @pytest.mark.parametrize(
@@ -53,8 +101,9 @@ def test_sleeping_notice_overrides_visible_search_and_prevents_spending(settings
     snapshot = parse_snapshot(raw)
     assert snapshot.phase == "sleeping"
     step = next_step(snapshot, settings)
-    assert step.action == "stop" and "Bangun" in step.reason
-    assert next_step(snapshot.model_copy(update={"phase": "idle"}), settings).action == "stop"
+    assert step.action == "wait" and "tidur" in step.reason
+    assert step.wait_seconds == settings.idle_poll_seconds
+    assert next_step(snapshot.model_copy(update={"phase": "idle"}), settings).action == "wait"
     raw["text"] = "Bisa narik di luar jam kerja dan saat tidak tidur."
     assert parse_snapshot(raw).phase == "idle"
 

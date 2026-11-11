@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from pydantic import ValidationError
 
 from ojol.auto_settings import set_auto_flag
 from ojol.cleanup import scan
@@ -270,6 +271,81 @@ async def test_auto_ojol_off_rejects_new_orders_and_allows_existing_trip_claim(a
     assert [json.loads(request.content) for request in posts] == [{"action": "selesai"}]
 
 
+@pytest.mark.parametrize("kind", ["search", "complete"])
+async def test_sleep_before_job_action_sends_no_post(api, world, kind):
+    world["needs"]["asleep"] = True
+    if kind == "complete":
+        world["ojol"]["trip"] = trip()
+        world["time"]["now"] = "2030-01-02T10:00:01Z"
+    with pytest.raises(HttpCoreError) as error:
+        await api.job_action(kind)
+    assert error.value.category == "sleeping"
+    assert all(request.method == "GET" for request in api.calls)
+
+
+@pytest.mark.parametrize(
+    "asleep,resting", [(True, False), (False, True), (True, True), (False, False)]
+)
+async def test_sleep_status_uses_both_game_sources_and_preserves_manual_wake(
+    api, world, asleep, resting
+):
+    world["needs"]["asleep"] = asleep
+    world["me"]["profile"] = {
+        "resting": resting,
+        "sleep": {"auto": True, "from": 1395, "to": 405, "inSchedule": True},
+    }
+    state = await api.snapshot()
+    assert state.phase == ("sleeping" if asleep or resting else "idle")
+    assert state.sleep_schedule.start == 1395
+    assert state.sleep_schedule.end == 405
+    assert state.sleep_schedule.auto is True
+    assert state.sleep_schedule.in_schedule is True
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("from", -1), ("to", 1440), ("from", True), ("auto", "false"), ("inSchedule", None)],
+)
+async def test_invalid_sleep_schedule_cannot_allow_job_post(api, world, field, value):
+    schedule = {"auto": True, "from": 1320, "to": 300, "inSchedule": False, field: value}
+    world["me"]["profile"] = {"resting": False, "sleep": schedule}
+    with pytest.raises(ValidationError):
+        await api.job_action("search")
+    assert all(request.method == "GET" for request in api.calls)
+
+
+async def test_sleep_during_purchase_preflight_waits_without_post_or_uncertain_ledger(
+    api, world, settings
+):
+    ui = HttpUI(settings)
+
+    async def call(name, **args):
+        if name == "ojol_snapshot":
+            return (await api.snapshot()).model_dump(mode="json")
+        if name == "ojol_preview_shop":
+            return await api.preview(**args)
+        if name == "ojol_purchase":
+            world["needs"]["asleep"] = True
+            return await api.purchase(**args)
+        pytest.fail(name)
+
+    ui.call_tool = call
+    with closing(Journal(settings.runtime_dir)) as journal:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+
+        async def wake(seconds):
+            assert all(request.method == "GET" for request in api.calls)
+            assert journal.history()["actions"][0]["status"] == "rejected"
+            world["needs"]["asleep"] = False
+
+        controller.wait = AsyncMock(side_effect=wake)
+        assert await controller.purchase(await ui.snapshot(), "data") is False
+        controller.wait.assert_awaited_once()
+        assert controller.state.phase == "idle"
+        assert not journal.unresolved() and controller.spent == 0
+        assert all(request.method == "GET" for request in api.calls)
+
+
 async def test_needs_snapshot_works_without_active_ojol_membership(api, world):
     set_auto_flag(api.directory, "ojol", False)
     world["ojol"] = {"enabled": True, "mitra": False}
@@ -382,7 +458,7 @@ async def test_need_value_prefers_item_that_fills_multiple_needs_within_budget(
     assert plan.product.name == "Soto"
 
 
-@pytest.mark.parametrize("change", ["stock", "balance", "brand", "missing_catalog"])
+@pytest.mark.parametrize("change", ["stock", "balance", "brand", "missing_catalog", "sleeping"])
 async def test_need_purchase_rechecks_catalog_and_wallet_before_post(api, world, settings, change):
     setup_food_catalog(world)
     before = await api.snapshot()
@@ -394,11 +470,13 @@ async def test_need_purchase_rechecks_catalog_and_wallet_before_post(api, world,
         world["me"]["balanceMilli"] -= 1000
     elif change == "brand":
         world["shop"]["plang"] = "Toko baru"
+    elif change == "sleeping":
+        world["needs"]["asleep"] = True
     else:
         world["failed_paths"].add(f"/api/shops/{SHOP}")
     with pytest.raises(HttpCoreError) as error:
         await api.purchase(plan.product.model_dump(mode="json"), "35", 55, "20", str(uuid4()))
-    assert error.value.category == "rejected"
+    assert error.value.category == ("sleeping" if change == "sleeping" else "rejected")
     assert all(request.method == "GET" for request in api.calls)
 
 
@@ -510,7 +588,8 @@ async def test_need_purchase_keeps_uncertain_post_single_attempt(api, world, set
     assert sum(request.method == "POST" for request in api.calls) == 1
 
 
-async def test_physical_facility_requires_free_active_service_on_second_read(api, world):
+@pytest.mark.parametrize("blocked", ["cooldown", "sleeping"])
+async def test_physical_facility_requires_free_active_service_on_second_read(api, world, blocked):
     facility_id = str(uuid4())
     world["needs"].update(
         enabled=True,
@@ -540,12 +619,16 @@ async def test_physical_facility_requires_free_active_service_on_second_read(api
     world["facilities"][facility_id] = details
     preview = await api.preview("fisik")
     product = preview["shops"][0]["products"][0]
-    details["nextAt"] = "2030-01-02T12:00:00Z"
+    if blocked == "cooldown":
+        details["nextAt"] = "2030-01-02T12:00:00Z"
+    else:
+        world["needs"]["asleep"] = True
     with pytest.raises(HttpCoreError) as error:
         await api.purchase(product, "35", 30, "20", str(uuid4()))
-    assert error.value.category == "rejected"
+    assert error.value.category == ("sleeping" if blocked == "sleeping" else "rejected")
     assert all(request.method == "GET" for request in api.calls)
     details["nextAt"] = None
+    world["needs"]["asleep"] = False
     product = (await api.preview("fisik"))["shops"][0]["products"][0]
     request_id = str(uuid4())
     await api.purchase(product, "35", 30, "20", request_id)

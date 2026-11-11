@@ -1,7 +1,8 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Annotated, Literal, get_args
+from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
 
@@ -113,6 +114,21 @@ class GameReceipt(Model):
     amount: Coin
 
 
+class SleepSchedule(Model):
+    auto: bool = Field(strict=True)
+    start: int = Field(ge=0, lt=1440, strict=True)
+    end: int = Field(ge=0, lt=1440, strict=True)
+    in_schedule: bool = Field(strict=True)
+
+    def next_transition(self, server_now):
+        if not self.auto:
+            return None
+        local = server_now.astimezone(ZoneInfo("Asia/Jakarta"))
+        midnight = local.replace(hour=0, minute=0, second=0, microsecond=0)
+        boundaries = [midnight + timedelta(minutes=value) for value in (self.start, self.end)]
+        return min(value if value > local else value + timedelta(days=1) for value in boundaries)
+
+
 class Snapshot(Model):
     observed_at: datetime = Field(default_factory=now)
     wallet: Coin
@@ -133,6 +149,7 @@ class Snapshot(Model):
     arrive_at: datetime | None = None
     home_plot: str | None = None
     village: str | None = None
+    sleep_schedule: SleepSchedule | None = None
 
     def resource_value(self, resource: Resource | Need):
         return self.needs.get(resource) if resource in NEEDS else getattr(self, resource)

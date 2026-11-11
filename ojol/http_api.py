@@ -16,7 +16,7 @@ import httpx
 from .auto_settings import auto_flags
 from .finance import WIB, day_bounds, report_date
 from .healing import write_private
-from .models import NEEDS, GameReceipt, Product, ShopPreview, Snapshot, now
+from .models import NEEDS, GameReceipt, Product, ShopPreview, SleepSchedule, Snapshot, now
 from .planner import ALLOWED_ITEMS
 from .session_transfer import DOMAIN, parse_cookie_input, session_expired
 from .shop_locations import NEED_FALLBACK_PLOTS, NEED_SHOPS_BY_VILLAGE, SHOPS_BY_VILLAGE, NeedShop
@@ -117,6 +117,21 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
         raise HttpCoreError("Akun belum menjadi mitra Ojol", category="blocked")
     if type(needs["asleep"]) is not bool:
         raise HttpCoreError("Status tidur API berubah", recoverable=True)
+    profile = me.get("profile") or {}
+    resting = profile.get("resting", False)
+    if type(resting) is not bool:
+        raise HttpCoreError("Status istirahat API berubah", recoverable=True)
+    schedule = profile.get("sleep")
+    sleep_schedule = (
+        SleepSchedule(
+            auto=schedule["auto"],
+            start=schedule["from"],
+            end=schedule["to"],
+            in_schedule=schedule["inSchedule"],
+        )
+        if schedule is not None
+        else None
+    )
     trip = ojol.get("trip") if not require_ojol and ojol.get("mitra") is False else ojol["trip"]
     phase, remaining, description = "idle", None, None
     buttons, text = ["📲 Cari order", "Berhenti jadi mitra ojol"], "Narik pakai motor"
@@ -132,8 +147,8 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
             "📍 Lihat di peta",
         ]
         text = description
-    if needs["asleep"]:
-        phase, text = "sleeping", "Kamu sedang tidur. Tekan ☀ Bangun dulu."
+    if needs["asleep"] or resting:
+        phase, text = "sleeping", "Karakter sedang tidur. Semua Auto dijeda sampai bangun di game."
     elif require_ojol and ojol.get("problem") and not trip:
         raise HttpCoreError("Game menolak Ojol: periksa kondisi akun di game", category="blocked")
     history = []
@@ -179,6 +194,7 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
         arrive_at=timestamp(trip["arriveAt"]) if trip else None,
         home_plot=(me.get("home") or {}).get("plotId"),
         village=(me.get("home") or {}).get("desa"),
+        sleep_schedule=sleep_schedule,
     )
 
 
@@ -780,7 +796,7 @@ class OjolHttpApi:
             AttributeError,
         ) as exc:
             if not is_need or (
-                isinstance(exc, HttpCoreError) and exc.category in {"auth", "rejected"}
+                isinstance(exc, HttpCoreError) and exc.category in {"auth", "rejected", "sleeping"}
             ):
                 raise
             raise HttpCoreError(
@@ -816,6 +832,8 @@ class OjolHttpApi:
                     "Nama toko atau katalog berubah sebelum pembelian", category="rejected"
                 )
         state = await self.snapshot()
+        if state.phase == "sleeping":
+            raise HttpCoreError("Karakter sedang tidur; transaksi ditunda", category="sleeping")
         if resource == "fisik":
             place = next(
                 (place for place in self.physical_places if place.get("id") == shop_id), {}
@@ -854,6 +872,8 @@ class OjolHttpApi:
 
     async def job_action(self, kind):
         state = await self.snapshot()
+        if state.phase == "sleeping":
+            raise HttpCoreError("Karakter sedang tidur; aksi Ojol ditunda", category="sleeping")
         if kind == "search" and state.phase == "idle":
             if not auto_flags(self.directory)["ojol"]:
                 raise HttpCoreError(

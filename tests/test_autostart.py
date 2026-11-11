@@ -233,8 +233,8 @@ async def test_restart_success_notice_requires_usable_game_state(settings, state
         snapshots = [HttpCoreError("fixture expired", "auth")]
         error = HttpCoreError
     elif mode == "sleeping":
-        snapshots = [state.model_copy(update={"phase": "sleeping"})]
-        error = RuntimeError
+        snapshots = [state.model_copy(update={"phase": "sleeping"}), end]
+        error = StopRequested
     else:
         snapshots = [state, state, end]
         error = StopRequested

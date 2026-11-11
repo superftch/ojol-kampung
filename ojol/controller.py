@@ -32,9 +32,11 @@ class Controller:
         self.spent = Decimal(0)
         self.completed = 0
         self.started = time.monotonic()
+        self.sleep_started = None
         self.started_at = now()
         self.state = None
         self.snapshot_received_at = None
+        self.snapshot_read_at = None
         self.last_event = None
         self.wait_until = None
         self.trip_due = None
@@ -55,7 +57,9 @@ class Controller:
             raise StopRequested("Dihentikan pengguna")
         if (
             self.settings.max_minutes is not None
-            and time.monotonic() - self.started >= self.settings.max_minutes * 60
+            and (self.sleep_started if self.sleep_started is not None else time.monotonic())
+            - self.started
+            >= self.settings.max_minutes * 60
         ):
             raise StopRequested("Batas durasi sesi tercapai")
 
@@ -98,9 +102,16 @@ class Controller:
                 )
 
     async def wait(self, seconds):
-        self.stage = "wait.countdown"
+        if self.state and self.state.sleep_schedule and self.snapshot_read_at is not None:
+            boundary = self.state.sleep_schedule.next_transition(self.state.observed_at)
+            if boundary is not None:
+                remaining = (boundary - self.state.observed_at).total_seconds()
+                remaining -= time.monotonic() - self.snapshot_read_at
+                seconds = min(seconds, max(0.25, remaining))
+        sleeping = self.sleep_started is not None
+        self.stage = "sleeping" if sleeping else "wait.countdown"
         self.wait_until = (now() + timedelta(seconds=seconds)).isoformat()
-        self.report("menunggu", seconds=round(seconds, 3))
+        self.report("tidur" if sleeping else "menunggu", seconds=round(seconds, 3))
         deadline = time.monotonic() + seconds
         while time.monotonic() < deadline:
             self.check_cancel()
@@ -110,8 +121,30 @@ class Controller:
     async def read_snapshot(self):
         self.state = await self.ui.snapshot()
         self.snapshot_received_at = now().isoformat()
+        self.snapshot_read_at = time.monotonic()
         self.journal.sync_game(self.state)
         return self.state
+
+    async def wait_for_wake(self):
+        if not is_sleeping(self.state):
+            return 0
+        self.sleep_started = time.monotonic()
+        try:
+            while is_sleeping(self.state):
+                await self.wait(self.settings.idle_poll_seconds)
+                await self.wait_for_maintenance()
+                self.check_cancel()
+                await self.read_snapshot()
+        finally:
+            paused = time.monotonic() - self.sleep_started
+            for field in ("started", "trip_due", "busy_since"):
+                value = getattr(self, field)
+                if value is not None:
+                    setattr(self, field, value + paused)
+            self.need_retry_at = {key: value + paused for key, value in self.need_retry_at.items()}
+            self.sleep_started = None
+        self.report("bangun", phase=self.state.phase)
+        return paused
 
     async def verify(self, predicate, timeout=12):
         deadline = time.monotonic() + timeout
@@ -119,7 +152,8 @@ class Controller:
             self.check_cancel()
             state = await self.read_snapshot()
             if is_sleeping(state):
-                raise RuntimeError(next_step(state, self.settings).reason)
+                deadline += await self.wait_for_wake()
+                state = self.state
             if predicate(state):
                 return state
             await asyncio.sleep(0.75)
@@ -139,6 +173,8 @@ class Controller:
 
     async def purchase(self, before, resource):
         self.check_cancel()
+        if is_sleeping(before):
+            return False
         is_need = resource in NEEDS
         feature = resource if is_need else "ojol"
         if held_window(self.maintenance_file) or not auto_flags(self.settings.runtime_dir)[feature]:
@@ -257,8 +293,16 @@ class Controller:
                 )
             )
         except BaseException as exc:
-            if isinstance(exc, HttpCoreError) and exc.category in {"rejected", "auto_disabled"}:
+            if isinstance(exc, HttpCoreError) and exc.category in {
+                "rejected",
+                "auto_disabled",
+                "sleeping",
+            }:
                 self.journal.reject(action)
+                if exc.category == "sleeping":
+                    await self.read_snapshot()
+                    await self.wait_for_wake()
+                    return False
                 if is_need or exc.category == "auto_disabled":
                     return False
             else:
@@ -284,6 +328,8 @@ class Controller:
 
     async def job_action(self, before, kind):
         self.check_cancel()
+        if is_sleeping(before):
+            return
         if held_window(self.maintenance_file) or (
             kind != "complete" and not auto_flags(self.settings.runtime_dir)["ojol"]
         ):
@@ -344,8 +390,11 @@ class Controller:
                     )
                 )
         except BaseException as exc:
-            if isinstance(exc, HttpCoreError) and exc.category == "auto_disabled":
+            if isinstance(exc, HttpCoreError) and exc.category in {"auto_disabled", "sleeping"}:
                 self.journal.reject(action)
+                if exc.category == "sleeping":
+                    await self.read_snapshot()
+                    await self.wait_for_wake()
                 return
             self.journal.settle(action, False)
             if isinstance(exc, VerificationPending) or (
@@ -447,6 +496,9 @@ class Controller:
             if dry_run:
                 self.report("dry_run", plan=step.model_dump(mode="json"))
                 return
+            if is_sleeping(self.state):
+                await self.wait_for_wake()
+                continue
             if auto_start and step.action != "stop":
                 queue_notice(
                     self.settings,

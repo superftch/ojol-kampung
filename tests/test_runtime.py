@@ -15,7 +15,7 @@ from ojol.healing import write_private
 from ojol.http_api import HttpCoreError
 from ojol.journal import Journal
 from ojol.maintenance import MaintenanceWindow
-from ojol.models import ROOT, Product
+from ojol.models import ROOT, Product, SleepSchedule
 
 
 def test_environment_and_double_runner_block(settings):
@@ -93,6 +93,39 @@ async def test_stop_interrupts_long_countdown(settings, state):
         await asyncio.wait_for(controller.wait(100), 1)
     await task
     journal.close()
+
+
+@pytest.mark.parametrize("server_now", ["2026-11-12T14:59:55+00:00", "2026-11-12T21:59:55+00:00"])
+@pytest.mark.parametrize("auto", [True, False])
+async def test_wait_rechecks_at_sleep_boundary_using_server_clock_and_snapshot_age(
+    settings, state, monkeypatch, server_now, auto
+):
+    clock = 100
+    monkeypatch.setattr("ojol.controller.time", SimpleNamespace(monotonic=lambda: clock))
+    state = state.model_copy(
+        update={
+            "observed_at": datetime.fromisoformat(server_now),
+            "sleep_schedule": SleepSchedule(auto=auto, start=1320, end=300, in_schedule=False),
+        }
+    )
+    ui = SimpleNamespace(snapshot=AsyncMock(return_value=state))
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        await controller.read_snapshot()
+        clock += 3
+
+        async def advance(seconds):
+            nonlocal clock
+            clock += seconds
+
+        monkeypatch.setattr("ojol.controller.asyncio.sleep", advance)
+        await controller.wait(10)
+        assert clock == (105 if auto else 113)
+        status = json.loads((settings.runtime_dir / "status.json").read_text())
+        assert status["seconds"] == (2 if auto else 10)
+    finally:
+        journal.close()
 
 
 async def test_worker_pauses_before_game_calls_and_resumes(settings, state, monkeypatch):
@@ -200,49 +233,178 @@ async def test_purchase_does_not_start_if_maintenance_begins_during_preview(
         journal.close()
 
 
-async def test_trip_completion_verified_only_after_history_change(settings, state):
+@pytest.mark.parametrize("sleep_during_verification", [False, True])
+async def test_trip_completion_verified_only_after_history_change(
+    settings, state, sleep_during_verification
+):
     before = state.model_copy(update={"phase": "complete", "buttons": ["✅ Sampai! Terima ongkos"]})
     after = state.model_copy(update={"history": ["17.30 trip fixture · +0,72", *state.history]})
-    ui = SimpleNamespace(job_click=AsyncMock(), snapshot=AsyncMock(return_value=after))
+    snapshots = (
+        [after.model_copy(update={"phase": "sleeping"}), after]
+        if sleep_during_verification
+        else [after]
+    )
+    ui = SimpleNamespace(job_click=AsyncMock(), snapshot=AsyncMock(side_effect=snapshots))
     journal = Journal(settings.runtime_dir)
     controller = Controller(ui, settings, journal, journal.start(settings))
+    controller.wait = AsyncMock()
     await controller.job_action(before, "complete")
+    ui.job_click.assert_awaited_once()
+    assert controller.wait.await_count == int(sleep_during_verification)
     assert controller.completed == 1
     assert journal.history()["actions"][0]["status"] == "verified"
     journal.close()
 
 
-async def test_sleeping_worker_stops_before_any_purchase_or_search(settings, state):
-    asleep = state.model_copy(
-        update={"phase": "sleeping", "raw_text": "Kamu sedang tidur. Tekan ☀ Bangun dulu."}
+@pytest.mark.parametrize("kind", ["search", "complete"])
+async def test_job_sleep_preflight_rejection_waits_without_uncertain_action(settings, state, kind):
+    before = state.model_copy(
+        update={
+            "phase": "complete" if kind == "complete" else "idle",
+            "buttons": ["✅ Sampai! Terima ongkos" if kind == "complete" else "📲 Cari order"],
+        }
     )
+    asleep = before.model_copy(update={"phase": "sleeping"})
     ui = SimpleNamespace(
-        snapshot=AsyncMock(return_value=asleep), job_click=AsyncMock(), buy=AsyncMock()
+        snapshot=AsyncMock(side_effect=[asleep, before]),
+        job_click=AsyncMock(
+            side_effect=HttpCoreError("Karakter sedang tidur", category="sleeping")
+        ),
     )
     journal = Journal(settings.runtime_dir)
     try:
         controller = Controller(ui, settings, journal, journal.start(settings))
-        with pytest.raises(RuntimeError, match="Bangun"):
-            await controller.run()
-        assert not journal.history()["actions"]
+        controller.wait = AsyncMock()
+        await controller.job_action(before, kind)
+        ui.job_click.assert_awaited_once()
+        controller.wait.assert_awaited_once()
+        assert controller.state is before and controller.completed == 0
+        assert journal.history()["actions"][0]["status"] == "rejected"
+        assert not journal.unresolved()
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("ojol_enabled", [True, False])
+async def test_sleeping_worker_pauses_all_auto_then_resumes(settings, state, ojol_enabled):
+    set_auto_flag(settings.runtime_dir, "ojol", ojol_enabled)
+    awake = state.model_copy(update={"data": 80, "needs": {"makan": 5}})
+    asleep = state.model_copy(update={"phase": "sleeping", "needs": {"makan": 5}})
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[asleep, asleep, awake, awake]),
+        preview_shops=AsyncMock(),
+        job_click=AsyncMock(),
+        buy=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.purchase = AsyncMock(side_effect=StopRequested("lanjut setelah bangun"))
+
+        async def sleeping_wait(seconds):
+            assert seconds == settings.idle_poll_seconds
+            assert not journal.history()["actions"]
+            ui.preview_shops.assert_not_awaited()
+            ui.buy.assert_not_awaited()
+            ui.job_click.assert_not_awaited()
+            controller.purchase.assert_not_awaited()
+            assert not list((settings.runtime_dir / "notifications").glob("*.json"))
+
+        controller.wait = AsyncMock(side_effect=sleeping_wait)
+        with pytest.raises(StopRequested, match="lanjut setelah bangun"):
+            await controller.run(auto_start=True)
+        assert controller.wait.await_count == 2
+        controller.purchase.assert_awaited_once_with(awake, "makan")
         ui.job_click.assert_not_awaited()
         ui.buy.assert_not_awaited()
     finally:
         journal.close()
 
 
-async def test_verification_reports_sleeping_instead_of_stale_before_state(settings, state):
-    asleep = state.model_copy(
-        update={"phase": "sleeping", "raw_text": "Kamu sedang tidur. Tekan ☀ Bangun dulu."}
-    )
-    ui = SimpleNamespace(snapshot=AsyncMock(return_value=asleep))
+async def test_sleep_freezes_session_verification_and_activity_timers(settings, state, monkeypatch):
+    clock = 0
+    monkeypatch.setattr("ojol.controller.time", SimpleNamespace(monotonic=lambda: clock))
+    asleep = state.model_copy(update={"phase": "sleeping"})
+    ui = SimpleNamespace(snapshot=AsyncMock(side_effect=[asleep, asleep, state]))
     journal = Journal(settings.runtime_dir)
     try:
         controller = Controller(ui, settings, journal, journal.start(settings))
-        with pytest.raises(RuntimeError, match="Bangun"):
-            await controller.verify(lambda snapshot: False)
-        assert controller.state is asleep
+        controller.trip_due = 20
+        controller.busy_since = 1
+        controller.need_retry_at = {"makan": 100}
+
+        async def advance(seconds):
+            nonlocal clock
+            clock += 3600
+            controller.check_cancel()
+
+        controller.wait = AsyncMock(side_effect=advance)
+        assert await controller.verify(lambda snapshot: snapshot.phase == "idle") is state
+        assert controller.started == 7200
+        assert controller.trip_due == 7220
+        assert controller.busy_since == 7201
+        assert controller.need_retry_at == {"makan": 7300}
+        assert controller.sleep_started is None
+        controller.check_cancel()
+        clock += settings.max_minutes * 60
+        with pytest.raises(StopRequested, match="durasi"):
+            controller.check_cancel()
+    finally:
+        journal.close()
+
+
+async def test_stop_still_interrupts_sleep_without_gameplay(settings, state):
+    asleep = state.model_copy(update={"phase": "sleeping"})
+    ui = SimpleNamespace(snapshot=AsyncMock(return_value=asleep), job_click=AsyncMock())
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+
+        async def stop():
+            await asyncio.sleep(0.01)
+            (settings.runtime_dir / "STOP").touch()
+
+        task = asyncio.create_task(stop())
+        try:
+            with pytest.raises(StopRequested, match="pengguna"):
+                await asyncio.wait_for(controller.run(), 1)
+        finally:
+            await task
         ui.snapshot.assert_awaited_once()
+        ui.job_click.assert_not_awaited()
+        assert not journal.history()["actions"]
+        status = json.loads((settings.runtime_dir / "status.json").read_text())
+        assert status["stage"] == "sleeping" and status["event"] == "tidur"
+    finally:
+        journal.close()
+
+
+async def test_purchase_verification_waits_through_sleep_without_repeating_buy(
+    settings, state, shop_preview
+):
+    product = Product(
+        name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
+    )
+    after = state.model_copy(update={"wallet": state.wallet - Decimal("0.5"), "data": 86})
+    asleep = after.model_copy(update={"phase": "sleeping"})
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[asleep, asleep, after]),
+        preview_shops=AsyncMock(return_value=[shop_preview([product])]),
+        buy=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+
+        async def sleep_wait(seconds):
+            assert journal.history()["actions"][0]["status"] == "pending"
+            ui.buy.assert_awaited_once()
+
+        controller.wait = AsyncMock(side_effect=sleep_wait)
+        assert await controller.purchase(state, "data")
+        ui.buy.assert_awaited_once()
+        assert journal.history()["actions"][0]["status"] == "verified"
+        assert controller.spent == Decimal("0.5")
     finally:
         journal.close()
 

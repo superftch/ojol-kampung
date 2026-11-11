@@ -318,6 +318,13 @@ class ControlService:
         except (OSError, ValueError, TypeError, KeyError, OverflowError):
             cookie_status = "belum terhubung"
         lines.extend(["", f"🔑 Sesi game • {cookie_status}"])
+        schedule = state.get("sleep_schedule")
+        if schedule:
+            start, end = schedule["start"], schedule["end"]
+            hours = f"{start // 60:02d}.{start % 60:02d}–{end // 60:02d}.{end % 60:02d} WIB"
+            lines.append(f"🌙 Tidur otomatis • {'ON' if schedule['auto'] else 'OFF'} • {hours}")
+        if phase == "sleeping" and active:
+            lines.append("Semua Auto dijeda sampai karakter bangun di game.")
         window = read_window(self.maintenance_file)
         if window:
             lines.append(f"Jadwal maintenance • {window.description()}")

@@ -11,8 +11,9 @@ from pydantic import SecretStr, ValidationError
 from starlette.testclient import TestClient
 
 from ojol.control import ControlService, create_app
+from ojol.healing import write_private
 from ojol.login_access import LoginAccess
-from ojol.models import Settings
+from ojol.models import Settings, SleepSchedule
 from ojol.telegram import (
     BUTTON_COMMANDS,
     KEYBOARD,
@@ -35,6 +36,16 @@ def bot_settings(settings):
             "telegram_chat_id": 123,
         }
     )
+
+
+@pytest.mark.parametrize("auto", [True, False])
+def test_status_shows_account_sleep_hours_in_wib(settings, state, auto):
+    service = ControlService(settings)
+    state = state.model_copy(
+        update={"sleep_schedule": SleepSchedule(auto=auto, start=1395, end=405, in_schedule=False)}
+    )
+    write_private(settings.runtime_dir / "status.json", {"snapshot": state.model_dump(mode="json")})
+    assert f"Tidur otomatis • {'ON' if auto else 'OFF'} • 23.15–06.45 WIB" in service.status()
 
 
 async def test_telegram_private_message_and_sanitized_network_error(settings):
