@@ -66,7 +66,7 @@ class Journal:
             or before.today_income is None
             or any(
                 getattr(before, field) != getattr(after, field)
-                for field in ("wallet", "today_income", "history")
+                for field in ("today_income", "history")
             )
             or any(
                 getattr(after, field) > getattr(before, field)
@@ -131,6 +131,11 @@ class Journal:
             status, handoff = "handed_off", "offer_available"
         else:
             return None
+        # A stable credit alone cannot prove a payout; allow only idle closure, never a debit.
+        if after.wallet != before.wallet and (
+            status != "closed_idle" or after.wallet < before.wallet
+        ):
+            return None
         evidence = {
             "action_id": action_id,
             "method": "two_consistent_observations_after_refresh",
@@ -142,6 +147,8 @@ class Journal:
                 for field in ("fuel", "condition", "data")
             },
             "resource_delta_cause": "not_attributed",
+            "wallet_delta": str(after.wallet - before.wallet),
+            "wallet_delta_cause": "not_attributed",
             "original_outcome": "uncertain",
         }
         with self.db:

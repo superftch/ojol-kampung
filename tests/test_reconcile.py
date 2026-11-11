@@ -30,8 +30,9 @@ def search_before(state):
 @pytest.mark.parametrize("asleep", [False, True])
 @pytest.mark.parametrize("drain", [0, 1])
 @pytest.mark.parametrize("unstable", [False, True])
+@pytest.mark.parametrize("wallet_gain", ["0", "14.301"])
 async def test_reconcile_idle_search_records_unknown_resource_deltas_without_replay_or_money(
-    settings, search_before, monkeypatch, capsys, asleep, drain, unstable
+    settings, search_before, monkeypatch, capsys, asleep, drain, unstable, wallet_gain
 ):
     import ojol.app as module
 
@@ -46,6 +47,7 @@ async def test_reconcile_idle_search_records_unknown_resource_deltas_without_rep
     after = search_before.model_copy(
         update={
             "observed_at": before.observed_at + timedelta(minutes=26),
+            "wallet": before.wallet + Decimal(wallet_gain),
             "fuel": before.fuel - drain,
             "data": before.data - drain,
         }
@@ -81,6 +83,7 @@ async def test_reconcile_idle_search_records_unknown_resource_deltas_without_rep
         assert row["status"] == ("uncertain" if unstable else "closed_idle")
         assert row["before_state"] == before.model_dump_json()
         assert journal.profit()["trip_tercatat"] == 0
+        assert journal.profit()["pendapatan_ojol"] == "0"
         assert journal.profit()["pengeluaran"] == "0"
         if unstable:
             with pytest.raises(RuntimeError, match="belum terverifikasi"):
@@ -95,7 +98,11 @@ async def test_reconcile_idle_search_records_unknown_resource_deltas_without_rep
             proof = json.loads(events[0]["data"])
             assert proof["resource_delta"] == {"fuel": -drain, "condition": 0, "data": -drain}
             assert proof["resource_delta_cause"] == "not_attributed"
+            assert Decimal(proof["wallet_delta"]) == Decimal(wallet_gain)
+            assert proof["wallet_delta_cause"] == "not_attributed"
             assert proof["original_outcome"] == "uncertain"
+            if Decimal(wallet_gain):
+                assert "Selisih saldo 14.301 koin" in capsys.readouterr().out
         else:
             line = next(
                 line
@@ -173,7 +180,10 @@ def test_idle_search_resolution_never_clears_other_action_kinds(settings, search
         journal.close()
 
 
-def test_idle_search_requires_two_distinct_stable_observations(settings, search_before):
+@pytest.mark.parametrize("field,value", [("data", 96), ("wallet", Decimal("59.391"))])
+def test_idle_search_requires_two_distinct_stable_observations(
+    settings, search_before, field, value
+):
     journal = Journal(settings.runtime_dir)
     try:
         run = journal.start(settings)
@@ -183,7 +193,7 @@ def test_idle_search_requires_two_distinct_stable_observations(settings, search_
         )
         assert not journal.resolve_search(action, after, after)
         changed = after.model_copy(
-            update={"observed_at": after.observed_at + timedelta(seconds=2), "data": 96}
+            update={"observed_at": after.observed_at + timedelta(seconds=2), field: value}
         )
         assert not journal.resolve_search(action, after, changed)
         assert journal.history()["actions"][0]["status"] == "pending"

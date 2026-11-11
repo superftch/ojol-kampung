@@ -112,6 +112,10 @@ class OjolAutomationAgent(BaseAgent):
                                 print(
                                     f"Selisih resource {closed['resource_delta']} dicatat tanpa atribusi penyebab."
                                 )
+                                if state.wallet != before.wallet:
+                                    print(
+                                        f"Selisih saldo {closed['wallet_delta']} koin dicatat tanpa atribusi penyebab; tidak dibukukan sebagai pendapatan Ojol."
+                                    )
                                 continue
                         payload = json.loads(action["payload"])
                         from decimal import Decimal
