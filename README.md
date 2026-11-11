@@ -5,7 +5,7 @@ Automation Ojol multi-account dengan **HTTP MCP + Google ADK**. Satu bot Telegra
 - Default **3 akun per user**, **3 worker aktif global**; admin dapat mengubahnya tanpa restart.
 - **1 akun = 1 subprocess worker**, dengan MCP, cookie, SQLite ledger, status dan pengaturan notifikasi sendiri. Semua berjalan dalam satu container aplikasi.
 - Tanpa batas trip/durasi default; saldo utama production minimal **20 koin**.
-- Akun yang sedang berjalan otomatis dipulihkan setelah shutdown normal/deploy; Stop manual dan error membatalkannya.
+- Default `OJOL_AUTO_START=true`: semua akun aktif dengan cookie tersimpan dicoba start pada setiap boot/deploy, mengikuti whitelist dan batas worker global.
 - Pembacaan HTTP sementara gagal dicoba maksimal 3 kali (backoff 1/2 detik). Transaksi dikirim sekali; hasil ambigu menghentikan akun dan memblokir replay.
 - Laporan laba harian WIB dan tombol navigasi tanggal terikat ke akun asal. Notifikasi diberi nama akun dan hanya dikirim ke pemiliknya.
 
@@ -72,6 +72,7 @@ Isi `.env` di server; jangan commit:
 | `OJOL_ENV` | `production` |
 | `OJOL_OPERATOR_AUTHORIZED` | `true` setelah izin operator tersedia |
 | `OJOL_CORE` | `http`; nilai lain ditolak |
+| `OJOL_AUTO_START` | `true` default: start semua akun saat boot; `false`: seluruh start manual |
 | `OJOL_TELEGRAM_BOT_TOKEN` | Token BotFather |
 | `OJOL_TELEGRAM_CHAT_ID` | Telegram ID **admin**, buka bot dan Start dahulu |
 | `OJOL_MAX_ACCOUNTS_PER_USER` | `3` default sebelum override management |
@@ -94,9 +95,11 @@ Production menolak Telegram kosong, origin tanpa HTTPS, dan saldo minimum di baw
 
 Saat upgrade dari versi satu akun, **Utama** milik admin otomatis menunjuk direktori runtime lama. Ledger, cookie HTTP, dan pengaturan tidak dipindah/dihapus. Profil Chrome lama dibiarkan sebagai arsip tetapi tidak dibaca; jika hanya profil Chrome yang tersedia, lakukan **Import Cookie** baru. Hapus variabel lama `OJOL_MANAGED_BROWSER`, `OJOL_CDP_URL`, dan `OJOL_BROWSER_FALLBACK` dari konfigurasi; pastikan `OJOL_CORE=http`.
 
-Setelah mengganti konfigurasi/secret atau image, recreate aplikasi. **Akun yang sebelumnya berjalan dipulihkan otomatis setelah shutdown normal/deploy**, dengan batas worker global yang sama. Akun yang menunggu kapasitas mulai saat slot tersedia. Status akun menampilkan **Auto-start setelah deploy: ON/OFF**.
+Setelah mengganti konfigurasi/secret atau image, recreate aplikasi. **`OJOL_AUTO_START=true` menjadi default**, termasuk ketika variabel belum ditulis di `.env`. Setiap boot/deploy menyiapkan semua akun nonarsip milik user whitelist yang memiliki cookie tersimpan, termasuk akun yang sebelumnya dihentikan. Tidak perlu menekan Jalankan dulu pada update pertama. Akun menunggu slot jika batas worker global penuh. Status akun menampilkan **Auto-start saat boot: ON/OFF**, ditambah keterangan menunggu slot bila perlu.
 
-**Saat pertama kali memasang fitur ini**, jalankan akun sekali melalui **Jalankan Ojol** untuk menyimpan intent auto-start. Deploy berikutnya tidak perlu menekan Jalankan satu per satu. Hentikan Ojol, Import Cookie, arsip, cabut whitelist, error, atau sesi yang selesai membatalkan auto-start. Crash/kill paksa, cookie tidak tersedia, dan transaksi pending/uncertain tetap membutuhkan pemeriksaan manual; tidak ada replay transaksi. Jika `OJOL_MAX_SPEND`, `OJOL_MAX_JOBS`, atau `OJOL_MAX_MINUTES` berisi batas, sesi perlu dimulai manual supaya batas sesi tidak direset oleh deploy.
+Set `OJOL_AUTO_START=false` di `.env` lalu recreate untuk mematikan seluruh auto-start. Hentikan Ojol, Import Cookie, arsip, cabut akses, atau error menghentikan akun dan membatalkan antrean startup **selama aplikasi berjalan**; boot berikutnya dengan env `true` kembali mencoba semua akun yang memenuhi syarat. Akun baru/cookie baru setelah boot tetap dijalankan melalui tombol Jalankan Ojol. Error tidak memicu restart loop dalam sesi aplikasi yang sama.
+
+Startup tetap memeriksa izin operator, whitelist, cookie dan ledger pending/uncertain sebelum membuat worker; hasil transaksi yang belum pasti tetap STOP tanpa replay. **Setiap boot membuka sesi baru:** batas belanja/trip/durasi dari env dihitung ulang per sesi, sedangkan saldo minimum production20 tetap berlaku. Marker `worker-restart.json` dari versi lama tidak lagi dipakai.
 
 Jika connector keluar, seluruh worker dihentikan dan admin diberi laporan `tunnel.process_exit`; tombol Import Cookie/Jalankan Ojol mencoba memulai connector lagi. `/health` membuktikan control service hidup, bukan keberhasilan game atau koneksi edge. Readiness connector:
 
@@ -130,7 +133,7 @@ docker compose run --rm --no-deps -T --entrypoint tar app -C /data -czf - runtim
 docker compose start app
 ```
 
-Arsip memuat sesi akun dan marker auto-start; simpan privat. Restore saat aplikasi berhenti, pertahankan UID1000, dan hentikan server asal sebelum menjalankan hasil restore/migrasi supaya akun tidak berjalan di dua server. `docker compose down` mempertahankan volume; **`down -v` menghapus data**.
+Arsip memuat sesi akun; simpan privat. Dengan env auto-start aktif, akun hasil restore juga dicoba saat boot. Restore saat aplikasi berhenti, pertahankan UID1000, dan hentikan server asal sebelum menjalankan hasil restore/migrasi supaya akun tidak berjalan di dua server. `docker compose down` mempertahankan volume; **`down -v` menghapus data**.
 
 ## Pengembangan
 

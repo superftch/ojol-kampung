@@ -725,35 +725,30 @@ class MultiAccountService:
     async def resume_workers(self):
         if (
             self.closing
+            or not self.settings.auto_start
             or self.settings.env == "testing"
             or (self.settings.tunnel_enabled and not self.hub.tunnel_alive())
         ):
             return
         async with self.lock:
             for service in list(self.services.values()):
-                if not service.restart_ready():
+                if not service.auto_start_pending:
                     continue
                 if (
                     not self.registry.allowed(service.settings.telegram_chat_id)
                     or (service.settings.runtime_dir / "STOP").exists()
                 ):
-                    service.restart_file.unlink(missing_ok=True)
+                    service.auto_start_pending = False
                     continue
                 if (service.worker and service.worker.returncode is None) or running(
                     service.settings.runtime_dir
                 ):
+                    service.auto_start_pending = False
                     continue
                 if self.active_workers() >= self.registry.value("max_active_workers"):
                     return
+                service.auto_start_pending = False
                 try:
-                    # shortcut: bounded sessions require manual restart so their limits never reset.
-                    if any(
-                        getattr(service.settings, key) is not None
-                        for key in ("max_spend", "max_jobs", "max_minutes")
-                    ):
-                        raise RuntimeError(
-                            "Auto-start diblokir karena batas belanja/trip/durasi aktif. Tekan Jalankan Ojol untuk sesi baru."
-                        )
                     from .session_transfer import parse_cookie_input
 
                     parse_cookie_input(
@@ -765,9 +760,7 @@ class MultiAccountService:
                     finally:
                         journal.close()
                     response = await service.command("run")
-                    queue_notice(
-                        service.settings, "♻️ Auto-start setelah deploy/restart.\n" + response
-                    )
+                    queue_notice(service.settings, "♻️ Auto-start akun saat boot.\n" + response)
                 except Exception as exc:
                     queue_error(service.settings, exc, "worker.auto_start")
 
@@ -801,7 +794,16 @@ class MultiAccountService:
         self.started = True
         for row in self.registry.list():
             if self.registry.allowed(row["owner"]):
-                await self.ensure_started(self.service(row["id"]))
+                service = self.service(row["id"])
+                await self.ensure_started(service)
+                if (
+                    self.settings.auto_start
+                    and self.settings.env != "testing"
+                    and (service.settings.runtime_dir / "http-session.json").is_file()
+                ):
+                    # A new boot deliberately starts all eligible accounts, including previously stopped ones.
+                    service.auto_start_pending = True
+                    (service.settings.runtime_dir / "STOP").unlink(missing_ok=True)
         if self.settings.env == "testing":
             return
         try:
@@ -823,7 +825,7 @@ class MultiAccountService:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         results = await asyncio.gather(
-            *(s.close(preserve_restart=True) for s in self.services.values()),
+            *(s.close() for s in self.services.values()),
             self.hub.close(),
             return_exceptions=True,
         )

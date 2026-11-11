@@ -265,7 +265,7 @@ def test_game_cookie_transfer_excludes_google_and_other_cookie_fields():
 
 
 async def test_restart_reports_interrupted_worker_without_restarting_gameplay(settings):
-    settings = settings.model_copy(update={"env": "local"})
+    settings = settings.model_copy(update={"env": "local", "auto_start": False})
     (settings.runtime_dir / "status.json").write_text(
         json.dumps({"pid": 999999, "run_id": 3, "event": "menunggu", "stage": "wait.countdown"})
     )
