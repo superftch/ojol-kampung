@@ -12,14 +12,17 @@ Gunakan dengan izin operator game. Satu akun game jangan dijalankan bersamaan di
 
 ## Management Telegram
 
-Admin pertama adalah ID pribadi dalam `OJOL_TELEGRAM_CHAT_ID`; ID ini selalu boleh masuk dan tidak bisa dicabut lewat bot. User lain ditolak sampai admin menambahkan ID numeriknya. Kontrol hanya menerima private chat dengan `chat.id == from.id`; grup dan callback milik user lain ditolak.
+Admin pertama adalah ID pribadi dalam `OJOL_TELEGRAM_CHAT_ID`; ID ini selalu boleh masuk dan tidak bisa dicabut lewat bot. User lain belum bisa memakai fitur akun sampai admin menyetujui pengajuan atau menambahkan ID numeriknya. Kontrol hanya menerima private chat dengan `chat.id == from.id`; grup dan callback milik user lain ditolak.
 
 Saat user ditambahkan atau diaktifkan ulang, bot mengirim menu utama ke chat pribadi user. Jika user belum pernah membuka bot, minta user menekan **Start** dahulu; [Telegram melarang bot memulai percakapan pribadi](https://core.telegram.org/bots#how-are-bots-different-from-users). Jika tombol belum terlihat, admin bisa memilih **Kirim Menu**, atau user mengirim pesan **menu** ke bot. Setelah menu muncul: **Tambah Akun → ketik nama → Import Cookie**.
+
+User belum terdaftar bisa menekan **Start** atau mengirim **`/start` → Ajukan Akses**. Bot menyimpan **nama dari profil Telegram, username (jika ada), dan Telegram ID** pemohon, lalu mengirim notifikasi ke admin dengan tombol **Setujui / Tolak**. Daftar persisten tersedia lewat **Management → Pengajuan Akses**, termasuk setelah bot restart. Pengajuan berulang saat menunggu tidak menambah notifikasi admin. Persetujuan memasukkan user ke whitelist dan mengirim menu utama; penolakan tetap menutup akses, dan aktivasi ulang harus dilakukan admin melalui Daftar User. Pengajuan tidak otomatis membuat akun game atau menjalankan worker.
 
 Semua operasi bot memakai tombol. Ketik hanya nilai yang diminta: ID Telegram, nama akun, batas angka, atau tanggal. Tidak perlu mengetik perintah. Tombol **Batal** selalu bisa membatalkan input; **Menu Utama** mengembalikan tombol utama.
 
 | Aksi admin | Alur tombol |
 |---|---|
+| Tinjau pengajuan beserta nama pemohon | **Management → Pengajuan Akses → pilih pemohon → Setujui / Tolak** |
 | Lihat whitelist, kuota dan worker aktif | **Management → Daftar User** |
 | Tambah user | **Management → Tambah User**, lalu ketik ID Telegram |
 | Aktifkan ulang user | **Daftar User → pilih user → Aktifkan Akses** |

@@ -24,6 +24,12 @@ HELP = (
 )
 CANCEL = {"inline_keyboard": [[{"text": "Batal", "callback_data": "cancel"}]]}
 PAGE_SIZE = 8
+ACCESS_REQUEST = {
+    "inline_keyboard": [[{"text": "Ajukan Akses", "callback_data": "access:request"}]]
+}
+ACCESS_STATUS = {
+    "inline_keyboard": [[{"text": "Cek Status Pengajuan", "callback_data": "access:status"}]]
+}
 
 
 class MultiAccountService:
@@ -186,6 +192,7 @@ class MultiAccountService:
                         {"text": "Daftar User", "callback_data": "admin:users:0"},
                         {"text": "Tambah User", "callback_data": "admin:add_user"},
                     ],
+                    [{"text": "Pengajuan Akses", "callback_data": "admin:requests:0"}],
                     [{"text": "Batas Akun Default", "callback_data": "admin:default_limit"}],
                     [{"text": "Batas Worker", "callback_data": "admin:worker_limit"}],
                     [{"text": "Menu Utama", "callback_data": "home"}],
@@ -244,6 +251,97 @@ class MultiAccountService:
             {"inline_keyboard": buttons},
         )
 
+    async def public_access(self, owner, text, callback, profile):
+        if not (
+            (not callback and text.split(maxsplit=1)[0:1] == ["/start"])
+            or (callback and text in {"access:request", "access:status"})
+        ):
+            return
+        request = self.registry.access_request(owner)
+        created = False
+        if callback and text == "access:request" and request is None:
+            if not self.registry.admin:
+                await self.reply(
+                    owner, "Pengajuan belum tersedia. Hubungi pengelola bot.", ACCESS_STATUS
+                )
+                return
+            profile = profile if profile.get("id") == owner else {}
+            name = " ".join(str(profile.get(key) or "") for key in ("first_name", "last_name"))
+            request, created = self.registry.request_access(
+                owner, name, str(profile.get("username") or "")
+            )
+        if request is None:
+            await self.reply(
+                owner,
+                "Anda belum terdaftar. Tekan Ajukan Akses untuk meminta persetujuan admin.",
+                ACCESS_REQUEST,
+            )
+        elif request["status"] == "pending":
+            await self.reply(
+                owner,
+                "Pengajuan Anda menunggu persetujuan admin. Tidak perlu mengajukan ulang.",
+                ACCESS_STATUS,
+            )
+        else:
+            await self.reply(
+                owner,
+                "Pengajuan ditolak atau akses dicabut. Hubungi admin untuk mengaktifkan akses.",
+                ACCESS_STATUS,
+            )
+        if created:
+            await self.request_menu(self.registry.admin, request["id"])
+
+    async def requests_menu(self, owner, page=0):
+        rows = self.registry.access_requests()
+        page = min(max(0, page), max(0, (len(rows) - 1) // PAGE_SIZE))
+        buttons = [
+            [
+                {
+                    "text": f"{r['name'][:30]} · {r['telegram_id']}",
+                    "callback_data": "request:" + r["id"],
+                }
+            ]
+            for r in rows[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]
+        ]
+        navigation = []
+        if page:
+            navigation.append(
+                {"text": "◀ Sebelumnya", "callback_data": f"admin:requests:{page - 1}"}
+            )
+        if (page + 1) * PAGE_SIZE < len(rows):
+            navigation.append(
+                {"text": "Berikutnya ▶", "callback_data": f"admin:requests:{page + 1}"}
+            )
+        if navigation:
+            buttons.append(navigation)
+        buttons.append([{"text": "Kembali ke Management", "callback_data": "admin:menu"}])
+        await self.reply(
+            owner,
+            f"Pengajuan menunggu: {len(rows)} · halaman {page + 1}",
+            {"inline_keyboard": buttons},
+        )
+
+    async def request_menu(self, owner, identifier):
+        row = self.registry.request_by_id(identifier)
+        buttons = []
+        if row["status"] == "pending":
+            buttons.append(
+                [
+                    {"text": "Setujui", "callback_data": "approve_request:" + identifier},
+                    {"text": "Tolak", "callback_data": "reject_request:" + identifier},
+                ]
+            )
+        buttons.append([{"text": "Daftar Pengajuan", "callback_data": "admin:requests:0"}])
+        status = {"pending": "menunggu", "approved": "disetujui", "rejected": "ditolak"}[
+            row["status"]
+        ]
+        await self.reply(
+            owner,
+            f"Pengajuan Akses\nNama: {row['name']}\nUsername: {'@' + row['username'] if row['username'] else 'tidak ada'}"
+            f"\nTelegram ID: {row['telegram_id']}\nStatus: {status}",
+            {"inline_keyboard": buttons},
+        )
+
     async def send_user_menu(self, owner, uid):
         if not self.registry.allowed(uid):
             raise ValueError("Aktifkan akses user dahulu.")
@@ -286,17 +384,22 @@ class MultiAccountService:
                 "Akses dicabut; sebagian worker belum terkonfirmasi berhenti. Periksa server."
             )
 
-    async def dispatch(self, owner, text, callback=False):
-        if not self.registry.allowed(owner):
+    async def dispatch(self, owner, text, callback=False, profile=None):
+        if type(owner) is not int or owner <= 0:
             return
         async with self.lock:
             try:
+                if not self.registry.allowed(owner):
+                    await self.public_access(owner, text.strip(), callback, profile or {})
+                    return
                 await self._dispatch(owner, text.strip(), callback)
             except (ValueError, OverflowError) as exc:
                 await self.reply(
                     owner,
                     str(exc) if not isinstance(exc, OverflowError) else "Tanggal tidak valid",
-                    CANCEL if owner in self.pending else KEYBOARD,
+                    (CANCEL if owner in self.pending else KEYBOARD)
+                    if self.registry.allowed(owner)
+                    else ACCESS_STATUS,
                 )
             except Exception as exc:
                 queue_error(self.hub.settings, exc, "management.command")
@@ -323,6 +426,24 @@ class MultiAccountService:
         self.pending.pop(owner, None)
         if text in {"Management", "admin:menu"}:
             await self.admin_menu(owner)
+        elif text.startswith("admin:requests:"):
+            await self.requests_menu(owner, int(text.rsplit(":", 1)[1]))
+        elif text.startswith("request:"):
+            await self.request_menu(owner, text.split(":", 1)[1])
+        elif text.startswith(("approve_request:", "reject_request:")):
+            action, identifier = text.split(":", 1)
+            row = self.registry.review_request(
+                identifier, owner, approve=action == "approve_request"
+            )
+            if row["status"] == "approved":
+                await self.send_user_menu(owner, row["telegram_id"])
+            else:
+                await self.reply(
+                    row["telegram_id"],
+                    "Pengajuan akses Anda ditolak oleh admin. Hubungi admin jika perlu peninjauan.",
+                    ACCESS_STATUS,
+                )
+            await self.request_menu(owner, identifier)
         elif text.startswith("admin:users:"):
             await self.users_menu(owner, int(text.rsplit(":", 1)[1]))
         elif text == "admin:add_user":
@@ -419,6 +540,9 @@ class MultiAccountService:
             await self.reply(owner, "Gunakan tombol konfirmasi atau Batal.", CANCEL)
 
     async def _dispatch(self, owner, text, callback):
+        if callback and text.startswith("access:"):
+            await self.home(owner)
+            return
         # Telegram sends /start when Start is pressed; users never need to type a command.
         if (not callback and text in {"/start", "Bantuan", "Menu Utama", "Batal"}) or (
             callback and text in {"home", "cancel"}
@@ -438,6 +562,9 @@ class MultiAccountService:
                     "revoke_confirm:",
                     "enable:",
                     "send_menu:",
+                    "request:",
+                    "approve_request:",
+                    "reject_request:",
                 )
             )
         ):
@@ -563,14 +690,14 @@ class MultiAccountService:
                         message = (
                             callback.get("message", {}) if callback else update.get("message", {})
                         )
-                        sender = (
-                            callback.get("from", {}) if callback else message.get("from", {})
-                        ).get("id")
+                        profile = callback.get("from", {}) if callback else message.get("from", {})
+                        sender = profile.get("id")
                         chat = message.get("chat", {})
                         if (
                             chat.get("type") == "private"
                             and chat.get("id") == sender
-                            and self.registry.allowed(sender)
+                            and type(sender) is int
+                            and sender > 0
                         ):
                             if callback:
                                 await api.call(
@@ -580,6 +707,7 @@ class MultiAccountService:
                                 sender,
                                 callback.get("data", "") if callback else message.get("text", ""),
                                 bool(callback),
+                                profile=profile,
                             )
                         offset = max(offset, update["update_id"] + 1)
                         cursor.write_text(str(offset))
