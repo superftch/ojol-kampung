@@ -2,7 +2,7 @@ import re
 from math import hypot, isfinite
 from random import shuffle
 
-from .http_api import HttpCoreError
+from .http_api import HouseUnavailable, HttpCoreError
 
 
 async def scan(api, blocks, limit, *, include_neighbors=False, dirty_only=True):
@@ -74,6 +74,17 @@ async def find_unvisited(api):
         status = await api.request(f"/api/daily/house?plotId={house['plot_id']}")
         if not isinstance(status, dict) or type(status.get("visitedToday")) is not bool:
             raise HttpCoreError("Status kunjungan rumah belum bisa dipastikan")
-        if not status["visitedToday"]:
-            return house
+        if status["visitedToday"]:
+            continue
+        try:
+            interior = await api.request(f"/api/rumah/interior/lihat?plotId={house['plot_id']}")
+        except HouseUnavailable:
+            continue
+        if (
+            not isinstance(interior, dict)
+            or not isinstance(interior.get("layout"), list)
+            or not isinstance(interior.get("bentuk"), str)
+        ):
+            raise HttpCoreError("Status akses rumah belum bisa dipastikan")
+        return house
     return None

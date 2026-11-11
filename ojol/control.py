@@ -508,13 +508,15 @@ class ControlService:
                 return "⚠️ Status kunjungan belum bisa diperiksa. Coba lagi beberapa saat lagi."
             if house is None:
                 return (
-                    "👋 Belum ada rumah yang belum kamu kunjungi hari ini di area sekitar rumahmu."
+                    "👋 Belum ditemukan rumah yang sedang menerima tamu dan belum kamu kunjungi "
+                    "hari ini di sekitar rumahmu."
                 )
             return (
                 "👋 Rumah untuk mampir ditemukan\n\n"
                 f"Pemilik • {house['nickname']}\nRumah • {house['plot_id']}\n"
                 f"Posisi • {house['x']}, {house['y']}\n\n"
-                "Belum kamu kunjungi hari ini saat diperiksa. Buka rumah ini di game untuk mampir."
+                "🟢 Menerima tamu sekarang dan belum kamu kunjungi hari ini saat diperiksa. "
+                "Buka rumah ini di game untuk mampir."
             )
         if command == "cleanup_scan":
             if self.settings.env == "testing":

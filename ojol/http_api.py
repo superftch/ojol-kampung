@@ -52,6 +52,17 @@ class ShopClosed(HttpCoreError):
     pass
 
 
+class HouseUnavailable(HttpCoreError):
+    pass
+
+
+def is_unavailable_house_response(response):
+    try:
+        return response.status_code == 403 and response.json()["error"]["code"] == "FORBIDDEN"
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def is_closed_shop_response(response):
     try:
         error = response.json()["error"]
@@ -255,6 +266,9 @@ class OjolHttpApi:
 
     async def request(self, path, payload=None, text=False, *, after=None):
         # No caller-provided URLs, redirects, or generic HTTP MCP tool.
+        house_view = re.fullmatch(
+            r"/api/rumah/interior/lihat\?plotId=[A-Z][0-9]{2}-[A-Z][0-9]{2}", path
+        )
         allowed = (
             path
             in {
@@ -270,6 +284,7 @@ class OjolHttpApi:
             )
             or re.fullmatch(r"/api/shops/[a-f0-9-]{36}(?:/buy)?", path)
             or re.fullmatch(r"/api/daily/house\?plotId=[A-Z][0-9]{2}-[A-Z][0-9]{2}", path)
+            or house_view
             or re.fullmatch(r"/api/world/plots/[A-Z][0-9]{2}-U[0-9]{2}\?t=[0-9]{1,15}", path)
             or re.fullmatch(r"/api/facilities/[a-f0-9-]{36}(?:/use)?", path)
             or re.fullmatch(r"/_next/static/[a-zA-Z0-9_./-]+\.js", path)
@@ -300,6 +315,10 @@ class OjolHttpApi:
                     ) from None
                 response = None
             if response is not None:
+                if house_view and is_unavailable_house_response(response):
+                    raise HouseUnavailable(
+                        "Rumah belum menerima tamu untuk akun ini", category="blocked"
+                    )
                 if response.status_code in {401, 403} or 300 <= response.status_code < 400:
                     raise HttpCoreError(
                         "Sesi ditolak/kedaluwarsa. Gunakan Import Cookie.", category="auth"

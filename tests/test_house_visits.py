@@ -5,7 +5,7 @@ import pytest
 
 from ojol.cleanup import find_unvisited
 from ojol.control import ControlService
-from ojol.http_api import ORIGIN, HttpCoreError, OjolHttpApi
+from ojol.http_api import ORIGIN, HouseUnavailable, HttpCoreError, OjolHttpApi
 
 
 def houses():
@@ -40,6 +40,8 @@ async def test_find_unvisited_uses_current_account_status_not_dirty_flag(
         if request.url.path == "/api/world/plots":
             assert "L40" in request.url.params["blocks"].split(",")
             return httpx.Response(200, json={"plots": houses()})
+        if request.url.path == "/api/rumah/interior/lihat":
+            return httpx.Response(200, json={"bentuk": "standar", "layout": []})
         assert request.url.path == "/api/daily/house"
         return httpx.Response(
             200,
@@ -56,6 +58,81 @@ async def test_find_unvisited_uses_current_account_status_not_dirty_flag(
         "K40-R02",
         "L40-R03",
     ]
+    assert sum(r.url.path == "/api/rumah/interior/lihat" for r in calls) == (0 if visited else 1)
+
+
+@pytest.mark.parametrize("open_neighbor", [False, True])
+async def test_unvisited_closed_house_is_skipped_without_requesting_login(
+    settings, monkeypatch, open_neighbor
+):
+    monkeypatch.setattr("ojol.cleanup.shuffle", lambda value: None)
+    checked = []
+
+    def handle(request):
+        assert request.method == "GET"
+        if request.url.path == "/api/game/me":
+            return httpx.Response(
+                200, json={"home": {"plotId": "K40-R01", "block": "K40", "x": 0, "y": 0}}
+            )
+        if request.url.path == "/api/world/plots":
+            return httpx.Response(200, json={"plots": houses()})
+        if request.url.path == "/api/daily/house":
+            return httpx.Response(200, json={"visitedToday": False})
+        assert request.url.path == "/api/rumah/interior/lihat"
+        checked.append(request.url.params["plotId"])
+        if open_neighbor and checked[-1] == "L40-R03":
+            return httpx.Response(200, json={"bentuk": "standar", "layout": []})
+        return httpx.Response(
+            403,
+            json={
+                "error": {
+                    "code": "FORBIDDEN",
+                    "message": "🕘 Rumah ini menerima tamu jam 06.00–21.00 WIB. Datang lagi nanti, ya.",
+                }
+            },
+        )
+
+    async with httpx.AsyncClient(base_url=ORIGIN, transport=httpx.MockTransport(handle)) as client:
+        house = await find_unvisited(OjolHttpApi(settings.runtime_dir, client=client))
+    assert checked == ["K40-R02", "L40-R03"]
+    assert (house["plot_id"] if house else None) == ("L40-R03" if open_neighbor else None)
+
+
+@pytest.mark.parametrize(
+    "interior", [None, {}, {"layout": []}, {"bentuk": "standar", "layout": None}]
+)
+async def test_unknown_house_access_is_never_offered(interior, monkeypatch):
+    monkeypatch.setattr("ojol.cleanup.shuffle", lambda value: None)
+    api = AsyncMock()
+    api.request.side_effect = [
+        {"home": {"plotId": "K40-R01", "block": "K40", "x": 0, "y": 0}},
+        {"plots": houses()},
+        {"visitedToday": False},
+        interior,
+    ]
+    with pytest.raises(HttpCoreError, match="Status akses"):
+        await find_unvisited(api)
+
+
+@pytest.mark.parametrize(
+    "path,status,code,expected",
+    [
+        ("/api/rumah/interior/lihat?plotId=K40-R02", 403, "FORBIDDEN", HouseUnavailable),
+        ("/api/rumah/interior/lihat?plotId=K40-R02", 401, "UNAUTHENTICATED", HttpCoreError),
+        ("/api/rumah/interior/lihat?plotId=K40-R02", 403, "UNAUTHENTICATED", HttpCoreError),
+        ("/api/daily/house?plotId=K40-R02", 403, "FORBIDDEN", HttpCoreError),
+    ],
+)
+async def test_house_access_denial_is_scoped_without_hiding_auth(
+    settings, path, status, code, expected
+):
+    def handle(request):
+        return httpx.Response(status, json={"error": {"code": code, "message": "fixture"}})
+
+    async with httpx.AsyncClient(base_url=ORIGIN, transport=httpx.MockTransport(handle)) as client:
+        with pytest.raises(expected) as error:
+            await OjolHttpApi(settings.runtime_dir, client=client).request(path)
+    assert error.value.category == ("blocked" if expected is HouseUnavailable else "auth")
 
 
 @pytest.mark.parametrize("status", [{}, {"visitedToday": "false"}, {"visitedToday": 0}, None])
@@ -78,6 +155,8 @@ async def test_unknown_visit_status_never_becomes_available(status, monkeypatch)
         ("/api/daily/house?plotId=../secret", None),
         ("/api/daily/house?plotId=K40-R01", {}),
         ("/api/daily/visit", {"plotId": "K40-R01"}),
+        ("/api/rumah/interior/lihat?plotId=../secret", None),
+        ("/api/rumah/interior/lihat?plotId=K40-R01", {}),
     ],
 )
 async def test_visit_search_only_allows_valid_house_get(settings, path, payload):
@@ -95,9 +174,9 @@ async def test_visit_search_only_allows_valid_house_get(settings, path, payload)
     [
         (
             {"plot_id": "K40-R02", "x": 1, "y": 0, "nickname": "Tetangga"},
-            "Belum kamu kunjungi hari ini",
+            "Menerima tamu sekarang dan belum kamu kunjungi hari ini",
         ),
-        (None, "Belum ada rumah"),
+        (None, "Belum ditemukan rumah"),
         (TimeoutError(), "belum selesai"),
         (HttpCoreError("fixture", category="auth"), "Import Cookie"),
         (HttpCoreError("fixture"), "belum bisa diperiksa"),
