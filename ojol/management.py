@@ -794,7 +794,7 @@ class MultiAccountService:
             await self.reply(owner, "Belum ada akun terpilih. Tekan Tambah Akun atau Akun Saya.")
             return
         service = self.service(account["id"])
-        if command != "cleanup_scan":
+        if command not in {"cleanup_scan", "visit_scan"}:
             await self.ensure_started(service)
         if command in {"run", "import_cookie"}:
             if command == "run" and not (

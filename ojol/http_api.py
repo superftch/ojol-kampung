@@ -269,6 +269,7 @@ class OjolHttpApi:
                 r"/api/world/plots\?v=2&blocks=[A-Z][0-9]{2}(?:,[A-Z][0-9]{2}){0,23}", path
             )
             or re.fullmatch(r"/api/shops/[a-f0-9-]{36}(?:/buy)?", path)
+            or re.fullmatch(r"/api/daily/house\?plotId=[A-Z][0-9]{2}-[A-Z][0-9]{2}", path)
             or re.fullmatch(r"/api/world/plots/[A-Z][0-9]{2}-U[0-9]{2}\?t=[0-9]{1,15}", path)
             or re.fullmatch(r"/api/facilities/[a-f0-9-]{36}(?:/use)?", path)
             or re.fullmatch(r"/_next/static/[a-zA-Z0-9_./-]+\.js", path)

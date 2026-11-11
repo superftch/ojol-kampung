@@ -20,6 +20,7 @@ BUTTON_COMMANDS = {
     "Status": "status",
     "Laba Bersih": "profit",
     "Cari Rumah Kotor": "cleanup_scan",
+    "Cari Rumah Mampir": "visit_scan",
     "Notifikasi ON": "notifications_on",
     "Notifikasi OFF": "notifications_off",
 }
@@ -31,6 +32,7 @@ KEYBOARD = {
         [{"text": "Hentikan Ojol"}, {"text": "Status"}],
         [{"text": "Laba Bersih"}, {"text": "Batal"}],
         [{"text": "Auto"}, {"text": "Cari Rumah Kotor"}],
+        [{"text": "Cari Rumah Mampir"}],
         [{"text": "Notifikasi ON"}, {"text": "Notifikasi OFF"}],
     ],
     "resize_keyboard": True,

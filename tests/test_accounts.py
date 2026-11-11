@@ -103,7 +103,7 @@ async def test_maintenance_schedule_is_admin_only_and_persistent(managed, monkey
     window = read_window(restored.maintenance_file)
     assert window.description() == "2026-11-12 00:30 sampai 2026-11-12 01:30 WIB"
     clock = window.start
-    for command in ("Jalankan Ojol", "Import Cookie", "Cari Rumah Kotor"):
+    for command in ("Jalankan Ojol", "Import Cookie", "Cari Rumah Kotor", "Cari Rumah Mampir"):
         await restored.dispatch(111, command)
         assert "dijeda sampai 2026-11-12 01:30 WIB" in restored.reply.call_args.args[1]
     await restored.dispatch(222, "admin:maintenance:clear", callback=True)
@@ -338,7 +338,12 @@ async def test_finance_buttons_keep_original_account_after_selection_changes(man
     b.execute.assert_not_awaited()
 
 
-async def test_cleanup_button_routes_to_selected_account_without_starting_service(managed):
+@pytest.mark.parametrize(
+    "label,command", [("Cari Rumah Kotor", "cleanup_scan"), ("Cari Rumah Mampir", "visit_scan")]
+)
+async def test_house_button_routes_to_selected_account_without_starting_service(
+    managed, label, command
+):
     from ojol.telegram import KEYBOARD
 
     manager = MultiAccountService(managed)
@@ -348,15 +353,12 @@ async def test_cleanup_button_routes_to_selected_account_without_starting_servic
     second = manager.service(manager.registry.create(111, "Second")["id"])
     manager.registry.select(111, second.account_id)
     first.execute, second.execute = AsyncMock(), AsyncMock()
-    label = next(
-        button["text"]
-        for row in KEYBOARD["keyboard"]
-        for button in row
-        if button["text"] == "Cari Rumah Kotor"
+    button_text = next(
+        button["text"] for row in KEYBOARD["keyboard"] for button in row if button["text"] == label
     )
-    await manager.dispatch(111, label)
-    await manager.dispatch(222, label)
-    second.execute.assert_awaited_once_with("cleanup_scan")
+    await manager.dispatch(111, button_text)
+    await manager.dispatch(222, button_text)
+    second.execute.assert_awaited_once_with(command)
     first.execute.assert_not_awaited()
     manager.ensure_started.assert_not_awaited()
 

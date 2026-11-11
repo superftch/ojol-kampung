@@ -1,10 +1,11 @@
 import re
 from math import hypot, isfinite
+from random import shuffle
 
 from .http_api import HttpCoreError
 
 
-async def scan(api, blocks, limit, *, include_neighbors=False):
+async def scan(api, blocks, limit, *, include_neighbors=False, dirty_only=True):
     me = await api.request("/api/game/me")
     home = me.get("home") if isinstance(me, dict) else None
     if not isinstance(home, dict):
@@ -35,25 +36,44 @@ async def scan(api, blocks, limit, *, include_neighbors=False):
 
     candidates = {}
     for plot in plots:
-        if plot.get("k") != "R" or plot.get("s") != "O" or plot.get("e") or not plot.get("kt"):
+        if plot.get("k") != "R" or plot.get("s") != "O" or plot.get("e"):
+            continue
+        if dirty_only and not plot.get("kt"):
+            continue
+        if not dirty_only and not isinstance(plot.get("w"), dict):
             continue
         plot_id = plot.get("id")
         if not isinstance(plot_id, str) or not re.fullmatch(
             r"[A-Z][0-9]{2}-[A-Z][0-9]{2}", plot_id
         ):
-            raise HttpCoreError("ID plot rumah kotor tidak valid")
+            raise HttpCoreError("ID plot rumah tidak valid")
         if plot_id.split("-", 1)[0] not in blocks or plot_id == home.get("plotId"):
             continue
         if not all(
             type(plot.get(key)) in (int, float) and isfinite(plot[key]) for key in ("x", "y")
         ):
-            raise HttpCoreError("Koordinat plot rumah kotor tidak valid")
+            raise HttpCoreError("Koordinat plot rumah tidak valid")
         if (plot["x"], plot["y"]) == (home["x"], home["y"]):
             continue
         candidates[plot_id] = {"plot_id": plot_id, "x": plot["x"], "y": plot["y"]}
+        if not dirty_only:
+            nickname = plot["w"].get("n")
+            candidates[plot_id]["nickname"] = nickname if isinstance(nickname, str) else "Warga"
 
     ordered = sorted(
         candidates.values(),
         key=lambda plot: (hypot(plot["x"] - home["x"], plot["y"] - home["y"]), plot["plot_id"]),
     )
     return {"blocks": blocks, "total_candidates": len(ordered), "candidates": ordered[:limit]}
+
+
+async def find_unvisited(api):
+    houses = await scan(api, None, None, include_neighbors=True, dirty_only=False)
+    shuffle(houses["candidates"])
+    for house in houses["candidates"]:
+        status = await api.request(f"/api/daily/house?plotId={house['plot_id']}")
+        if not isinstance(status, dict) or type(status.get("visitedToday")) is not bool:
+            raise HttpCoreError("Status kunjungan rumah belum bisa dipastikan")
+        if not status["visitedToday"]:
+            return house
+    return None

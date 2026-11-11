@@ -64,6 +64,7 @@ async def test_telegram_private_message_and_sanitized_network_error(settings):
         "status",
         "profit",
         "cleanup_scan",
+        "visit_scan",
         "notifications_on",
         "notifications_off",
     }

@@ -16,6 +16,7 @@ Tabel ini mencakup seluruh request yang dipanggil adapter Ojol ke `https://www.k
 | GET `/api/game/me` | `balanceMilli`, `configVersion`, rumah/desa | HTTP200 |
 | GET `/api/kebutuhan` | `asleep`, status kebutuhan aktif, nilai per kebutuhan, dan kandidat tempat fisik | HTTP 200 untuk status kebutuhan. Bentuk kandidat fasilitas berasal dari bundle client. |
 | GET `/api/time` | waktu server untuk arrival/countdown | HTTP200 |
+| GET `/api/daily/house?plotId={plotId}` | Baca status kunjungan akun ke rumah kandidat; hanya `visitedToday: false` yang dipilih untuk Cari Rumah Mampir | Bundle client historis, dibaca ulang 12 November 2026; belum diverifikasi live |
 | GET `/api/shops/{businessId}` | menu, item ID, priceMilli, open, mine | HTTP200 untuk SPBU/bengkel/konter |
 | GET `/api/world/plots/{plotId}?t={timestamp}` | Cocokkan ID usaha, kategori, dan desa untuk plot cadangan auto kebutuhan | Bundle client dan capture detail plot historis. Plot cadangan berasal dari inventaris tujuan historis. Pemeriksaan live lanjutan mendapat HTTP 503. |
 | GET `/kampung` | baca HTML halaman untuk menemukan bundle yang dirujuk | kode `OjolHttpApi.effects` |
@@ -118,3 +119,9 @@ Command lokal `cleanup-scan` memakai sesi HTTP akun yang sudah diimpor. Default-
 ```sh
 python main.py cleanup-scan --blocks K39 L39 --limit 1
 ```
+
+## Cari rumah untuk mampir
+
+Inspeksi statis 12 November 2026 memakai capture bundle `0wwcgg-bq-sxa.js` dari 11 November dan REA Evidence `ev_023e4ab77fb30c59c2aae651f186a1310584965590f54b8e31adc3bd2a6ca0eb`. Analisis semantik REA parsial; pembacaan langsung fungsi `V` pada bundle memperlihatkan GET `/api/daily/house?plotId=...` dan properti `visitedToday`. Tombol Mampir memakai POST `/api/daily/visit` hanya bila belum dikunjungi; bila sudah, client menampilkan Sudah mampir atau Masuk lagi. Bukti ini menetapkan arti status pada client, bukan keberhasilan request live.
+
+Fitur Telegram **Cari Rumah Mampir** memakai GET saja. Filter peta memakai `k == "R"`, `s == "O"`, `e` tidak aktif, dan data warga `w`; rumah sendiri dikeluarkan berdasarkan ID dan koordinat. Penanda kotor `kt` tidak diperlukan. Status kunjungan dibaca dengan sesi akun terpilih dan harus boolean eksplisit. Field hilang atau respons gagal tidak dianggap belum dikunjungi. Satu kandidat acak yang terkonfirmasi belum dikunjungi hari ini ditampilkan. Status masih dapat berubah sesudah pemeriksaan. Fitur tidak memanggil POST kunjungan dan tidak mencatat kunjungan hanya karena rumah ditampilkan.

@@ -21,7 +21,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .auto_settings import AUTO_LABELS, auto_flags
-from .cleanup import scan
+from .cleanup import find_unvisited, scan
 from .cli import exclusive_lock, running
 from .config import load_settings
 from .finance import WIB, report_date
@@ -490,6 +490,32 @@ class ControlService:
             )
         if command == "status":
             return self.status()
+        if command == "visit_scan":
+            if self.settings.env == "testing":
+                return "HTTP live diblokir dalam test environment."
+            try:
+                async with asyncio.timeout(12), OjolHttpApi(self.settings.runtime_dir) as api:
+                    house = await find_unvisited(api)
+            except TimeoutError:
+                return (
+                    "⏳ Pencarian rumah belum selesai. Tekan Cari Rumah Mampir untuk mencoba lagi."
+                )
+            except HttpCoreError as exc:
+                if exc.category == "auth":
+                    return (
+                        "🔑 Sesi game perlu dihubungkan ulang. Tekan Import Cookie, lalu cari lagi."
+                    )
+                return "⚠️ Status kunjungan belum bisa diperiksa. Coba lagi beberapa saat lagi."
+            if house is None:
+                return (
+                    "👋 Belum ada rumah yang belum kamu kunjungi hari ini di area sekitar rumahmu."
+                )
+            return (
+                "👋 Rumah untuk mampir ditemukan\n\n"
+                f"Pemilik • {house['nickname']}\nRumah • {house['plot_id']}\n"
+                f"Posisi • {house['x']}, {house['y']}\n\n"
+                "Belum kamu kunjungi hari ini saat diperiksa. Buka rumah ini di game untuk mampir."
+            )
         if command == "cleanup_scan":
             if self.settings.env == "testing":
                 return "HTTP live diblokir dalam test environment."
@@ -590,6 +616,8 @@ class ControlService:
         except Exception as exc:
             if command == "cleanup_scan":
                 queue_notice(self.settings, "Pencarian rumah kotor gagal. Coba lagi.")
+            elif command == "visit_scan":
+                queue_notice(self.settings, "Pencarian rumah untuk mampir gagal. Coba lagi.")
             else:
                 queue_error(
                     self.settings,

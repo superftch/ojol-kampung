@@ -51,6 +51,7 @@ Contoh jadwal maintenance `2026-11-12 00:30 / 2026-11-12 01:30`. Jadwal berlaku 
 | Resource, kebutuhan, saldo, countdown, riwayat game, sesi dan pengaturan Auto | **Status** |
 | Laporan harian WIB | **Laba Bersih**, tombol hari atau **Pilih tanggal**, lalu ketik tanggal |
 | Pilih satu kandidat rumah kotor secara acak di sekitar rumah akun | **Cari Rumah Kotor** |
+| Cari satu rumah warga yang belum dikunjungi hari ini | **Cari Rumah Mampir** |
 | Event rutin | **Notifikasi ON / OFF** |
 
 Pesan Telegram memakai judul singkat, baris terpisah untuk angka penting, dan petunjuk tindakan berikutnya. Notifikasi ON mengirim hasil trip, pembelian yang sudah terverifikasi, serta jeda maintenance. Bot tetap mengirim pesan jika perlu tindakan saat notifikasi rutin OFF. Antrean lama juga disesuaikan saat dikirim ulang. Rujukan penulisan memakai [Telegram Bot Guidelines](https://core.telegram.org/bots/guidelines) dan [Material Communication Principles](https://codelabs.developers.google.com/codelabs/material-communication-guidance).
@@ -60,6 +61,8 @@ Pesan Telegram memakai judul singkat, baris terpisah untuk angka penting, dan pe
 Akun baru atau akun yang dipulihkan langsung terpilih. Ganti pilihan tidak menghentikan akun lain. Arsip menghentikan worker dan mencabut akses import, membebaskan kuota akun, tanpa menghapus ledger/cookie. Daftar akun dan user memiliki tombol halaman berikutnya/sebelumnya; tidak perlu menyalin ID akun. Form input yang belum selesai dibatalkan saat bot restart. Konfirmasi arsip/cabut akses yang sudah dibatalkan tidak berlaku lagi.
 
 Pengaturan **Auto** tersimpan per akun dan berlaku pada worker yang sedang berjalan. Default seluruh fitur ON. **Auto Ojol** satu paket untuk trip, bensin, kondisi mesin, dan kuota. Saat dimatikan, worker menyelesaikan trip yang sedang dipantau dan berhenti mengambil order baru atau mengisi resource Ojol. **Makan**, **Kesehatan**, **Fisik**, **Rekreasi**, **Penampilan**, dan **Kondisi rumah** bisa dimatikan satu per satu. Jika semua fitur OFF, worker menunggu perubahan pengaturan.
+
+**Cari Rumah Mampir** membaca rumah warga di blok rumah akun dan delapan blok tetangga yang tersedia. Rumah sendiri, plot kosong dan rumah yang tidak aktif dikecualikan. Kandidat diacak, lalu status kunjungannya diperiksa lewat API sampai ditemukan `visitedToday: false`. Hasil menampilkan nama warga, ID rumah dan koordinat. Kriteria belum dikunjungi mengikuti hari game, bukan seluruh riwayat akun. Pencarian tidak mengirim kunjungan, tidak memulai worker atau tunnel, dan diblokir saat maintenance. Jika belum selesai dalam 12 detik, bot meminta pencarian diulang tanpa menganggap semua rumah sudah dikunjungi.
 
 Import hanya menerima cookie sesi `__Secure-better-auth.session_token` milik `www.kampungsebelah.com`, sebagai nilai atau JSON cookie. Cookie tidak dikirim melalui Telegram/argv/log. Link HTTPS sekali pakai berlaku 15 menit, memakai cookie HttpOnly dengan path akun dan CSRF terikat sesi. Kandidat sesi diverifikasi lewat HTTP MCP lalu dipasang atomik; kegagalan tidak mengganti sesi lama. Nama akun ditampilkan pada form supaya tujuan import jelas.
 
