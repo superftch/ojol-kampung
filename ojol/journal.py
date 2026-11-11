@@ -188,6 +188,13 @@ class Journal:
                 ),
             ).lastrowid
 
+    def reject_purchase(self, action_id):
+        with self.db:
+            self.db.execute(
+                "UPDATE actions SET status='rejected' WHERE id=? AND kind='purchase' AND status='pending'",
+                (action_id,),
+            )
+
     def settle(self, action_id, verified, after=None):
         with self.db:
             self.db.execute(

@@ -344,19 +344,21 @@ class OjolHttpApi:
                 matches = [row for row in places["usaha"] if row["item"] in categories]
                 if matches:
                     effects = await self.effects()
-                    for offset in range(0, len(matches), 4):
-                        results = await asyncio.gather(
-                            *(
-                                self.preview_shop(row, resource, effects)
-                                for row in matches[offset : offset + 4]
-                            ),
-                            return_exceptions=True,
-                        )
-                        for shop in results:
-                            if isinstance(shop, BaseException):
-                                raise shop
+                    rows = iter(matches)
+
+                    async def scan():
+                        for row in rows:
+                            shop = await self.preview_shop(row, resource, effects)
                             if shop is not None:
                                 shops[shop.id] = shop
+
+                    tasks = [asyncio.create_task(scan()) for _ in range(min(4, len(matches)))]
+                    try:
+                        await asyncio.gather(*tasks)
+                    finally:
+                        for task in tasks:
+                            task.cancel()
+                        await asyncio.gather(*tasks, return_exceptions=True)
         except TimeoutError:
             raise HttpCoreError(
                 "Deadline preview toko tercapai sebelum katalog terverifikasi",
@@ -391,26 +393,30 @@ class OjolHttpApi:
             or product not in shop.products
             or not product.enabled
         ):
-            raise HttpCoreError("Produk tidak berasal dari preview sesi ini", category="blocked")
+            raise HttpCoreError("Produk tidak berasal dari preview sesi ini", category="rejected")
+        effects = await self.effects()
+        version = self.config_version
+        catalog, fresh = await self.products(shop_id, resource, effects)
+        if product not in fresh or (catalog.get("plang") and catalog["plang"] != shop.name):
+            raise HttpCoreError(
+                "Nama toko atau katalog berubah sebelum pembelian", category="rejected"
+            )
         state = await self.snapshot()
         if (
             state.phase != "idle"
             or state.wallet != Decimal(expected_wallet)
             or getattr(state, resource) != expected_resource
+            or self.config_version != version
+            or self.catalog.get(resource, {}).get(shop_id) is not shop
         ):
             raise HttpCoreError(
-                "Fase, saldo atau resource berubah sebelum pembelian", category="blocked"
-            )
-        catalog, fresh = await self.products(shop_id, resource, await self.effects())
-        if product not in fresh or (catalog.get("plang") and catalog["plang"] != shop.name):
-            raise HttpCoreError(
-                "Nama toko atau katalog berubah sebelum pembelian", category="blocked"
+                "Fase, saldo, resource atau katalog berubah sebelum pembelian", category="rejected"
             )
         if (
             state.wallet - product.price < max(Decimal(20), Decimal(min_balance))
             or getattr(state, resource) + product.effects[resource] > 100
         ):
-            raise HttpCoreError("Pembelian melanggar saldo minimum/overflow", category="blocked")
+            raise HttpCoreError("Pembelian melanggar saldo minimum/overflow", category="rejected")
         self.catalog.pop(resource)
         return await self.request(
             f"/api/shops/{shop_id}/buy", {"item": identity["item"], "requestId": request_id}

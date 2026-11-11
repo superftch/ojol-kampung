@@ -6,6 +6,7 @@ import time
 from datetime import timedelta
 from decimal import Decimal
 
+from .http_api import HttpCoreError
 from .models import now
 from .planner import is_sleeping, next_step, select_shop
 
@@ -183,8 +184,11 @@ class Controller:
                     and abs((before.wallet - state.wallet) - plan.product.price) <= Decimal("0.015")
                 )
             )
-        except BaseException:
-            self.journal.settle(action, False)
+        except BaseException as exc:
+            if isinstance(exc, HttpCoreError) and exc.category == "rejected":
+                self.journal.reject_purchase(action)
+            else:
+                self.journal.settle(action, False)
             raise
         self.journal.settle(action, True, after)
         self.spent += plan.product.price
