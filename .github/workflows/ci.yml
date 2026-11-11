@@ -15,5 +15,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Lint and isolated tests in Docker
-        run: docker build --target test -t ojol-kampung:test .
+      - name: Lint and isolated non-root tests with private source permissions
+        run: |
+          chmod -R go-rwx ojol tests scripts
+          chmod 600 main.py
+          docker build --target test -t ojol-kampung:test .

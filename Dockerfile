@@ -10,7 +10,8 @@ RUN pip install --no-cache-dir uv==0.11.6 && UV_PYTHON_DOWNLOADS=never uv sync -
 COPY main.py ./
 COPY ojol ./ojol
 COPY docker/entrypoint.sh /usr/local/bin/ojol-entrypoint
-RUN chmod 755 /usr/local/bin/ojol-entrypoint
+# Checkout permissions may be 600/700; the runtime switches to UID 1000.
+RUN chmod -R a+rX /app/ojol && chmod 644 /app/main.py /app/pyproject.toml /app/uv.lock && chmod 755 /usr/local/bin/ojol-entrypoint
 ENV PATH="/app/.venv/bin:$PATH" OJOL_CONFIG_FILE=/data/config.env OJOL_RUNTIME_DIR=/data/runtime
 EXPOSE 6080
 ENTRYPOINT ["ojol-entrypoint"]
@@ -20,5 +21,5 @@ FROM runtime AS test
 ENV UV_PYTHON_DOWNLOADS=never
 COPY tests ./tests
 COPY scripts/test.py ./scripts/test.py
-RUN pip install --no-cache-dir uv==0.11.6 && uv sync --frozen --no-cache && python scripts/test.py --prepare
-RUN uv run ruff check . && uv run ruff format --check . && python scripts/test.py
+RUN pip install --no-cache-dir uv==0.11.6 && uv sync --frozen --no-cache && python scripts/test.py --prepare && chmod -R a+rX tests scripts && mkdir -p .local/testing && chown -R app:app .local .env.testing
+RUN uv run ruff check . && uv run ruff format --check . && gosu app python scripts/test.py -o cache_dir=/app/.local/testing/pytest-cache
