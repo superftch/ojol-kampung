@@ -1,5 +1,6 @@
 import asyncio
 import sys
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -9,6 +10,7 @@ from pydantic import ValidationError
 from ojol.config import load_settings
 from ojol.healing import write_private
 from ojol.journal import Journal
+from ojol.maintenance import MaintenanceWindow
 from ojol.management import MultiAccountService
 from ojol.models import ROOT, Settings
 from ojol.session_transfer import parse_cookie_input
@@ -43,6 +45,30 @@ def worker():
     child = SimpleNamespace(returncode=None, pid=12345)
     child.terminate = Mock(side_effect=lambda: setattr(child, "returncode", 0))
     return child
+
+
+async def test_boot_defers_worker_during_maintenance_until_end(settings, monkeypatch):
+    clock = datetime.fromisoformat("2026-11-12T00:28+07:00")
+    monkeypatch.setattr("ojol.maintenance.now", lambda: clock)
+    manager = manager_with_accounts(settings)
+    window = MaintenanceWindow.parse("2026-11-12 00:30 / 2026-11-12 01:30")
+    write_private(manager.maintenance_file, window.payload())
+    spawn = AsyncMock(side_effect=lambda *a, **kw: worker())
+    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    assert not window.held(datetime.fromisoformat("2026-11-12T00:27:59+07:00"))
+    try:
+        await manager.start()
+        spawn.assert_not_awaited()
+        assert all(service.auto_start_pending for service in manager.services.values())
+        clock = window.end
+        await manager.resume_workers()
+        assert spawn.await_count == 2
+        assert all(
+            call.kwargs["env"]["OJOL_MAINTENANCE_FILE"] == str(manager.maintenance_file)
+            for call in spawn.await_args_list
+        )
+    finally:
+        await manager.close()
 
 
 def test_auto_start_defaults_true_and_env_can_disable_it(monkeypatch):

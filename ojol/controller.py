@@ -5,8 +5,10 @@ import re
 import time
 from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from .http_api import HttpCoreError
+from .maintenance import SCHEDULE_FILE, held_window
 from .models import now
 from .planner import is_sleeping, next_step, select_shop
 
@@ -31,6 +33,9 @@ class Controller:
         self.stage = "controller.start"
         self.last_action = None
         self.busy_since = None
+        self.maintenance_file = Path(
+            os.environ.get("OJOL_MAINTENANCE_FILE", str(settings.runtime_dir / SCHEDULE_FILE))
+        )
         if ui is not None:
             ui.check_cancel = self.check_cancel
             ui.on_recovery = self.report
@@ -109,10 +114,31 @@ class Controller:
             await asyncio.sleep(0.75)
         raise RuntimeError("Perubahan status belum terbukti; berhenti tanpa mengulang aksi")
 
+    async def wait_for_maintenance(self):
+        window = held_window(self.maintenance_file)
+        if window is None:
+            return
+        self.stage = "maintenance"
+        self.report("maintenance", sampai=window.end.isoformat())
+        self.active_trip = None
+        self.busy_since = None
+        while held_window(self.maintenance_file):
+            self.check_cancel()
+            await asyncio.sleep(1)
+
     async def purchase(self, before, resource):
         self.check_cancel()
+        if held_window(self.maintenance_file):
+            return False
         self.stage = f"shop.preview.{resource}"
-        shops = await self.ui.preview_shops(resource)
+        try:
+            shops = await self.ui.preview_shops(resource)
+        except HttpCoreError:
+            if held_window(self.maintenance_file):
+                return False
+            raise
+        if held_window(self.maintenance_file):
+            return False
         selection, defer = select_shop(before, resource, shops, self.settings, self.spent)
         if defer:
             self.report(
@@ -215,6 +241,8 @@ class Controller:
 
     async def job_action(self, before, kind):
         self.check_cancel()
+        if held_window(self.maintenance_file):
+            return
         patterns = {
             "search": r"Cari order",
             "take": r"Terima|Ambil|Antar sekarang",
@@ -294,9 +322,21 @@ class Controller:
     async def run(self, dry_run=False):
         while True:
             self.check_cancel()
+            await self.wait_for_maintenance()
+            self.check_cancel()
             previous = self.state
+            previous_received_at = self.snapshot_received_at
             self.stage = "observe.ojol"
-            await self.read_snapshot()
+            try:
+                await self.read_snapshot()
+            except HttpCoreError:
+                if held_window(self.maintenance_file):
+                    continue
+                raise
+            if held_window(self.maintenance_file):
+                self.state = previous
+                self.snapshot_received_at = previous_received_at
+                continue
             if (
                 previous
                 and previous.phase == "delivering"

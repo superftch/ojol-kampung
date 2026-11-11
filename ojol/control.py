@@ -24,6 +24,7 @@ from .config import load_settings
 from .finance import WIB, report_date
 from .journal import Journal, unresolved_action
 from .login_access import LoginAccess
+from .maintenance import GAME_COMMANDS, SCHEDULE_FILE, held_window
 from .models import ROOT, Settings, now
 from .telegram import (
     BUTTON_COMMANDS,
@@ -69,6 +70,7 @@ class ControlService:
         self.url_prefix = ""
         self.account_id = None
         self.auto_start_pending = False
+        self.maintenance_file = settings.runtime_dir / SCHEDULE_FILE
 
     async def ensure_backend(self, require_session=False):
         if require_session and not (self.settings.runtime_dir / "http-session.json").is_file():
@@ -205,9 +207,12 @@ class ControlService:
             if reason:
                 lines.append(f"⚠️ Alasan berhenti: {redact(reason, self.settings)}")
 
+        maintenance = held_window(self.maintenance_file)
+        if maintenance:
+            lines.append(maintenance.message())
         auto_start = "ON" if self.settings.auto_start else "OFF"
         if self.auto_start_pending:
-            auto_start += " · menunggu slot"
+            auto_start += " · menunggu maintenance" if maintenance else " · menunggu slot"
         lines.extend(
             [
                 "",
@@ -360,7 +365,11 @@ class ControlService:
             ticket = self.access.issue("ticket")
             return f"{self.public_url()}{self.url_prefix}/access/{ticket}"
 
-    async def command(self, command):
+    async def command(self, command, *, auto_start=False):
+        if command in GAME_COMMANDS and (maintenance := held_window(self.maintenance_file)):
+            if auto_start:
+                self.auto_start_pending = True
+            return maintenance.message()
         if command == "import_cookie":
             url = await self.cookie_link()
             browser_hint = (
@@ -407,6 +416,10 @@ class ControlService:
                 self.access.revoke()
                 await self.ensure_backend(require_session=True)
                 await self.start_tunnel()
+                if maintenance := held_window(self.maintenance_file):
+                    if auto_start:
+                        self.auto_start_pending = True
+                    return maintenance.message()
                 config_file = os.environ.get("OJOL_CONFIG_FILE")
                 args = [sys.executable, str(ROOT / "main.py")]
                 if config_file:
@@ -423,6 +436,7 @@ class ControlService:
                         "OJOL_RUNTIME_DIR": str(self.settings.runtime_dir),
                         "OJOL_TELEGRAM_CHAT_ID": str(self.settings.telegram_chat_id or ""),
                         "OJOL_ACCOUNT_NAME": self.settings.account_name,
+                        "OJOL_MAINTENANCE_FILE": str(self.maintenance_file),
                     },
                 )
                 return (
@@ -752,6 +766,8 @@ def create_app(settings, service=None):
         # Registry mutations and imports serialize, so revocation cannot race session installation.
         async with manager.lock if manager else asyncio.Lock(), service.lock:
             require_access(request)
+            if maintenance := held_window(service.maintenance_file):
+                return HTMLResponse(maintenance.message(), status_code=503)
             digest = None
             if manager:
                 account = manager.registry.get(service.account_id)

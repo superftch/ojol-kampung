@@ -32,8 +32,11 @@ Semua operasi bot memakai tombol. Ketik hanya nilai yang diminta: ID Telegram, n
 | Default akun per user | **Management → Batas Akun Default**, lalu ketik angka |
 | Override akun user tertentu | **Daftar User → pilih user → Ubah Batas Akun**, lalu ketik angka |
 | Batas worker aktif global | **Management → Batas Worker**, lalu ketik angka |
+| Jadwal maintenance game | **Management → Maintenance → Atur Jadwal**, lalu ketik waktu mulai dan selesai (WIB) |
 
 Batas valid 1–100. Override management disimpan di `accounts.sqlite3` dan mengalahkan default env setelah restart. Menurunkan batas tidak menghapus akun atau memutus worker yang sudah aktif; batas berlaku pada tambah/pulihkan/start berikutnya. Override user yang sudah dibuat tetap mengalahkan default global. Pencabutan whitelist menghentikan worker user, mencabut tiket/sesi import, dan membatalkan notifikasi pending; data/history tetap disimpan. Aktivasi ulang tidak otomatis menjalankan game.
+
+Contoh jadwal maintenance `2026-11-12 00:30 / 2026-11-12 01:30`. Jadwal berlaku untuk semua akun dan tersimpan setelah restart. Dua menit sebelum mulai, worker menahan aksi baru agar transaksi yang sedang berjalan bisa selesai. Selama jeda, tombol **Jalankan Ojol** dan **Import Cookie** menampilkan waktu selesai. Worker melanjutkan dari status game terbaru setelah waktu selesai, dan antrean auto-start kembali diproses. Admin bisa mengubah jadwal atau memilih **Hapus / Akhiri** jika game dibuka lebih awal.
 
 | Aksi user | Alur tombol |
 |---|---|

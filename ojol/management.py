@@ -6,7 +6,9 @@ import re
 from .accounts import Accounts
 from .cli import running
 from .control import ControlService
+from .healing import write_private
 from .journal import Journal
+from .maintenance import GAME_COMMANDS, SCHEDULE_FILE, MaintenanceWindow, held_window, read_window
 from .telegram import (
     BUTTON_COMMANDS,
     KEYBOARD,
@@ -40,6 +42,7 @@ class MultiAccountService:
     def __init__(self, settings):
         self.settings = settings
         self.registry = Accounts(settings)
+        self.maintenance_file = settings.runtime_dir / SCHEDULE_FILE
         self.services = {}
         self.hub = ControlService(
             settings.model_copy(
@@ -88,6 +91,7 @@ class MultiAccountService:
         account = self.registry.get(identifier)
         if identifier not in self.services:
             service = ControlService(self.registry.scoped_settings(account))
+            service.maintenance_file = self.maintenance_file
             service.url_prefix = f"/a/{identifier}"
             service.public_url = self.public_url
             # Finance buttons retain account identity even after user switches selection.
@@ -206,7 +210,23 @@ class MultiAccountService:
                     [{"text": "Pengajuan Akses", "callback_data": "admin:requests:0"}],
                     [{"text": "Batas Akun Default", "callback_data": "admin:default_limit"}],
                     [{"text": "Batas Worker", "callback_data": "admin:worker_limit"}],
+                    [{"text": "Maintenance", "callback_data": "admin:maintenance"}],
                     [{"text": "Menu Utama", "callback_data": "home"}],
+                ]
+            },
+        )
+
+    async def maintenance_menu(self, owner):
+        window = read_window(self.maintenance_file)
+        status = window.description() if window else "Belum ada jadwal."
+        await self.reply(
+            owner,
+            f"🛠 Maintenance game\n{status}",
+            {
+                "inline_keyboard": [
+                    [{"text": "Atur Jadwal", "callback_data": "admin:maintenance:set"}],
+                    [{"text": "Hapus / Akhiri", "callback_data": "admin:maintenance:clear"}],
+                    [{"text": "Management", "callback_data": "admin:menu"}],
                 ]
             },
         )
@@ -453,6 +473,18 @@ class MultiAccountService:
         self.pending.pop(owner, None)
         if text in {"Management", "admin:menu"}:
             await self.admin_menu(owner)
+        elif text == "admin:maintenance":
+            await self.maintenance_menu(owner)
+        elif text == "admin:maintenance:set":
+            await self.prompt(
+                owner,
+                {"kind": "maintenance"},
+                "Ketik mulai dan selesai (WIB): YYYY-MM-DD HH:MM / YYYY-MM-DD HH:MM. "
+                "Aksi game mulai dijeda 2 menit sebelum jadwal.",
+            )
+        elif text == "admin:maintenance:clear":
+            self.maintenance_file.unlink(missing_ok=True)
+            await self.maintenance_menu(owner)
         elif text.startswith("admin:requests:"):
             await self.requests_menu(owner, int(text.rsplit(":", 1)[1]))
         elif text.startswith("request:"):
@@ -532,7 +564,10 @@ class MultiAccountService:
     async def input(self, owner, text):
         state = self.pending[owner]
         kind = state["kind"]
-        if kind in {"add_user", "limit", "user_limit"} and owner != self.registry.admin:
+        if (
+            kind in {"add_user", "limit", "user_limit", "maintenance"}
+            and owner != self.registry.admin
+        ):
             raise ValueError("🔒 Menu Management hanya untuk admin.")
         if kind == "name":
             row = self.registry.create(owner, text)
@@ -557,6 +592,11 @@ class MultiAccountService:
             self.registry.set_limit(state["setting"], text)
             self.pending.pop(owner)
             await self.admin_menu(owner)
+        elif kind == "maintenance":
+            window = MaintenanceWindow.parse(text)
+            write_private(self.maintenance_file, window.payload())
+            self.pending.pop(owner)
+            await self.maintenance_menu(owner)
         elif kind == "user_limit":
             uid = state["user"]
             if not self.registry.allowed(uid):
@@ -691,6 +731,9 @@ class MultiAccountService:
                     await self.home(owner)
                 return
         self.pending.pop(owner, None)
+        if command in GAME_COMMANDS and (maintenance := held_window(self.maintenance_file)):
+            await self.reply(owner, maintenance.message())
+            return
         account = account or self.registry.selected(owner)
         if account is None:
             await self.reply(
@@ -771,6 +814,8 @@ class MultiAccountService:
         ):
             return
         async with self.lock:
+            if held_window(self.maintenance_file):
+                return
             for service in list(self.services.values()):
                 if not service.auto_start_pending:
                     continue
@@ -799,8 +844,9 @@ class MultiAccountService:
                         journal.ensure_resolved()
                     finally:
                         journal.close()
-                    response = await service.command("run")
-                    queue_notice(service.settings, "♻️ Auto-start akun saat boot.\n" + response)
+                    response = await service.command("run", auto_start=True)
+                    if not service.auto_start_pending:
+                        queue_notice(service.settings, "♻️ Auto-start akun saat boot.\n" + response)
                 except Exception as exc:
                     queue_error(service.settings, exc, "worker.auto_start")
 

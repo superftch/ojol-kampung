@@ -1,5 +1,6 @@
 import asyncio
 import json
+from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -9,8 +10,10 @@ import pytest
 from ojol.cli import exclusive_lock, main, running
 from ojol.config import load_settings
 from ojol.controller import Controller, StopRequested
+from ojol.healing import write_private
 from ojol.http_api import HttpCoreError
 from ojol.journal import Journal
+from ojol.maintenance import MaintenanceWindow
 from ojol.models import ROOT, Product
 
 
@@ -89,6 +92,57 @@ async def test_stop_interrupts_long_countdown(settings, state):
         await asyncio.wait_for(controller.wait(100), 1)
     await task
     journal.close()
+
+
+async def test_worker_pauses_before_game_calls_and_resumes(settings, state, monkeypatch):
+    clock = datetime.fromisoformat("2026-11-12T00:29+07:00")
+    monkeypatch.setattr("ojol.maintenance.now", lambda: clock)
+    window = MaintenanceWindow.parse("2026-11-12 00:30 / 2026-11-12 01:30")
+    ui = SimpleNamespace(snapshot=AsyncMock(return_value=state))
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        write_private(controller.maintenance_file, window.payload())
+
+        async def advance(seconds):
+            nonlocal clock
+            ui.snapshot.assert_not_awaited()
+            assert controller.stage == "maintenance"
+            clock = window.end
+
+        monkeypatch.setattr("ojol.controller.asyncio.sleep", advance)
+        await controller.run(dry_run=True)
+        ui.snapshot.assert_awaited_once()
+        assert controller.last_event == "dry_run"
+    finally:
+        journal.close()
+
+
+async def test_purchase_does_not_start_if_maintenance_begins_during_preview(
+    settings, state, shop_preview, monkeypatch
+):
+    clock = datetime.fromisoformat("2026-11-12T00:27:59+07:00")
+    monkeypatch.setattr("ojol.maintenance.now", lambda: clock)
+    window = MaintenanceWindow.parse("2026-11-12 00:30 / 2026-11-12 01:30")
+    product = Product(
+        name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
+    )
+
+    async def preview(resource):
+        nonlocal clock
+        clock = datetime.fromisoformat("2026-11-12T00:28:00+07:00")
+        return [shop_preview([product])]
+
+    ui = SimpleNamespace(preview_shops=preview, buy=AsyncMock())
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        write_private(controller.maintenance_file, window.payload())
+        assert await controller.purchase(state, "data") is False
+        ui.buy.assert_not_awaited()
+        assert journal.history()["actions"] == []
+    finally:
+        journal.close()
 
 
 async def test_trip_completion_verified_only_after_history_change(settings, state):

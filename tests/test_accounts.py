@@ -1,6 +1,7 @@
 import asyncio
 import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from unittest.mock import call as mock_call
@@ -14,6 +15,7 @@ from ojol.control import create_app
 from ojol.healing import write_private
 from ojol.http_api import HttpCoreError
 from ojol.http_core import HttpUI
+from ojol.maintenance import read_window
 from ojol.management import MultiAccountService
 from ojol.models import Settings
 from ojol.session_transfer import parse_cookie_input
@@ -32,6 +34,36 @@ async def click(manager, owner, label, profile=None):
 @pytest.fixture
 def managed(settings):
     return settings.model_copy(update={"telegram_chat_id": 111})
+
+
+async def test_maintenance_schedule_is_admin_only_and_persistent(managed, monkeypatch):
+    clock = datetime.fromisoformat("2026-11-11T23:00+07:00")
+    monkeypatch.setattr("ojol.maintenance.now", lambda: clock)
+    manager = MultiAccountService(managed)
+    manager.registry.whitelist(222)
+    manager.reply = AsyncMock()
+    await manager.dispatch(222, "admin:maintenance:set", callback=True)
+    assert "hanya untuk admin" in manager.reply.call_args.args[1]
+    await manager.dispatch(111, "Management")
+    await click(manager, 111, "Maintenance")
+    await click(manager, 111, "Atur Jadwal")
+    await manager.dispatch(111, "2026-11-12 01:30 / 2026-11-12 00:30")
+    assert "Waktu selesai harus setelah" in manager.reply.call_args.args[1]
+    assert not manager.maintenance_file.exists()
+    await manager.dispatch(111, "2026-11-12 00:30 / 2026-11-12 01:30")
+    restored = MultiAccountService(managed)
+    restored.reply = AsyncMock()
+    window = read_window(restored.maintenance_file)
+    assert window.description() == "2026-11-12 00:30 sampai 2026-11-12 01:30 WIB"
+    clock = window.start
+    for command in ("Jalankan Ojol", "Import Cookie"):
+        await restored.dispatch(111, command)
+        assert "dijeda sampai 2026-11-12 01:30 WIB" in restored.reply.call_args.args[1]
+    await restored.dispatch(222, "admin:maintenance:clear", callback=True)
+    assert restored.maintenance_file.is_file()
+    await restored.dispatch(111, "admin:maintenance", callback=True)
+    await click(restored, 111, "Hapus / Akhiri")
+    assert read_window(restored.maintenance_file) is None
 
 
 def test_whitelist_admin_ownership_and_legacy_preservation(managed):
