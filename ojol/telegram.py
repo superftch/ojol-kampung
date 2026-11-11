@@ -214,6 +214,98 @@ async def flush_notices(settings, client=None):
     return count
 
 
+RESOURCES = {"fuel": "⛽ Bensin", "condition": "🔧 Kondisi", "data": "📶 Kuota"}
+PHASES = {
+    "idle": "menunggu order",
+    "searching": "mencari order",
+    "delivering": "dalam perjalanan",
+    "complete": "siap klaim ongkos",
+    "sleeping": "karakter tidur",
+    "unknown": "tidak diketahui",
+}
+ACTIONS = {
+    "search": "Cari order",
+    "take": "Ambil order",
+    "complete": "Klaim ongkos",
+    "maintain": "Isi ulang",
+    "wait": "Menunggu",
+    "stop": "Berhenti",
+}
+
+
+def koin(value):
+    return f"{str(value).replace('.', ',')} koin"
+
+
+def event_text(event, data):
+    """Turn one worker event into a short message for the end user."""
+    get = data.get
+    resource = RESOURCES.get(get("resource"), get("resource"))
+    if event == "mulai":
+        return "▶️ Ojol mulai jalan" + ("" if get("live", True) else " (uji coba, tanpa transaksi)")
+    if event == "berhenti":
+        return f"🛑 Ojol berhenti\n{get('reason') or 'Dihentikan pengguna'}"
+    if event == "gagal":
+        return f"⚠️ Ojol gagal\n{get('reason') or 'Penyebab belum diketahui.'}"
+    if event == "menunggu":
+        seconds = int(float(get("seconds") or 0))
+        return f"⏳ Menunggu {seconds // 60}:{seconds % 60:02d}"
+    if event == "observasi":
+        return (
+            f"👀 Cek kondisi · {PHASES.get(get('phase'), get('phase'))}\n"
+            f"⛽ {get('fuel', '?')}% · 🔧 {get('condition', '?')}% · 📶 {get('data', '?')}% · "
+            f"💰 {koin(get('wallet', '?'))}\n"
+            f"👉 Berikutnya: {ACTIONS.get(get('next'), get('next'))}"
+        )
+    if event == "isi_ulang_ditunda":
+        return f"⏸️ Isi ulang {resource} ditunda ({get('current')}%)\n{get('reason')}"
+    if event == "toko_dibuka":
+        return f"🏪 Buka toko {get('shop')}"
+    if event == "rencana_beli":
+        return (
+            f"🛒 Rencana beli {get('product')} ×{get('quantity')} · {koin(get('cost'))}\n"
+            f"Toko {get('shop')} · {get('reason')}"
+        )
+    if event == "pembelian_terverifikasi":
+        return (
+            f"✅ Beli {get('product')} · {koin(get('cost'))}\n"
+            f"{resource} {get('before')}% → {get('after')}% · saldo {koin(get('wallet'))}"
+        )
+    if event == "pendapatan_ojol_tercatat":
+        return f"💵 Ongkos masuk +{koin(get('amount'))}"
+    if event == "trip_selesai_otomatis_teramati":
+        return (
+            f"🏁 Trip selesai · +{koin(get('income'))}\n"
+            f"Hari ini {koin(get('today_income'))} · saldo {koin(get('wallet'))}"
+        )
+    if event == "aksi_job_terverifikasi":
+        return (
+            f"✅ {ACTIONS.get(get('action'), get('action'))} berhasil · "
+            f"{PHASES.get(get('phase'), get('phase'))}"
+        )
+    if event == "dry_run":
+        return "🧪 Uji coba selesai, tanpa transaksi"
+    details = "\n".join(f"{key}: {value}" for key, value in data.items() if value is not None)
+    return f"📣 {event.replace('_', ' ').capitalize()}" + (f"\n{details}" if details else "")
+
+
+ERROR_HINTS = (
+    ("telegram.", "Bot akan mencoba lagi sendiri. Jika tetap diam, cek koneksi server."),
+    ("tunnel.", "Link Import Cookie tidak bisa dibuka. Hubungi admin untuk cek tunnel."),
+    ("control.startup", "Hubungi admin untuk cek server."),
+    ("control.command.import_cookie", "Tekan Import Cookie lagi beberapa saat lagi."),
+    ("control.command.run", "Tekan Status untuk cek, lalu Jalankan Ojol lagi."),
+    ("worker.", "Tekan Status untuk cek, lalu Jalankan Ojol lagi."),
+)
+
+
+def error_hint(stage):
+    return next(
+        (hint for prefix, hint in ERROR_HINTS if stage.startswith(prefix)),
+        "Tekan Status untuk cek. Jika masalah sama muncul lagi, kirim Kode ke admin.",
+    )
+
+
 def queue_error(settings, error, stage, context=None):
     settings.runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     (settings.runtime_dir / "STOP").touch(mode=0o600)
@@ -223,8 +315,15 @@ def queue_error(settings, error, stage, context=None):
         "message": redact(error, settings),
         **(context or {}),
     }
-    message = "🛑 Ojol STOP karena error\n" + "\n".join(
-        f"{key}: {value}" for key, value in details.items() if value is not None
+    message = "\n".join(
+        [
+            "⚠️ Ojol berhenti karena ada masalah",
+            "",
+            details["message"] or "Penyebab belum diketahui.",
+            f"👉 {error_hint(stage)}",
+            "",
+            f"Kode: {stage}",
+        ]
     )
     path = queue_notice(settings, message, details)
     latest = settings.runtime_dir / "last-error.json"

@@ -85,7 +85,10 @@ async def import_session(settings, payload):
             candidate.replace(settings.runtime_dir / "http-session.json")
         finally:
             candidate.unlink(missing_ok=True)
-    queue_notice(settings, "✅ Cookie diverifikasi melalui HTTP MCP. Tekan Jalankan Ojol.")
+    queue_notice(
+        settings,
+        "✅ Cookie berhasil diimpor\n\nSesi game sudah dicek dan siap dipakai.\n👉 Tekan Jalankan Ojol.",
+    )
     await flush_notices(settings)
 
 

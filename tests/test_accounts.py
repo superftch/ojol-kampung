@@ -40,9 +40,9 @@ def test_whitelist_admin_ownership_and_legacy_preservation(managed):
     accounts = Accounts(managed)
     assert accounts.allowed(111) and not accounts.allowed(222)
     assert not accounts.allowed(True) and not accounts.allowed(-1)
-    with pytest.raises(ValueError, match="Admin"):
+    with pytest.raises(ValueError, match="admin utama"):
         accounts.whitelist(111, False)
-    with pytest.raises(ValueError, match="whitelist"):
+    with pytest.raises(ValueError, match="belum diizinkan"):
         accounts.create(222, "Forbidden")
     accounts.whitelist(222)
     account = accounts.create(222, "Second user")
@@ -183,7 +183,7 @@ async def test_global_worker_cap_serializes_simultaneous_starts_and_deduplicates
     )
     assert starts == ["a"]
     b.execute.assert_not_awaited()
-    assert "Batas worker" in manager.reply.call_args.args[1]
+    assert "Kuota worker" in manager.reply.call_args.args[1]
     a.execute = AsyncMock()
     await manager.dispatch(111, "Jalankan Ojol")
     a.execute.assert_awaited_once_with("run")
@@ -575,7 +575,7 @@ async def test_pending_inputs_are_separate_per_user_and_old_rename_does_not_swit
     await manager.dispatch(111, "Renamed")
     assert manager.registry.get(first["id"])["name"] == "Renamed"
     assert manager.registry.selected(111)["id"] == second["id"]
-    assert "Akun terpilih: Second" in manager.reply.call_args.args[1]
+    assert "Akun yang dipilih: Second" in manager.reply.call_args.args[1]
     await manager.dispatch(222, "New User Account")
     assert manager.registry.selected(222)["name"] == "New User Account"
     assert manager.pending == {}
@@ -614,7 +614,7 @@ async def test_lists_paginate_without_losing_buttons_or_exposing_account_ids(man
     await click(manager, 111, "Daftar User")
     await click(manager, 111, "Berikutnya ▶")
     await click(manager, 111, "309 · aktif")
-    assert "Telegram ID: 309" in manager.reply.call_args.args[1]
+    assert "User 309" in manager.reply.call_args.args[1]
     assert all(
         len(b["callback_data"].encode()) <= 64
         for call in manager.reply.call_args_list
@@ -646,7 +646,7 @@ async def test_archive_confirmation_stops_only_target_and_restore_respects_quota
     await click(manager, 111, "Pulihkan Utama")
     assert manager.registry.get(first["id"], archived=True)
     assert manager.registry.selected(111)["id"] == second["id"]
-    assert "Batas akun" in manager.reply.call_args.args[1]
+    assert "Jumlah akun sudah penuh" in manager.reply.call_args.args[1]
 
 
 @pytest.mark.parametrize("reactivate", [False, True])

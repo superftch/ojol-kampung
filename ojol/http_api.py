@@ -167,7 +167,7 @@ class OjolHttpApi:
                 payload = parse_cookie_input(self.session_file.read_text())
             except (OSError, ValueError, TypeError, KeyError):
                 raise HttpCoreError(
-                    "Sesi HTTP belum tersedia. Gunakan Import Cookie.", category="auth"
+                    "Sesi game belum ada. Tekan Import Cookie dulu.", category="auth"
                 ) from None
             cookies = httpx.Cookies()
             for cookie in payload["cookies"]:

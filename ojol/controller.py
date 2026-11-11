@@ -70,15 +70,12 @@ class Controller:
         temporary.write_text(json.dumps(status, ensure_ascii=False, default=str, indent=2))
         temporary.chmod(0o600)
         temporary.replace(output)
-        from .telegram import notifications_enabled, queue_notice, redact
+        from .telegram import event_text, notifications_enabled, queue_notice, redact
 
         if notifications_enabled(self.settings):
             from .finance import WIB
 
-            text = (
-                f"📣 {event} · {now().astimezone(WIB):%d-%m-%Y %H:%M:%S} WIB\nRun {self.run_id} · {self.stage}\n"
-                + json.dumps(data, ensure_ascii=False, default=str)
-            )
+            text = f"{event_text(event, data)}\n🕒 {now().astimezone(WIB):%H:%M:%S} WIB"
             queue_notice(
                 self.settings,
                 redact(text, self.settings),

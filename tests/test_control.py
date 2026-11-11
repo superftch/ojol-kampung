@@ -289,7 +289,7 @@ async def test_fast_double_start_and_stop_before_child_takes_lock(settings, monk
     child.terminate = Mock(side_effect=lambda: setattr(child, "returncode", -15))
     service.worker = child
     monkeypatch.setattr("ojol.control.running", lambda directory: False)
-    assert "sudah aktif" in await service.command("run")
+    assert "sudah jalan" in await service.command("run")
     await service.stop_worker()
     child.terminate.assert_called_once()
     assert service.expected_stop and (settings.runtime_dir / "STOP").exists()

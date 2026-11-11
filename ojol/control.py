@@ -72,7 +72,7 @@ class ControlService:
 
     async def ensure_backend(self, require_session=False):
         if require_session and not (self.settings.runtime_dir / "http-session.json").is_file():
-            raise RuntimeError("Sesi HTTP belum tersedia. Gunakan tombol Import Cookie.")
+            raise RuntimeError("Sesi game belum ada. Tekan Import Cookie dulu.")
 
     def tunnel_alive(self):
         return bool(self.tunnel_process and self.tunnel_process.returncode is None)
@@ -122,7 +122,7 @@ class ControlService:
             ):
                 return
             await asyncio.sleep(0.25)
-        raise RuntimeError("Worker belum berhenti setelah 30 detik; sesi tidak diganti")
+        raise RuntimeError("Worker belum berhenti setelah 30 detik. Sesi game tidak diganti.")
 
     def status(self):
         directory = self.settings.runtime_dir
@@ -364,15 +364,16 @@ class ControlService:
         if command == "import_cookie":
             url = await self.cookie_link()
             browser_hint = (
-                " Salin link ke browser di komputer yang menjalankan Docker."
+                "\n💻 Buka link ini di browser komputer yang menjalankan Docker."
                 if urlsplit(url).scheme == "http"
                 else ""
             )
             return (
-                f"🔐 Import Cookie sesi KampungSebelah:\n{url}\n"
-                f"Link sekali pakai, 15 menit.{browser_hint} "
-                "Tempel nilai cookie sesi atau JSON cookie di form. "
-                "Setelah berhasil, tekan Jalankan Ojol."
+                "🔐 Import Cookie KampungSebelah\n\n"
+                f"{url}\n\n"
+                f"⏳ Link hanya bisa dipakai sekali, berlaku 15 menit.{browser_hint}\n"
+                "📋 Tempel cookie sesi atau JSON cookie di form.\n"
+                "👉 Setelah berhasil, tekan Jalankan Ojol."
             )
         if command == "status":
             return self.status()
@@ -381,26 +382,28 @@ class ControlService:
             return await self.account_profit(day)
         if command == "choose_date":
             self.awaiting_date = True
-            return "Ketik tanggal laporan: YYYY-MM-DD atau DD-MM-YYYY. Contoh: 2026-11-10."
+            return "📅 Ketik tanggal laporan.\n\nFormat: YYYY-MM-DD atau DD-MM-YYYY\nContoh: 2026-11-10"
         if command in {"notifications_on", "notifications_off"}:
             enabled = command == "notifications_on"
             set_notifications(self.settings, enabled)
             return (
-                "🔔 Notifikasi ON. Semua event Ojol berikutnya akan dikirim."
+                "🔔 Notifikasi ON\n\nSetiap kegiatan Ojol akan dikirim ke sini."
                 if enabled
-                else "🔕 Notifikasi OFF. Event rutin tidak dikirim; laporan error + STOP tetap aktif."
+                else "🔕 Notifikasi OFF\n\n"
+                "Kegiatan rutin tidak dikirim lagi.\n"
+                "⚠️ Pesan error tetap dikirim."
             )
         if command == "stop":
             await self.stop_worker()
-            return "🛑 Worker berhenti. Sesi HTTP dan riwayat disimpan."
+            return "🛑 Ojol dihentikan\n\n💾 Sesi game dan riwayat tetap tersimpan.\n👉 Tekan Jalankan Ojol untuk mulai lagi."
         if command == "run":
             async with self.lock:
                 if (self.worker and self.worker.returncode is None) or running(
                     self.settings.runtime_dir
                 ):
-                    return "Worker sudah aktif; tidak membuat worker kedua."
+                    return "🟢 Ojol sudah jalan\n\nTidak perlu ditekan lagi. Tekan Status untuk melihat kondisinya."
                 if not self.settings.operator_authorized:
-                    raise RuntimeError("Izin operator belum dikonfigurasi")
+                    raise RuntimeError("Akun ini belum diizinkan menjalankan Ojol oleh admin.")
                 self.access.revoke()
                 await self.ensure_backend(require_session=True)
                 await self.start_tunnel()
@@ -422,8 +425,19 @@ class ControlService:
                         "OJOL_ACCOUNT_NAME": self.settings.account_name,
                     },
                 )
-                return "▶️ Worker HTTP MCP dimulai. Tanpa batas trip/durasi default; saldo utama ≥20 koin. Pembacaan boleh retry, transaksi tidak diulang. Error yang tidak pulih: STOP dan lapor."
-        return "Pilih tombol: Import Cookie, Jalankan Ojol, Hentikan Ojol, Status, Laba Bersih, Notifikasi ON/OFF."
+                return (
+                    "▶️ Ojol mulai jalan\n\n"
+                    "🛵 Trip jalan terus sampai dihentikan\n"
+                    f"💰 Berhenti otomatis jika saldo di bawah {self.settings.min_balance} koin\n"
+                    "🔒 Pembelian tidak pernah diulang otomatis\n"
+                    "⚠️ Jika ada error, bot berhenti dan lapor ke sini"
+                )
+        return (
+            "🤔 Perintah tidak dikenal\n\n"
+            "Pakai tombol di bawah:\n"
+            "🔐 Import Cookie · ▶️ Jalankan Ojol · 🛑 Hentikan Ojol\n"
+            "🛵 Status · 📒 Laba Bersih · 🔔 Notifikasi ON · OFF"
+        )
 
     async def execute(self, command):
         try:
@@ -437,17 +451,21 @@ class ControlService:
         except (ValueError, OverflowError):
             if command.startswith("profit"):
                 queue_notice(
-                    self.settings, "Tanggal tidak valid. Gunakan YYYY-MM-DD atau DD-MM-YYYY."
+                    self.settings,
+                    "❌ Tanggal tidak valid\n\nFormat: YYYY-MM-DD atau DD-MM-YYYY\nContoh: 2026-11-10",
                 )
             else:
                 queue_error(
                     self.settings,
-                    RuntimeError("Input command tidak valid"),
+                    RuntimeError("Perintah tidak dikenal."),
                     f"control.command.{command}",
                 )
         except Exception as exc:
             if command == "status" or command == "profit" or command.startswith("profit:"):
-                queue_notice(self.settings, "Data laporan belum dapat dibaca. Coba lagi.")
+                queue_notice(
+                    self.settings,
+                    "⚠️ Data belum bisa dibaca\n\n👉 Coba tekan lagi beberapa saat lagi.",
+                )
             else:
                 queue_error(self.settings, exc, f"control.command.{command}")
         await flush_notices(self.settings)
@@ -510,7 +528,7 @@ class ControlService:
                 self.tunnel_process = None
                 queue_error(
                     self.settings,
-                    RuntimeError(f"Cloudflared exit code {code}"),
+                    RuntimeError(f"Tunnel berhenti tiba-tiba (exit code {code})."),
                     "tunnel.process_exit",
                 )
                 await self.stop_worker()
@@ -525,11 +543,11 @@ class ControlService:
                     if previous_error.get("pid") != pid:
                         queue_error(
                             self.settings,
-                            RuntimeError(f"Worker exit code {code}"),
+                            RuntimeError(f"Worker mati tiba-tiba (exit code {code})."),
                             "worker.process_exit",
                         )
                 else:
-                    queue_notice(self.settings, "Worker berhenti. " + self.status())
+                    queue_notice(self.settings, "🛑 Ojol berhenti\n\n" + self.status())
             commands = self.settings.runtime_dir / "control-commands"
             for path in sorted(commands.glob("*.json")):
                 payload = json.loads(path.read_text())
@@ -565,7 +583,7 @@ class ControlService:
             }:
                 queue_error(
                     self.settings,
-                    RuntimeError("Sesi worker sebelumnya terputus; tidak dilanjutkan otomatis"),
+                    RuntimeError("Ojol terputus saat server mati. Tidak dilanjutkan otomatis."),
                     "worker.interrupted",
                     {
                         "run_id": previous.get("run_id"),
