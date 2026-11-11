@@ -52,6 +52,10 @@ Akun baru atau akun yang dipulihkan langsung terpilih. Ganti pilihan tidak mengh
 
 Import hanya menerima cookie sesi `__Secure-better-auth.session_token` milik `www.kampungsebelah.com`, sebagai nilai atau JSON cookie. Cookie tidak dikirim melalui Telegram/argv/log. Link HTTPS sekali pakai berlaku 15 menit, memakai cookie HttpOnly dengan path akun dan CSRF terikat sesi. Kandidat sesi diverifikasi lewat HTTP MCP lalu dipasang atomik; kegagalan tidak mengganti sesi lama. Nama akun ditampilkan pada form supaya tujuan import jelas.
 
+## Development lokal
+
+Gunakan [panduan Docker lokal dan bot Telegram development](docs/local-development.md) untuk pengujian sebelum deploy. Compose lokal memakai port 6081 dan volume development sendiri.
+
 ## Deploy dan upgrade
 
 Prasyarat: Linux amd64/arm64, Docker Engine + Compose, koneksi game/Telegram, domain Cloudflare. Container memakai batas 2 CPU / 2 GiB RAM; angka worker default adalah batas awal konservatif, **belum benchmark kapasitas**.

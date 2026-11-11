@@ -3,7 +3,7 @@ import json
 import os
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import httpx
 import pytest
@@ -427,3 +427,130 @@ async def test_invalid_report_date_never_stops_gameplay(settings, monkeypatch):
     assert not (settings.runtime_dir / "STOP").exists()
     notice = next((settings.runtime_dir / "notifications").glob("*.json"))
     assert "Tanggal tidak valid" in json.loads(notice.read_text())["text"]
+
+
+def test_status_snapshot_freshness_and_worker_stop_reason(settings, monkeypatch):
+    import os
+    from datetime import datetime
+
+    import ojol.control as control
+
+    service = ControlService(settings.model_copy(update={"account_name": "Akun uji"}))
+    assert "belum dijalankan" in service.status()
+    (settings.runtime_dir / "last-error.json").write_text(json.dumps({"message": "Error lama"}))
+    (settings.runtime_dir / "status.json").write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "event": "menunggu",
+                "snapshot_received_at": "2026-11-11T10:00:00+00:00",
+                "snapshot": {"phase": "delivering", "remaining_seconds": 90},
+            }
+        )
+    )
+    monkeypatch.setattr(control, "now", lambda: datetime.fromisoformat("2026-11-11T10:00:30+00:00"))
+    monkeypatch.setattr(control, "running", lambda _: True)
+    active = service.status()
+    assert "Akun uji" in active and "Worker aktif" in active
+    assert "17:00:00 WIB" in active and "30 detik lalu" in active and "1:00" in active
+    assert "Error lama" not in active and "data lama" not in active
+
+    monkeypatch.setattr(control, "running", lambda _: False)
+    stopped = service.status()
+    assert "Worker berhenti" in stopped and "data lama" in stopped and "sisa trip" not in stopped
+    (settings.runtime_dir / "last-error.json").write_text(
+        json.dumps({"message": "Sesi kedaluwarsa"})
+    )
+    assert "Sesi kedaluwarsa" in service.status()
+
+
+async def test_account_profit_unavailable_does_not_stop_worker(settings, monkeypatch):
+    service = ControlService(settings.model_copy(update={"env": "local"}))
+    (settings.runtime_dir / "http-session.json").touch()
+    monkeypatch.setattr("ojol.http_core.HttpUI", Mock(side_effect=RuntimeError("unavailable")))
+    await service.execute("profit")
+    files = list((settings.runtime_dir / "notifications").glob("*.json"))
+    assert len(files) == 1
+    assert "Riwayat game tidak dapat dibaca" in json.loads(files[0].read_text())["text"]
+    assert not (settings.runtime_dir / "STOP").exists()
+
+
+def test_status_shows_unresolved_action_and_starting_worker(settings, state):
+    from types import SimpleNamespace
+
+    from ojol.journal import Journal
+
+    service = ControlService(settings)
+    service.worker = SimpleNamespace(pid=123, returncode=None)
+    assert "Worker memulai" in service.status()
+    service.worker.returncode = 1
+    journal = Journal(settings.runtime_dir)
+    try:
+        run_id = journal.start(settings)
+        action = journal.begin(run_id, "search", state, {})
+        journal.settle(action, False)
+        assert f"Aksi #{action} (search) menunggu rekonsiliasi" in service.status()
+    finally:
+        journal.close()
+
+
+async def test_daily_report_uses_only_selected_account_session(settings, monkeypatch):
+    from contextlib import asynccontextmanager
+
+    from ojol.finance import report_date
+
+    root = settings.runtime_dir
+    for name in ("alpha", "beta"):
+        (root / name).mkdir()
+        (root / name / "http-session.json").touch()
+    selected = root / "beta"
+    fetched = []
+
+    @asynccontextmanager
+    async def core(account_settings):
+        fetched.append(account_settings.runtime_dir)
+        yield type(
+            "Core",
+            (),
+            {
+                "daily_wallet": AsyncMock(
+                    return_value={
+                        "income_milli": 2400,
+                        "payout_count": 3,
+                        "expenses_milli": {"fuel": 2700},
+                        "expense_issue": None,
+                        "complete": True,
+                        "today_income_milli": None,
+                        "issue": None,
+                    }
+                )
+            },
+        )()
+
+    monkeypatch.setattr("ojol.http_core.HttpUI", core)
+    service = ControlService(settings.model_copy(update={"env": "local", "runtime_dir": selected}))
+    result = await service.account_profit(report_date("2026-11-11"))
+    assert fetched == [selected]
+    assert "Pendapatan Ojol seluruh akun 2,4 koin · 3 payout" in result
+    assert "Estimasi laba Ojol -0,3 koin" in result
+    assert "⛽ Bensin 2,7 koin · 🔧 Bengkel 0 koin · 📶 Kuota 0 koin" in result
+    assert "Biaya worker terverifikasi 0 koin" in result
+
+
+def test_profit_omits_estimate_when_coverage_or_expense_details_are_partial(settings):
+    service = ControlService(settings)
+    wallet = {
+        "income_milli": 500,
+        "payout_count": 1,
+        "expenses_milli": {"data": 500},
+        "expense_issue": None,
+        "complete": True,
+        "today_income_milli": None,
+    }
+    assert "Estimasi laba Ojol 0 koin" in service.profit(wallet=wallet)
+    for complete, expense_issue in [(False, None), (True, "Nama barang kosong")]:
+        report = service.profit(
+            wallet={**wallet, "complete": complete, "expense_issue": expense_issue}
+        )
+        assert "Estimasi laba Ojol" not in report
+        assert "Belanja produk Ojol ditemukan (parsial) 0,5 koin" in report

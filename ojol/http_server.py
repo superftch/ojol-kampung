@@ -55,14 +55,14 @@ async def invoke(method, **kwargs):
             "ok": False,
             "error": "Deadline core HTTP tercapai; transaksi tidak diulang",
             "category": "transport",
-            "recoverable": method in {"snapshot", "preview"},
+            "recoverable": method in {"snapshot", "preview", "daily_wallet"},
         }
     except (KeyError, TypeError, ValueError, AttributeError):
         return {
             "ok": False,
             "error": "Skema API Ojol berubah",
             "category": "schema",
-            "recoverable": method in {"snapshot", "preview"},
+            "recoverable": method in {"snapshot", "preview", "daily_wallet"},
         }
 
 
@@ -70,6 +70,12 @@ async def invoke(method, **kwargs):
 async def ojol_snapshot() -> dict:
     """Read wallet, resources, trips and receipts using server time."""
     return await invoke("snapshot")
+
+
+@server.tool()
+async def ojol_daily_wallet(day: str) -> dict:
+    """Read bounded wallet history and verified Ojol payouts for one WIB date."""
+    return await invoke("daily_wallet", day=day)
 
 
 @server.tool()

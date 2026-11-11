@@ -2,11 +2,29 @@ import json
 import os
 import re
 import sqlite3
+from contextlib import closing
 from decimal import Decimal
 from pathlib import Path
 
 from .finance import WIB, day_bounds, received_income, report_date
 from .models import Snapshot, now
+
+UNRESOLVED_ACTION = (
+    "SELECT id,kind FROM actions WHERE status IN ('pending','uncertain') ORDER BY id DESC LIMIT 1"
+)
+
+
+def unresolved_action(directory: Path):
+    path = directory / "history.sqlite3"
+    if not path.is_file():
+        return None
+    try:
+        with closing(
+            sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=0.25)
+        ) as db:
+            return db.execute(UNRESOLVED_ACTION).fetchone()
+    except sqlite3.Error:
+        return None
 
 
 class Journal:
@@ -33,9 +51,7 @@ class Journal:
         self.db.close()
 
     def ensure_resolved(self):
-        unresolved = self.db.execute(
-            "SELECT id,kind FROM actions WHERE status IN ('pending','uncertain') ORDER BY id DESC LIMIT 1"
-        ).fetchone()
+        unresolved = self.db.execute(UNRESOLVED_ACTION).fetchone()
         if unresolved:
             raise RuntimeError(
                 f"Aksi #{unresolved['id']} ({unresolved['kind']}) belum terverifikasi. Periksa history sebelum menjalankan ulang; klik tidak diulang."
