@@ -5,6 +5,7 @@ Automation Ojol multi-account dengan **HTTP MCP + Google ADK**. Satu bot Telegra
 - Default **3 akun per user**, **3 worker aktif global**; admin dapat mengubahnya tanpa restart.
 - **1 akun = 1 subprocess worker**, dengan MCP, cookie, SQLite ledger, status dan pengaturan notifikasi sendiri. Semua berjalan dalam satu container aplikasi.
 - Tanpa batas trip/durasi default; saldo utama production minimal **20 koin**.
+- Default `OJOL_AUTO_START=true`: semua akun aktif dengan cookie tersimpan dicoba start pada setiap boot/deploy, mengikuti whitelist dan batas worker global.
 - Pembacaan HTTP sementara gagal dicoba maksimal 3 kali (backoff 1/2 detik). Transaksi dikirim sekali; hasil ambigu menghentikan akun dan memblokir replay.
 - Laporan laba harian WIB dan tombol navigasi tanggal terikat ke akun asal. Notifikasi diberi nama akun dan hanya dikirim ke pemiliknya.
 
@@ -12,14 +13,17 @@ Gunakan dengan izin operator game. Satu akun game jangan dijalankan bersamaan di
 
 ## Management Telegram
 
-Admin pertama adalah ID pribadi dalam `OJOL_TELEGRAM_CHAT_ID`; ID ini selalu boleh masuk dan tidak bisa dicabut lewat bot. User lain ditolak sampai admin menambahkan ID numeriknya. Kontrol hanya menerima private chat dengan `chat.id == from.id`; grup dan callback milik user lain ditolak.
+Admin pertama adalah ID pribadi dalam `OJOL_TELEGRAM_CHAT_ID`; ID ini selalu boleh masuk dan tidak bisa dicabut lewat bot. User lain belum bisa memakai fitur akun sampai admin menyetujui pengajuan atau menambahkan ID numeriknya. Kontrol hanya menerima private chat dengan `chat.id == from.id`; grup dan callback milik user lain ditolak.
 
 Saat user ditambahkan atau diaktifkan ulang, bot mengirim menu utama ke chat pribadi user. Jika user belum pernah membuka bot, minta user menekan **Start** dahulu; [Telegram melarang bot memulai percakapan pribadi](https://core.telegram.org/bots#how-are-bots-different-from-users). Jika tombol belum terlihat, admin bisa memilih **Kirim Menu**, atau user mengirim pesan **menu** ke bot. Setelah menu muncul: **Tambah Akun → ketik nama → Import Cookie**.
+
+User belum terdaftar bisa menekan **Start** atau mengirim **`/start` → Ajukan Akses**. Bot menyimpan **nama dari profil Telegram, username (jika ada), dan Telegram ID** pemohon, lalu mengirim notifikasi ke admin dengan tombol **Setujui / Tolak**. Daftar persisten tersedia lewat **Management → Pengajuan Akses**, termasuk setelah bot restart. Pengajuan berulang saat menunggu tidak menambah notifikasi admin. Persetujuan memasukkan user ke whitelist dan mengirim menu utama; penolakan tetap menutup akses, dan aktivasi ulang harus dilakukan admin melalui Daftar User. Pengajuan tidak otomatis membuat akun game atau menjalankan worker.
 
 Semua operasi bot memakai tombol. Ketik hanya nilai yang diminta: ID Telegram, nama akun, batas angka, atau tanggal. Tidak perlu mengetik perintah. Tombol **Batal** selalu bisa membatalkan input; **Menu Utama** mengembalikan tombol utama.
 
 | Aksi admin | Alur tombol |
 |---|---|
+| Tinjau pengajuan beserta nama pemohon | **Management → Pengajuan Akses → pilih pemohon → Setujui / Tolak** |
 | Lihat whitelist, kuota dan worker aktif | **Management → Daftar User** |
 | Tambah user | **Management → Tambah User**, lalu ketik ID Telegram |
 | Aktifkan ulang user | **Daftar User → pilih user → Aktifkan Akses** |
@@ -72,6 +76,7 @@ Isi `.env` di server; jangan commit:
 | `OJOL_ENV` | `production` |
 | `OJOL_OPERATOR_AUTHORIZED` | `true` setelah izin operator tersedia |
 | `OJOL_CORE` | `http`; nilai lain ditolak |
+| `OJOL_AUTO_START` | `true` default: start semua akun saat boot; `false`: seluruh start manual |
 | `OJOL_TELEGRAM_BOT_TOKEN` | Token BotFather |
 | `OJOL_TELEGRAM_CHAT_ID` | Telegram ID **admin**, buka bot dan Start dahulu |
 | `OJOL_MAX_ACCOUNTS_PER_USER` | `3` default sebelum override management |
@@ -94,7 +99,13 @@ Production menolak Telegram kosong, origin tanpa HTTPS, dan saldo minimum di baw
 
 Saat upgrade dari versi satu akun, **Utama** milik admin otomatis menunjuk direktori runtime lama. Ledger, cookie HTTP, dan pengaturan tidak dipindah/dihapus. Profil Chrome lama dibiarkan sebagai arsip tetapi tidak dibaca; jika hanya profil Chrome yang tersedia, lakukan **Import Cookie** baru. Hapus variabel lama `OJOL_MANAGED_BROWSER`, `OJOL_CDP_URL`, dan `OJOL_BROWSER_FALLBACK` dari konfigurasi; pastikan `OJOL_CORE=http`.
 
-Setelah mengganti konfigurasi/secret atau image, recreate aplikasi. Gameplay tidak otomatis dimulai setelah restart; pilih akun, periksa Status, lalu Jalankan Ojol. Jika connector keluar, seluruh worker dihentikan dan admin diberi laporan `tunnel.process_exit`; tombol Import Cookie/Jalankan Ojol mencoba memulai connector lagi. `/health` membuktikan control service hidup, bukan keberhasilan game atau koneksi edge. Readiness connector:
+Setelah mengganti konfigurasi/secret atau image, recreate aplikasi. **`OJOL_AUTO_START=true` menjadi default**, termasuk ketika variabel belum ditulis di `.env`. Setiap boot/deploy menyiapkan semua akun nonarsip milik user whitelist yang memiliki cookie tersimpan, termasuk akun yang sebelumnya dihentikan. Tidak perlu menekan Jalankan dulu pada update pertama. Akun menunggu slot jika batas worker global penuh. Status akun menampilkan **Auto-start saat boot: ON/OFF**, ditambah keterangan menunggu slot bila perlu.
+
+Set `OJOL_AUTO_START=false` di `.env` lalu recreate untuk mematikan seluruh auto-start. Hentikan Ojol, Import Cookie, arsip, cabut akses, atau error menghentikan akun dan membatalkan antrean startup **selama aplikasi berjalan**; boot berikutnya dengan env `true` kembali mencoba semua akun yang memenuhi syarat. Akun baru/cookie baru setelah boot tetap dijalankan melalui tombol Jalankan Ojol. Error tidak memicu restart loop dalam sesi aplikasi yang sama.
+
+Startup tetap memeriksa izin operator, whitelist, cookie dan ledger pending/uncertain sebelum membuat worker; hasil transaksi yang belum pasti tetap STOP tanpa replay. **Setiap boot membuka sesi baru:** batas belanja/trip/durasi dari env dihitung ulang per sesi, sedangkan saldo minimum production20 tetap berlaku. Marker `worker-restart.json` dari versi lama tidak lagi dipakai.
+
+Jika connector keluar, seluruh worker dihentikan dan admin diberi laporan `tunnel.process_exit`; tombol Import Cookie/Jalankan Ojol mencoba memulai connector lagi. `/health` membuktikan control service hidup, bukan keberhasilan game atau koneksi edge. Readiness connector:
 
 ```sh
 docker compose exec -u app app python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:2000/ready',timeout=3).status)"
@@ -129,7 +140,7 @@ docker compose run --rm --no-deps -T --entrypoint tar app -C /data -czf - runtim
 docker compose start app
 ```
 
-Arsip memuat sesi akun; simpan privat. Restore saat aplikasi berhenti, pertahankan UID1000, jangan menjalankan akun sama di dua server. `docker compose down` mempertahankan volume; **`down -v` menghapus data**.
+Arsip memuat sesi akun; simpan privat. Dengan env auto-start aktif, akun hasil restore juga dicoba saat boot. Restore saat aplikasi berhenti, pertahankan UID1000, dan hentikan server asal sebelum menjalankan hasil restore/migrasi supaya akun tidak berjalan di dua server. `docker compose down` mempertahankan volume; **`down -v` menghapus data**.
 
 ## Pengembangan
 

@@ -1,3 +1,4 @@
+import asyncio
 import json
 from decimal import Decimal
 from types import SimpleNamespace
@@ -220,8 +221,9 @@ async def test_purchase_rechecks_identity_price_cash_floor_and_no_overflow(api, 
         world["shop"]["open"] = False
     if case == "forged":
         product["price"] = "0.001"
-    with pytest.raises(HttpCoreError):
+    with pytest.raises(HttpCoreError) as error:
         await api.purchase(product, wallet, resource, "0", str(uuid4()))
+    assert error.value.category == "rejected"
     assert not any(r.method == "POST" for r in api.calls)
 
 
@@ -232,6 +234,41 @@ async def test_purchase_uses_fresh_observed_item_and_single_request_id(api):
     posts = [r for r in api.calls if r.method == "POST"]
     assert len(posts) == 1 and posts[0].url.path == f"/api/shops/{SHOP}/buy"
     assert json.loads(posts[0].content) == {"item": "pulsa", "requestId": request_id}
+
+
+@pytest.mark.parametrize("change", [{"balanceMilli": 20250}, {"configVersion": "fixture-v2"}])
+async def test_state_change_during_catalog_read_rejects_without_locking_journal(
+    api, world, settings, monkeypatch, change
+):
+    original = api.products
+
+    async def products(*args):
+        catalog = await original(*args)
+        world["me"].update(change)
+        return catalog
+
+    async def call(name, **args):
+        if name == "ojol_preview_shop":
+            return await api.preview(**args)
+        if name == "ojol_purchase":
+            monkeypatch.setattr(api, "products", products)
+            return await api.purchase(**args)
+        pytest.fail(name)
+
+    ui = HttpUI(settings)
+    ui.call_tool = call
+    journal = Journal(settings.runtime_dir)
+    try:
+        run = journal.start(settings)
+        controller = Controller(ui, settings, journal, run)
+        with pytest.raises(HttpCoreError, match="berubah sebelum pembelian"):
+            await controller.purchase(await api.snapshot(), "data")
+        assert all(request.method == "GET" for request in api.calls)
+        assert journal.history()["actions"][0]["status"] == "rejected"
+        assert controller.spent == 0
+        assert journal.start(settings) > run
+    finally:
+        journal.close()
 
 
 @pytest.mark.parametrize(
@@ -332,6 +369,36 @@ async def test_preview_considers_more_than_twelve_matching_shops(api, world):
     result = await api.preview("data")
     assert len(result["shops"]) == 15
     assert result["shops"][-1]["id"] == preferred
+
+
+async def test_preview_refills_available_slot_while_slow_shop_is_pending(api, world, monkeypatch):
+    for number in range(8, 12):
+        add_shop(world, number, "Konter biasa", "konter-pulsa", "pulsa", "Isi pulsa", 500)
+    original = api.preview_shop
+    four_started, fifth_started = asyncio.Event(), asyncio.Event()
+    active = peak = 0
+
+    async def preview_shop(row, resource, effects):
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        if active == 4:
+            four_started.set()
+        try:
+            if row["plotId"] == "K22-U07":
+                await fifth_started.wait()
+            elif row["plotId"] == "K22-U11":
+                fifth_started.set()
+            else:
+                await four_started.wait()
+            return await original(row, resource, effects)
+        finally:
+            active -= 1
+
+    monkeypatch.setattr(api, "preview_shop", preview_shop)
+    result = await asyncio.wait_for(api.preview("data"), timeout=2)
+    assert len(result["shops"]) == 5
+    assert peak == 4
 
 
 async def test_preview_timeout_leaves_no_buyable_catalog(api, monkeypatch):

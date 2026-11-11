@@ -50,12 +50,15 @@ class Journal:
     def close(self):
         self.db.close()
 
-    def start(self, settings):
+    def ensure_resolved(self):
         unresolved = self.db.execute(UNRESOLVED_ACTION).fetchone()
         if unresolved:
             raise RuntimeError(
                 f"Aksi #{unresolved['id']} ({unresolved['kind']}) belum terverifikasi. Periksa history sebelum menjalankan ulang; klik tidak diulang."
             )
+
+    def start(self, settings):
+        self.ensure_resolved()
         with self.db:
             return self.db.execute(
                 "INSERT INTO runs(started,outcome,settings) VALUES(?,?,?)",
@@ -200,6 +203,13 @@ class Journal:
                     json.dumps(payload, ensure_ascii=False, default=str),
                 ),
             ).lastrowid
+
+    def reject_purchase(self, action_id):
+        with self.db:
+            self.db.execute(
+                "UPDATE actions SET status='rejected' WHERE id=? AND kind='purchase' AND status='pending'",
+                (action_id,),
+            )
 
     def settle(self, action_id, verified, after=None):
         with self.db:

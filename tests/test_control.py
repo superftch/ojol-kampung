@@ -265,7 +265,7 @@ def test_game_cookie_transfer_excludes_google_and_other_cookie_fields():
 
 
 async def test_restart_reports_interrupted_worker_without_restarting_gameplay(settings):
-    settings = settings.model_copy(update={"env": "local"})
+    settings = settings.model_copy(update={"env": "local", "auto_start": False})
     (settings.runtime_dir / "status.json").write_text(
         json.dumps({"pid": 999999, "run_id": 3, "event": "menunggu", "stage": "wait.countdown"})
     )
@@ -533,7 +533,7 @@ async def test_daily_report_uses_only_selected_account_session(settings, monkeyp
     assert fetched == [selected]
     assert "Pendapatan Ojol seluruh akun 2,4 koin · 3 payout" in result
     assert "Estimasi laba Ojol -0,3 koin" in result
-    assert "Bensin 2,7 koin · Bengkel 0 koin · Kuota 0 koin" in result
+    assert "⛽ Bensin 2,7 koin · 🔧 Bengkel 0 koin · 📶 Kuota 0 koin" in result
     assert "Biaya worker terverifikasi 0 koin" in result
 
 

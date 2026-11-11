@@ -3,6 +3,7 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from unittest.mock import call as mock_call
 
 import pytest
 from pydantic import ValidationError
@@ -19,10 +20,13 @@ from ojol.session_transfer import parse_cookie_input
 from ojol.telegram import TelegramClient
 
 
-async def click(manager, owner, label):
+async def click(manager, owner, label, profile=None):
     markup = manager.reply.call_args.args[2]
     button = next(b for row in markup["inline_keyboard"] for b in row if b["text"] == label)
-    await manager.dispatch(owner, button["callback_data"], callback=True)
+    if profile is None:
+        await manager.dispatch(owner, button["callback_data"], callback=True)
+    else:
+        await manager.dispatch(owner, button["callback_data"], callback=True, profile=profile)
 
 
 @pytest.fixture
@@ -387,9 +391,10 @@ async def test_single_poller_routes_whitelisted_private_users_and_rejects_foreig
     monkeypatch.setattr(module, "TelegramClient", lambda settings: context)
     await manager.poll_telegram()
     assert manager.dispatch.call_args_list == [
-        ((111, "Status", False),),
-        ((222, "Status", False),),
-        ((222, "select:fixture", True),),
+        mock_call(111, "Status", False, profile={"id": 111}),
+        mock_call(222, "Status", False, profile={"id": 222}),
+        mock_call(333, "Status", False, profile={"id": 333}),
+        mock_call(222, "select:fixture", True, profile={"id": 222}),
     ]
     assert (managed.runtime_dir / "telegram-offset").read_text() == "7"
 
@@ -690,13 +695,15 @@ async def test_resending_menu_is_admin_only_and_preserves_user_input(managed):
     assert not manager.registry.allowed(333)
 
 
-async def test_menu_recovers_after_start_was_ignored_before_whitelist(managed):
+async def test_start_offers_application_before_whitelist_then_shows_main_menu(managed):
     from ojol.telegram import KEYBOARD
 
     manager = MultiAccountService(managed)
     manager.reply = AsyncMock()
     await manager.dispatch(222, "/start")
-    manager.reply.assert_not_awaited()
+    assert "Ajukan Akses" in str(manager.reply.call_args.args[2])
+    assert not manager.registry.allowed(222)
+    manager.reply.reset_mock()
     manager.registry.whitelist(222)
     await manager.dispatch(222, "menu")
     manager.reply.assert_awaited_once()
@@ -753,3 +760,186 @@ async def test_failed_welcome_stays_queued_and_admin_gets_recovery_steps(
     )
     assert not (manager.hub.settings.runtime_dir / "STOP").exists()
     assert not (manager.notice_settings(222).runtime_dir / "STOP").exists()
+
+
+async def test_unlisted_start_requests_access_with_telegram_name_and_no_duplicate_admin_notices(
+    managed,
+):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock(return_value=True)
+    profile = {"id": 222, "first_name": "Siti", "last_name": "Aminah", "username": "siti_aminah"}
+    await manager.dispatch(222, "/start", profile=profile)
+    assert manager.registry.access_request(222) is None
+    assert manager.reply.call_args.args[0] == 222
+    await click(manager, 222, "Ajukan Akses", profile=profile)
+    request = manager.registry.access_request(222)
+    assert request["name"] == "Siti Aminah" and request["username"] == "siti_aminah"
+    assert request["status"] == "pending" and not manager.registry.allowed(222)
+    admin_notices = [c for c in manager.reply.call_args_list if c.args[0] == 111]
+    assert len(admin_notices) == 1
+    assert "Siti Aminah" in admin_notices[0].args[1] and "@siti_aminah" in admin_notices[0].args[1]
+    assert "222" in admin_notices[0].args[1]
+    for _ in range(3):
+        await manager.dispatch(222, "access:request", callback=True, profile=profile)
+    assert len([c for c in manager.reply.call_args_list if c.args[0] == 111]) == 1
+    assert not manager.registry.list(222) and not manager.services
+    assert Accounts(managed).access_request(222)["id"] == request["id"]
+    await manager.dispatch(111, "Management")
+    await click(manager, 111, "Pengajuan Akses")
+    await click(manager, 111, "Siti Aminah · 222")
+    assert "Siti Aminah" in manager.reply.call_args.args[1]
+    assert {
+        b["text"] for row in manager.reply.call_args.args[2]["inline_keyboard"] for b in row
+    } >= {"Setujui", "Tolak"}
+
+
+@pytest.mark.parametrize("approve", [True, False])
+async def test_only_admin_can_review_request_and_old_decision_buttons_cannot_replay(
+    managed, approve
+):
+    from ojol.management import ACCESS_STATUS
+    from ojol.telegram import KEYBOARD
+
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock(return_value=True)
+    manager.registry.whitelist(444)
+    profile = {"id": 222, "first_name": "Pemohon"}
+    await manager.dispatch(222, "access:request", callback=True, profile=profile)
+    row = manager.registry.access_request(222)
+    for actor in (222, 444):
+        await manager.dispatch(actor, "approve_request:" + row["id"], callback=True)
+        assert not manager.registry.allowed(222)
+    for text in ("Import Cookie", "Tambah Akun", "Management", "select:any"):
+        await manager.dispatch(222, text, callback=text.startswith("select:"))
+        assert not manager.services
+    manager.reply.reset_mock()
+    await manager.dispatch(111, "request:" + row["id"], callback=True)
+    await click(manager, 111, "Setujui" if approve else "Tolak")
+    result = manager.registry.access_request(222)
+    assert result["status"] == ("approved" if approve else "rejected")
+    assert result["decided_by"] == 111 and result["decided_at"] >= result["created"]
+    assert manager.registry.allowed(222) is approve
+    applicant_notices = [c for c in manager.reply.call_args_list if c.args[0] == 222]
+    assert len(applicant_notices) == 1
+    assert applicant_notices[0].args[2] == (KEYBOARD if approve else ACCESS_STATUS)
+    assert not manager.registry.list(222) and not manager.services
+    await manager.dispatch(111, "approve_request:" + row["id"], callback=True)
+    await manager.dispatch(111, "reject_request:" + row["id"], callback=True)
+    assert manager.registry.allowed(222) is approve
+    assert not manager.registry.access_requests()
+    manager.reply.reset_mock()
+    await manager.dispatch(222, "/start")
+    assert manager.reply.call_args.args[2] == (KEYBOARD if approve else ACCESS_STATUS)
+    if not approve:
+        await manager.dispatch(222, "access:request", callback=True, profile=profile)
+        assert not any(c.args[0] == 111 for c in manager.reply.call_args_list)
+
+
+def test_access_request_is_atomic_persistent_and_manual_whitelist_resolves_it(managed):
+    registry = Accounts(managed)
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        rows = list(
+            pool.map(
+                lambda _: registry.request_access(222, "Nama\nPemohon\x00", "username"), range(6)
+            )
+        )
+    assert sum(created for _, created in rows) == 1
+    assert len({row["id"] for row, _ in rows}) == 1
+    assert not registry.allowed(222)
+    assert not any(u["telegram_id"] == 222 for u in registry.users())
+    restarted = Accounts(managed)
+    assert restarted.access_requests()[0]["name"] == "Nama Pemohon"
+    with pytest.raises(ValueError):
+        restarted.review_request(rows[0][0]["id"], 222, True)
+    restarted.whitelist(222, maximum=5)
+    assert restarted.access_request(222)["status"] == "approved"
+    assert restarted.quota(222) == 5
+    assert not restarted.access_requests()
+    restarted.whitelist(222, False)
+    assert restarted.access_request(222)["status"] == "rejected"
+    assert restarted.quota(222) == 5
+
+
+async def test_poller_accepts_private_start_and_application_with_actual_sender_profile(
+    managed, monkeypatch
+):
+    import ojol.management as module
+
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock(return_value=True)
+    profile = {"id": 222, "first_name": "Dewi", "last_name": "Putri", "username": "dewi_putri"}
+    message = {"chat": {"id": 222, "type": "private"}, "from": profile, "text": "/start"}
+    updates = [
+        {"update_id": 1, "message": message},
+        {
+            "update_id": 2,
+            "callback_query": {
+                "id": "foreign",
+                "from": {**profile, "id": 333},
+                "message": message,
+                "data": "access:request",
+            },
+        },
+        {"update_id": 3, "message": {**message, "chat": {"type": "group", "id": -1}}},
+        {
+            "update_id": 4,
+            "callback_query": {
+                "id": "application",
+                "from": profile,
+                "message": message,
+                "data": "access:request",
+            },
+        },
+    ]
+
+    async def api_call(method, **kwargs):
+        if method == "getUpdates":
+            manager.closing = True
+            return updates
+        assert method == "answerCallbackQuery" and kwargs["callback_query_id"] == "application"
+
+    context = AsyncMock()
+    context.__aenter__.return_value = SimpleNamespace(call=AsyncMock(side_effect=api_call))
+    monkeypatch.setattr(module, "TelegramClient", lambda settings: context)
+    await manager.poll_telegram()
+    request = manager.registry.access_request(222)
+    assert request["name"] == "Dewi Putri" and request["username"] == "dewi_putri"
+    assert manager.registry.access_request(333) is None
+    assert not manager.registry.allowed(222)
+    assert (managed.runtime_dir / "telegram-offset").read_text() == "5"
+
+
+async def test_request_buttons_do_not_allow_spoofing_identity_or_decision(managed):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock(return_value=True)
+    await manager.dispatch(
+        222, "access:request", callback=True, profile={"id": 333, "first_name": "Forged"}
+    )
+    row = manager.registry.access_request(222)
+    assert row["telegram_id"] == 222 and row["name"] == "Tanpa nama"
+    assert manager.registry.access_request(333) is None
+    await manager.dispatch(222, "access:request:333", callback=True)
+    await manager.dispatch(222, "approve_request:" + row["id"], callback=True)
+    assert not manager.registry.allowed(222)
+    assert manager.registry.access_request(222)["status"] == "pending"
+    await manager.dispatch(111, "Management")
+    await click(manager, 111, "Pengajuan Akses")
+    for c in manager.reply.call_args_list:
+        if len(c.args) > 2:
+            for buttons in c.args[2].get("inline_keyboard", []):
+                assert all(len(b["callback_data"].encode()) <= 64 for b in buttons)
+
+
+def test_access_request_schema_upgrade_preserves_existing_accounts_and_limits(managed):
+    registry = Accounts(managed)
+    registry.whitelist(222, maximum=4)
+    account = registry.create(222, "Existing account")
+    registry.set_limit("max_active_workers", 2)
+    with registry.db() as db:
+        db.execute("DROP TABLE access_requests")  # Simulate the previous registry schema.
+    upgraded = Accounts(managed)
+    assert upgraded.allowed(222)
+    assert upgraded.selected(222)["id"] == account["id"]
+    assert upgraded.quota(222) == 4
+    assert upgraded.value("max_active_workers") == 2
+    assert upgraded.access_requests() == []

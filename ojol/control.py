@@ -68,6 +68,7 @@ class ControlService:
         self.lock = asyncio.Lock()
         self.url_prefix = ""
         self.account_id = None
+        self.auto_start_pending = False
 
     async def ensure_backend(self, require_session=False):
         if require_session and not (self.settings.runtime_dir / "http-session.json").is_file():
@@ -107,6 +108,7 @@ class ControlService:
         return Settings.secure_login_origin(candidate)
 
     async def stop_worker(self):
+        self.auto_start_pending = False
         self.expected_stop = True
         (self.settings.runtime_dir / "STOP").touch(mode=0o600)
         if self.worker and self.worker.returncode is None:
@@ -144,13 +146,13 @@ class ControlService:
         active = busy and recorded_worker and (not managed or self.worker.pid == pid)
         starting = managed and not active
         if active:
-            worker = "aktif"
+            worker = "🟢 Worker aktif"
         elif starting:
-            worker = "memulai"
+            worker = "🟡 Worker memulai"
         elif busy:
-            worker = "runtime sedang dipakai"
+            worker = "🟠 Worker lain sedang memakai akun ini"
         else:
-            worker = "berhenti" if data else "belum dijalankan"
+            worker = "🔴 Worker berhenti" if data else "⚪ Worker belum dijalankan"
         phase = state.get("phase")
         phases = {
             "idle": "menunggu order",
@@ -163,11 +165,8 @@ class ControlService:
         moment = now()
         observed = status_timestamp(data.get("snapshot_received_at") or state.get("observed_at"))
         seconds = state.get("remaining_seconds")
-        lines = [
-            f"🛵 Status Ojol · {self.settings.account_name or 'Utama'}",
-            f"Worker {worker} · {data.get('core', self.settings.core)}",
-            f"Fase trip terakhir {phases.get(phase, 'belum terbaca')}",
-        ]
+        lines = [f"🛵 Status Ojol · {self.settings.account_name or 'Utama'}", "", worker]
+        trip = f"📍 Trip: {phases.get(phase, 'belum terbaca')}"
         if observed:
             age = max(0, int((moment - observed).total_seconds()))
             age_text = (
@@ -177,21 +176,26 @@ class ControlService:
                 if age < 3600
                 else f"{age // 3600} jam"
             )
-            stale = " · data lama" if not active else ""
-            lines.append(
-                f"Snapshot {observed.astimezone(WIB):%d-%m-%Y %H:%M:%S} WIB · {age_text} lalu{stale}"
-            )
             if active and phase == "delivering" and type(seconds) is int and seconds > 0:
                 remaining = max(0, ceil(seconds - (moment - observed).total_seconds()))
-                lines.append(f"Estimasi sisa trip {remaining // 60}:{remaining % 60:02d}")
+                trip += f" · sisa trip ±{remaining // 60}:{remaining % 60:02d}"
+            lines.append(trip)
+            stale = " · data lama, worker tidak aktif" if not active else ""
+            lines.append(
+                f"🕒 Update terakhir: {observed.astimezone(WIB):%d-%m-%Y %H:%M:%S} WIB "
+                f"({age_text} lalu){stale}"
+            )
         else:
-            lines.append("Snapshot belum tercatat")
+            lines.extend([trip, "🕒 Update terakhir: belum ada data"])
         if not active and not starting:
             pending = unresolved_action(directory)
             error, error_updated = status_record(directory / "last-error.json")
             reason = None
             if pending:
-                reason = f"Aksi #{pending[0]} ({pending[1]}) menunggu rekonsiliasi"
+                reason = (
+                    f"Aksi #{pending[0]} ({pending[1]}) menunggu rekonsiliasi "
+                    "(hasil klik terakhir belum pasti, dicek dulu sebelum lanjut)"
+                )
             elif error_updated >= status_updated and error.get("message"):
                 reason = error["message"]
             elif data.get("event") in {"berhenti", "gagal"}:
@@ -199,17 +203,27 @@ class ControlService:
             elif self.expected_stop and data:
                 reason = "Dihentikan pengguna"
             if reason:
-                lines.append(f"Alasan terakhir · {redact(reason, self.settings)}")
+                lines.append(f"⚠️ Alasan berhenti: {redact(reason, self.settings)}")
 
+        auto_start = "ON" if self.settings.auto_start else "OFF"
+        if self.auto_start_pending:
+            auto_start += " · menunggu slot"
         lines.extend(
             [
-                f"Bensin {state.get('fuel', '?')}% | Kondisi {state.get('condition', '?')}% | Kuota {state.get('data', '?')}%",
-                f"Saldo utama {state.get('wallet', '?')} koin · minimum {self.settings.min_balance}",
-                f"Notifikasi event: {'ON' if notifications_enabled(self.settings) else 'OFF'}",
+                "",
+                f"⛽ Bensin {state.get('fuel', '?')}%",
+                f"🔧 Kondisi {state.get('condition', '?')}%",
+                f"📶 Kuota {state.get('data', '?')}%",
+                f"💰 Saldo utama {state.get('wallet', '?')} koin "
+                f"(minimum {self.settings.min_balance} koin)",
+                "",
+                f"🔔 Notifikasi event: {'ON' if notifications_enabled(self.settings) else 'OFF'}",
+                f"🔁 Auto-start saat boot: {auto_start}",
+                f"⚙️ Mode: {data.get('core', self.settings.core)}",
             ]
         )
         if self.settings.tunnel_enabled:
-            lines.append(f"Tunnel {'aktif' if self.tunnel_alive() else 'berhenti'}")
+            lines.append(f"🌐 Tunnel: {'aktif' if self.tunnel_alive() else 'berhenti'}")
         return "\n".join(lines)
 
     async def account_profit(self, day):
@@ -240,25 +254,8 @@ class ControlService:
         money = lambda value: str(value).replace(".", ",")
         from .http_api import coin, display
 
-        lines = [f"📒 Laba Bersih · {report['tanggal']} (WIB)"]
-        if wallet and wallet["complete"]:
-            lines.append(
-                f"Pendapatan Ojol seluruh akun {display(coin(wallet['income_milli']))} koin · "
-                f"{wallet['payout_count']} payout"
-            )
-        else:
-            lines.append(
-                f"Pendapatan Ojol seluruh akun belum lengkap · {issue or 'belum diperiksa'}"
-            )
-            if wallet and wallet["payout_count"]:
-                lines.append(
-                    f"Payout ditemukan {display(coin(wallet['income_milli']))} koin (parsial)"
-                )
-        if wallet and wallet["today_income_milli"] is not None:
-            lines.append(
-                f"Hasil hari ini menurut game {display(coin(wallet['today_income_milli']))} koin"
-            )
-        names = {"fuel": "Bensin", "condition": "Bengkel", "data": "Kuota"}
+        names = {"fuel": "⛽ Bensin", "condition": "🔧 Bengkel", "data": "📶 Kuota"}
+        lines = [f"📒 Laba Bersih · {report['tanggal']} (WIB)", "", "🎮 Menurut riwayat game"]
         if wallet:
             expenses = wallet["expenses_milli"]
             cost = sum(expenses.values())
@@ -266,45 +263,70 @@ class ControlService:
             complete = wallet["complete"] and expense_issue is None
             if complete:
                 net = Decimal(wallet["income_milli"] - cost) / 1000
-                lines.append(f"Estimasi laba Ojol {display(net)} koin")
+                lines.append(f"✅ Estimasi laba Ojol {display(net)} koin")
+        if wallet and wallet["complete"]:
+            lines.append(
+                f"💵 Pendapatan Ojol seluruh akun {display(coin(wallet['income_milli']))} koin · "
+                f"{wallet['payout_count']} payout"
+            )
+        else:
+            lines.append(f"⚠️ Pendapatan belum lengkap: {issue or 'belum diperiksa'}")
+            if wallet and wallet["payout_count"]:
+                lines.append(
+                    f"💵 Payout ditemukan {display(coin(wallet['income_milli']))} koin (parsial)"
+                )
+        if wallet:
             if complete or expenses:
                 label = (
                     "Belanja produk Ojol" if complete else "Belanja produk Ojol ditemukan (parsial)"
                 )
-                lines.append(f"{label} {display(coin(cost))} koin")
+                lines.append(f"🛒 {label} {display(coin(cost))} koin")
                 lines.append(
-                    " · ".join(
+                    "   "
+                    + " · ".join(
                         f"{name} {display(coin(expenses.get(key, 0)))} koin"
                         for key, name in names.items()
                     )
                 )
-                lines.append(
-                    "Perhitungan menganggap semua pembelian produk yang cocok sebagai biaya Ojol."
-                )
             if expense_issue:
-                lines.append(f"Data biaya parsial · {expense_issue}")
+                lines.append(f"⚠️ Data biaya belum lengkap: {expense_issue}")
+        if wallet and wallet["today_income_milli"] is not None:
+            lines.append(
+                f"📊 Hasil hari ini menurut game {display(coin(wallet['today_income_milli']))} koin"
+            )
+        if wallet and (complete or expenses):
+            lines.append(
+                "ℹ️ Semua pembelian bensin, bengkel, dan kuota dihitung sebagai biaya Ojol."
+            )
+        if not wallet or not complete:
+            lines.append("ℹ️ Laba belum dihitung karena data game belum lengkap.")
         lines.extend(
             [
                 "",
-                "Catatan worker pada tanggal ini",
-                f"Pendapatan Ojol {money(total['pendapatan_ojol'])} koin",
-                f"Biaya worker terverifikasi {money(total['pengeluaran'])} koin",
-                f"Laba bersih worker {money(total['laba_bersih'])} koin",
-                f"{total['trip_tercatat']} trip · {total['pembelian_tercatat']} pembelian",
+                "🤖 Catatan worker",
+                f"✅ Laba bersih worker {money(total['laba_bersih'])} koin",
+                f"💵 Pendapatan Ojol {money(total['pendapatan_ojol'])} koin · "
+                f"{total['trip_tercatat']} trip",
+                f"🛒 Biaya worker terverifikasi {money(total['pengeluaran'])} koin · "
+                f"{total['pembelian_tercatat']} pembelian",
             ]
         )
-        lines.extend(
-            f"{names.get(key, key)} {money(value)} koin"
-            for key, value in total["biaya_per_kategori"].items()
-        )
+        if total["biaya_per_kategori"]:
+            lines.append(
+                "   "
+                + " · ".join(
+                    f"{names.get(key, key)} {money(value)} koin"
+                    for key, value in total["biaya_per_kategori"].items()
+                )
+            )
         if report["transaksi_terakhir"]:
-            lines.append("\nTransaksi worker terakhir")
+            lines.extend(["", "🧾 Transaksi worker terakhir"])
         for row in report["transaksi_terakhir"][:8]:
             clock = datetime.fromisoformat(row["created"]).astimezone(WIB).strftime("%H:%M")
             detail = json.loads(row["detail"])
             label = detail.get("product", "Payout Ojol")
             lines.append(
-                f"{clock} {'+' if row['kind'] == 'income' else '−'}{money(row['amount'])} · {label}"
+                f"{clock} {'+' if row['kind'] == 'income' else '−'}{money(row['amount'])} koin · {label}"
             )
         return "\n".join(lines)
 
@@ -530,7 +552,11 @@ class ControlService:
         if self.settings.env == "testing":
             return
         status_file = self.settings.runtime_dir / "status.json"
-        if status_file.exists() and not running(self.settings.runtime_dir):
+        if (
+            not self.settings.auto_start
+            and status_file.exists()
+            and not running(self.settings.runtime_dir)
+        ):
             previous = json.loads(status_file.read_text())
             if previous.get("pid") and previous.get("event") not in {
                 "berhenti",

@@ -3,6 +3,7 @@
 import hashlib
 import re
 import sqlite3
+import time
 from contextlib import closing, contextmanager
 from uuid import uuid4
 
@@ -25,6 +26,11 @@ class Accounts:
                     legacy INTEGER NOT NULL DEFAULT 0, cookie_hash TEXT UNIQUE
                 );
                 CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
+                CREATE TABLE IF NOT EXISTS access_requests (
+                    id TEXT PRIMARY KEY, telegram_id INTEGER NOT NULL UNIQUE,
+                    name TEXT NOT NULL, username TEXT NOT NULL, status TEXT NOT NULL,
+                    created REAL NOT NULL, decided_by INTEGER, decided_at REAL
+                );
             """)
             if self.admin:
                 db.execute("INSERT OR IGNORE INTO users(telegram_id) VALUES(?)", (self.admin,))
@@ -93,17 +99,83 @@ class Accounts:
         row = db.execute("SELECT max_accounts FROM users WHERE telegram_id=?", (owner,)).fetchone()
         return row[0] if row and row[0] is not None else self.value("max_accounts_per_user", db)
 
-    def whitelist(self, owner, enabled=True, maximum=None):
+    def whitelist(self, owner, enabled=True, maximum=None, db=None):
         owner = self.owner_id(owner)
         if owner == self.admin and not enabled:
             raise ValueError("Admin dari env tidak bisa dicabut")
         maximum = self.limit(maximum) if maximum is not None else None
+        if db is None:
+            with self.db() as connection:
+                return self.whitelist(owner, enabled, maximum, connection)
+        db.execute(
+            "INSERT INTO users(telegram_id,enabled,max_accounts) VALUES(?,?,?) "
+            "ON CONFLICT(telegram_id) DO UPDATE SET enabled=excluded.enabled, "
+            "max_accounts=COALESCE(excluded.max_accounts,users.max_accounts)",
+            (owner, int(enabled), maximum),
+        )
+        db.execute(
+            "UPDATE access_requests SET status=?,decided_by=?,decided_at=? WHERE telegram_id=?",
+            ("approved" if enabled else "rejected", self.admin, time.time(), owner),
+        )
+
+    def access_request(self, owner):
         with self.db() as db:
+            row = db.execute(
+                "SELECT * FROM access_requests WHERE telegram_id=?", (owner,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def request_access(self, owner, name, username):
+        owner = self.owner_id(owner)
+        if self.allowed(owner):
+            raise ValueError("User sudah diizinkan")
+        name = (
+            " ".join("".join(c for c in name if c.isprintable() or c.isspace()).split())[:128]
+            or "Tanpa nama"
+        )
+        username = username if re.fullmatch(r"[A-Za-z0-9_]{1,64}", username) else ""
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute(
+                "SELECT * FROM access_requests WHERE telegram_id=?", (owner,)
+            ).fetchone()
+            if row:
+                return dict(row), False
+            identifier = uuid4().hex
             db.execute(
-                "INSERT INTO users(telegram_id,enabled,max_accounts) VALUES(?,?,?) "
-                "ON CONFLICT(telegram_id) DO UPDATE SET enabled=excluded.enabled, "
-                "max_accounts=COALESCE(excluded.max_accounts,users.max_accounts)",
-                (owner, int(enabled), maximum),
+                "INSERT INTO access_requests(id,telegram_id,name,username,status,created) VALUES(?,?,?,?,?,?)",
+                (identifier, owner, name, username, "pending", time.time()),
+            )
+            row = db.execute("SELECT * FROM access_requests WHERE id=?", (identifier,)).fetchone()
+        return dict(row), True
+
+    def access_requests(self):
+        with self.db() as db:
+            return [
+                dict(row)
+                for row in db.execute(
+                    "SELECT * FROM access_requests WHERE status='pending' ORDER BY created,id"
+                )
+            ]
+
+    def request_by_id(self, identifier):
+        with self.db() as db:
+            row = db.execute("SELECT * FROM access_requests WHERE id=?", (identifier,)).fetchone()
+        if not row:
+            raise ValueError("Pengajuan tidak tersedia")
+        return dict(row)
+
+    def review_request(self, identifier, admin, approve):
+        if not self.admin or admin != self.admin:
+            raise ValueError("Pengajuan hanya boleh diproses admin")
+        with self.db() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT * FROM access_requests WHERE id=?", (identifier,)).fetchone()
+            if not row or row["status"] != "pending":
+                raise ValueError("Pengajuan sudah diproses / tidak tersedia")
+            self.whitelist(row["telegram_id"], enabled=approve, db=db)
+            return dict(
+                db.execute("SELECT * FROM access_requests WHERE id=?", (identifier,)).fetchone()
             )
 
     def set_limit(self, name, value):

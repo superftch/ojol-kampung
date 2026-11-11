@@ -38,6 +38,7 @@ class Settings(Model):
     max_accounts_per_user: int = Field(default=3, ge=1, le=100)
     max_active_workers: int = Field(default=3, ge=1, le=100)
     tunnel_enabled: bool = False
+    auto_start: bool = True
 
     @field_validator("telegram_chat_id", mode="before")
     @classmethod
