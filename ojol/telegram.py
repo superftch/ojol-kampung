@@ -24,7 +24,7 @@ KEYBOARD = {
         [{"text": "Bantuan"}, {"text": "Management"}],
         [{"text": "Import Cookie"}, {"text": "Jalankan Ojol"}],
         [{"text": "Hentikan Ojol"}, {"text": "Status"}],
-        [{"text": "Laba Bersih"}],
+        [{"text": "Laba Bersih"}, {"text": "Batal"}],
         [{"text": "Notifikasi ON"}, {"text": "Notifikasi OFF"}],
     ],
     "resize_keyboard": True,

@@ -20,6 +20,8 @@ Registry memakai query parameter dan transaksi `BEGIN IMMEDIATE` saat tambah/pul
 
 Akun baru: `runtime/accounts/<UUID>/`. Akun lama didaftarkan sebagai **Utama** dengan direktori asli supaya ledger/pending action/cookie tetap sama. Arsip membebaskan kuota tetapi menyimpan semua data. Revoke whitelist berlaku sebelum menunggu shutdown, menolak request baru, mencabut tiket/sesi import dan membatalkan delivery pending. User tidak dapat memilih akun user lain, termasuk dengan memalsukan callback. Callback laporan membawa ID akun agar tombol lama tidak berubah tujuan saat pilihan akun berubah.
 
+Navigasi Telegram memakai reply keyboard dan inline button. Management meminta ID hanya ketika menambah user; user yang sudah ada dipilih dari daftar. Nama/kuota/tanggal memakai state input per Telegram ID, dengan validasi sebelum state dihapus dan tombol Batal. Callback akun tetap memeriksa ownership; callback admin dan input admin memeriksa ID admin. Arsip/pencabutan memerlukan konfirmasi yang terikat target dan state saat ini. Daftar berhalaman8item agar menu tetap ringkas. Perintah teks management lama tidak lagi menjalankan aksi; tombol Start bawaan Telegram hanya membuka menu.
+
 Sesi form dibatasi path akun, HttpOnly, SameSite dan Secure pada HTTPS. CSRF berasal dari sesi yang sama. Registry dan import berserial sehingga pencabutan akses tidak bersaing dengan pemasangan cookie. Cookie sama dicegah terpasang ke slot akun lain dengan SHA256, tanpa menyimpan cookie di registry. **Batas:** dua cookie sesi berbeda dari akun game sama belum dapat dideduplikasi tanpa ID pemain stabil dari API. Jangan menjalankan akun game sama melalui beberapa sesi/server.
 
 ## Alasan subprocess, bukan container per akun

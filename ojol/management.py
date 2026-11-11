@@ -8,6 +8,7 @@ from .cli import running
 from .control import ControlService
 from .telegram import (
     BUTTON_COMMANDS,
+    KEYBOARD,
     TelegramClient,
     TelegramError,
     flush_notices,
@@ -16,16 +17,13 @@ from .telegram import (
 )
 
 HELP = (
-    "Akun Saya: daftar/pilih akun. Tambah Akun: masukkan nama.\n"
-    "/akun tambah Nama\n/akun pilih ID\n/akun nama ID Nama baru\n"
-    "/akun arsip ID\n/akun pulihkan ID\n"
-    "Tombol Import Cookie, Jalankan Ojol, Hentikan Ojol, Status, Laba Bersih berlaku untuk akun terpilih."
+    "Pilih Akun Saya untuk memilih, mengubah nama, mengarsipkan atau memulihkan akun. "
+    "Tambah Akun hanya meminta nama.\n"
+    "Import Cookie, Jalankan Ojol, Hentikan Ojol, Status, Laba Bersih dan Notifikasi "
+    "berlaku untuk akun terpilih.\nTekan Batal untuk membatalkan input."
 )
-ADMIN_HELP = (
-    "Admin:\n/users — whitelist dan kuota\n/whitelist tambah TELEGRAM_ID [BATAS]\n"
-    "/whitelist hapus TELEGRAM_ID\n/batas default JUMLAH\n/batas worker JUMLAH\n"
-    "/batas TELEGRAM_ID JUMLAH\nDefault/override tersimpan; turunkan batas tidak menghapus akun."
-)
+CANCEL = {"inline_keyboard": [[{"text": "Batal", "callback_data": "cancel"}]]}
+PAGE_SIZE = 8
 
 
 class MultiAccountService:
@@ -110,26 +108,138 @@ class MultiAccountService:
             raise ValueError("Akun lama tidak tersedia")
         return self.service(rows[0]["id"])
 
-    async def accounts(self, owner):
+    async def home(self, owner):
+        self.pending.pop(owner, None)
+        await self.reply(owner, HELP, KEYBOARD)
+
+    async def prompt(self, owner, state, text):
+        self.pending[owner] = state
+        await self.reply(owner, text, CANCEL)
+
+    async def accounts(self, owner, page=0):
         selected = self.registry.selected(owner)
-        rows = self.registry.list(owner)
-        lines = [f"Akun Anda: {len(rows)}/{self.registry.quota(owner)}"]
+        active = self.registry.list(owner)
+        rows = active + self.registry.list(owner, archived=True)
+        page = min(max(0, page), max(0, (len(rows) - 1) // PAGE_SIZE))
+        lines = [f"Akun Anda: {len(active)}/{self.registry.quota(owner)}"]
         buttons = []
-        for row in rows:
-            service = self.service(row["id"])
-            active = bool(
-                (service.worker and service.worker.returncode is None)
-                or running(service.settings.runtime_dir)
+        for row in rows[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]:
+            if row["archived"]:
+                lines.append(f"Arsip: {row['name']}")
+                label, action = f"Pulihkan {row['name']}", "restore:"
+            else:
+                service = self.service(row["id"])
+                running_now = bool(
+                    (service.worker and service.worker.returncode is None)
+                    or running(service.settings.runtime_dir)
+                )
+                mark = "✓" if selected and selected["id"] == row["id"] else "•"
+                lines.append(f"{mark} {row['name']} · {'aktif' if running_now else 'stop'}")
+                label, action = f"Pilih {row['name']}", "select:"
+            buttons.append([{"text": label, "callback_data": action + row["id"]}])
+        navigation = []
+        if page:
+            navigation.append({"text": "◀ Sebelumnya", "callback_data": f"accounts:{page - 1}"})
+        if (page + 1) * PAGE_SIZE < len(rows):
+            navigation.append({"text": "Berikutnya ▶", "callback_data": f"accounts:{page + 1}"})
+        if navigation:
+            buttons.append(navigation)
+        buttons.extend(
+            [
+                [{"text": "Tambah Akun", "callback_data": "add_account"}],
+                [{"text": "Menu Utama", "callback_data": "home"}],
+            ]
+        )
+        await self.reply(owner, "\n".join(lines), {"inline_keyboard": buttons})
+
+    async def account_menu(self, owner, identifier):
+        row = self.registry.get(identifier, owner)
+        selected = self.registry.selected(owner)
+        buttons = [
+            [
+                {"text": "Ubah Nama", "callback_data": "rename:" + identifier},
+                {"text": "Arsipkan Akun", "callback_data": "archive:" + identifier},
+            ],
+            [
+                {"text": "Akun Saya", "callback_data": "accounts:0"},
+                {"text": "Menu Utama", "callback_data": "home"},
+            ],
+        ]
+        if not selected or selected["id"] != identifier:
+            buttons.insert(0, [{"text": "Pilih Akun Ini", "callback_data": "select:" + identifier}])
+        await self.reply(
+            owner,
+            f"Akun: {row['name']}\nAkun terpilih: {selected['name'] if selected else 'belum ada'}. "
+            "Tombol utama menjalankan atau menampilkan status akun terpilih.",
+            {"inline_keyboard": buttons},
+        )
+
+    async def admin_menu(self, owner):
+        await self.reply(
+            owner,
+            f"Management\nDefault akun/user: {self.registry.value('max_accounts_per_user')}"
+            f"\nWorker aktif: {self.active_workers()}/{self.registry.value('max_active_workers')}",
+            {
+                "inline_keyboard": [
+                    [
+                        {"text": "Daftar User", "callback_data": "admin:users:0"},
+                        {"text": "Tambah User", "callback_data": "admin:add_user"},
+                    ],
+                    [{"text": "Batas Akun Default", "callback_data": "admin:default_limit"}],
+                    [{"text": "Batas Worker", "callback_data": "admin:worker_limit"}],
+                    [{"text": "Menu Utama", "callback_data": "home"}],
+                ]
+            },
+        )
+
+    def user(self, identifier):
+        identifier = self.registry.owner_id(identifier)
+        row = next((u for u in self.registry.users() if u["telegram_id"] == identifier), None)
+        if row is None:
+            raise ValueError("User tidak tersedia. Tambahkan melalui Tambah User.")
+        return row
+
+    async def users_menu(self, owner, page=0):
+        users = self.registry.users()
+        page = min(max(0, page), max(0, (len(users) - 1) // PAGE_SIZE))
+        buttons = []
+        for user in users[page * PAGE_SIZE : (page + 1) * PAGE_SIZE]:
+            uid = user["telegram_id"]
+            status = (
+                "admin" if uid == self.registry.admin else "aktif" if user["enabled"] else "dicabut"
             )
-            lines.append(
-                f"{'✓' if selected and selected['id'] == row['id'] else '•'} {row['name']} · {'aktif' if active else 'stop'}\nID: {row['id']}"
-            )
+            buttons.append([{"text": f"{uid} · {status}", "callback_data": f"user:{uid}"}])
+        navigation = []
+        if page:
+            navigation.append({"text": "◀ Sebelumnya", "callback_data": f"admin:users:{page - 1}"})
+        if (page + 1) * PAGE_SIZE < len(users):
+            navigation.append({"text": "Berikutnya ▶", "callback_data": f"admin:users:{page + 1}"})
+        if navigation:
+            buttons.append(navigation)
+        buttons.append([{"text": "Kembali ke Management", "callback_data": "admin:menu"}])
+        await self.reply(owner, f"Pilih user · halaman {page + 1}", {"inline_keyboard": buttons})
+
+    async def user_menu(self, owner, identifier):
+        user = self.user(identifier)
+        uid = user["telegram_id"]
+        enabled = self.registry.allowed(uid)
+        buttons = [[{"text": "Ubah Batas Akun", "callback_data": f"user_limit:{uid}"}]]
+        if uid != self.registry.admin:
             buttons.append(
-                [{"text": f"Pilih {row['name']}", "callback_data": "select:" + row["id"]}]
+                [
+                    {
+                        "text": "Cabut Akses" if enabled else "Aktifkan Akses",
+                        "callback_data": f"revoke:{uid}" if enabled else f"enable:{uid}",
+                    }
+                ]
             )
-        archived = self.registry.list(owner, archived=True)
-        lines.extend(f"Arsip: {a['name']} · {a['id']}" for a in archived)
-        await self.reply(owner, "\n".join(lines), {"inline_keyboard": buttons} if buttons else None)
+        buttons.append([{"text": "Daftar User", "callback_data": "admin:users:0"}])
+        await self.reply(
+            owner,
+            f"Telegram ID: {uid}\nAkses: {'admin' if uid == self.registry.admin else 'aktif' if enabled else 'dicabut'}"
+            f"\nAkun: {len(self.registry.list(uid))}/{self.registry.quota(uid)}",
+            {"inline_keyboard": buttons},
+        )
 
     async def revoke(self, owner):
         owner = self.registry.owner_id(owner)
@@ -164,7 +274,9 @@ class MultiAccountService:
                 await self._dispatch(owner, text.strip(), callback)
             except (ValueError, OverflowError) as exc:
                 await self.reply(
-                    owner, str(exc) if not isinstance(exc, OverflowError) else "Tanggal tidak valid"
+                    owner,
+                    str(exc) if not isinstance(exc, OverflowError) else "Tanggal tidak valid",
+                    CANCEL if owner in self.pending else KEYBOARD,
                 )
             except Exception as exc:
                 queue_error(self.hub.settings, exc, "management.command")
@@ -173,139 +285,219 @@ class MultiAccountService:
                     "Perintah gagal. Periksa status akun atau hubungi admin.",
                 )
 
+    async def admin_action(self, owner, text):
+        if owner != self.registry.admin:
+            raise ValueError("Management hanya untuk admin dari env")
+        if text.startswith("revoke_confirm:"):
+            uid = self.registry.owner_id(text.split(":", 1)[1])
+            if self.pending.get(owner) != {"kind": "revoke", "user": uid}:
+                raise ValueError("Konfirmasi kedaluwarsa. Pilih user lagi.")
+            self.pending.pop(owner)
+            await self.revoke(uid)
+            await self.reply(
+                owner,
+                "Akses dicabut; seluruh worker user berhenti dan link import dicabut. Data disimpan.",
+            )
+            await self.user_menu(owner, uid)
+            return
+        self.pending.pop(owner, None)
+        if text in {"Management", "admin:menu"}:
+            await self.admin_menu(owner)
+        elif text.startswith("admin:users:"):
+            await self.users_menu(owner, int(text.rsplit(":", 1)[1]))
+        elif text == "admin:add_user":
+            await self.prompt(
+                owner,
+                {"kind": "add_user"},
+                "Ketik ID Telegram user yang akan diizinkan (angka positif).",
+            )
+        elif text in {"admin:default_limit", "admin:worker_limit"}:
+            name = (
+                "max_accounts_per_user" if text == "admin:default_limit" else "max_active_workers"
+            )
+            await self.prompt(
+                owner,
+                {"kind": "limit", "setting": name},
+                "Ketik batas baru (1–100). Akun dan worker yang sudah ada tetap; batas berlaku pada tambah atau start berikutnya.",
+            )
+        elif text.startswith("user:"):
+            await self.user_menu(owner, text.split(":", 1)[1])
+        elif text.startswith("user_limit:"):
+            user = self.user(text.split(":", 1)[1])
+            if not self.registry.allowed(user["telegram_id"]):
+                raise ValueError("Aktifkan akses user dahulu.")
+            await self.prompt(
+                owner,
+                {"kind": "user_limit", "user": user["telegram_id"]},
+                f"Ketik batas akun untuk {user['telegram_id']} (1–100).",
+            )
+        elif text.startswith("revoke:"):
+            uid = self.user(text.split(":", 1)[1])["telegram_id"]
+            if uid == self.registry.admin:
+                raise ValueError("Admin dari env tidak bisa dicabut")
+            self.pending[owner] = {"kind": "revoke", "user": uid}
+            await self.reply(
+                owner,
+                f"Cabut akses Telegram ID {uid}? Semua worker user dihentikan dan link import dicabut. Data disimpan.",
+                {
+                    "inline_keyboard": [
+                        [{"text": "Ya, Cabut Akses", "callback_data": f"revoke_confirm:{uid}"}],
+                        [{"text": "Batal", "callback_data": "cancel"}],
+                    ]
+                },
+            )
+        elif text.startswith("enable:"):
+            uid = self.user(text.split(":", 1)[1])["telegram_id"]
+            self.registry.whitelist(uid)
+            await self.user_menu(owner, uid)
+
+    async def input(self, owner, text):
+        state = self.pending[owner]
+        kind = state["kind"]
+        if kind in {"add_user", "limit", "user_limit"} and owner != self.registry.admin:
+            raise ValueError("Management hanya untuk admin dari env")
+        if kind == "name":
+            row = self.registry.create(owner, text)
+            self.pending.pop(owner)
+            await self.reply(owner, f"Akun {row['name']} dibuat dan dipilih. Tekan Import Cookie.")
+            await self.account_menu(owner, row["id"])
+        elif kind == "rename":
+            self.registry.rename(owner, state["account"], text)
+            self.service(state["account"])
+            self.pending.pop(owner)
+            await self.account_menu(owner, state["account"])
+        elif kind == "add_user":
+            uid = self.registry.owner_id(text)
+            self.registry.whitelist(uid)
+            self.pending.pop(owner)
+            await self.user_menu(owner, uid)
+        elif kind == "limit":
+            self.registry.set_limit(state["setting"], text)
+            self.pending.pop(owner)
+            await self.admin_menu(owner)
+        elif kind == "user_limit":
+            uid = state["user"]
+            if not self.registry.allowed(uid):
+                raise ValueError("User tidak masuk whitelist")
+            self.registry.whitelist(uid, maximum=text)
+            self.pending.pop(owner)
+            await self.user_menu(owner, uid)
+        elif kind == "date":
+            self.registry.get(state["account"], owner)
+            service = self.service(state["account"])
+            service.profit_buttons(text)  # Validate before clearing the date prompt.
+            self.pending.pop(owner)
+            await self.ensure_started(service)
+            await service.execute("profit:" + text)
+        else:
+            await self.reply(owner, "Gunakan tombol konfirmasi atau Batal.", CANCEL)
+
     async def _dispatch(self, owner, text, callback):
-        if text in {"/admin", "Management", "/users"} or text.startswith(("/whitelist", "/batas")):
-            self.pending.pop(owner, None)
-            if owner != self.registry.admin:
-                raise ValueError("Management hanya untuk admin dari env")
-            parts = text.split()
-            if parts[:2] == ["/whitelist", "tambah"] and len(parts) in {3, 4}:
-                self.registry.whitelist(parts[2], maximum=parts[3] if len(parts) == 4 else None)
-                await self.reply(owner, "Whitelist diperbarui.")
-            elif parts[:2] == ["/whitelist", "hapus"] and len(parts) == 3:
-                await self.revoke(parts[2])
-                await self.reply(
-                    owner,
-                    "Akses dicabut; seluruh worker user berhenti, link import dicabut. Data disimpan.",
-                )
-            elif parts[:1] == ["/batas"] and len(parts) == 3:
-                if parts[1] in {"default", "worker"}:
-                    self.registry.set_limit(
-                        "max_accounts_per_user" if parts[1] == "default" else "max_active_workers",
-                        parts[2],
-                    )
-                else:
-                    user = self.registry.owner_id(parts[1])
-                    if not self.registry.allowed(user):
-                        raise ValueError("User belum masuk whitelist")
-                    self.registry.whitelist(user, maximum=parts[2])
-                await self.reply(
-                    owner,
-                    "Batas diperbarui. Akun/worker yang sudah ada tetap; start/tambah berikutnya mengikuti batas baru.",
-                )
-            else:
-                lines = [
-                    ADMIN_HELP,
-                    f"Default akun/user: {self.registry.value('max_accounts_per_user')} · Worker aktif: {self.active_workers()}/{self.registry.value('max_active_workers')}",
-                ]
-                for user in self.registry.users():
-                    uid = user["telegram_id"]
-                    lines.append(
-                        f"{uid} · {'admin' if uid == self.registry.admin else 'whitelist' if user['enabled'] else 'dicabut'} · {len(self.registry.list(uid))}/{self.registry.quota(uid)} akun"
-                    )
-                await self.reply(owner, "\n".join(lines))
-            return
-        if text in {"Akun Saya", "/akun"}:
-            self.pending.pop(owner, None)
-            await self.accounts(owner)
-            return
-        if text == "Tambah Akun":
-            self.pending[owner] = "name"
-            await self.reply(owner, "Ketik nama akun baru (1–40 karakter), atau /batal.")
-            return
-        if text == "/batal":
-            self.pending.pop(owner, None)
-            await self.reply(owner, "Input dibatalkan.")
+        # Telegram sends /start when Start is pressed; users never need to type a command.
+        if (not callback and text in {"/start", "Bantuan", "Menu Utama", "Batal"}) or (
+            callback and text in {"home", "cancel"}
+        ):
+            await self.home(owner)
             return
         if (
-            self.pending.get(owner) == "name"
+            text == "Management"
             and not callback
-            and not text.startswith("/")
-            and text not in BUTTON_COMMANDS
+            or callback
+            and text.startswith(
+                ("admin:", "user:", "user_limit:", "revoke:", "revoke_confirm:", "enable:")
+            )
         ):
-            row = self.registry.create(owner, text)
-            self.pending.pop(owner, None)
-            await self.reply(owner, f"Akun {row['name']} dibuat dan dipilih. Tekan Import Cookie.")
+            await self.admin_action(owner, text)
             return
-        if text.startswith("select:") and callback:
+        if text == "Akun Saya" and not callback or callback and text.startswith("accounts:"):
             self.pending.pop(owner, None)
-            self.registry.select(owner, text.split(":", 1)[1])
-            await self.accounts(owner)
+            await self.accounts(owner, int(text.split(":", 1)[1]) if callback else 0)
             return
-        if text.startswith("/akun "):
-            self.pending.pop(owner, None)
-            parts = text.split(maxsplit=3)
-            if parts[1] == "tambah" and len(parts) >= 3:
-                row = self.registry.create(owner, text.split(maxsplit=2)[2])
-                await self.reply(
-                    owner, f"Akun {row['name']} dibuat dan dipilih. Tekan Import Cookie."
-                )
-            elif parts[1] == "pilih" and len(parts) == 3:
-                self.registry.select(owner, parts[2])
-                await self.accounts(owner)
-            elif parts[1] == "nama" and len(parts) == 4:
-                self.registry.rename(owner, parts[2], parts[3])
-                if parts[2] in self.services:
-                    self.service(parts[2])
-                await self.accounts(owner)
-            elif parts[1] == "arsip" and len(parts) == 3:
-                row = self.registry.get(parts[2], owner)
-                service = self.service(row["id"])
+        if text == "Tambah Akun" and not callback or callback and text == "add_account":
+            await self.prompt(owner, {"kind": "name"}, "Ketik nama akun baru (1–40 karakter).")
+            return
+        if callback and text.startswith(
+            ("select:", "rename:", "archive:", "archive_confirm:", "restore:")
+        ):
+            action, identifier = text.split(":", 1)
+            row = self.registry.get(identifier, owner, archived=action == "restore")
+            if action == "archive_confirm":
+                if self.pending.get(owner) != {"kind": "archive", "account": identifier}:
+                    raise ValueError("Konfirmasi kedaluwarsa. Pilih akun lagi.")
+                self.pending.pop(owner)
+                service = self.service(identifier)
                 async with service.lock:
                     service.access.revoke()
                     await service.close()
-                    self.registry.archive(owner, row["id"])
-                    self.services.pop(row["id"], None)
-                await self.accounts(owner)
-            elif parts[1] == "pulihkan" and len(parts) == 3:
-                self.registry.archive(owner, parts[2], archived=False)
+                    self.registry.archive(owner, identifier)
+                    self.services.pop(identifier, None)
                 await self.accounts(owner)
             else:
-                await self.reply(owner, HELP)
+                self.pending.pop(owner, None)
+                if action in {"select", "restore"}:
+                    if action == "restore":
+                        self.registry.archive(owner, identifier, archived=False)
+                    self.registry.select(owner, identifier)
+                    await self.account_menu(owner, identifier)
+                elif action == "rename":
+                    await self.prompt(
+                        owner,
+                        {"kind": "rename", "account": identifier},
+                        f"Ketik nama baru untuk {row['name']} (1–40 karakter).",
+                    )
+                elif action == "archive":
+                    self.pending[owner] = {"kind": "archive", "account": identifier}
+                    await self.reply(
+                        owner,
+                        f"Arsipkan {row['name']}? Worker dihentikan dan link import dicabut. Riwayat disimpan; akun bisa dipulihkan.",
+                        {
+                            "inline_keyboard": [
+                                [
+                                    {
+                                        "text": "Ya, Arsipkan",
+                                        "callback_data": "archive_confirm:" + identifier,
+                                    }
+                                ],
+                                [{"text": "Batal", "callback_data": "cancel"}],
+                            ]
+                        },
+                    )
             return
         account = None
-        if callback and text.startswith("acct:"):
-            _, identifier, text = text.split(":", 2)
+        command = None
+        if callback:
+            if not text.startswith("acct:"):
+                return
+            _, identifier, action = text.split(":", 2)
             account = self.registry.get(identifier, owner)
-        elif callback:
-            # Old unscoped finance buttons cannot select another account implicitly.
-            return
-        if text in {"/start", "/help", "Bantuan"}:
-            self.pending.pop(owner, None)
-            await self.reply(
-                owner, HELP + ("\n" + ADMIN_HELP if owner == self.registry.admin else "")
-            )
-            return
+            if action == "choose_date":
+                await self.prompt(
+                    owner,
+                    {"kind": "date", "account": identifier},
+                    f"Ketik tanggal laporan {account['name']}: YYYY-MM-DD atau DD-MM-YYYY.",
+                )
+                return
+            if not re.fullmatch(r"profit:\d{4}-\d{2}-\d{2}", action):
+                return
+            command = action
+        else:
+            command = BUTTON_COMMANDS.get(text)
+            if text.startswith("/"):
+                await self.home(owner)
+                return
+            if command is None:
+                if owner in self.pending:
+                    await self.input(owner, text)
+                else:
+                    await self.home(owner)
+                return
+        self.pending.pop(owner, None)
         account = account or self.registry.selected(owner)
         if account is None:
             await self.reply(owner, "Belum ada akun terpilih. Tekan Tambah Akun atau Akun Saya.")
             return
         service = self.service(account["id"])
         await self.ensure_started(service)
-        command = BUTTON_COMMANDS.get(text)
-        if callback:
-            if text == "choose_date" or re.fullmatch(r"profit:\d{4}-\d{2}-\d{2}", text):
-                command = text
-        elif self.pending.get(owner, "").startswith("date:") and text not in BUTTON_COMMANDS:
-            identifier = self.pending.pop(owner).split(":", 1)[1]
-            service = self.service(self.registry.get(identifier, owner)["id"])
-            command = "profit:" + text
-        elif re.fullmatch(r"\d{4}-\d{2}-\d{2}|\d{2}-\d{2}-\d{4}", text):
-            command = "profit:" + text
-        if command == "choose_date":
-            self.pending[owner] = "date:" + account["id"]
-        elif command:
-            self.pending.pop(owner, None)
         if command in {"run", "import_cookie"}:
             if command == "run" and not (
                 (service.worker and service.worker.returncode is None)
@@ -316,7 +508,7 @@ class MultiAccountService:
                         "Batas worker aktif global tercapai. Hentikan akun lain atau hubungi admin."
                     )
             await self.start_tunnel()
-        await service.execute(command or "help")
+        await service.execute(command)
 
     async def poll_telegram(self):
         cursor = self.settings.runtime_dir / "telegram-offset"

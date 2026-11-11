@@ -19,6 +19,12 @@ from ojol.session_transfer import parse_cookie_input
 from ojol.telegram import TelegramClient
 
 
+async def click(manager, owner, label):
+    markup = manager.reply.call_args.args[2]
+    button = next(b for row in markup["inline_keyboard"] for b in row if b["text"] == label)
+    await manager.dispatch(owner, button["callback_data"], callback=True)
+
+
 @pytest.fixture
 def managed(settings):
     return settings.model_copy(update={"telegram_chat_id": 111})
@@ -110,31 +116,42 @@ def test_same_cookie_cannot_be_attached_to_another_account_including_archives(ma
 async def test_management_admin_boundary_and_user_account_operations(managed):
     manager = MultiAccountService(managed)
     manager.reply = AsyncMock()
-    await manager.dispatch(222, "/akun tambah Denied")
+    await manager.dispatch(222, "Tambah Akun")
     manager.reply.assert_not_awaited()
-    await manager.dispatch(111, "/whitelist tambah 222 2")
+    await manager.dispatch(111, "Management")
+    await click(manager, 111, "Tambah User")
+    await manager.dispatch(111, "222")
+    await click(manager, 111, "Ubah Batas Akun")
+    await manager.dispatch(111, "2")
     assert manager.registry.allowed(222) and manager.registry.quota(222) == 2
-    await manager.dispatch(222, "/whitelist tambah 333")
-    assert not manager.registry.allowed(333)
-    await manager.dispatch(222, "/batas worker 99")
+    await manager.dispatch(222, "admin:add_user", callback=True)
+    assert 222 not in manager.pending
+    await manager.dispatch(222, "admin:worker_limit", callback=True)
     assert manager.registry.value("max_active_workers") == 3
-    await manager.dispatch(111, "/batas default 4")
-    await manager.dispatch(111, "/batas worker 2")
+    await manager.dispatch(111, "Management")
+    await click(manager, 111, "Batas Akun Default")
+    await manager.dispatch(111, "4")
+    await click(manager, 111, "Batas Worker")
+    await manager.dispatch(111, "2")
     assert manager.registry.value("max_accounts_per_user") == 4
     assert manager.registry.value("max_active_workers") == 2
     await manager.dispatch(222, "Tambah Akun")
     await manager.dispatch(222, "Malam")
     account = manager.registry.selected(222)
     assert account["name"] == "Malam"
-    await manager.dispatch(222, f"/akun nama {account['id']} Akun Baru")
+    await click(manager, 222, "Ubah Nama")
+    await manager.dispatch(222, "Akun Baru")
     assert manager.registry.get(account["id"])["name"] == "Akun Baru"
     admin = manager.registry.selected(111)
     await manager.dispatch(222, "select:" + admin["id"], callback=True)
     assert manager.registry.selected(222)["id"] == account["id"]
-    await manager.dispatch(222, f"/akun arsip {account['id']}")
+    await manager.dispatch(222, "Akun Saya")
+    await click(manager, 222, "Pilih Akun Baru")
+    await click(manager, 222, "Arsipkan Akun")
+    assert manager.registry.selected(222)["id"] == account["id"]
+    await click(manager, 222, "Ya, Arsipkan")
     assert manager.registry.selected(222) is None
-    await manager.dispatch(222, f"/akun pulihkan {account['id']}")
-    await manager.dispatch(222, "select:" + account["id"], callback=True)
+    await click(manager, 222, "Pulihkan Akun Baru")
     assert manager.registry.selected(222)["id"] == account["id"]
 
 
@@ -204,7 +221,10 @@ async def test_whitelist_revoke_stops_all_user_workers_revokes_links_preserves_a
         service.stop_worker = AsyncMock()
     admin = manager.service(manager.registry.selected(111)["id"])
     admin.stop_worker = AsyncMock()
-    await manager.dispatch(111, "/whitelist hapus 222")
+    await manager.dispatch(111, "user:222", callback=True)
+    await click(manager, 111, "Cabut Akses")
+    assert manager.registry.allowed(222)
+    await click(manager, 111, "Ya, Cabut Akses")
     assert not manager.registry.allowed(222)
     for service, ticket in zip(services, tickets, strict=True):
         service.stop_worker.assert_awaited_once()
@@ -451,7 +471,174 @@ async def test_selecting_account_cancels_pending_name_input(managed):
     manager.reply = AsyncMock()
     original = manager.registry.selected(111)
     await manager.dispatch(111, "Tambah Akun")
-    assert manager.pending[111] == "name"
+    assert manager.pending[111] == {"kind": "name"}
     await manager.dispatch(111, "select:" + original["id"], callback=True)
     assert 111 not in manager.pending
     assert len(manager.registry.list(111)) == 1
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["/akun tambah Forbidden", "/whitelist tambah 333", "/batas worker 99", "/akun arsip anything"],
+)
+async def test_old_slash_commands_only_show_buttons(managed, text):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    await manager.dispatch(111, text)
+    assert len(manager.registry.list(111)) == 1
+    assert not manager.registry.allowed(333)
+    assert manager.registry.value("max_active_workers") == 3
+    assert "keyboard" in manager.reply.call_args.args[2]
+    assert "/" not in manager.reply.call_args.args[1]
+
+
+async def test_invalid_input_can_retry_and_cancel_without_changing_settings(managed):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    await manager.dispatch(111, "Management")
+    await click(manager, 111, "Tambah User")
+    await manager.dispatch(111, "not-an-id")
+    assert manager.pending[111] == {"kind": "add_user"}
+    await click(manager, 111, "Batal")
+    assert 111 not in manager.pending
+    assert len(manager.registry.users()) == 1
+    await manager.dispatch(111, "Management")
+    await click(manager, 111, "Batas Worker")
+    await manager.dispatch(111, "0")
+    assert manager.registry.value("max_active_workers") == 3
+    assert 111 in manager.pending
+    await manager.dispatch(111, "2")
+    assert manager.registry.value("max_active_workers") == 2
+    assert 111 not in manager.pending
+    await manager.dispatch(111, "Tambah Akun")
+    await manager.dispatch(111, "Batal")
+    assert 111 not in manager.pending
+    assert len(manager.registry.list(111)) == 1
+
+
+async def test_user_enable_and_revoke_confirmation_cannot_be_replayed(managed):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    manager.registry.whitelist(222)
+    await manager.dispatch(111, "Management")
+    await click(manager, 111, "Daftar User")
+    await click(manager, 111, "222 · aktif")
+    await click(manager, 111, "Cabut Akses")
+    confirm = manager.reply.call_args.args[2]["inline_keyboard"][0][0]["callback_data"]
+    await click(manager, 111, "Batal")
+    await manager.dispatch(111, confirm, callback=True)
+    assert manager.registry.allowed(222)
+    await manager.dispatch(111, "user:222", callback=True)
+    await click(manager, 111, "Cabut Akses")
+    await click(manager, 111, "Ya, Cabut Akses")
+    assert not manager.registry.allowed(222)
+    await click(manager, 111, "Aktifkan Akses")
+    assert manager.registry.allowed(222)
+    await manager.dispatch(111, confirm, callback=True)
+    assert manager.registry.allowed(222)
+    await manager.dispatch(111, "revoke:111", callback=True)
+    assert manager.registry.allowed(111)
+    assert 111 not in manager.pending
+
+
+@pytest.mark.parametrize(
+    "action", ["rename:", "archive:", "archive_confirm:", "restore:", "select:"]
+)
+async def test_account_management_buttons_reject_foreign_account(managed, action):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    manager.registry.whitelist(222)
+    own = manager.registry.create(222, "Own")
+    foreign = manager.registry.selected(111)
+    await manager.dispatch(222, action + foreign["id"], callback=True)
+    assert manager.registry.get(foreign["id"])["name"] == "Utama"
+    assert manager.registry.selected(222)["id"] == own["id"]
+    assert 222 not in manager.pending
+    assert not (managed.runtime_dir / "STOP").exists()
+
+
+async def test_pending_inputs_are_separate_per_user_and_old_rename_does_not_switch_selection(
+    managed,
+):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    manager.registry.whitelist(222)
+    first = manager.registry.selected(111)
+    second = manager.registry.create(111, "Second")
+    await manager.dispatch(111, "rename:" + first["id"], callback=True)
+    await manager.dispatch(222, "Tambah Akun")
+    await manager.dispatch(111, "Renamed")
+    assert manager.registry.get(first["id"])["name"] == "Renamed"
+    assert manager.registry.selected(111)["id"] == second["id"]
+    assert "Akun terpilih: Second" in manager.reply.call_args.args[1]
+    await manager.dispatch(222, "New User Account")
+    assert manager.registry.selected(222)["name"] == "New User Account"
+    assert manager.pending == {}
+
+
+async def test_date_prompt_retries_invalid_input_and_cancel_keeps_gameplay_running(managed):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    account = manager.registry.selected(111)
+    service = manager.service(account["id"])
+    service.execute = AsyncMock()
+    await manager.dispatch(111, f"acct:{account['id']}:choose_date", callback=True)
+    await manager.dispatch(111, "not-a-date")
+    assert manager.pending[111] == {"kind": "date", "account": account["id"]}
+    await manager.dispatch(111, "03-01-2030")
+    service.execute.assert_awaited_once_with("profit:03-01-2030")
+    await manager.dispatch(111, f"acct:{account['id']}:choose_date", callback=True)
+    await click(manager, 111, "Batal")
+    assert 111 not in manager.pending
+    assert not (managed.runtime_dir / "STOP").exists()
+
+
+async def test_lists_paginate_without_losing_buttons_or_exposing_account_ids(managed):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    manager.registry.whitelist(222, maximum=10)
+    rows = [manager.registry.create(222, f"Slot {i}") for i in range(10)]
+    await manager.dispatch(222, "Akun Saya")
+    assert all(row["id"] not in manager.reply.call_args.args[1] for row in rows)
+    await click(manager, 222, "Berikutnya ▶")
+    await click(manager, 222, "Pilih Slot 9")
+    assert manager.registry.selected(222)["id"] == rows[9]["id"]
+    for uid in range(300, 310):
+        manager.registry.whitelist(uid)
+    await manager.dispatch(111, "Management")
+    await click(manager, 111, "Daftar User")
+    await click(manager, 111, "Berikutnya ▶")
+    await click(manager, 111, "309 · aktif")
+    assert "Telegram ID: 309" in manager.reply.call_args.args[1]
+    assert all(
+        len(b["callback_data"].encode()) <= 64
+        for call in manager.reply.call_args_list
+        for row in (call.args[2].get("inline_keyboard", []) if len(call.args) > 2 else [])
+        for b in row
+    )
+
+
+async def test_archive_confirmation_stops_only_target_and_restore_respects_quota(managed):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    first = manager.registry.selected(111)
+    second = manager.registry.create(111, "Second")
+    a, b = manager.service(first["id"]), manager.service(second["id"])
+    a.stop_worker, b.stop_worker = AsyncMock(), AsyncMock()
+    ticket = a.access.issue("ticket")
+    await manager.dispatch(111, "archive:" + first["id"], callback=True)
+    confirm = manager.reply.call_args.args[2]["inline_keyboard"][0][0]["callback_data"]
+    await click(manager, 111, "Batal")
+    await manager.dispatch(111, confirm, callback=True)
+    a.stop_worker.assert_not_awaited()
+    assert manager.registry.get(first["id"])
+    await manager.dispatch(111, "archive:" + first["id"], callback=True)
+    await click(manager, 111, "Ya, Arsipkan")
+    a.stop_worker.assert_awaited_once()
+    b.stop_worker.assert_not_awaited()
+    assert a.access.consume_ticket(ticket) is None
+    manager.registry.set_limit("max_accounts_per_user", 1)
+    await click(manager, 111, "Pulihkan Utama")
+    assert manager.registry.get(first["id"], archived=True)
+    assert manager.registry.selected(111)["id"] == second["id"]
+    assert "Batas akun" in manager.reply.call_args.args[1]

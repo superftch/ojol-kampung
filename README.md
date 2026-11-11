@@ -14,33 +14,34 @@ Gunakan dengan izin operator game. Satu akun game jangan dijalankan bersamaan di
 
 Admin pertama adalah ID pribadi dalam `OJOL_TELEGRAM_CHAT_ID`; ID ini selalu boleh masuk dan tidak bisa dicabut lewat bot. User lain ditolak sampai admin menambahkan ID numeriknya. Kontrol hanya menerima private chat dengan `chat.id == from.id`; grup dan callback milik user lain ditolak.
 
-| Aksi admin | Perintah |
+Semua operasi bot memakai tombol. Ketik hanya nilai yang diminta: ID Telegram, nama akun, batas angka, atau tanggal. Tidak perlu mengetik perintah. Tombol **Batal** selalu bisa membatalkan input; **Menu Utama** mengembalikan tombol utama.
+
+| Aksi admin | Alur tombol |
 |---|---|
-| Lihat whitelist, kuota dan worker aktif | `Management`, `/admin`, atau `/users` |
-| Tambah/aktifkan user | `/whitelist tambah 123456789` |
-| Tambah user dengan kuota khusus | `/whitelist tambah 123456789 5` |
-| Cabut akses dan hentikan seluruh akun user | `/whitelist hapus 123456789` |
-| Default akun per user | `/batas default 3` |
-| Override akun user tertentu | `/batas 123456789 5` |
-| Batas worker aktif global | `/batas worker 3` |
+| Lihat whitelist, kuota dan worker aktif | **Management → Daftar User** |
+| Tambah user | **Management → Tambah User**, lalu ketik ID Telegram |
+| Aktifkan ulang user | **Daftar User → pilih user → Aktifkan Akses** |
+| Cabut akses dan hentikan seluruh akun user | **Daftar User → pilih user → Cabut Akses → Ya, Cabut Akses** |
+| Default akun per user | **Management → Batas Akun Default**, lalu ketik angka |
+| Override akun user tertentu | **Daftar User → pilih user → Ubah Batas Akun**, lalu ketik angka |
+| Batas worker aktif global | **Management → Batas Worker**, lalu ketik angka |
 
 Batas valid 1–100. Override management disimpan di `accounts.sqlite3` dan mengalahkan default env setelah restart. Menurunkan batas tidak menghapus akun atau memutus worker yang sudah aktif; batas berlaku pada tambah/pulihkan/start berikutnya. Override user yang sudah dibuat tetap mengalahkan default global. Pencabutan whitelist menghentikan worker user, mencabut tiket/sesi import, dan membatalkan notifikasi pending; data/history tetap disimpan. Aktivasi ulang tidak otomatis menjalankan game.
 
-| Aksi user | Tombol/perintah |
+| Aksi user | Alur tombol |
 |---|---|
-| Daftar dan pilih akun | **Akun Saya**, lalu tombol Pilih |
-| Tambah akun | **Tambah Akun**, lalu nama; `/batal` untuk batal |
-| Tambah/pilih lewat perintah | `/akun tambah Nama`, `/akun pilih ID` |
-| Ubah nama | `/akun nama ID Nama baru` |
-| Arsipkan akun | `/akun arsip ID` |
-| Pulihkan arsip | `/akun pulihkan ID`, lalu pilih lewat Akun Saya |
+| Daftar dan pilih akun | **Akun Saya → Pilih nama akun** |
+| Tambah akun | **Tambah Akun**, lalu ketik nama |
+| Ubah nama | **Akun Saya → Pilih akun → Ubah Nama**, lalu ketik nama baru |
+| Arsipkan akun | **Akun Saya → Pilih akun → Arsipkan Akun → Ya, Arsipkan** |
+| Pulihkan arsip | **Akun Saya → Pulihkan nama akun** |
 | Login akun terpilih | **Import Cookie** |
 | Mulai/hentikan akun terpilih | **Jalankan Ojol** / **Hentikan Ojol** |
 | Resource, saldo dan countdown | **Status** |
-| Laporan harian WIB | **Laba Bersih**, tombol hari/tanggal |
+| Laporan harian WIB | **Laba Bersih**, tombol hari atau **Pilih tanggal**, lalu ketik tanggal |
 | Event rutin | **Notifikasi ON / OFF** |
 
-Akun baru langsung terpilih. Ganti pilihan tidak menghentikan akun lain. Arsip menghentikan worker dan mencabut akses import, membebaskan kuota akun, tanpa menghapus ledger/cookie. Pulihkan arsip untuk memakai kembali history akun sama.
+Akun baru atau akun yang dipulihkan langsung terpilih. Ganti pilihan tidak menghentikan akun lain. Arsip menghentikan worker dan mencabut akses import, membebaskan kuota akun, tanpa menghapus ledger/cookie. Daftar akun dan user memiliki tombol halaman berikutnya/sebelumnya; tidak perlu menyalin ID akun. Form input yang belum selesai dibatalkan saat bot restart. Konfirmasi arsip/cabut akses yang sudah dibatalkan tidak berlaku lagi.
 
 Import hanya menerima cookie sesi `__Secure-better-auth.session_token` milik `www.kampungsebelah.com`, sebagai nilai atau JSON cookie. Cookie tidak dikirim melalui Telegram/argv/log. Link HTTPS sekali pakai berlaku 15 menit, memakai cookie HttpOnly dengan path akun dan CSRF terikat sesi. Kandidat sesi diverifikasi lewat HTTP MCP lalu dipasang atomik; kegagalan tidak mengganti sesi lama. Nama akun ditampilkan pada form supaya tujuan import jelas.
 
