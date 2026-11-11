@@ -436,7 +436,7 @@ class ControlService:
             "🤔 Perintah tidak dikenal\n\n"
             "Pakai tombol di bawah:\n"
             "🔐 Import Cookie · ▶️ Jalankan Ojol · 🛑 Hentikan Ojol\n"
-            "🛵 Status · 📒 Laba Bersih · 🔔 Notifikasi ON/OFF"
+            "🛵 Status · 📒 Laba Bersih · 🔔 Notifikasi ON · OFF"
         )
 
     async def execute(self, command):
