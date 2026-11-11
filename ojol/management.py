@@ -70,8 +70,9 @@ class MultiAccountService:
 
     async def reply(self, owner, text, markup=None):
         settings = self.notice_settings(owner)
-        queue_notice(settings, text, reply_markup=markup)
+        notice = queue_notice(settings, text, reply_markup=markup)
         await flush_notices(settings)
+        return notice.with_suffix(".sent").is_file()
 
     def service(self, identifier):
         account = self.registry.get(identifier)
@@ -224,6 +225,8 @@ class MultiAccountService:
         uid = user["telegram_id"]
         enabled = self.registry.allowed(uid)
         buttons = [[{"text": "Ubah Batas Akun", "callback_data": f"user_limit:{uid}"}]]
+        if enabled:
+            buttons.append([{"text": "Kirim Menu", "callback_data": f"send_menu:{uid}"}])
         if uid != self.registry.admin:
             buttons.append(
                 [
@@ -239,6 +242,23 @@ class MultiAccountService:
             f"Telegram ID: {uid}\nAkses: {'admin' if uid == self.registry.admin else 'aktif' if enabled else 'dicabut'}"
             f"\nAkun: {len(self.registry.list(uid))}/{self.registry.quota(uid)}",
             {"inline_keyboard": buttons},
+        )
+
+    async def send_user_menu(self, owner, uid):
+        if not self.registry.allowed(uid):
+            raise ValueError("Aktifkan akses user dahulu.")
+        delivered = await self.reply(
+            uid,
+            "Akses Anda sudah diaktifkan. Tekan Tambah Akun, ketik nama akun, lalu Import Cookie.\n"
+            + HELP,
+            KEYBOARD,
+        )
+        await self.reply(
+            owner,
+            f"Menu utama dikirim ke {uid}."
+            if delivered
+            else f"User {uid} diizinkan, tetapi menu belum terkirim. Minta user membuka chat pribadi bot, "
+            "tekan Start atau kirim pesan menu, dan pastikan ID Telegram benar. Pesan tetap dalam antrean.",
         )
 
     async def revoke(self, owner):
@@ -346,9 +366,14 @@ class MultiAccountService:
                     ]
                 },
             )
+        elif text.startswith("send_menu:"):
+            uid = self.user(text.split(":", 1)[1])["telegram_id"]
+            await self.send_user_menu(owner, uid)
+            await self.user_menu(owner, uid)
         elif text.startswith("enable:"):
             uid = self.user(text.split(":", 1)[1])["telegram_id"]
             self.registry.whitelist(uid)
+            await self.send_user_menu(owner, uid)
             await self.user_menu(owner, uid)
 
     async def input(self, owner, text):
@@ -370,6 +395,7 @@ class MultiAccountService:
             uid = self.registry.owner_id(text)
             self.registry.whitelist(uid)
             self.pending.pop(owner)
+            await self.send_user_menu(owner, uid)
             await self.user_menu(owner, uid)
         elif kind == "limit":
             self.registry.set_limit(state["setting"], text)
@@ -404,7 +430,15 @@ class MultiAccountService:
             and not callback
             or callback
             and text.startswith(
-                ("admin:", "user:", "user_limit:", "revoke:", "revoke_confirm:", "enable:")
+                (
+                    "admin:",
+                    "user:",
+                    "user_limit:",
+                    "revoke:",
+                    "revoke_confirm:",
+                    "enable:",
+                    "send_menu:",
+                )
             )
         ):
             await self.admin_action(owner, text)

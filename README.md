@@ -14,6 +14,8 @@ Gunakan dengan izin operator game. Satu akun game jangan dijalankan bersamaan di
 
 Admin pertama adalah ID pribadi dalam `OJOL_TELEGRAM_CHAT_ID`; ID ini selalu boleh masuk dan tidak bisa dicabut lewat bot. User lain ditolak sampai admin menambahkan ID numeriknya. Kontrol hanya menerima private chat dengan `chat.id == from.id`; grup dan callback milik user lain ditolak.
 
+Saat user ditambahkan atau diaktifkan ulang, bot mengirim menu utama ke chat pribadi user. Jika user belum pernah membuka bot, minta user menekan **Start** dahulu; [Telegram melarang bot memulai percakapan pribadi](https://core.telegram.org/bots#how-are-bots-different-from-users). Jika tombol belum terlihat, admin bisa memilih **Kirim Menu**, atau user mengirim pesan **menu** ke bot. Setelah menu muncul: **Tambah Akun → ketik nama → Import Cookie**.
+
 Semua operasi bot memakai tombol. Ketik hanya nilai yang diminta: ID Telegram, nama akun, batas angka, atau tanggal. Tidak perlu mengetik perintah. Tombol **Batal** selalu bisa membatalkan input; **Menu Utama** mengembalikan tombol utama.
 
 | Aksi admin | Alur tombol |
@@ -21,6 +23,7 @@ Semua operasi bot memakai tombol. Ketik hanya nilai yang diminta: ID Telegram, n
 | Lihat whitelist, kuota dan worker aktif | **Management → Daftar User** |
 | Tambah user | **Management → Tambah User**, lalu ketik ID Telegram |
 | Aktifkan ulang user | **Daftar User → pilih user → Aktifkan Akses** |
+| Kirim ulang tombol utama user | **Daftar User → pilih user → Kirim Menu** |
 | Cabut akses dan hentikan seluruh akun user | **Daftar User → pilih user → Cabut Akses → Ya, Cabut Akses** |
 | Default akun per user | **Management → Batas Akun Default**, lalu ketik angka |
 | Override akun user tertentu | **Daftar User → pilih user → Ubah Batas Akun**, lalu ketik angka |

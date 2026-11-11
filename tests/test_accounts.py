@@ -642,3 +642,114 @@ async def test_archive_confirmation_stops_only_target_and_restore_respects_quota
     assert manager.registry.get(first["id"], archived=True)
     assert manager.registry.selected(111)["id"] == second["id"]
     assert "Batas akun" in manager.reply.call_args.args[1]
+
+
+@pytest.mark.parametrize("reactivate", [False, True])
+async def test_granting_access_sends_main_keyboard_to_correct_user(managed, reactivate):
+    from ojol.telegram import KEYBOARD
+
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock(return_value=1)
+    if reactivate:
+        manager.registry.whitelist(222, False)
+        await manager.dispatch(111, "user:222", callback=True)
+        await click(manager, 111, "Aktifkan Akses")
+    else:
+        await manager.dispatch(111, "Management")
+        await click(manager, 111, "Tambah User")
+        await manager.dispatch(111, "222")
+    welcome = [call for call in manager.reply.call_args_list if call.args[0] == 222]
+    assert len(welcome) == 1
+    assert welcome[0].args[2] == KEYBOARD
+    assert "Tambah Akun" in welcome[0].args[1] and "Import Cookie" in welcome[0].args[1]
+    assert manager.registry.allowed(222)
+    assert not manager.registry.list(222)
+    assert not manager.services
+    assert manager.reply.call_args.args[0] == 111
+
+
+async def test_resending_menu_is_admin_only_and_preserves_user_input(managed):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock(return_value=1)
+    manager.registry.whitelist(222)
+    await manager.dispatch(222, "Tambah Akun")
+    await manager.dispatch(111, "user:222", callback=True)
+    await click(manager, 111, "Kirim Menu")
+    assert manager.pending[222] == {"kind": "name"}
+    assert any(
+        call.args[0] == 222 and "keyboard" in call.args[2] for call in manager.reply.call_args_list
+    )
+    manager.reply.reset_mock()
+    await manager.dispatch(222, "send_menu:111", callback=True)
+    assert all(call.args[0] == 222 for call in manager.reply.call_args_list)
+    assert "Management hanya" in manager.reply.call_args.args[1]
+    manager.registry.whitelist(333, False)
+    manager.reply.reset_mock()
+    await manager.dispatch(111, "send_menu:333", callback=True)
+    assert all(call.args[0] == 111 for call in manager.reply.call_args_list)
+    assert not manager.registry.allowed(333)
+
+
+async def test_menu_recovers_after_start_was_ignored_before_whitelist(managed):
+    from ojol.telegram import KEYBOARD
+
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    await manager.dispatch(222, "/start")
+    manager.reply.assert_not_awaited()
+    manager.registry.whitelist(222)
+    await manager.dispatch(222, "menu")
+    manager.reply.assert_awaited_once()
+    assert manager.reply.call_args.args[0] == 222
+    assert manager.reply.call_args.args[2] == KEYBOARD
+    assert not manager.registry.list(222)
+
+
+@pytest.mark.parametrize("pending_message", [False, True])
+async def test_failed_welcome_stays_queued_and_admin_gets_recovery_steps(
+    managed, monkeypatch, pending_message
+):
+    import httpx
+    from pydantic import SecretStr
+
+    import ojol.management as module
+    from ojol.telegram import KEYBOARD, flush_notices, queue_notice
+
+    manager = MultiAccountService(
+        managed.model_copy(update={"telegram_bot_token": SecretStr("isolated-test-token")})
+    )
+    sent = []
+    if pending_message:
+        queue_notice(manager.notice_settings(222), "older fixture")
+
+    def handle(request):
+        data = json.loads(request.content)
+        sent.append(data)
+        if data["chat_id"] == 222 and data["text"] != "older fixture":
+            return httpx.Response(
+                403, json={"ok": False, "description": "bot cannot initiate conversation"}
+            )
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+
+        async def flush(settings):
+            return await flush_notices(settings, client)
+
+        monkeypatch.setattr(module, "flush_notices", flush)
+        monkeypatch.setattr("ojol.telegram.asyncio.sleep", AsyncMock())
+        await manager.dispatch(111, "Management")
+        await manager.dispatch(111, "admin:add_user", callback=True)
+        await manager.dispatch(111, "222")
+    assert manager.registry.allowed(222)
+    notice_dir = manager.notice_settings(222).runtime_dir / "notifications"
+    pending = list(notice_dir.glob("*.json"))
+    assert len(pending) == 1
+    payload = json.loads(pending[0].read_text())
+    assert payload["reply_markup"] == KEYBOARD and payload["attempts"] == 1
+    assert any(
+        data["chat_id"] == 111 and "menu belum terkirim" in data["text"] and "Start" in data["text"]
+        for data in sent
+    )
+    assert not (manager.hub.settings.runtime_dir / "STOP").exists()
+    assert not (manager.notice_settings(222).runtime_dir / "STOP").exists()
