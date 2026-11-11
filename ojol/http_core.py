@@ -13,7 +13,8 @@ from mcp import StdioServerParameters
 from .http_api import HttpCoreError
 from .models import ShopPreview, Snapshot
 
-HTTP_TOOLS = {"ojol_snapshot", "ojol_preview_shop", "ojol_purchase", "ojol_job_action"}
+READ_TOOLS = {"ojol_snapshot", "ojol_preview_shop", "ojol_daily_wallet"}
+HTTP_TOOLS = READ_TOOLS | {"ojol_purchase", "ojol_job_action"}
 
 
 class HttpUI:
@@ -63,7 +64,7 @@ class HttpUI:
 
     async def call_tool(self, name, **args):
         self.check_cancel()
-        read = name in {"ojol_snapshot", "ojol_preview_shop"}
+        read = name in READ_TOOLS
         if name not in self.tools:
             raise HttpCoreError(
                 "Server MCP HTTP belum tersedia", category="transport", recoverable=read
@@ -109,6 +110,9 @@ class HttpUI:
 
     async def snapshot(self):
         return Snapshot.model_validate(await self.call_tool("ojol_snapshot"))
+
+    async def daily_wallet(self, day):
+        return await self.call_tool("ojol_daily_wallet", day=day.isoformat())
 
     async def preview_shops(self, resource):
         data = await self.call_tool("ojol_preview_shop", resource=resource)

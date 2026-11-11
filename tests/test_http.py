@@ -131,6 +131,7 @@ def world():
     world["locations"] = {"data": [ShopLocation(SHOP, "K22-U07", "Konter fixture", 0, 0)]}
     world["shops"] = {SHOP: world["shop"]}
     world["failed_paths"] = set()
+    world["conflicting_catalogs"] = {}
     return world
 
 
@@ -172,6 +173,8 @@ async def api(settings, world, monkeypatch):
             if path == world.get("lost_response"):
                 raise httpx.ReadTimeout("fixture response lost", request=request)
             return httpx.Response(200, json={"ok": True})
+        if path in world["conflicting_catalogs"]:
+            return httpx.Response(409, json=world["conflicting_catalogs"][path])
         data = {
             "/api/ojol": world["ojol"],
             "/api/game/me": world["me"],
@@ -691,6 +694,24 @@ async def test_incomplete_scan_clears_previous_preview_and_never_buys(api, world
     assert all(request.method == "GET" for request in api.calls)
 
 
+@pytest.mark.parametrize("closed", [True, False])
+async def test_preview_skips_only_verified_closed_catalog_conflict(api, world, closed):
+    shop_id = add_shop(world, 8, "Konter lain", "konter-pulsa", "pulsa", "Isi pulsa", 100)
+    world["conflicting_catalogs"]["/api/shops/" + shop_id] = {
+        "error": {
+            "code": "REQUIREMENT_NOT_MET",
+            "message": "Usaha ini belum buka." if closed else "Konflik lain.",
+        }
+    }
+    if closed:
+        result = await api.preview("data")
+        assert [shop["id"] for shop in result["shops"]] == [SHOP]
+    else:
+        with pytest.raises(HttpCoreError, match="HTTP409"):
+            await api.preview("data")
+    assert all(request.method == "GET" for request in api.calls)
+
+
 async def test_preview_skips_configured_shop_when_catalog_name_changes(api, world):
     world["shop"]["plang"] = "Konter berubah"
     result = await api.preview("data")
@@ -998,3 +1019,87 @@ async def test_asset_get_cannot_escape_origin_or_static_directory(api):
     with pytest.raises(HttpCoreError):
         await api.request("/_next/static/../../api/ojol.js")
     assert not api.calls
+
+
+@pytest.mark.parametrize(
+    "repeat_cursor, missing_detail", [(False, False), (True, False), (False, True)]
+)
+async def test_daily_wallet_wib_pagination_and_dedup(
+    settings, monkeypatch, repeat_cursor, missing_detail
+):
+    from datetime import datetime
+
+    def row(identifier, at, amount, kind="OJOL_ONGKOS"):
+        return {"id": identifier, "at": at, "amountMilli": amount, "type": kind}
+
+    def purchase(identifier, at, amount, detail):
+        return {**row(identifier, at, amount, "SHOP_PURCHASE"), "detail": detail}
+
+    start = purchase("at-start", "2026-11-10T17:00:00Z", -1000, "Isi Pertalite")
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        assert request.method == "GET" and request.url.path == "/api/me/koin"
+        if not request.url.params:
+            return httpx.Response(
+                200,
+                json={
+                    "items": [
+                        row("next-day", "2026-11-11T17:00:00Z", 9000),
+                        purchase("end", "2026-11-11T17:00:00Z", -1000, "Isi Pertalite"),
+                        row("manual", "2026-11-11T10:00:00Z", 800),
+                        row("worker", "2026-11-11T09:30:00Z", 1200),
+                        purchase("pulsa", "2026-11-11T09:00:00Z", -500, "  ISI   pulsa  "),
+                        purchase("ban", "2026-11-11T08:00:00Z", -500, "Tambal ban"),
+                        purchase("oli", "2026-11-11T07:00:00Z", -600, "Ganti oli"),
+                        purchase("positive", "2026-11-11T06:00:00Z", 100, "Isi pulsa"),
+                        purchase(
+                            "unclassified",
+                            "2026-11-11T05:00:00Z",
+                            -300,
+                            None if missing_detail else "Bonus Isi pulsa",
+                        ),
+                        start,
+                    ],
+                    "next": "opaque?&cursor",
+                },
+            )
+        assert dict(request.url.params) == {"after": "opaque?&cursor"}
+        return httpx.Response(
+            200,
+            json={
+                "items": [start, row("older", "2026-11-10T16:59:59Z", 4000)],
+                "next": "opaque?&cursor" if repeat_cursor else None,
+            },
+        )
+
+    monkeypatch.setattr(
+        "ojol.http_api.now", lambda: datetime.fromisoformat("2026-11-12T10:00:00+00:00")
+    )
+    async with httpx.AsyncClient(base_url=ORIGIN, transport=httpx.MockTransport(handle)) as client:
+        result = await OjolHttpApi(settings.runtime_dir, client=client).daily_wallet("2026-11-11")
+    assert result["income_milli"] == 2000 and result["payout_count"] == 2
+    assert result["expenses_milli"] == {"data": 500, "condition": 1100, "fuel": 1000}
+    assert bool(result["expense_issue"]) is missing_detail
+    assert result["complete"] is not repeat_cursor
+    assert result["issue"] == ("Cursor riwayat berulang" if repeat_cursor else None)
+    assert len(calls) == 2
+
+
+async def test_daily_wallet_page_limit_is_partial(settings, monkeypatch):
+    from datetime import datetime
+
+    calls = []
+
+    def handle(request):
+        calls.append(request)
+        return httpx.Response(200, json={"items": [], "next": str(len(calls))})
+
+    monkeypatch.setattr(
+        "ojol.http_api.now", lambda: datetime.fromisoformat("2026-11-12T10:00:00+00:00")
+    )
+    async with httpx.AsyncClient(base_url=ORIGIN, transport=httpx.MockTransport(handle)) as client:
+        result = await OjolHttpApi(settings.runtime_dir, client=client).daily_wallet("2026-11-11")
+    assert len(calls) == 10
+    assert not result["complete"] and result["issue"] == "Batas 10 halaman tercapai"

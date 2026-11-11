@@ -27,6 +27,7 @@ class Controller:
         self.completed = 0
         self.started = time.monotonic()
         self.state = None
+        self.snapshot_received_at = None
         self.last_event = None
         self.wait_until = None
         self.trip_due = None
@@ -69,6 +70,7 @@ class Controller:
             "profit": self.journal.profit(self.run_id),
             "profit_total": self.journal.profit(),
             "snapshot": self.state.model_dump(mode="json") if self.state else None,
+            "snapshot_received_at": self.snapshot_received_at,
             **data,
         }
         output = self.settings.runtime_dir / "status.json"
@@ -97,12 +99,16 @@ class Controller:
             await asyncio.sleep(min(0.25, max(0, deadline - time.monotonic())))
         self.wait_until = None
 
+    async def read_snapshot(self):
+        self.state = await self.ui.snapshot()
+        self.snapshot_received_at = now().isoformat()
+        return self.state
+
     async def verify(self, predicate, timeout=12):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             self.check_cancel()
-            state = await self.ui.snapshot()
-            self.state = state
+            state = await self.read_snapshot()
             if is_sleeping(state):
                 raise RuntimeError(next_step(state, self.settings).reason)
             if predicate(state):
@@ -359,6 +365,7 @@ class Controller:
             self.check_cancel()
             flags = auto_flags(self.settings.runtime_dir)
             previous = self.state
+            previous_received_at = self.snapshot_received_at
             if not any(flags.values()) and (
                 previous is None or previous.phase not in {"searching", "delivering", "complete"}
             ):
@@ -369,14 +376,15 @@ class Controller:
                 continue
             self.stage = "observe.ojol"
             try:
-                state = await self.ui.snapshot()
+                await self.read_snapshot()
             except HttpCoreError:
                 if held_window(self.maintenance_file):
                     continue
                 raise
             if held_window(self.maintenance_file):
+                self.state = previous
+                self.snapshot_received_at = previous_received_at
                 continue
-            self.state = state
             if (
                 previous
                 and previous.phase == "delivering"

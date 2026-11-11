@@ -63,6 +63,10 @@ Import hanya menerima cookie sesi `__Secure-better-auth.session_token` milik `ww
 
 Jika JSON cookie menyertakan waktu kedaluwarsa, bot memeriksanya sebelum mulai dan sebelum request berikutnya. Nilai cookie tanpa metadata diperiksa lewat respons server. Jika sesi ditolak atau kedaluwarsa, akun berhenti dan Telegram meminta login ulang, dengan tombol **Login ulang ke game** dan **Import Cookie** untuk akun yang bermasalah. Login di game, impor cookie baru lewat formulir, lalu tekan **Jalankan Ojol**.
 
+## Development lokal
+
+Gunakan [panduan Docker lokal dan bot Telegram development](docs/local-development.md) untuk pengujian sebelum deploy. Compose lokal memakai port 6081 dan volume development sendiri.
+
 ## Deploy dan upgrade
 
 Prasyarat: Linux amd64/arm64, Docker Engine + Compose, koneksi game/Telegram, domain Cloudflare. Container memakai batas 2 CPU / 2 GiB RAM; angka worker default adalah batas awal konservatif, **belum benchmark kapasitas**.

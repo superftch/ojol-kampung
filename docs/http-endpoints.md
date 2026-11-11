@@ -1,4 +1,6 @@
-# Endpoint Ojol
+# Inventaris API client KampungSebelah
+
+Inventaris request gameplay lengkap ada di [katalog API client](http-gameplay-catalog.md). Panduan development tersedia di [development lokal](local-development.md).
 
 Inspeksi 11 November 2026 WIB: bundle client dibaca sebagai teks, lalu GET dan POST terpilih diverifikasi melalui sesi pemilik akun. Source/capture awal berada di `.local/http-discovery`, diabaikan Git dan direktori mode0700. Salinan cookie inspeksi dihapus setelah verifikasi. Analisis REA bersifat statis dan graph semantik parsial; bukan bukti eksekusi seluruh route.
 
@@ -35,6 +37,12 @@ Client helper memakai JSON body, sesi cookie same-origin dan tidak menambahkan t
 Keterbatasan: endpoint internal bisa berubah, tidak membuktikan kontrak API publik. Tidak menyimpulkan idempotensi endpoint Ojol dari adanya requestId pada pembelian; semua POST tetap satu kali. Perubahan harga/efek/resource, error auth, dan hasil transaksi yang belum pasti tetap dapat menghentikan worker. Runtime kini hanya HTTP MCP; kegagalan terminal menghentikan akun tanpa fallback browser.
 
 Probe transaksi lokal dilakukan setelah pengguna menghentikan worker production, melalui ADK → stdio MCP → HTTP tanpa Chromium. Lima aksi (klaim, tiga pembelian, ambil) tercatat verified pada ledger lokal, tanpa pending/uncertain. Sesuai instruksi pengguna, probe sementara melewati planner threshold dan mengizinkan efek pembelian terpotong di100%, dengan anggaran maksimal2koin dan saldo minimum20. Pengecualian hanya pada proses probe sementara; guard source production tidak diubah. Script bypass dan salinan cookie dihapus setelah proses berhenti. Bukti finansial/account tetap privat di `.local/live-verification/report.json` dan ledger lokal, tidak dikomit.
+
+## Bukti laporan harian
+
+Pada 11 November 2026 WIB, pembacaan lokal terotorisasi untuk dua halaman `GET /api/me/koin` berhasil. Respons berisi `items` dan cursor `next`. Query `after` menerima cursor dari halaman sebelumnya. Baris memiliki `id`, `at` dengan zona waktu, `amountMilli` bertanda, `type`, `label`, dan `detail`. Dua halaman yang diperiksa berurutan dari terbaru ke terlama.
+
+Payout Ojol memiliki `type: OJOL_ONGKOS`. Pembelian yang terlihat memakai `SHOP_PURCHASE` dan tidak memberi penanda yang cukup untuk mengaitkan biaya manual ke Ojol. Bot menghitung pendapatan dari penanda payout dan mengestimasi laba dengan mengurangi belanja yang nama produknya cocok persis dengan daftar produk worker setelah normalisasi kapital dan spasi. Estimasi menganggap semua pembelian produk yang cocok sebagai biaya Ojol. Jurnal tetap menyediakan biaya worker terverifikasi. Lihat [rujukan client riwayat koin](http-gameplay-catalog.md#profil-perbankan-dan-pembayaran).
 
 ## Inventaris Akademis.ai
 

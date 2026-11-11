@@ -7,9 +7,9 @@ import os
 import re
 import shutil
 import sys
-import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
+from decimal import Decimal
 from math import ceil
 from pathlib import Path
 from random import choice
@@ -26,10 +26,10 @@ from .cli import exclusive_lock, running
 from .config import load_settings
 from .finance import WIB, report_date
 from .http_api import HttpCoreError, OjolHttpApi
-from .journal import Journal
+from .journal import Journal, unresolved_action
 from .login_access import LoginAccess
 from .maintenance import GAME_COMMANDS, SCHEDULE_FILE, held_window
-from .models import ROOT, Settings
+from .models import ROOT, Settings, now
 from .telegram import (
     BUTTON_COMMANDS,
     TelegramClient,
@@ -40,10 +40,27 @@ from .telegram import (
     notifications_enabled,
     queue_error,
     queue_notice,
+    redact,
     set_notifications,
 )
 
 WORKER_SHUTDOWN = "worker-shutdown"
+
+
+def status_record(path):
+    try:
+        value = json.loads(path.read_text())
+        return (value, path.stat().st_mtime_ns) if isinstance(value, dict) else ({}, 0)
+    except (OSError, ValueError):
+        return {}, 0
+
+
+def status_timestamp(value):
+    try:
+        stamp = datetime.fromisoformat(value)
+        return stamp if stamp.tzinfo is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 class ControlService:
@@ -125,99 +142,215 @@ class ControlService:
             ):
                 return
             await asyncio.sleep(0.25)
-        raise RuntimeError("Worker belum berhenti setelah 30 detik; sesi tidak diganti")
+        raise RuntimeError("Worker belum berhenti setelah 30 detik. Sesi game tidak diganti.")
 
     def status(self):
-        path = self.settings.runtime_dir / "status.json"
-        data = json.loads(path.read_text()) if path.is_file() else {}
+        directory = self.settings.runtime_dir
+        data, status_updated = status_record(directory / "status.json")
         state = data.get("snapshot") or {}
-        maintenance = held_window(self.maintenance_file)
-        busy = running(self.settings.runtime_dir)
-        starting = self.worker is not None and self.worker.returncode is None and not busy
-        phases = {
-            "idle": "siap beraktivitas",
-            "searching": "sedang mencari order",
-            "delivering": "sedang mengantar",
-            "complete": "ongkos siap diambil",
-            "sleeping": "karakter sedang tidur",
-            "unknown": "kondisi belum terbaca",
-        }
-        lines = [
-            f"🛵 Status akun • {self.settings.account_name or 'Utama'}",
-            "",
-            "Bot sedang memulai."
-            if starting
-            else "Bot sedang berjalan."
-            if busy
-            else "Bot sedang berhenti.",
-            f"Kondisi terakhir • {phases.get(state.get('phase'), 'belum ada data game')}",
-        ]
-        if data.get("wait_until"):
-            seconds = max(
-                0, ceil(datetime.fromisoformat(data["wait_until"]).timestamp() - time.time())
-            )
-            if busy:
-                lines.append(f"Perkiraan menunggu • {seconds // 60}:{seconds % 60:02d}")
-        lines.extend(
-            [
-                "",
-                f"⛽ Bensin {state.get('fuel', '?')}%",
-                f"🔧 Kondisi mesin {state.get('condition', '?')}%",
-                f"📶 Kuota HP {state.get('data', '?')}%",
-                f"💰 Saldo utama {koin(state.get('wallet', '?'))}",
-                "",
-            ]
+        busy = running(directory)
+        managed = self.worker is not None and self.worker.returncode is None
+        pid = data.get("pid")
+        recorded_worker = (
+            type(pid) is int
+            and pid > 0
+            and data.get("event") not in {"berhenti", "gagal", "dry_run"}
         )
+        if busy and recorded_worker:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                recorded_worker = False
+            except PermissionError:
+                pass
+        active = busy and recorded_worker and (not managed or self.worker.pid == pid)
+        starting = managed and not active
+        if active:
+            worker = "🟢 Worker aktif"
+        elif starting:
+            worker = "🟡 Worker memulai"
+        elif busy:
+            worker = "🟠 Worker lain sedang memakai akun ini"
+        else:
+            worker = "🔴 Worker berhenti" if data else "⚪ Worker belum dijalankan"
+        phase = state.get("phase")
+        phases = {
+            "idle": "menunggu order",
+            "searching": "mencari order",
+            "delivering": "dalam perjalanan",
+            "complete": "siap klaim ongkos",
+            "sleeping": "karakter tidur",
+            "unknown": "tidak diketahui",
+        }
+        moment = now()
+        observed = status_timestamp(data.get("snapshot_received_at") or state.get("observed_at"))
+        seconds = state.get("remaining_seconds")
+        lines = [f"🛵 Status Ojol · {self.settings.account_name or 'Utama'}", "", worker]
+        trip = f"📍 Trip: {phases.get(phase, 'belum terbaca')}"
+        if observed:
+            age = max(0, int((moment - observed).total_seconds()))
+            age_text = (
+                f"{age} detik"
+                if age < 60
+                else f"{age // 60} menit"
+                if age < 3600
+                else f"{age // 3600} jam"
+            )
+            if active and phase == "delivering" and type(seconds) is int and seconds > 0:
+                remaining = max(0, ceil(seconds - (moment - observed).total_seconds()))
+                trip += f" · sisa trip ±{remaining // 60}:{remaining % 60:02d}"
+            lines.append(trip)
+            stale = " · data lama, worker tidak aktif" if not active else ""
+            lines.append(
+                f"🕒 Update terakhir: {observed.astimezone(WIB):%d-%m-%Y %H:%M:%S} WIB "
+                f"({age_text} lalu){stale}"
+            )
+        else:
+            lines.extend([trip, "🕒 Update terakhir: belum ada data"])
+        if not active and not starting:
+            pending = unresolved_action(directory)
+            error, error_updated = status_record(directory / "last-error.json")
+            reason = None
+            if pending:
+                reason = (
+                    f"Aksi #{pending[0]} ({pending[1]}) menunggu rekonsiliasi "
+                    "(hasil klik terakhir belum pasti, dicek dulu sebelum lanjut)"
+                )
+            elif error_updated >= status_updated and error.get("message"):
+                reason = error["message"]
+            elif data.get("event") in {"berhenti", "gagal"}:
+                reason = data.get("reason")
+            elif self.expected_stop and data:
+                reason = "Dihentikan pengguna"
+            if reason:
+                lines.append(f"⚠️ Alasan berhenti: {redact(reason, self.settings)}")
+
         lines.extend(
             f"{AUTO_LABELS[key]} {value}%"
             for key, value in state.get("needs", {}).items()
             if key in AUTO_LABELS
         )
-        flags = auto_flags(self.settings.runtime_dir)
+        flags = auto_flags(directory)
         enabled = ", ".join(label for key, label in AUTO_LABELS.items() if flags[key])
+        lines.append(f"Auto aktif • {enabled or 'semua dimatikan'}")
+        maintenance = held_window(self.maintenance_file)
+        if maintenance:
+            lines.append(maintenance.message())
+        auto_start = "ON" if self.settings.auto_start else "OFF"
+        if self.auto_start_pending:
+            auto_start += " · menunggu maintenance" if maintenance else " · menunggu slot"
         lines.extend(
             [
                 "",
-                f"Auto aktif • {enabled or 'semua dimatikan'}",
+                f"⛽ Bensin {state.get('fuel', '?')}%",
+                f"🔧 Kondisi {state.get('condition', '?')}%",
+                f"📶 Kuota {state.get('data', '?')}%",
+                f"💰 Saldo utama {state.get('wallet', '?')} koin "
+                f"(minimum {self.settings.min_balance} koin)",
+                "",
                 f"Notifikasi • {'ON' if notifications_enabled(self.settings) else 'OFF'}",
-                f"Mulai otomatis setelah restart • {'ON' if self.settings.auto_start else 'OFF'}",
+                f"🔁 Auto-start saat boot: {auto_start}",
             ]
         )
-        if self.auto_start_pending:
-            lines.append(
-                "Menunggu maintenance selesai." if maintenance else "Menunggu slot kosong."
-            )
-        if maintenance:
-            lines.extend(["", maintenance.message()])
+        if self.settings.tunnel_enabled:
+            lines.append(f"🌐 Tunnel: {'aktif' if self.tunnel_alive() else 'berhenti'}")
         return "\n".join(lines)
 
-    def profit(self, day=None):
+    async def account_profit(self, day):
+        directory = self.settings.runtime_dir
+        wallet = None
+        if self.settings.env == "testing" or not (directory / "http-session.json").is_file():
+            issue = "Sesi game belum tersedia"
+        else:
+            from .http_core import HttpUI
+
+            try:
+                async with asyncio.timeout(18):
+                    async with HttpUI(self.settings) as core:
+                        wallet = await core.daily_wallet(day)
+                issue = wallet["issue"]
+            except Exception:
+                wallet = None
+                issue = "Riwayat game tidak dapat dibaca"
+        return self.profit(day, wallet, issue)
+
+    def profit(self, day=None, wallet=None, issue=None):
         journal = Journal(self.settings.runtime_dir)
         try:
             report = journal.financial_report(day)
         finally:
             journal.close()
         total = report["total"]
-        lines = [
-            f"📒 Laba Bersih · {report['tanggal']} (WIB)",
-            "",
-            f"Pendapatan Ojol • {koin(total['pendapatan_ojol'])}",
-            f"Pengeluaran akun • {koin(total['pengeluaran'])}",
-            f"Laba bersih • {koin(total['laba_bersih'])}",
-            f"{total['trip_tercatat']} trip · {total['pembelian_tercatat']} pembelian",
-        ]
-        names = {"fuel": "Bensin", "condition": "Bengkel", "data": "Kuota", **AUTO_LABELS}
-        if total["biaya_per_kategori"]:
-            lines.extend(["", "Belanja per kebutuhan"])
+        money = lambda value: str(value).replace(".", ",")
+        from .http_api import coin, display
+
+        names = {"fuel": "⛽ Bensin", "condition": "🔧 Bengkel", "data": "📶 Kuota"}
+        lines = [f"📒 Laba Bersih · {report['tanggal']} (WIB)", "", "🎮 Menurut riwayat game"]
+        if wallet:
+            expenses = wallet["expenses_milli"]
+            cost = sum(expenses.values())
+            expense_issue = wallet["expense_issue"]
+            complete = wallet["complete"] and expense_issue is None
+            if complete:
+                net = Decimal(wallet["income_milli"] - cost) / 1000
+                lines.append(f"✅ Estimasi laba Ojol {display(net)} koin")
+        if wallet and wallet["complete"]:
+            lines.append(
+                f"💵 Pendapatan Ojol seluruh akun {display(coin(wallet['income_milli']))} koin · "
+                f"{wallet['payout_count']} payout"
+            )
+        else:
+            lines.append(f"⚠️ Pendapatan belum lengkap: {issue or 'belum diperiksa'}")
+            if wallet and wallet["payout_count"]:
+                lines.append(
+                    f"💵 Payout ditemukan {display(coin(wallet['income_milli']))} koin (parsial)"
+                )
+        if wallet:
+            if complete or expenses:
+                label = (
+                    "Belanja produk Ojol" if complete else "Belanja produk Ojol ditemukan (parsial)"
+                )
+                lines.append(f"🛒 {label} {display(coin(cost))} koin")
+                lines.append(
+                    "   "
+                    + " · ".join(
+                        f"{name} {display(coin(expenses.get(key, 0)))} koin"
+                        for key, name in names.items()
+                    )
+                )
+            if expense_issue:
+                lines.append(f"⚠️ Data biaya belum lengkap: {expense_issue}")
+        if wallet and wallet["today_income_milli"] is not None:
+            lines.append(
+                f"📊 Hasil hari ini menurut game {display(coin(wallet['today_income_milli']))} koin"
+            )
+        if wallet and (complete or expenses):
+            lines.append(
+                "ℹ️ Semua pembelian bensin, bengkel, dan kuota dihitung sebagai biaya Ojol."
+            )
+        if not wallet or not complete:
+            lines.append("ℹ️ Laba belum dihitung karena data game belum lengkap.")
         lines.extend(
-            f"{names.get(key, 'Lainnya')} • {koin(value)}"
-            for key, value in total["biaya_per_kategori"].items()
+            [
+                "",
+                "🤖 Catatan worker",
+                f"✅ Laba bersih worker {money(total['laba_bersih'])} koin",
+                f"💵 Pendapatan Ojol {money(total['pendapatan_ojol'])} koin · "
+                f"{total['trip_tercatat']} trip",
+                f"🛒 Biaya worker terverifikasi {money(total['pengeluaran'])} koin · "
+                f"{total['pembelian_tercatat']} pembelian",
+            ]
         )
-        lines.append(
-            "\nTransaksi terakhir"
-            if report["transaksi_terakhir"]
-            else "\nBelum ada transaksi pada tanggal ini."
-        )
+        if total["biaya_per_kategori"]:
+            lines.append(
+                "   "
+                + " · ".join(
+                    f"{names.get(key, AUTO_LABELS.get(key, key))} {money(value)} koin"
+                    for key, value in total["biaya_per_kategori"].items()
+                )
+            )
+        if report["transaksi_terakhir"]:
+            lines.extend(["", "🧾 Transaksi worker terakhir"])
         for row in report["transaksi_terakhir"][:8]:
             clock = datetime.fromisoformat(row["created"]).astimezone(WIB).strftime("%H:%M")
             detail = json.loads(row["detail"])
@@ -264,9 +397,15 @@ class ControlService:
             return maintenance.message()
         if command == "import_cookie":
             url = await self.cookie_link()
+            browser_hint = (
+                "\n💻 Buka link ini di browser komputer yang menjalankan Docker."
+                if urlsplit(url).scheme == "http"
+                else ""
+            )
             return (
                 "🔐 Hubungkan akun game\n\n"
                 + url
+                + browser_hint
                 + "\n\nBuka tautan, lalu tempel cookie sesi KampungSebelah pada formulir.\n"
                 "Tautan berlaku 15 menit dan bisa dipakai satu kali.\n\n"
                 "Setelah berhasil, kembali ke sini dan tekan Jalankan Ojol."
@@ -292,7 +431,8 @@ class ControlService:
                 "Rumah ini terlihat kotor saat diperiksa. Ketersediaan pekerjaan bisa berubah."
             )
         if command == "profit" or command.startswith("profit:"):
-            return self.profit(command.split(":", 1)[1] if ":" in command else None)
+            day = report_date(command.split(":", 1)[1] if ":" in command else None)
+            return await self.account_profit(day)
         if command == "choose_date":
             self.awaiting_date = True
             return "📅 Laporan tanggal berapa?\n\nKirim tanggal dengan format YYYY-MM-DD atau DD-MM-YYYY."
@@ -316,7 +456,7 @@ class ControlService:
                 ):
                     return "🟢 Bot sudah aktif untuk akun ini. Tekan Status untuk melihat perkembangannya."
                 if not self.settings.operator_authorized:
-                    raise RuntimeError("Izin operator belum dikonfigurasi")
+                    raise RuntimeError("Akun ini belum diizinkan menjalankan Ojol oleh admin.")
                 self.access.revoke()
                 await self.ensure_backend(require_session=True)
                 await self.start_tunnel()
@@ -360,12 +500,13 @@ class ControlService:
         except (ValueError, OverflowError):
             if command.startswith("profit"):
                 queue_notice(
-                    self.settings, "Tanggal tidak valid. Gunakan YYYY-MM-DD atau DD-MM-YYYY."
+                    self.settings,
+                    "❌ Tanggal tidak valid\n\nFormat: YYYY-MM-DD atau DD-MM-YYYY\nContoh: 2026-11-10",
                 )
             else:
                 queue_error(
                     self.settings,
-                    RuntimeError("Input command tidak valid"),
+                    RuntimeError("Perintah tidak dikenal."),
                     f"control.command.{command}",
                 )
         except Exception as exc:
@@ -438,7 +579,7 @@ class ControlService:
                 self.tunnel_process = None
                 queue_error(
                     self.settings,
-                    RuntimeError(f"Cloudflared exit code {code}"),
+                    RuntimeError(f"Tunnel berhenti tiba-tiba (exit code {code})."),
                     "tunnel.process_exit",
                 )
                 await self.stop_worker()
@@ -453,7 +594,7 @@ class ControlService:
                     if previous_error.get("pid") != pid:
                         queue_error(
                             self.settings,
-                            RuntimeError(f"Worker exit code {code}"),
+                            RuntimeError(f"Worker mati tiba-tiba (exit code {code})."),
                             "worker.process_exit",
                         )
                 else:
@@ -496,7 +637,7 @@ class ControlService:
             }:
                 queue_error(
                     self.settings,
-                    RuntimeError("Sesi worker sebelumnya terputus; tidak dilanjutkan otomatis"),
+                    RuntimeError("Ojol terputus saat server mati. Tidak dilanjutkan otomatis."),
                     "worker.interrupted",
                     {
                         "run_id": previous.get("run_id"),
