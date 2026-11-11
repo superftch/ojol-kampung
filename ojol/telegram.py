@@ -211,14 +211,16 @@ def error_text(details):
         details.get("http_category") == "uncertain"
         or (
             ("hasil belum pasti" in diagnostic or "belum terverifikasi" in diagnostic)
-            and (stage.startswith(("purchase.", "job.", "worker.auto_start")))
+            and (stage.startswith(("purchase.", "job.", "worker.auto_start", "worker.reconcile")))
         )
         or stage.startswith("purchase.verify.")
         or stage.startswith("job.")
         and ".verify" in stage
     ):
         reason = "Hasil aksi terakhir belum bisa dipastikan."
-        action = "Minta admin memeriksa dan melakukan rekonsiliasi transaksi sebelum bot dijalankan kembali."
+        action = (
+            "Tekan Jalankan Ojol untuk menjalankan pemeriksaan hasil transaksi secara otomatis."
+        )
     elif "sedang tidur" in diagnostic:
         reason = "Karakter sedang tidur."
         action = "Bangunkan karakter di game, lalu tekan Jalankan Ojol."

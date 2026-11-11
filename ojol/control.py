@@ -28,7 +28,7 @@ from .finance import WIB, report_date
 from .http_api import HttpCoreError, OjolHttpApi
 from .journal import Journal, unresolved_action
 from .login_access import LoginAccess
-from .maintenance import GAME_COMMANDS, SCHEDULE_FILE, held_window
+from .maintenance import GAME_COMMANDS, SCHEDULE_FILE, held_window, read_window
 from .models import ROOT, Settings, now
 from .telegram import (
     BUTTON_COMMANDS,
@@ -148,6 +148,16 @@ class ControlService:
         directory = self.settings.runtime_dir
         data, status_updated = status_record(directory / "status.json")
         state = data.get("snapshot") or {}
+        sync, _ = status_record(directory / "game-sync.json")
+        synced_at = status_timestamp(sync.get("checked_at"))
+        observed = status_timestamp(data.get("snapshot_received_at") or state.get("observed_at"))
+        if (
+            synced_at
+            and (observed is None or synced_at > observed)
+            and isinstance(sync.get("snapshot"), dict)
+        ):
+            state = sync["snapshot"]
+            observed = synced_at
         busy = running(directory)
         managed = self.worker is not None and self.worker.returncode is None
         pid = data.get("pid")
@@ -183,7 +193,6 @@ class ControlService:
             "unknown": "tidak diketahui",
         }
         moment = now()
-        observed = status_timestamp(data.get("snapshot_received_at") or state.get("observed_at"))
         seconds = state.get("remaining_seconds")
         lines = [f"🛵 Status Ojol · {self.settings.account_name or 'Utama'}", "", worker]
         trip = f"📍 Trip: {phases.get(phase, 'belum terbaca')}"
@@ -207,6 +216,21 @@ class ControlService:
             )
         else:
             lines.extend([trip, "🕒 Update terakhir: belum ada data"])
+        if data.get("event") in {"rekonsiliasi", "rekonsiliasi_otomatis"} and (active or starting):
+            lines.append("Bot sedang mencocokkan riwayat dengan game sebelum mulai.")
+            if data.get("reconciliation_pending"):
+                lines.append(
+                    f"{data['reconciliation_pending']} hasil aksi masih diperiksa otomatis."
+                )
+        if state.get("village") or state.get("home_plot"):
+            lines.append(
+                f"🏠 Rumah • {state.get('home_plot') or '?'} • {state.get('village') or '?'}"
+            )
+        if state.get("trip"):
+            lines.extend(["", state["trip"]])
+        arrives = status_timestamp(state.get("arrive_at"))
+        if arrives:
+            lines.append(f"Perkiraan tiba • {arrives.astimezone(WIB):%d-%m-%Y %H:%M:%S} WIB")
         if not active and not starting:
             pending = unresolved_action(directory)
             error, error_updated = status_record(directory / "last-error.json")
@@ -225,14 +249,17 @@ class ControlService:
             if reason:
                 lines.append(f"⚠️ Alasan berhenti: {redact(reason, self.settings)}")
 
+        lines.extend(["", "Kebutuhan akun"])
         lines.extend(
-            f"{AUTO_LABELS[key]} {value}%"
-            for key, value in state.get("needs", {}).items()
-            if key in AUTO_LABELS
+            f"{label} • {state.get('needs', {}).get(key, '?')}%"
+            for key, label in AUTO_LABELS.items()
+            if key != "ojol"
         )
         flags = auto_flags(directory)
-        enabled = ", ".join(label for key, label in AUTO_LABELS.items() if flags[key])
-        lines.append(f"Auto aktif • {enabled or 'semua dimatikan'}")
+        lines.extend(["", "Pengaturan Auto"])
+        lines.extend(
+            f"{label} • {'ON' if flags[key] else 'OFF'}" for key, label in AUTO_LABELS.items()
+        )
         maintenance = held_window(self.maintenance_file)
         if maintenance:
             lines.append(maintenance.message())
@@ -254,6 +281,57 @@ class ControlService:
         )
         if self.settings.tunnel_enabled:
             lines.append(f"🌐 Tunnel: {'aktif' if self.tunnel_alive() else 'berhenti'}")
+        lines.extend(
+            [
+                "",
+                "🎮 Ringkasan game terakhir",
+                f"Trip selesai pada hari data game • {state.get('today_count') if state.get('today_count') is not None else '?'}",
+                f"Pendapatan pada hari data game • {koin(state.get('today_income', '?'))}",
+            ]
+        )
+        if synced_at:
+            lines.append(f"Riwayat dicocokkan • {synced_at.astimezone(WIB):%d-%m-%Y %H:%M:%S} WIB")
+        lines.extend(
+            [
+                "",
+                "🤖 Sesi bot",
+                f"Trip selesai sesi ini • {data.get('completed', 0)}",
+                f"Belanja sesi ini • {koin(data.get('spent', 0))}",
+                f"Target isi ulang • {self.settings.threshold}%",
+                f"Batas belanja • {koin(self.settings.max_spend) if self.settings.max_spend is not None else 'tanpa batas'}",
+                f"Batas trip • {self.settings.max_jobs if self.settings.max_jobs is not None else 'tanpa batas'}",
+                f"Batas waktu • {str(self.settings.max_minutes) + ' menit' if self.settings.max_minutes is not None else 'tanpa batas'}",
+            ]
+        )
+        started = status_timestamp(data.get("run_started_at"))
+        if started:
+            lines.append(f"Mulai sesi • {started.astimezone(WIB):%d-%m-%Y %H:%M:%S} WIB")
+        from .session_transfer import parse_cookie_input, session_expired
+
+        try:
+            cookie = parse_cookie_input((directory / "http-session.json").read_text())
+            expires = cookie["cookies"][0].get("expires")
+            cookie_status = "perlu login ulang" if session_expired(cookie) else "tersimpan"
+            if expires is not None:
+                expiry_date = datetime.fromtimestamp(expires, WIB)
+                cookie_status += f" • berlaku sampai {expiry_date:%d-%m-%Y %H:%M} WIB"
+        except (OSError, ValueError, TypeError, KeyError, OverflowError):
+            cookie_status = "belum terhubung"
+        lines.extend(["", f"🔑 Sesi game • {cookie_status}"])
+        window = read_window(self.maintenance_file)
+        if window:
+            lines.append(f"Jadwal maintenance • {window.description()}")
+        lines.extend(["", "🧾 Riwayat terbaru dari game"])
+        receipts = state.get("game_history") or []
+        if not receipts:
+            lines.append("Belum ada riwayat pada data game yang dibaca.")
+        for receipt in receipts[:5]:
+            at = status_timestamp(receipt.get("done_at"))
+            clock = at.astimezone(WIB).strftime("%d-%m %H:%M") if at else "waktu belum tersedia"
+            lines.append(
+                f"{clock} • {receipt.get('origin', '?')} → {receipt.get('destination', '?')}\n"
+                f"Ongkos diterima {koin(receipt.get('amount', '?'))}"
+            )
         return "\n".join(lines)
 
     async def account_profit(self, day):

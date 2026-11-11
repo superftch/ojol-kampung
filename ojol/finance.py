@@ -33,6 +33,27 @@ def day_bounds(value):
 
 def received_income(before: Snapshot, after: Snapshot):
     """Use received payouts, never gross fares or unrelated wallet changes."""
+    if (
+        after.game_history
+        and len(after.history) == len(after.game_history)
+        and (before.game_history or before.trip_id)
+    ):
+        known = {receipt.id for receipt in before.game_history}
+        fresh = [
+            (receipt, text)
+            for receipt, text in zip(after.game_history, after.history)
+            if receipt.id not in known
+            and (
+                receipt.id == before.trip_id
+                if before.phase == "complete" and before.trip_id
+                else before.game_history or receipt.id == before.trip_id
+            )
+        ]
+        if not fresh:
+            return None
+        return sum((receipt.amount for receipt, _ in fresh), Decimal(0)), [
+            text for _, text in fresh
+        ]
     added = Counter(after.history) - Counter(before.history)
     fresh = list(added.elements())
     payouts = []
@@ -52,7 +73,24 @@ def completion_evidence(before: Snapshot, after: Snapshot):
         "searching",
         "delivering",
         "sleeping",
+        "complete",
     }:
+        return None
+    if before.trip_id:
+        receipt = next((row for row in after.game_history if row.id == before.trip_id), None)
+        if (
+            receipt is not None
+            and before.observed_at <= receipt.done_at <= after.observed_at
+            and all(row.id != receipt.id for row in before.game_history)
+        ):
+            return {
+                "method": "matching_server_trip_receipt",
+                "receipt_id": receipt.id,
+                "amount": str(receipt.amount),
+                "receipt_time_wib": receipt.done_at.astimezone(WIB).isoformat(),
+            }
+        return None
+    if after.phase == "complete":
         return None
     if before.observed_at.astimezone(WIB).date() != after.observed_at.astimezone(WIB).date():
         return None

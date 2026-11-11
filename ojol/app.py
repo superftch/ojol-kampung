@@ -11,11 +11,12 @@ from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
 from .controller import Controller, StopRequested
-from .finance import completion_evidence
+from .healing import write_private
 from .http_core import HttpUI
 from .journal import Journal
-from .models import NEEDS, Settings, Snapshot
+from .models import Settings, now
 from .planner import next_step
+from .reconciliation import reconcile, wait_until_resolved
 
 
 class OjolAutomationAgent(BaseAgent):
@@ -56,116 +57,40 @@ class OjolAutomationAgent(BaseAgent):
             elif self.command == "reconcile":
                 journal = Journal(self.settings.runtime_dir)
                 try:
-                    pending = [
-                        row
-                        for row in journal.history(100)["actions"]
-                        if row["status"] in {"pending", "uncertain"}
-                    ]
-                    if not pending:
-                        print("Tidak ada aksi tertunda.")
-                    for action in pending:
-                        before = Snapshot.model_validate_json(action["before_state"])
-                        state = await ui.snapshot()
-                        if action["kind"] == "search":
-                            observed = state
-                            await asyncio.sleep(1)
-                            state = await ui.snapshot()
-                            closed = journal.resolve_search(action["id"], observed, state)
-                            if closed:
-                                if closed["status"] == "handed_off":
-                                    print(
-                                        f"Aksi #{action['id']}: pencarian diserahkan ke state {state.phase}; klik tidak diulang, ongkos belum diklaim. Tekan Jalankan Ojol untuk melanjutkan."
-                                    )
-                                else:
-                                    print(
-                                        f"Aksi #{action['id']}: ditutup, tidak ada order aktif; klik tidak diulang."
-                                    )
-                                print(
-                                    f"Selisih resource {closed['resource_delta']} dicatat tanpa atribusi penyebab."
-                                )
-                                if state.wallet != before.wallet:
-                                    print(
-                                        f"Selisih saldo {closed['wallet_delta']} koin dicatat tanpa atribusi penyebab; tidak dibukukan sebagai pendapatan Ojol."
-                                    )
-                                continue
-                        payload = json.loads(action["payload"])
-                        from decimal import Decimal
-
-                        valid = False
-                        evidence = None
-                        if action["kind"] == "purchase":
-                            resource = payload["resource"]
-                            previous = before.resource_value(resource)
-                            current = state.resource_value(resource)
-                            tolerance = Decimal(0) if resource in NEEDS else Decimal("0.015")
-                            valid = (
-                                previous is not None
-                                and current is not None
-                                and current > previous
-                                and abs(
-                                    before.wallet
-                                    - state.wallet
-                                    - Decimal(payload["product"]["price"])
-                                )
-                                <= tolerance
-                            )
-                        elif action["kind"] in {"take", "search"}:
-                            valid = state.phase == "delivering"
-                        elif action["kind"] == "complete":
-                            evidence = completion_evidence(before, state)
-                            valid = evidence is not None
-                        from .models import now
-
-                        if (now() - before.observed_at).total_seconds() > 300 and not evidence:
-                            valid = False
-                        if valid:
-                            journal.settle(action["id"], True, state)
-                            journal.event(
-                                action["run_id"],
-                                "aksi_dipulihkan_dari_bukti",
-                                {"action_id": action["id"], "evidence": evidence},
-                            )
+                    await reconcile(ui, journal)
+                    if journal.unresolved():
                         print(
-                            f"Aksi #{action['id']}: "
-                            + (
-                                "terverifikasi dari state sekarang"
-                                if valid
-                                else "belum dapat dipastikan; automation tetap diblokir"
-                            )
+                            "Masih ada hasil aksi yang belum pasti. Periksa riwayat sebelum melanjutkan."
                         )
-                        if action["kind"] == "search" and not valid:
-                            fields = {
-                                "observed_at",
-                                "phase",
-                                "wallet",
-                                "fuel",
-                                "condition",
-                                "data",
-                                "today_income",
-                                "trip",
-                                "buttons",
-                            }
-                            print(
-                                "Bukti pencarian: "
-                                + json.dumps(
-                                    {
-                                        "before": before.model_dump(mode="json", include=fields),
-                                        "current": state.model_dump(mode="json", include=fields),
-                                        "history_changed": before.history != state.history,
-                                        "observations_stable": observed.model_dump(
-                                            exclude={"observed_at"}
-                                        )
-                                        == state.model_dump(exclude={"observed_at"}),
-                                    },
-                                    ensure_ascii=False,
-                                )
-                            )
+                    else:
+                        print(
+                            "Riwayat yang tersedia sudah sesuai game. Tekan Jalankan Ojol untuk melanjutkan."
+                        )
                 finally:
                     journal.close()
             else:
                 journal = Journal(self.settings.runtime_dir)
-                run_id = journal.start(self.settings)
+                try:
+                    if self.live:
+                        write_private(
+                            self.settings.runtime_dir / "status.json",
+                            {
+                                "pid": os.getpid(),
+                                "event": "rekonsiliasi",
+                                "stage": "worker.reconcile",
+                                "time": now().isoformat(),
+                            },
+                        )
+                        reconciled = await wait_until_resolved(ui, journal, self.settings)
+                    else:
+                        reconciled = await ui.snapshot()
+                    run_id = journal.start(self.settings)
+                except BaseException:
+                    journal.close()
+                    raise
                 controller = Controller(ui, self.settings, journal, run_id, self.cancel)
+                controller.state = reconciled
+                controller.snapshot_received_at = now().isoformat()
                 ui.check_cancel = controller.check_cancel
                 try:
                     controller.report(

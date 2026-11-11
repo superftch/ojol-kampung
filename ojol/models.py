@@ -104,6 +104,15 @@ class Settings(Model):
         return self
 
 
+class GameReceipt(Model):
+    id: str = Field(min_length=1)
+    done_at: datetime
+    kind: str
+    origin: str
+    destination: str
+    amount: Coin
+
+
 class Snapshot(Model):
     observed_at: datetime = Field(default_factory=now)
     wallet: Coin
@@ -118,6 +127,12 @@ class Snapshot(Model):
     buttons: list[str] = Field(default_factory=list)
     raw_text: str = ""
     needs: dict[Need, Percent] = Field(default_factory=dict)
+    game_history: list[GameReceipt] = Field(default_factory=list)
+    today_count: int | None = Field(default=None, ge=0)
+    trip_id: str | None = None
+    arrive_at: datetime | None = None
+    home_plot: str | None = None
+    village: str | None = None
 
     def resource_value(self, resource: Resource | Need):
         return self.needs.get(resource) if resource in NEEDS else getattr(self, resource)

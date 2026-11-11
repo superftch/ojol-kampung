@@ -112,7 +112,7 @@ async def test_reconcile_idle_search_records_unknown_resource_deltas_without_rep
             assert not diagnostic["history_changed"]
             assert diagnostic["current"]["data"] == confirmed.data
         ui.snapshot.assert_awaited()
-        assert ui.snapshot.await_count == (4 if unstable else 2)
+        assert ui.snapshot.await_count == (4 if unstable else 3)
         ui.job_click.assert_not_awaited()
     finally:
         journal.close()
@@ -295,7 +295,7 @@ async def test_reconciled_search_hands_off_current_trip_without_claiming_early_o
         monkeypatch.setattr(module, "ToolContext", lambda ctx: None)
         monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
         ui = SimpleNamespace(
-            snapshot=AsyncMock(side_effect=[ready, confirmed]), job_click=AsyncMock()
+            snapshot=AsyncMock(side_effect=[ready, confirmed, confirmed]), job_click=AsyncMock()
         )
         context.__aenter__.return_value = ui
         monkeypatch.setattr(module, "HttpUI", lambda *args, **kwargs: context)

@@ -230,7 +230,7 @@ def main(argv=None):
             stage = (
                 status.get("stage")
                 if args.command == "run"
-                and status.get("event") == "gagal"
+                and status.get("event") in {"gagal", "rekonsiliasi", "rekonsiliasi_otomatis"}
                 and status.get("pid") == os.getpid()
                 else getattr(exc, "stage", f"cli.{args.command}")
             )

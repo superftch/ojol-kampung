@@ -48,12 +48,14 @@ Contoh jadwal maintenance `2026-11-12 00:30 / 2026-11-12 01:30`. Jadwal berlaku 
 | Login akun terpilih | **Import Cookie** |
 | Mulai/hentikan akun terpilih | **Jalankan Ojol** / **Hentikan Ojol** |
 | Pilih fitur yang dijalankan worker | **Auto**, lalu tekan tombol fitur untuk ubah ON/OFF |
-| Resource, saldo dan countdown | **Status** |
+| Resource, kebutuhan, saldo, countdown, riwayat game, sesi dan pengaturan Auto | **Status** |
 | Laporan harian WIB | **Laba Bersih**, tombol hari atau **Pilih tanggal**, lalu ketik tanggal |
 | Pilih satu kandidat rumah kotor secara acak di sekitar rumah akun | **Cari Rumah Kotor** |
 | Event rutin | **Notifikasi ON / OFF** |
 
 Pesan Telegram memakai judul singkat, baris terpisah untuk angka penting, dan petunjuk tindakan berikutnya. Notifikasi ON mengirim hasil trip, pembelian yang sudah terverifikasi, serta jeda maintenance. Bot tetap mengirim pesan jika perlu tindakan saat notifikasi rutin OFF. Antrean lama juga disesuaikan saat dikirim ulang. Rujukan penulisan memakai [Telegram Bot Guidelines](https://core.telegram.org/bots/guidelines) dan [Material Communication Principles](https://codelabs.developers.google.com/codelabs/material-communication-guidance).
+
+**Status** menampilkan snapshot terbaru yang dibaca worker atau rekonsiliasi, lengkap dengan waktu update WIB. Ringkasan trip dan pendapatan mengikuti penghitung game pada hari snapshot; lima receipt terbaru berasal dari riwayat yang disediakan game. Angka sesi bot ditampilkan terpisah. Menu juga menampilkan rumah/desa, trip dan perkiraan tiba, seluruh kebutuhan, ON/OFF tiap fitur, batas sesi, jadwal maintenance, serta metadata kedaluwarsa cookie bila tersedia. Membuka menu tidak mengirim transaksi ke game atau menampilkan nilai cookie.
 
 Akun baru atau akun yang dipulihkan langsung terpilih. Ganti pilihan tidak menghentikan akun lain. Arsip menghentikan worker dan mencabut akses import, membebaskan kuota akun, tanpa menghapus ledger/cookie. Daftar akun dan user memiliki tombol halaman berikutnya/sebelumnya; tidak perlu menyalin ID akun. Form input yang belum selesai dibatalkan saat bot restart. Konfirmasi arsip/cabut akses yang sudah dibatalkan tidak berlaku lagi.
 
@@ -114,9 +116,9 @@ Setelah mengganti konfigurasi/secret atau image, recreate aplikasi. **`OJOL_AUTO
 
 Set `OJOL_AUTO_START=false` di `.env` lalu recreate untuk mematikan seluruh auto-start. Hentikan Ojol, Import Cookie, arsip, cabut akses, atau error menghentikan akun dan membatalkan antrean startup **selama aplikasi berjalan**; boot berikutnya dengan env `true` kembali mencoba semua akun yang memenuhi syarat. Akun baru/cookie baru setelah boot tetap dijalankan melalui tombol Jalankan Ojol. Error tidak memicu restart loop dalam sesi aplikasi yang sama.
 
-Startup tetap memeriksa izin operator, whitelist, cookie dan ledger pending/uncertain sebelum membuat worker; hasil transaksi yang belum pasti tetap STOP tanpa replay. **Setiap boot membuka sesi baru:** batas belanja/trip/durasi dari env dihitung ulang per sesi, sedangkan saldo minimum production20 tetap berlaku. Marker `worker-restart.json` dari versi lama tidak lagi dipakai.
+Startup tetap memeriksa izin operator, whitelist, cookie dan kapasitas. Worker mencocokkan riwayat game dan menyelesaikan ledger pending/uncertain otomatis sebelum membuka sesi baru. Hasil yang belum pasti diperiksa ulang setiap 10 detik tanpa meminta admin dan tanpa mengirim ulang transaksi. **Setiap boot membuka sesi baru setelah rekonsiliasi:** batas belanja/trip/durasi dari env dihitung ulang per sesi, sedangkan saldo minimum production20 tetap berlaku. Marker `worker-restart.json` dari versi lama tidak lagi dipakai.
 
-Telegram memberi tahu pemilik akun saat worker aktif dihentikan oleh shutdown normal, termasuk saat rebuild. Jika pengiriman tertunda, antrean lokal dilanjutkan setelah boot. Notifikasi auto-start berhasil dikirim setelah worker membaca status game dan bisa lanjut. Jika perlu tindakan, pesan menyebut langkah yang sesuai, seperti **Import Cookie**, rekonsiliasi transaksi, atau **Jalankan Ojol**. Notifikasi ini tetap aktif saat notifikasi rutin OFF.
+Telegram memberi tahu pemilik akun saat worker aktif dihentikan oleh shutdown normal, termasuk saat rebuild. Jika pengiriman tertunda, antrean lokal dilanjutkan setelah boot. Notifikasi auto-start berhasil dikirim setelah worker membaca status game dan bisa lanjut. Bot memberi kabar saat perlu menunggu rekonsiliasi dan saat sudah bisa melanjutkan. Jika perlu tindakan karena sesi habis atau bot dihentikan, pesan menyebut **Import Cookie** atau **Jalankan Ojol**. Notifikasi ini tetap aktif saat notifikasi rutin OFF.
 
 Jika connector keluar, seluruh worker dihentikan dan admin diberi laporan `tunnel.process_exit`; tombol Import Cookie/Jalankan Ojol mencoba memulai connector lagi. `/health` membuktikan control service hidup, bukan keberhasilan game atau koneksi edge. Readiness connector:
 
@@ -144,7 +146,9 @@ docker compose exec -u app app python main.py --account ACCOUNT_ID inspect --sho
 docker compose exec -u app app python main.py --account ACCOUNT_ID reconcile
 ```
 
-Tanpa `--account`, CLI membaca direktori akun lama. `reconcile` hanya membaca game dan menyelesaikan ledger bila bukti cukup; tidak mengirim ulang pembelian/order/klaim. Aksi `pending`/`uncertain` tetap memblokir start baru. Klaim memerlukan receipt/rute/waktu/payout cocok, bukan perubahan history saja. Pencarian lama memakai dua snapshot stabil; state idle dapat ditutup tanpa replay, atau order saat ini diserahkan ke worker berikutnya tanpa mengklaim ongkos saat rekonsiliasi. Saldo naik yang tidak berasal dari payout hanya dicatat sebagai selisih tanpa atribusi. Bila bukti ambigu, tetap STOP; jangan hapus database atau paksa status transaksi.
+Tanpa `--account`, CLI membaca direktori akun lama. `reconcile` melakukan satu pemeriksaan read-only; menjalankannya manual bersifat opsional. Worker otomatis menjalankan pemeriksaan yang sama sebelum start dan setelah timeout aksi Ojol. Ledger belum pasti menahan transaksi baru, bukan menghentikan pemeriksaan: bot menunggu dan membaca ulang setiap 10 detik, tetap bisa dihentikan lewat tombol Hentikan Ojol. Gangguan transport saat rekonsiliasi dicoba ulang; sesi kedaluwarsa tetap meminta Import Cookie.
+
+Receipt yang ID trip dan waktunya cocok membuktikan klaim; jurnal lama tanpa ID memakai bukti rute/waktu/payout. Dua snapshot konsisten dapat menyerahkan pencarian atau klaim lama ke status game sekarang jika trip lama sudah tidak aktif. Status `handed_off` mempertahankan hasil lama sebagai belum pasti tanpa membukukan pendapatan. Trip lama yang masih sama tidak diklaim ulang. Riwayat game disimpan di `game-sync.json` terpisah dari ledger: sinkronisasi tidak mengarang pendapatan bot atau menggandakan payout. Cakupannya mengikuti riwayat yang dikembalikan API, bukan seluruh riwayat sepanjang masa. Jangan hapus database atau paksa status transaksi.
 
 Backup konsisten seluruh runtime, termasuk registry dan semua akun:
 

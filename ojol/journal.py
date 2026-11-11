@@ -7,6 +7,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from .finance import WIB, day_bounds, received_income, report_date
+from .healing import write_private
 from .models import Snapshot, now
 
 UNRESOLVED_ACTION = (
@@ -46,6 +47,7 @@ class Journal:
             CREATE INDEX IF NOT EXISTS cashflows_created ON cashflows(created);
         """)
         self.backfill_cashflows()
+        self.directory = directory
 
     def close(self):
         self.db.close()
@@ -56,6 +58,25 @@ class Journal:
             raise RuntimeError(
                 f"Aksi #{unresolved['id']} ({unresolved['kind']}) belum terverifikasi. Periksa history sebelum menjalankan ulang; klik tidak diulang."
             )
+
+    def unresolved(self):
+        return [
+            dict(row)
+            for row in self.db.execute(
+                "SELECT * FROM actions WHERE status IN ('pending','uncertain') ORDER BY id"
+            )
+        ]
+
+    def sync_game(self, state, resolved=None):
+        write_private(
+            self.directory / "game-sync.json",
+            {
+                "checked_at": now().isoformat(),
+                "snapshot": state.model_dump(mode="json"),
+                "resolved": resolved or [],
+                "unresolved": len(self.unresolved()),
+            },
+        )
 
     def start(self, settings):
         self.ensure_resolved()
@@ -203,6 +224,57 @@ class Journal:
                     json.dumps(payload, ensure_ascii=False, default=str),
                 ),
             ).lastrowid
+
+    def handoff_complete(self, action_id, observed, after):
+        row = self.db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
+        if not row or row["kind"] != "complete" or row["status"] not in {"pending", "uncertain"}:
+            return None
+        before = Snapshot.model_validate_json(row["before_state"])
+        if (
+            before.phase != "complete"
+            or not before.observed_at <= observed.observed_at < after.observed_at
+            or (before.trip_id and before.trip_id in {observed.trip_id, after.trip_id})
+            or (after.phase == "complete" and not before.trip_id)
+            or observed.phase != after.phase
+            or after.phase == "unknown"
+        ):
+            return None
+        excluded = {"observed_at", "remaining_seconds", "buttons", "raw_text"}
+        if observed.model_dump(exclude=excluded) != after.model_dump(exclude=excluded):
+            return None
+        if after.phase == "delivering" and not (
+            observed.remaining_seconds is not None
+            and after.remaining_seconds is not None
+            and 0 < after.remaining_seconds <= observed.remaining_seconds
+        ):
+            return None
+        evidence = {
+            "action_id": action_id,
+            "method": "two_consistent_current_observations",
+            "original_outcome": "uncertain",
+            "payout_attributed": False,
+            "old_trip_id": before.trip_id,
+            "current_trip_id": after.trip_id,
+            "observation_times": [observed.observed_at.isoformat(), after.observed_at.isoformat()],
+        }
+        with self.db:
+            changed = self.db.execute(
+                "UPDATE actions SET status='handed_off',after_state=? "
+                "WHERE id=? AND status IN ('pending','uncertain')",
+                (after.model_dump_json(), action_id),
+            )
+            if changed.rowcount != 1:
+                return None
+            self.db.execute(
+                "INSERT INTO events(run_id,created,event,data) VALUES(?,?,?,?)",
+                (
+                    row["run_id"],
+                    now().isoformat(),
+                    "klaim_diserahkan_ke_state_teramati",
+                    json.dumps(evidence),
+                ),
+            )
+        return evidence
 
     def reject(self, action_id):
         with self.db:

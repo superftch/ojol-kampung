@@ -220,9 +220,26 @@ def trip():
     }
 
 
+async def test_snapshot_keeps_receipt_ids_game_totals_and_home(api, world):
+    receipt = {**trip(), "doneAt": "2030-01-02T09:59:00Z", "netMilli": 720}
+    world["ojol"].update(history=[receipt, receipt], todayCount=5)
+    world["me"]["home"]["plotId"] = "K40-R01"
+    state = await api.snapshot()
+    assert state.today_count == 5 and state.home_plot == "K40-R01"
+    assert state.village == "fixture-desa"
+    assert len(state.game_history) == len(state.history) == 1
+    assert state.game_history[0].id == "trip-fixture"
+    assert state.game_history[0].amount == Decimal("0.72")
+    world["ojol"]["history"][1] = {**receipt, "netMilli": 800}
+    with pytest.raises(HttpCoreError, match="ID sama"):
+        await api.snapshot()
+
+
 async def test_snapshot_exact_coins_sleep_and_server_countdown(api, world):
     world["ojol"]["trip"] = trip()
     state = await api.snapshot()
+    assert state.trip_id == "trip-fixture"
+    assert state.arrive_at.isoformat() == "2030-01-02T10:00:00.001000+00:00"
     assert (
         state.wallet == Decimal("35")
         and state.phase == "delivering"

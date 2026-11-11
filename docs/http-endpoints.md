@@ -26,6 +26,8 @@ Tabel ini mencakup seluruh request yang dipanggil adapter Ojol ke `https://www.k
 | GET `/api/facilities/{id}` | Cek status, layanan, tarif, dan cooldown fasilitas fisik yang ditawarkan game | Bundle client; alur adapter diuji dengan mock |
 | POST `/api/facilities/{id}/use` | `{requestId}` untuk fasilitas fisik gratis yang lolos pemeriksaan | Bundle client; belum dieksekusi live oleh adapter |
 
+Capture historis `/api/ojol` dalam `.local/http-discovery/ojol.json` memuat `todayCount` dan receipt `history[]` dengan `id`, `doneAt`, `kind`, `from.label`, `to.label`, serta `netMilli`. Trip aktif memuat `id` dan `arriveAt`. Adapter memakai ID receipt dan waktu server untuk rekonsiliasi, serta `netMilli` untuk ongkos diterima. Snapshot menyimpan penghitung dan riwayat yang tersedia pada respons, bukan seluruh riwayat akun. Tidak ada endpoint baru atau asumsi idempotensi POST untuk fitur ini.
+
 Tombol mata memanggil onLook → centerOn + pembukaan panel. Panel membaca detail plot lalu katalog. Tombol Pergi memakai POST `/api/tujuan`; core HTTP tidak mengirim endpoint tersebut. Adapter membaca katalog berdasarkan ID toko tetap di `ojol/shop_locations.py`. Pembelian service sendiri dapat mempunyai efek tampil di toko yang ditentukan server, sama seperti Beli dari preview browser.
 
 Auto kebutuhan memeriksa semua katalog Akademis.ai yang terdaftar untuk desa dan kebutuhan akun. Cadangan hanya tersedia jika setiap katalog yang cocok berisi produk relevan dan semuanya ditandai habis oleh game. Adapter memeriksa lagi status ini dan detail usaha cadangan sebelum POST. Pergantian stok sebelum POST diuji lewat simulasi HTTP.

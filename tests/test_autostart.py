@@ -202,11 +202,14 @@ async def test_auto_start_preserves_guards_and_other_accounts_can_start(
     monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
     await manager.start()
     await manager.resume_workers()
-    spawn.assert_awaited_once()
-    assert spawn.call_args.kwargs["env"]["OJOL_RUNTIME_DIR"] == str(good.settings.runtime_dir)
+    assert spawn.await_count == (2 if blocked in {"pending", "uncertain"} else 1)
+    assert any(
+        call.kwargs["env"]["OJOL_RUNTIME_DIR"] == str(good.settings.runtime_dir)
+        for call in spawn.await_args_list
+    )
     assert not bad.auto_start_pending
     if blocked in {"pending", "uncertain"}:
-        assert "rekonsiliasi transaksi" in notices(bad.settings)[0]
+        assert not notices(bad.settings)
         journal = Journal(bad.settings.runtime_dir)
         assert journal.history()["actions"][0]["status"] == blocked
         assert journal.db.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1

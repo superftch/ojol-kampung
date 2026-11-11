@@ -8,7 +8,6 @@ from .auto_settings import AUTO_LABELS, auto_flags, set_auto_flag
 from .cli import running
 from .control import WORKER_SHUTDOWN, ControlService
 from .healing import write_private
-from .journal import Journal
 from .maintenance import GAME_COMMANDS, SCHEDULE_FILE, MaintenanceWindow, held_window, read_window
 from .telegram import (
     BUTTON_COMMANDS,
@@ -895,12 +894,6 @@ class MultiAccountService:
                     parse_cookie_input(
                         (service.settings.runtime_dir / "http-session.json").read_text()
                     )
-                    action = "Minta admin memeriksa riwayat dan rekonsiliasi transaksi, lalu tekan Jalankan Ojol."
-                    journal = Journal(service.settings.runtime_dir)
-                    try:
-                        journal.ensure_resolved()
-                    finally:
-                        journal.close()
                     action = "Minta admin memeriksa izin operator dan status server, lalu tekan Jalankan Ojol."
                     await service.command("run", auto_start=True)
                 except Exception as exc:

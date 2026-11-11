@@ -167,7 +167,7 @@ async def test_telegram_renders_pending_legacy_notices_without_debug_fields(sett
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
         assert await flush_notices(bot, client) == 2
-    assert any("rekonsiliasi transaksi" in message for message in sent)
+    assert any("pemeriksaan hasil transaksi secara otomatis" in message for message in sent)
     assert any("Soto berhasil dibeli" in message and "55% ke 90%" in message for message in sent)
     assert all(
         field not in message

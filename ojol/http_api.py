@@ -16,7 +16,7 @@ import httpx
 from .auto_settings import auto_flags
 from .finance import WIB, day_bounds, report_date
 from .healing import write_private
-from .models import NEEDS, Product, ShopPreview, Snapshot, now
+from .models import NEEDS, GameReceipt, Product, ShopPreview, Snapshot, now
 from .planner import ALLOWED_ITEMS
 from .session_transfer import DOMAIN, parse_cookie_input, session_expired
 from .shop_locations import NEED_FALLBACK_PLOTS, NEED_SHOPS_BY_VILLAGE, SHOPS_BY_VILLAGE, NeedShop
@@ -126,7 +126,21 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
     elif require_ojol and ojol.get("problem") and not trip:
         raise HttpCoreError("Game menolak Ojol: periksa kondisi akun di game", category="blocked")
     history = []
+    game_history = {}
     for receipt in ojol["history"] if require_ojol else ojol.get("history", []):
+        record = GameReceipt(
+            id=receipt["id"],
+            done_at=timestamp(receipt["doneAt"]),
+            kind=receipt["kind"],
+            origin=receipt["from"]["label"],
+            destination=receipt["to"]["label"],
+            amount=coin(receipt["netMilli"]),
+        )
+        if record.id in game_history:
+            if game_history[record.id] != record:
+                raise HttpCoreError("Receipt Ojol memiliki ID sama dengan data berbeda")
+            continue
+        game_history[record.id] = record
         done = timestamp(receipt["doneAt"]).astimezone(WIB)
         icon, _ = KINDS[receipt["kind"]]
         history.append(
@@ -148,6 +162,12 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
         buttons=buttons,
         raw_text=text,
         needs={key: row["value"] for key, row in need_rows(needs).items()},
+        game_history=list(game_history.values()),
+        today_count=integer(ojol["todayCount"]) if "todayCount" in ojol else None,
+        trip_id=trip["id"] if trip else None,
+        arrive_at=timestamp(trip["arriveAt"]) if trip else None,
+        home_plot=(me.get("home") or {}).get("plotId"),
+        village=(me.get("home") or {}).get("desa"),
     )
 
 

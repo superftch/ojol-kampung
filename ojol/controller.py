@@ -8,14 +8,20 @@ from decimal import Decimal
 from pathlib import Path
 
 from .auto_settings import auto_flags
+from .finance import completion_evidence
 from .http_api import HttpCoreError
 from .maintenance import SCHEDULE_FILE, held_window
 from .models import NEEDS, Step, now
 from .planner import is_sleeping, next_step, select_need, select_shop
+from .reconciliation import wait_until_resolved
 from .telegram import queue_notice
 
 
 class StopRequested(Exception):
+    pass
+
+
+class VerificationPending(RuntimeError):
     pass
 
 
@@ -26,6 +32,7 @@ class Controller:
         self.spent = Decimal(0)
         self.completed = 0
         self.started = time.monotonic()
+        self.started_at = now()
         self.state = None
         self.snapshot_received_at = None
         self.last_event = None
@@ -60,6 +67,7 @@ class Controller:
         status = {
             "pid": os.getpid(),
             "run_id": self.run_id,
+            "run_started_at": self.started_at.isoformat(),
             "event": event,
             "stage": self.stage,
             "spent": str(self.spent),
@@ -102,6 +110,7 @@ class Controller:
     async def read_snapshot(self):
         self.state = await self.ui.snapshot()
         self.snapshot_received_at = now().isoformat()
+        self.journal.sync_game(self.state)
         return self.state
 
     async def verify(self, predicate, timeout=12):
@@ -114,7 +123,7 @@ class Controller:
             if predicate(state):
                 return state
             await asyncio.sleep(0.75)
-        raise RuntimeError("Perubahan status belum terbukti; berhenti tanpa mengulang aksi")
+        raise VerificationPending("Perubahan status belum terbukti; memeriksa ulang hasil aksi")
 
     async def wait_for_maintenance(self):
         window = held_window(self.maintenance_file)
@@ -306,7 +315,11 @@ class Controller:
             self.stage = f"job.{kind}.verify"
             if kind == "complete":
                 after = await self.verify(
-                    lambda state: state.phase != "complete" and state.history != before.history
+                    lambda state: (
+                        completion_evidence(before, state) is not None
+                        if before.trip_id
+                        else state.phase != "complete" and state.history != before.history
+                    )
                 )
                 self.completed += 1
             elif kind == "take":
@@ -335,6 +348,18 @@ class Controller:
                 self.journal.reject(action)
                 return
             self.journal.settle(action, False)
+            if isinstance(exc, VerificationPending) or (
+                isinstance(exc, HttpCoreError) and exc.category in {"uncertain", "transport"}
+            ):
+                self.state = await wait_until_resolved(self.ui, self.journal, self.settings)
+                self.snapshot_received_at = now().isoformat()
+                resolved = self.journal.db.execute(
+                    "SELECT status FROM actions WHERE id=?", (action,)
+                ).fetchone()
+                if kind == "complete" and resolved["status"] == "verified":
+                    self.completed += 1
+                self.report("rekonsiliasi_selesai", action=kind)
+                return
             raise
         cashflow = self.journal.settle(action, True, after)
         if cashflow and cashflow["kind"] == "income":
