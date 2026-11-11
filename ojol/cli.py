@@ -44,9 +44,10 @@ def running(directory):
 
 def parser():
     result = argparse.ArgumentParser(
-        description="Ojol background melalui Browser Harness MCP. Default dry-run."
+        description="Ojol background melalui HTTP MCP. Default dry-run."
     )
     result.add_argument("--env-file", type=Path)
+    result.add_argument("--account", help="ID akun dari menu Telegram; default akun lama")
     commands = result.add_subparsers(dest="command", required=True)
     for name in ("run", "start"):
         command = commands.add_parser(name)
@@ -63,7 +64,7 @@ def parser():
         choices=["fuel", "condition", "data"],
         help="Periksa harga toko melalui tombol mata, tanpa beli",
     )
-    for name in ("doctor", "status", "stop", "history", "reconcile", "diagnostics"):
+    for name in ("doctor", "status", "stop", "history", "reconcile"):
         commands.add_parser(name)
     profit = commands.add_parser("profit")
     period = profit.add_mutually_exclusive_group()
@@ -80,6 +81,11 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         settings = load_settings(args.env_file)
+        if args.account:
+            from .accounts import Accounts
+
+            registry = Accounts(settings)
+            settings = registry.scoped_settings(registry.get(args.account))
         changes = {
             key: getattr(args, key)
             for key in ("max_jobs", "max_minutes")
@@ -117,13 +123,6 @@ def main(argv=None):
                     "Estimasi dari countdown DOM terakhir; snapshot tetap memuat waktu observasi aslinya."
                 )
             print(json.dumps(data, ensure_ascii=False, indent=2))
-        elif args.command == "diagnostics":
-            files = sorted((directory / "diagnostics").glob("browser-*.json"))[-5:]
-            print(
-                json.dumps(
-                    [json.loads(path.read_text()) for path in files], ensure_ascii=False, indent=2
-                )
-            )
         elif args.command == "stop":
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             (directory / "STOP").touch(mode=0o600)
@@ -154,6 +153,8 @@ def main(argv=None):
             command = [sys.executable, str(ROOT / "main.py")]
             if args.env_file:
                 command += ["--env-file", str(args.env_file.resolve())]
+            if args.account:
+                command += ["--account", args.account]
             command += ["run", "--live"]
             for option, value in (
                 ("--max-jobs", settings.max_jobs),
@@ -177,7 +178,7 @@ def main(argv=None):
             )
         else:
             if settings.env == "testing":
-                raise ValueError("Browser live diblokir dalam test environment")
+                raise ValueError("HTTP live diblokir dalam test environment")
             from .app import run_app
 
             with exclusive_lock(directory):

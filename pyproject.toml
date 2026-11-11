@@ -1,9 +1,9 @@
 [project]
 name = "ojol-automation"
 version = "0.1.0"
-description = "Automation Ojol melalui Browser Harness MCP pada tab background khusus."
+description = "Automation Ojol multi-account melalui HTTP MCP."
 requires-python = ">=3.12,<3.13"
-dependencies = ["google-adk==2.14.0", "browser-harness[mcp]==0.1.13", "pydantic>=2,<3", "python-dotenv>=1,<2", "httpx>=0.28", "fastapi>=0.115", "uvicorn>=0.30"]
+dependencies = ["mcp==2.1.1", "google-adk==2.14.0", "pydantic>=2,<3", "python-dotenv>=1,<2", "httpx>=0.28", "fastapi>=0.115", "uvicorn>=0.30"]
 
 [dependency-groups]
 dev = [

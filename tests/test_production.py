@@ -14,11 +14,10 @@ from ojol.models import Settings
 from ojol.telegram import TelegramError, flush_notices
 
 
-def test_production_requires_https_telegram_managed_browser_and_cash_floor(settings):
+def test_production_requires_https_telegram_and_cash_floor(settings):
     values = dict(
         env="production",
         runtime_dir=settings.runtime_dir,
-        managed_browser=True,
         telegram_bot_token="isolated-test-secret",
         telegram_chat_id=123,
         login_public_url="https://ojol.example.test",
@@ -26,7 +25,6 @@ def test_production_requires_https_telegram_managed_browser_and_cash_floor(setti
     valid = Settings(**values)
     assert valid.max_jobs is None and valid.max_minutes is None
     for change in (
-        {"managed_browser": False},
         {"telegram_bot_token": ""},
         {"telegram_chat_id": None},
         {"login_public_url": "http://localhost:6080"},
@@ -73,10 +71,7 @@ async def test_delivered_notice_retention_never_deletes_pending(settings):
 async def test_one_error_notice_per_telegram_outage(settings, monkeypatch):
     import ojol.control as module
 
-    browser = SimpleNamespace(
-        mode="headless", alive=lambda: True, close=AsyncMock(), switch=AsyncMock()
-    )
-    service = ControlService(settings, browser=browser)
+    service = ControlService(settings)
     count = 0
 
     async def fail(*args, **kwargs):
@@ -100,7 +95,7 @@ async def test_one_error_notice_per_telegram_outage(settings, monkeypatch):
 
 async def test_extreme_report_date_does_not_stop_worker(settings, monkeypatch):
     monkeypatch.setattr("ojol.control.flush_notices", AsyncMock())
-    service = ControlService(settings, browser=SimpleNamespace(mode="headless"))
+    service = ControlService(settings)
     await service.execute("profit:9999-12-31")
     assert not (settings.runtime_dir / "STOP").exists()
 
@@ -109,13 +104,12 @@ def test_production_origin_ignores_stale_quick_tunnel_override(settings):
     production = Settings(
         env="production",
         runtime_dir=settings.runtime_dir,
-        managed_browser=True,
         telegram_bot_token="isolated-test-secret",
         telegram_chat_id=123,
         login_public_url="https://ojol.example.test",
     )
     (settings.runtime_dir / "public-url").write_text("http://localhost:6080")
-    service = ControlService(production, browser=SimpleNamespace(mode="headless"))
+    service = ControlService(production)
     assert service.public_url() == "https://ojol.example.test"
 
 
@@ -124,10 +118,7 @@ def test_form_expiry_race_returns_forbidden(settings, monkeypatch):
 
     from ojol.control import create_app
 
-    browser = SimpleNamespace(
-        mode="headless", alive=lambda: True, close=AsyncMock(), switch=AsyncMock()
-    )
-    service = ControlService(settings, browser=browser)
+    service = ControlService(settings)
     with TestClient(
         create_app(settings, service=service), base_url="http://localhost:6080"
     ) as client:

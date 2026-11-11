@@ -10,7 +10,6 @@ import pytest
 from pydantic import SecretStr, ValidationError
 from starlette.testclient import TestClient
 
-from ojol.browser_runtime import BrowserRuntime
 from ojol.control import ControlService, create_app
 from ojol.login_access import LoginAccess
 from ojol.models import Settings
@@ -159,17 +158,9 @@ def test_login_origin_rejects_unsafe_urls(url):
         Settings(login_public_url=url)
 
 
-def test_testing_blocks_live_telegram_and_host_browser(settings):
+def test_testing_blocks_live_telegram(settings):
     with pytest.raises(ValidationError):
         Settings(env="testing", runtime_dir=settings.runtime_dir, telegram_bot_token="test")
-    with pytest.raises(RuntimeError, match="container Docker"):
-        BrowserRuntime(settings)
-
-
-def fake_browser():
-    return SimpleNamespace(
-        mode="headless", alive=lambda: True, switch=AsyncMock(), close=AsyncMock()
-    )
 
 
 def test_cookie_gateway_access_origin_size_and_single_use(settings, monkeypatch):
@@ -177,7 +168,7 @@ def test_cookie_gateway_access_origin_size_and_single_use(settings, monkeypatch)
 
     imported = AsyncMock()
     monkeypatch.setattr(transfer, "import_session", imported)
-    service = ControlService(settings, browser=fake_browser())
+    service = ControlService(settings)
     app = create_app(settings, service=service)
     with TestClient(app, base_url="http://localhost:6080") as client:
         assert client.get("/import-cookie").status_code == 403
@@ -229,13 +220,11 @@ def test_cookie_gateway_access_origin_size_and_single_use(settings, monkeypatch)
         assert client.get("/import-cookie").status_code == 403
 
 
-async def test_login_stops_worker_before_browser_switch_and_guards_errors(settings, monkeypatch):
-    browser = fake_browser()
-    service = ControlService(settings, browser=browser)
+async def test_import_stops_worker_before_issuing_ticket_and_guards_errors(settings, monkeypatch):
+    service = ControlService(settings)
     service.stop_worker = AsyncMock(side_effect=RuntimeError("still running"))
     with pytest.raises(RuntimeError):
         await service.cookie_link()
-    browser.switch.assert_not_awaited()
     service.stop_worker = AsyncMock()
 
     async def fail():
@@ -247,40 +236,6 @@ async def test_login_stops_worker_before_browser_switch_and_guards_errors(settin
         json.loads((settings.runtime_dir / "last-error.json").read_text())["stage"]
         == "control.supervise"
     )
-
-
-async def test_managed_browser_volume_lease_and_stale_profile_locks(settings, monkeypatch):
-    from pathlib import Path
-    from unittest.mock import Mock
-
-    import ojol.browser_runtime as runtime
-
-    original = Path.is_file
-    monkeypatch.setattr(
-        Path, "is_file", lambda path: True if str(path) == "/.dockerenv" else original(path)
-    )
-    managed = settings.model_copy(update={"env": "local", "managed_browser": True})
-    browser = BrowserRuntime(managed)
-    try:
-        with pytest.raises(RuntimeError, match="proses lain"):
-            BrowserRuntime(managed)
-        browser.profile.mkdir()
-        (browser.profile / "SingletonLock").symlink_to("old-container-123")
-        browser.spawn = AsyncMock(return_value=SimpleNamespace(returncode=None))
-        browser.terminate = AsyncMock()
-        monkeypatch.setattr(runtime.shutil, "which", lambda name: "/fixture/chromium")
-        writer = SimpleNamespace(close=Mock(), wait_closed=AsyncMock())
-        monkeypatch.setattr(
-            runtime.asyncio, "open_connection", AsyncMock(return_value=(None, writer))
-        )
-        await browser.switch("headless")
-        assert "--headless=new" in browser.spawn.call_args.args
-        assert "--window-size=960,640" in browser.spawn.call_args.args
-        assert browser.spawn.call_args.args[-1] == "about:blank"
-        assert not (browser.profile / "SingletonLock").is_symlink()
-        await browser.close()
-    finally:
-        browser.lease.close()
 
 
 def test_game_cookie_transfer_excludes_google_and_other_cookie_fields():
@@ -309,39 +264,12 @@ def test_game_cookie_transfer_excludes_google_and_other_cookie_fields():
             session_cookie({**cookie, **change})
 
 
-async def test_cookie_cdp_requires_explicit_transfer_mode_and_exact_site(settings):
-    from ojol.mcp_browser import BrowserError, McpBrowser
-
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    browser.tab_id = "owned"
-    with pytest.raises(BrowserError):
-        await browser.call(
-            "browser_cdp",
-            method="Network.getCookies",
-            params={"urls": ["https://www.kampungsebelah.com/kampung"]},
-        )
-    browser.allow_session_transfer = True
-    with pytest.raises(BrowserError):
-        await browser.call(
-            "browser_cdp",
-            method="Network.getCookies",
-            params={"urls": ["https://accounts.google.com/"]},
-        )
-    with pytest.raises(BrowserError):
-        await browser.call(
-            "browser_cdp",
-            method="Network.setCookies",
-            params={"cookies": [{"domain": ".google.com"}]},
-        )
-
-
 async def test_restart_reports_interrupted_worker_without_restarting_gameplay(settings):
     settings = settings.model_copy(update={"env": "local"})
     (settings.runtime_dir / "status.json").write_text(
         json.dumps({"pid": 999999, "run_id": 3, "event": "menunggu", "stage": "wait.countdown"})
     )
-    browser = fake_browser()
-    service = ControlService(settings, browser=browser)
+    service = ControlService(settings)
     await service.start()
     try:
         error = json.loads((settings.runtime_dir / "last-error.json").read_text())
@@ -356,7 +284,7 @@ async def test_fast_double_start_and_stop_before_child_takes_lock(settings, monk
     from unittest.mock import Mock
 
     settings = settings.model_copy(update={"env": "local", "operator_authorized": True})
-    service = ControlService(settings, browser=fake_browser())
+    service = ControlService(settings)
     child = SimpleNamespace(returncode=None)
     child.terminate = Mock(side_effect=lambda: setattr(child, "returncode", -15))
     service.worker = child
@@ -370,7 +298,7 @@ async def test_fast_double_start_and_stop_before_child_takes_lock(settings, monk
 async def test_status_profit_and_date_buttons_are_distinct(settings):
     from ojol.finance import report_date
 
-    service = ControlService(settings, browser=fake_browser())
+    service = ControlService(settings)
     status = await service.command("status")
     profit = await service.command("profit")
     assert (
@@ -394,11 +322,11 @@ async def test_notification_toggle_persists_and_mutes_pending_events_but_not_err
     from ojol.journal import Journal
     from ojol.telegram import notifications_enabled
 
-    service = ControlService(settings, browser=fake_browser())
+    service = ControlService(settings)
     assert not notifications_enabled(settings)
     await service.command("notifications_on")
     assert notifications_enabled(settings)
-    assert "Notifikasi event: ON" in ControlService(settings, browser=fake_browser()).status()
+    assert "Notifikasi event: ON" in ControlService(settings).status()
     journal = Journal(settings.runtime_dir)
     controller = Controller(None, settings, journal, journal.start(settings))
     for event in ("observasi", "menunggu", "pembelian_terverifikasi"):
@@ -451,7 +379,7 @@ def test_callback_authorization(settings):
 async def test_telegram_date_callback_ack_and_message_routing(settings, monkeypatch):
     import ojol.control as module
 
-    service = ControlService(bot_settings(settings), browser=fake_browser())
+    service = ControlService(bot_settings(settings))
     service.execute = AsyncMock()
     authorized = {
         "from": {"id": 123},
@@ -494,7 +422,7 @@ async def test_telegram_date_callback_ack_and_message_routing(settings, monkeypa
 
 async def test_invalid_report_date_never_stops_gameplay(settings, monkeypatch):
     monkeypatch.setattr("ojol.control.flush_notices", AsyncMock())
-    service = ControlService(settings, browser=fake_browser())
+    service = ControlService(settings)
     await service.execute("profit:2026-02-31")
     assert not (settings.runtime_dir / "STOP").exists()
     notice = next((settings.runtime_dir / "notifications").glob("*.json"))

@@ -257,47 +257,7 @@ async def test_real_stdio_mcp_exposes_only_ojol_tools_and_blocks_test_network(se
         assert set(ui.tools) == HTTP_TOOLS
         with pytest.raises(HttpCoreError, match="testing"):
             await ui.snapshot()
-        assert ui.fallback is None
-
-
-async def test_fallback_is_for_recoverable_reads_only(settings):
-    ui = HttpUI(settings.model_copy(update={"core": "http"}))
-    error = HttpCoreError("Fixture read down", recoverable=True)
-    ui.call_tool = AsyncMock(side_effect=error)
-    fallback = SimpleNamespace(snapshot=AsyncMock(return_value="browser snapshot"))
-
-    async def activate(exc):
-        ui.fallback = fallback
-
-    ui.activate_fallback = AsyncMock(side_effect=activate)
-    assert await ui.snapshot() == "browser snapshot"
-    ui.activate_fallback.assert_awaited_once_with(error)
-    ui.fallback = None
-    ui.activate_fallback.reset_mock()
-    product = Product(
-        name="Isi pulsa", price="0.5", effects={"data": 40}, enabled=True, row_text="fixture"
-    )
-    with pytest.raises(HttpCoreError):
-        await ui.buy(product, 35)
-    ui.activate_fallback.assert_not_awaited()
-    ui.call_tool.assert_awaited_with(
-        "ojol_purchase",
-        product=product.model_dump(mode="json"),
-        expected_wallet="35",
-        min_balance="20",
-        request_id=None,
-    )
-
-
-async def test_fallback_disabled_or_auth_never_starts_browser(settings):
-    ui = HttpUI(settings.model_copy(update={"core": "http", "browser_fallback": False}))
-    ui.recover_browser = AsyncMock()
-    with pytest.raises(HttpCoreError):
-        await ui.activate_fallback(HttpCoreError("Read down", recoverable=True))
-    ui.settings = ui.settings.model_copy(update={"browser_fallback": True})
-    with pytest.raises(HttpCoreError):
-        await ui.activate_fallback(HttpCoreError("Auth expired", category="auth"))
-    ui.recover_browser.assert_not_awaited()
+        assert not hasattr(ui, "fallback")
 
 
 async def test_http_controller_keeps_pending_request_id_and_books_once(api, world, settings):
@@ -346,35 +306,8 @@ async def test_http_controller_keeps_pending_request_id_and_books_once(api, worl
 async def test_http_mode_with_session_never_starts_chromium(settings):
     settings = settings.model_copy(update={"core": "http"})
     write_private(settings.runtime_dir / "http-session.json", {"cookies": []})
-    browser = SimpleNamespace(close=AsyncMock(), switch=AsyncMock(), mode=None)
-    service = ControlService(settings, browser)
+    service = ControlService(settings)
     await service.ensure_backend(require_session=True)
-    browser.switch.assert_not_awaited()
-    browser.close.assert_awaited_once()
-
-
-async def test_fallback_lazily_installs_same_cookie_and_preserves_core_context(
-    settings, monkeypatch
-):
-    import ojol.http_core as module
-
-    ui = HttpUI(settings.model_copy(update={"core": "http"}))
-    ui.recover_browser = AsyncMock()
-    ui.on_recovery = Mock()
-    browser = SimpleNamespace(tab_id="owned-fallback", call=AsyncMock(), reset_focus=AsyncMock())
-    context = AsyncMock()
-    context.__aenter__.return_value = browser
-    monkeypatch.setattr(module, "McpBrowser", lambda *args, **kwargs: context)
-    install = AsyncMock()
-    monkeypatch.setattr(module, "install_browser_session", install)
-    try:
-        await ui.activate_fallback(HttpCoreError("Fixture schema changed", recoverable=True))
-        ui.recover_browser.assert_awaited_once()
-        install.assert_awaited_once_with(browser, ui.session_file)
-        assert ui.core_name == "browser_fallback" and ui.tab_id == "owned-fallback"
-        ui.on_recovery.assert_called_once_with("core_browser_fallback", reason="schema")
-    finally:
-        await ui.stack.aclose()
 
 
 async def test_stop_cancels_waiting_http_tool_without_repeating(settings):
@@ -412,7 +345,7 @@ async def test_http_cookie_import_is_atomic_and_preserves_old_session_on_failure
     import ojol.http_core as module
     import ojol.session_transfer as transfer
 
-    settings = settings.model_copy(update={"core": "http", "managed_browser": True})
+    settings = settings.model_copy(update={"core": "http", "env": "local"})
     previous = transfer.parse_cookie_input("old-isolated-fixture")
     payload = transfer.parse_cookie_input("new-isolated-fixture")
     active = settings.runtime_dir / "http-session.json"
@@ -456,44 +389,3 @@ async def test_asset_get_cannot_escape_origin_or_static_directory(api):
     with pytest.raises(HttpCoreError):
         await api.request("/_next/static/../../api/ojol.js")
     assert not api.calls
-
-
-@pytest.mark.parametrize("found", [True, False])
-async def test_one_time_profile_migration_always_closes_owned_chromium(
-    settings, monkeypatch, found
-):
-    import ojol.session_transfer as transfer
-
-    settings = settings.model_copy(update={"core": "http"})
-    browser = SimpleNamespace(close=AsyncMock(), switch=AsyncMock(), mode=None)
-    service = ControlService(settings, browser)
-
-    async def migrate(settings):
-        if found:
-            write_private(settings.runtime_dir / "http-session.json", {"fixture": True})
-        return found
-
-    monkeypatch.setattr(transfer, "migrate_browser_session", migrate)
-    if found:
-        await service.ensure_backend(require_session=True)
-    else:
-        with pytest.raises(RuntimeError, match="Import Cookie"):
-            await service.ensure_backend(require_session=True)
-    browser.switch.assert_awaited_once_with("headless")
-    browser.close.assert_awaited_once()
-
-
-async def test_browser_fallback_cookie_install_is_scoped_and_precedes_navigation(settings):
-    from ojol.http_core import install_browser_session
-    from ojol.session_transfer import parse_cookie_input
-
-    payload = parse_cookie_input("isolated-cookie-fixture")
-    path = settings.runtime_dir / "http-session.json"
-    write_private(path, payload)
-    browser = SimpleNamespace(open_owned_tab=AsyncMock(), call=AsyncMock(), wait_ready=AsyncMock())
-    await install_browser_session(browser, path)
-    browser.open_owned_tab.assert_awaited_once_with(prepare_session=True)
-    calls = browser.call.call_args_list
-    assert calls[0].kwargs == {"method": "Network.setCookies", "params": payload}
-    assert calls[1].args == ("browser_goto",) and calls[1].kwargs == {"url": ORIGIN + "/kampung"}
-    browser.wait_ready.assert_awaited_once()

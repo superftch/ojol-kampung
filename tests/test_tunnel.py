@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from pydantic import ValidationError
@@ -13,16 +13,12 @@ def tunnel_service(settings):
     settings = settings.model_copy(
         update={
             "env": "local",
-            "managed_browser": True,
             "tunnel_enabled": True,
             "runtime_dir": settings.runtime_dir / "runtime",
         }
     )
     settings.runtime_dir.mkdir()
-    browser = SimpleNamespace(
-        mode="headless", alive=lambda: True, close=AsyncMock(), terminate=AsyncMock()
-    )
-    return ControlService(settings, browser=browser)
+    return ControlService(settings)
 
 
 def test_testing_config_rejects_live_tunnel(settings):
@@ -39,7 +35,7 @@ async def test_tunnel_secret_file_and_single_owned_process(settings, monkeypatch
     is_file = Path.is_file
     monkeypatch.setattr(Path, "is_file", lambda path: path == Path("/.dockerenv") or is_file(path))
     monkeypatch.setattr("ojol.control.shutil.which", lambda binary: "/bin/cloudflared")
-    child = SimpleNamespace(returncode=None)
+    child = SimpleNamespace(returncode=None, terminate=Mock(), wait=AsyncMock())
     spawn = AsyncMock(return_value=child)
     monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
     await service.start_tunnel()
@@ -50,12 +46,12 @@ async def test_tunnel_secret_file_and_single_owned_process(settings, monkeypatch
     assert "isolated-fake-token" not in str(spawn.call_args)
     assert "127.0.0.1:2000" in args and service.tunnel_alive()
     await service.close()
-    service.browser.terminate.assert_awaited_once_with(child)
+    child.terminate.assert_called_once()
     assert not service.tunnel_alive()
 
 
 async def test_disabled_tunnel_never_spawns(settings, monkeypatch):
-    service = ControlService(settings, browser=SimpleNamespace())
+    service = ControlService(settings)
     spawn = AsyncMock()
     monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
     await service.start_tunnel()
@@ -97,9 +93,10 @@ async def test_tunnel_exit_stops_worker_once_and_reports_stage(settings, monkeyp
 
 async def test_shutdown_cleans_tunnel_even_when_worker_stop_fails(settings):
     service = tunnel_service(settings)
-    child = service.tunnel_process = SimpleNamespace(returncode=None)
+    child = service.tunnel_process = SimpleNamespace(
+        returncode=None, terminate=Mock(), wait=AsyncMock()
+    )
     service.stop_worker = AsyncMock(side_effect=RuntimeError("Worker fixture stuck"))
     with pytest.raises(RuntimeError, match="Worker fixture stuck"):
         await service.close()
-    service.browser.close.assert_awaited_once()
-    service.browser.terminate.assert_awaited_once_with(child)
+    child.terminate.assert_called_once()

@@ -20,6 +20,8 @@ BUTTON_COMMANDS = {
 }
 KEYBOARD = {
     "keyboard": [
+        [{"text": "Akun Saya"}, {"text": "Tambah Akun"}],
+        [{"text": "Bantuan"}, {"text": "Management"}],
         [{"text": "Import Cookie"}, {"text": "Jalankan Ojol"}],
         [{"text": "Hentikan Ojol"}, {"text": "Status"}],
         [{"text": "Laba Bersih"}],
@@ -111,7 +113,10 @@ class TelegramClient:
         return await self.call(
             "sendMessage",
             chat_id=self.settings.telegram_chat_id,
-            text=message[:4000],
+            text=(
+                (f"[{self.settings.account_name}]\n" if self.settings.account_name else "")
+                + message
+            )[:4000],
             link_preview_options={"is_disabled": True},
             protect_content=True,
             reply_markup=reply_markup or KEYBOARD,

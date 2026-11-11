@@ -60,17 +60,15 @@ async def test_reconcile_idle_search_records_unknown_resource_deltas_without_rep
         run = journal.start(settings)
         action = journal.begin(run, "search", before, {"label": "📲 Cari order"})
         journal.settle(action, False)
-        browser = SimpleNamespace(open_owned_tab=AsyncMock(), call=AsyncMock(), js=AsyncMock())
         context = AsyncMock()
-        context.__aenter__.return_value = browser
-        monkeypatch.setattr(module, "McpBrowser", lambda *args, **kwargs: context)
         monkeypatch.setattr(module, "ToolContext", lambda ctx: None)
         monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
         ui = SimpleNamespace(
             snapshot=AsyncMock(side_effect=[after, confirmed, after, confirmed]),
             job_click=AsyncMock(),
         )
-        monkeypatch.setattr(module, "GameUI", lambda browser: ui)
+        context.__aenter__.return_value = ui
+        monkeypatch.setattr(module, "HttpUI", lambda *args, **kwargs: context)
         agent = module.OjolAutomationAgent(
             name="IsolatedSearchReconcile",
             settings=settings.model_copy(update={"env": "local"}),
@@ -115,9 +113,6 @@ async def test_reconcile_idle_search_records_unknown_resource_deltas_without_rep
             assert diagnostic["current"]["data"] == confirmed.data
         ui.snapshot.assert_awaited()
         assert ui.snapshot.await_count == (4 if unstable else 2)
-        browser.open_owned_tab.assert_awaited_with(refresh=True)
-        browser.call.assert_not_awaited()
-        browser.js.assert_not_awaited()
         ui.job_click.assert_not_awaited()
     finally:
         journal.close()
@@ -231,13 +226,11 @@ async def test_reconcile_claim_requires_exact_receipt_and_never_replays_or_doubl
         run = journal.start(settings)
         action = journal.begin(run, "complete", before, {"label": "Sampai"})
         journal.settle(action, False)
-        browser = SimpleNamespace(open_owned_tab=AsyncMock(), call=AsyncMock(), js=AsyncMock())
         context = AsyncMock()
-        context.__aenter__.return_value = browser
-        monkeypatch.setattr(module, "McpBrowser", lambda *args, **kwargs: context)
         monkeypatch.setattr(module, "ToolContext", lambda ctx: None)
         ui = SimpleNamespace(snapshot=AsyncMock(return_value=after), job_click=AsyncMock())
-        monkeypatch.setattr(module, "GameUI", lambda browser: ui)
+        context.__aenter__.return_value = ui
+        monkeypatch.setattr(module, "HttpUI", lambda *args, **kwargs: context)
         agent = module.OjolAutomationAgent(
             name="IsolatedReconcile",
             settings=settings.model_copy(update={"env": "local"}),
@@ -248,12 +241,9 @@ async def test_reconcile_claim_requires_exact_receipt_and_never_replays_or_doubl
                 pass
         row = journal.history()["actions"][0]
         assert row["status"] == ("verified" if matching_route else "uncertain")
-        browser.open_owned_tab.assert_awaited_with(refresh=True)
         assert journal.profit()["trip_tercatat"] == int(matching_route)
         assert journal.profit()["pendapatan_ojol"] == ("0.72" if matching_route else "0")
         ui.job_click.assert_not_awaited()
-        browser.call.assert_not_awaited()
-        browser.js.assert_not_awaited()
         if not matching_route:
             with pytest.raises(RuntimeError, match="belum terverifikasi"):
                 journal.start(settings)
@@ -301,16 +291,14 @@ async def test_reconciled_search_hands_off_current_trip_without_claiming_early_o
         run = journal.start(settings)
         search = journal.begin(run, "search", search_before, {"label": "📲 Cari order"})
         journal.settle(search, False)
-        browser = SimpleNamespace(open_owned_tab=AsyncMock(), call=AsyncMock(), js=AsyncMock())
         context = AsyncMock()
-        context.__aenter__.return_value = browser
-        monkeypatch.setattr(module, "McpBrowser", lambda *args, **kwargs: context)
         monkeypatch.setattr(module, "ToolContext", lambda ctx: None)
         monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
         ui = SimpleNamespace(
             snapshot=AsyncMock(side_effect=[ready, confirmed]), job_click=AsyncMock()
         )
-        monkeypatch.setattr(module, "GameUI", lambda browser: ui)
+        context.__aenter__.return_value = ui
+        monkeypatch.setattr(module, "HttpUI", lambda *args, **kwargs: context)
         agent = module.OjolAutomationAgent(
             name="IsolatedSearchHandoff",
             settings=settings.model_copy(update={"env": "local"}),

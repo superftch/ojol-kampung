@@ -46,7 +46,7 @@ def no_network(monkeypatch):
 @pytest.fixture
 def settings(tmp_path):
     original = load_settings(ROOT / ".env.testing")
-    return original.model_copy(update={"runtime_dir": tmp_path, "core": "browser"})
+    return original.model_copy(update={"runtime_dir": tmp_path})
 
 
 @pytest.fixture

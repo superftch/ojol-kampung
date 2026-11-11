@@ -11,11 +11,10 @@ from google.genai import types
 
 from .controller import Controller, StopRequested, load_catalog
 from .finance import completion_evidence
+from .http_core import HttpUI
 from .journal import Journal
-from .mcp_browser import McpBrowser
 from .models import Settings, Snapshot
 from .planner import next_step
-from .ui import GameUI
 
 
 class OjolAutomationAgent(BaseAgent):
@@ -28,20 +27,7 @@ class OjolAutomationAgent(BaseAgent):
     async def _run_async_impl(self, ctx):
         if self.settings.env == "testing":
             raise ValueError("Agen live tidak boleh dijalankan dalam testing; gunakan mocked UI")
-        from .http_core import HttpUI, install_browser_session
-
-        session_file = self.settings.runtime_dir / "http-session.json"
-        backend = (
-            HttpUI(self.settings, ToolContext(ctx))
-            if self.settings.core == "http"
-            else McpBrowser(
-                self.settings.runtime_dir / "harness",
-                ToolContext(ctx),
-                self.settings.cdp_url,
-                allow_session_transfer=session_file.is_file(),
-            )
-        )
-        async with backend as browser:
+        async with HttpUI(self.settings, ToolContext(ctx)) as ui:
 
             def check_startup_cancel():
                 if (self.cancel and self.cancel.is_set()) or (
@@ -49,26 +35,13 @@ class OjolAutomationAgent(BaseAgent):
                 ):
                     raise StopRequested("Dihentikan pengguna")
 
-            browser.check_cancel = check_startup_cancel
-            if self.settings.managed_browser and self.command == "run":
-                from .healing import request_browser_restart
-
-                browser.recover_browser = lambda: request_browser_restart(
-                    self.settings, browser.check_cancel
-                )
-            if self.settings.core == "browser" and session_file.is_file():
-                await install_browser_session(browser, session_file)
-            else:
-                await browser.open_owned_tab(refresh=True)
-            ui = browser if self.settings.core == "http" else GameUI(browser)
+            ui.check_cancel = check_startup_cancel
+            ui.check_cancel()
             if self.command in {"inspect", "doctor"}:
                 state = await ui.snapshot()
                 output = {
-                    "mcp": "Ojol HTTP stdio via ADK McpToolset"
-                    if self.settings.core == "http"
-                    else "Browser Harness stdio via ADK McpToolset",
-                    "tab_id": browser.tab_id,
-                    "core": getattr(browser, "core_name", "browser"),
+                    "mcp": "Ojol HTTP stdio via ADK McpToolset",
+                    "core": ui.core_name,
                     "snapshot": state.model_dump(mode="json"),
                     "next": next_step(
                         state, self.settings, load_catalog(self.settings.runtime_dir)
@@ -186,15 +159,10 @@ class OjolAutomationAgent(BaseAgent):
                 controller = Controller(ui, self.settings, journal, run_id, self.cancel)
                 ui.check_cancel = controller.check_cancel
                 try:
-                    await browser.call(
-                        "browser_cdp",
-                        method="Emulation.setFocusEmulationEnabled",
-                        params={"enabled": True},
-                    )
                     controller.report(
                         "mulai",
                         live=self.live,
-                        tab_id=browser.tab_id,
+                        core=ui.core_name,
                         max_spend=str(self.settings.max_spend)
                         if self.settings.max_spend is not None
                         else None,
@@ -216,15 +184,12 @@ class OjolAutomationAgent(BaseAgent):
                         reason=redact(exc, self.settings),
                         stage=controller.stage,
                         last_action=controller.last_action,
-                        tab_id=browser.tab_id,
+                        core=ui.core_name,
                     )
                     journal.finish(run_id, "error")
                     raise
                 finally:
-                    try:
-                        await browser.reset_focus()
-                    finally:
-                        journal.close()
+                    journal.close()
         yield Event(author=self.name)
 
 
@@ -256,9 +221,7 @@ async def run_app(settings, command, live=False, shop=None):
             new_message=types.Content(
                 role="user",
                 parts=[
-                    types.Part(
-                        text="Jalankan hanya alur Ojol yang dikonfigurasi melalui Browser Harness MCP."
-                    )
+                    types.Part(text="Jalankan hanya alur Ojol yang dikonfigurasi melalui HTTP MCP.")
                 ],
             ),
         ):

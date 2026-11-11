@@ -1,9 +1,8 @@
-"""Explicit local-only transfer of the game's session cookie via Harness MCP."""
+"""Validate and atomically install an account session through HTTP MCP."""
 
 import asyncio
 import json
 import sys
-from pathlib import Path
 
 from .cli import exclusive_lock
 from .config import load_settings
@@ -65,183 +64,29 @@ def session_cookie(cookie):
     return result
 
 
-async def transfer_to_docker(settings):
-    from .mcp_browser import McpBrowser
-
-    global STAGE
-    STAGE = "session.export"
-    with exclusive_lock(settings.runtime_dir):
-        async with McpBrowser(
-            settings.runtime_dir / "harness", None, settings.cdp_url, allow_session_transfer=True
-        ) as browser:
-            await browser.open_owned_tab()
-            data = await browser.call(
-                "browser_cdp",
-                method="Network.getCookies",
-                params={"urls": ["https://www.kampungsebelah.com/kampung"]},
-            )
-            cookies = [
-                session_cookie(item)
-                for item in data.get("cookies", [])
-                if item.get("name") == COOKIE_NAME
-            ]
-        if len(cookies) != 1:
-            raise ValueError("Sesi game Chrome belum tersedia")
-        # Only an anonymous pipe carries credentials; never argv, stdout, file, or Telegram.
-        process = await asyncio.create_subprocess_exec(
-            "docker",
-            "compose",
-            "exec",
-            "-T",
-            "-u",
-            "app",
-            "app",
-            "python",
-            "-m",
-            "ojol.session_transfer",
-            "import",
-            cwd=Path(__file__).resolve().parent.parent,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        STAGE = "session.docker_import"
-        output, diagnostic = await process.communicate(json.dumps({"cookies": cookies}).encode())
-        if process.returncode:
-            # Importer emits only a fixed stage and exception class, never provider text.
-            for line in diagnostic.decode().splitlines():
-                if line.startswith("Session transfer stage="):
-                    print(line[:200], file=sys.stderr)
-            raise RuntimeError(
-                "Import sesi Docker gagal; tidak mencetak payload atau error provider"
-            )
-        print(output.decode().strip())
-
-
 async def import_session(settings, payload):
     global STAGE
     STAGE = "session.import.validate"
-    if not settings.managed_browser or not Path("/.dockerenv").is_file():
-        raise ValueError("Import hanya dalam browser Docker terkelola")
+    if settings.env == "testing":
+        raise ValueError("Import sesi live diblokir dalam testing")
     data = json.loads(payload)
     if set(data) != {"cookies"} or len(data["cookies"]) != 1:
         raise ValueError("Hanya satu cookie sesi game diizinkan")
     cookies = [session_cookie(item) for item in data["cookies"]]
-    if settings.core == "http":
-        from .http_core import HttpUI
+    from .http_core import HttpUI
 
-        candidate = settings.runtime_dir / "http-session.pending.json"
-        with exclusive_lock(settings.runtime_dir):
-            write_private(candidate, {"cookies": cookies})
-            try:
-                STAGE = "session.import.http_verify"
-                async with HttpUI(settings, session_file=candidate) as core:
-                    snapshot = await core.snapshot()
-                candidate.replace(settings.runtime_dir / "http-session.json")
-            finally:
-                candidate.unlink(missing_ok=True)
-        print(
-            json.dumps(
-                {
-                    "session_imported": True,
-                    "core": "http_mcp",
-                    "phase": snapshot.phase,
-                    "wallet": str(snapshot.wallet),
-                }
-            )
-        )
-        queue_notice(
-            settings,
-            "✅ Cookie sesi game diverifikasi melalui HTTP MCP. Tekan Jalankan Ojol untuk melanjutkan.",
-        )
-        await flush_notices(settings)
-        return
-    from .mcp_browser import McpBrowser
-    from .ui import GameUI
-
+    candidate = settings.runtime_dir / "http-session.pending.json"
     with exclusive_lock(settings.runtime_dir):
-        async with McpBrowser(
-            settings.runtime_dir / "harness", None, settings.cdp_url, allow_session_transfer=True
-        ) as browser:
-            STAGE = "session.import.open_tab"
-            # Install the new session before loading the expensive game world, and never reload an old session.
-            await browser.open_owned_tab(prepare_session=True)
-            await browser.call(
-                "browser_cdp", method="Emulation.setFocusEmulationEnabled", params={"enabled": True}
-            )
-            try:
-                STAGE = "session.import.set_cookie"
-                await browser.call(
-                    "browser_cdp", method="Network.setCookies", params={"cookies": cookies}
-                )
-                STAGE = "session.import.reload"
-                await browser.call("browser_goto", url="https://www.kampungsebelah.com/kampung")
-                STAGE = "session.import.verify_login"
-                async with asyncio.timeout(30):
-                    for _ in range(40):
-                        try:
-                            ready = await browser.js(
-                                "!!document.querySelector('[data-tour=\"nav-kerja\"]')",
-                                require_game=False,
-                            )
-                        except Exception as exc:
-                            if (
-                                getattr(exc, "operation", None) not in {"browser_js", "browser_cdp"}
-                                or "timed out" not in str(exc).lower()
-                            ):
-                                raise
-                            ready = False
-                        if ready:
-                            break
-                        await asyncio.sleep(0.5)
-                    else:
-                        raise RuntimeError(
-                            "Sesi tidak diterima situs; import cookie sesi yang masih valid"
-                        )
-                STAGE = "session.import.snapshot"
-                snapshot = await GameUI(browser).snapshot()
-                write_private(settings.runtime_dir / "http-session.json", {"cookies": cookies})
-            finally:
-                await browser.reset_focus()
-        print(
-            json.dumps(
-                {
-                    "session_imported": True,
-                    "phase": snapshot.phase,
-                    "fuel": snapshot.fuel,
-                    "condition": snapshot.condition,
-                    "data": snapshot.data,
-                    "wallet": str(snapshot.wallet),
-                }
-            )
-        )
-    queue_notice(
-        settings,
-        "✅ Cookie sesi game berhasil diimpor dan diverifikasi pada browser headless. Tekan Jalankan Ojol untuk melanjutkan.",
-    )
+        write_private(candidate, {"cookies": cookies})
+        try:
+            STAGE = "session.import.http_verify"
+            async with HttpUI(settings, session_file=candidate) as core:
+                await core.snapshot()
+            candidate.replace(settings.runtime_dir / "http-session.json")
+        finally:
+            candidate.unlink(missing_ok=True)
+    queue_notice(settings, "✅ Cookie diverifikasi melalui HTTP MCP. Tekan Jalankan Ojol.")
     await flush_notices(settings)
-
-
-async def migrate_browser_session(settings):
-    """One-time owned-profile migration; no page render, order or purchase."""
-    from .mcp_browser import McpBrowser
-
-    async with McpBrowser(
-        settings.runtime_dir / "harness", None, settings.cdp_url, allow_session_transfer=True
-    ) as browser:
-        await browser.open_owned_tab(prepare_session=True)
-        data = await browser.call(
-            "browser_cdp",
-            method="Network.getCookies",
-            params={"urls": ["https://www.kampungsebelah.com/kampung"]},
-        )
-        cookies = [
-            session_cookie(c) for c in data.get("cookies", []) if c.get("name") == COOKIE_NAME
-        ]
-        if len(cookies) != 1:
-            return False
-        write_private(settings.runtime_dir / "http-session.json", {"cookies": cookies})
-        return True
 
 
 def main():
@@ -249,19 +94,17 @@ def main():
         settings = load_settings()
         if settings.env == "testing":
             raise ValueError("Transfer sesi live dilarang dalam testing")
-        if sys.argv[1:] == ["to-docker"]:
-            asyncio.run(transfer_to_docker(settings))
-        elif sys.argv[1:] == ["import"]:
+        if sys.argv[1:] == ["import"]:
             payload = sys.stdin.buffer.read(16385)
             if len(payload) > 16384:
                 raise ValueError("Payload terlalu besar")
             asyncio.run(import_session(settings, payload))
         else:
-            raise ValueError("Gunakan to-docker pada host; import menerima stdin lokal")
+            raise ValueError("Gunakan import; cookie diterima melalui stdin lokal")
     except Exception as exc:
         print(f"Session transfer stage={STAGE} category={type(exc).__name__}", file=sys.stderr)
         print(
-            "Transfer sesi gagal; payload/credential tidak dicetak. Periksa browser, login, dan worker yang masih aktif.",
+            "Transfer sesi gagal; payload/credential tidak dicetak. Periksa sesi HTTP dan worker yang masih aktif.",
             file=sys.stderr,
         )
         return 2

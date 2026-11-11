@@ -1,61 +1,53 @@
-# Arsitektur
+# Arsitektur HTTP multi-account
 
-## Alur runtime
+Keputusan 11 November 2026 WIB: **satu akun terdaftar memiliki maksimal satu subprocess worker aktif; satu container aplikasi menampung control service, worker akun, MCP dan satu cloudflared**. Chrome/Browser Harness dan seluruh fallback dihapus. Error HTTP terminal menghentikan akun; tidak pindah backend.
 
-Telegram private chat → ControlService → worker ADK BaseAgent → McpToolset stdio → Ojol HTTP MCP → endpoint game.
+## Alur
 
-Core browser lama tetap tersedia: worker ADK → McpToolset stdio → Browser Harness MCP → Chromium headless. Tidak ada model yang menghasilkan payload atau kode klik. Controller deterministik, planner, journal dan laporan dipakai bersama. Chromium, profil dan daemon Harness hanya milik container; tidak memakai profil desktop.
+```text
+Telegram private chat
+  -> satu getUpdates poller + whitelist/admin + akun terpilih
+    -> akun A: ControlService -> subprocess ADK -> stdio HTTP MCP -> game
+    -> akun B: ControlService -> subprocess ADK -> stdio HTTP MCP -> game
+HTTPS import /a/<ID>/...
+  -> whitelist pemilik + tiket sekali pakai + sesi/CSRF akun
+    -> verifikasi HTTP MCP -> cookie file akun diganti atomik
+```
 
-## Core HTTP
+`accounts.sqlite3` memuat user yang diizinkan, pemilik akun, akun terpilih, kuota dan override admin. Admin adalah `OJOL_TELEGRAM_CHAT_ID` dari env induk; settings akun memakai Telegram ID pemilik untuk notifikasi. Penggantian env worker hanya mengubah runtime, penerima dan label akun, bukan otoritas admin registry.
 
-`http_server.py` mengekspos empat tool berparameter terbatas; tidak ada proxy HTTP bebas. `http_api.py` membatasi origin, path dan metode, mematikan redirect/proxy env, memakai cookie host game saja dan tidak mencetak body. GET boleh3percobaan (backoff1/2detik), POST selalu1percobaan, termasuk jika ada requestId. Stdio dibatasi35detik, batas server30detik dan client40detik; Stop dicek ketika menunggu. Testing menolak HTTP live di subprocess MCP; unit test memakai MockTransport dan resources `.env.testing`.
+Registry memakai query parameter dan transaksi `BEGIN IMMEDIATE` saat tambah/pulihkan akun. Batas default3akun/user dan3worker aktif global dapat diubah1–100. Lock management menserialisasi pemilihan/start/arsip/revokasi/import; jumlah worker memperhitungkan child yang sudah di-spawn sebelum mengambil file lock. Lock per akun mencegah worker ganda; lock control-server mencegah dua poller untuk volume sama. Tidak ada auto-resume gameplay setelah restart.
 
-Snapshot membaca Ojol, cash, kebutuhan/tidur dan waktu server. Sisa perjalanan memakai ceil(arriveAt−waktu server), tidak memakai clock host atau flag arrived untuk mempercepat klaim. API memakai milli-koin yang dikonversi Decimal. Receipt diproyeksikan ke format history browser yang sama agar pencatatan laba dan rekonsiliasi lama tetap bekerja.
+Akun baru: `runtime/accounts/<UUID>/`. Akun lama didaftarkan sebagai **Utama** dengan direktori asli supaya ledger/pending action/cookie tetap sama. Arsip membebaskan kuota tetapi menyimpan semua data. Revoke whitelist berlaku sebelum menunggu shutdown, menolak request baru, mencabut tiket/sesi import dan membatalkan delivery pending. User tidak dapat memilih akun user lain, termasuk dengan memalsukan callback. Callback laporan membawa ID akun agar tombol lama tidak berubah tujuan saat pilihan akun berubah.
 
-Preview mata: GET daftar tujuan → GET detail kavling → GET katalog business ID. Hanya kategori motor/SPBU/konter di desa rumah akun; toko terbuka dan bukan milik sendiri. Tidak ada POST tujuan/travel. Harga dibaca ulang sebelum beli; efek produk diekstrak secara inert dari JSON dalam bundle client dan dicache per configVersion. Efek tak dikenal/ambigu atau skema berubah gagal aman. Pembelian memerlukan item dari preview dalam proses MCP yang sama, harga/effect/enabled tetap sama, saldo baru sama dengan snapshot awal, saldo sesudah≥20 dan tanpa overflow. RequestId dicatat bersama aksi pending sebelum POST.
+Sesi form dibatasi path akun, HttpOnly, SameSite dan Secure pada HTTPS. CSRF berasal dari sesi yang sama. Registry dan import berserial sehingga pencabutan akses tidak bersaing dengan pemasangan cookie. Cookie sama dicegah terpasang ke slot akun lain dengan SHA256, tanpa menyimpan cookie di registry. **Batas:** dua cookie sesi berbeda dari akun game sama belum dapat dideduplikasi tanpa ID pemain stabil dari API. Jangan menjalankan akun game sama melalui beberapa sesi/server.
 
-Cookie import HTTP menulis kandidat0600, memverifikasi melalui MCP, lalu mengganti file sesi atomik. Kandidat gagal tidak mengganti sesi lama. Upgrade memigrasikan satu cookie dari profil Docker lewat Harness tanpa memuat game, lalu menutup Chromium. Browser dimulai oleh parent hanya jika mode browser dipilih atau GET HTTP gagal dan fallback diizinkan. Fallback memasang cookie aktif, mempertahankan worker/run/cap/ledger, lalu mengikuti state game saat ini. Tidak replay write ambigu. Auth/kondisi akun memblokir aksi tanpa fallback. Inspect/reconcile tidak mengaktifkan fallback karena bukan child worker terkelola. Browser fallback ditutup setelah worker selesai.
+## Alasan subprocess, bukan container per akun
 
-## Core browser lama
+[Python asyncio menyediakan proses asynchronous](https://docs.python.org/3.12/library/asyncio-subprocess.html) yang dapat dipantau bersamaan. Proyek sudah memiliki lifecycle subprocess dan journal per direktori; model itu memenuhi kebutuhan akun HTTP terpisah tanpa scheduler/container API baru.
 
-BrowserRuntime memegang file lock volume. Worker kedua ditolak oleh lock terpisah, termasuk sebelum child memperoleh lock. Stop dicek selama countdown dan sebelum tindakan. Browser boot ke about:blank; hanya Harness memuat satu dunia game. Default HTTP dengan sesi tersimpan tidak menyalakan Chromium saat startup/idle.
+[Docker memakai namespaces untuk isolasi proses/network dan cgroups untuk resource](https://docs.docker.com/engine/security/). Container per akun berguna jika membutuhkan batas CPU/RAM dan isolasi OS per user. Saat ini setiap worker menjalankan kode aplikasi tepercaya, pengguna hanya memasukkan cookie, dan tidak ada browser/rendering. Membuat container per akun menambah lifecycle volume/secret/network dan pengelolaan Docker daemon. Bot tidak diberi Docker socket.
 
-Saat start/inspect/reconcile menggunakan kembali tab miliknya, agent mengirim Page.reload dengan sesi CDP eksplisit dan deadline15detik. Readiness menunggu performance.timeOrigin berubah, dokumen complete dan navigasi Kerja tersedia; dokumen lama tidak dianggap siap selama reload lambat. Timeout tidak menyebabkan reload kedua atau replay aksi game.
+| Model | Kelebihan | Batas | Keputusan |
+|---|---|---|---|
+| Coroutine dalam satu proses | Proses lebih sedikit | Crash/cancel dan global state lebih saling terikat | Tidak dipilih |
+| Subprocess per akun | Reuse worker/lock saat ini; sesi/journal/error per akun | UID, filesystem, batas CPU/RAM container masih bersama | Dipakai |
+| Container per akun | Isolasi OS dan batas resource per akun | Perlu orchestrator, provisioning secret/volume dan pemantauan container | Tunda sampai diperlukan |
 
-## Browser dan transaksi
+Default3worker adalah pembatas operasional awal, bukan hasil pengukuran. Container Compose dibatasi2CPU/2GiB; total RAM juga mencakup interpreter ADK dan MCP per akun. [Batas resource Docker harus dikonfigurasi eksplisit](https://docs.docker.com/engine/containers/resource_constraints/). Ukur RSS/CPU/latensi dan kegagalan429 pada server sebelum menaikkan kuota. Jika jumlah akun besar, kebutuhan isolasi OS muncul, atau resource per user harus dijamin, pindahkan worker ke service/container terkelola dengan volume akun terpisah.
 
-Target ID yang dibuat sendiri disimpan dan diverifikasi sebelum reuse. Evaluasi DOM dan focus emulation memakai sesi CDP persisten yang terikat pada target itu, melalui tool MCP resmi `browser_cdp`. Timeout berlapis: response daemon15detik, request MCP25detik, batas luar panggilan30detik. MCP stdio memakai timeout request yang lebih panjang dari batas daemon beserta koneksi IPC. Error langsung dari ADK (`error` tanpa content) dibaca sebagai error tool, bukan diparse sebagai JSON kosong. Respons cacat dilaporkan dengan tipe content dan nama tool tanpa body payload. Kegagalan reset focus saat cleanup tidak menggantikan exception aksi yang sedang gagal; setelah timeout, cleanup tidak mengirim perintah baru ke transport/renderer yang baru gagal. Tanpa exception sebelumnya, kegagalan cleanup tetap dilaporkan. Origin/path game diperiksa di setiap ekspresi. Tidak mengaktifkan tab desktop atau memakai input OS.
+## HTTP dan transaksi
 
-Sebelum klik berakibat, SQLite meng-commit aksi pending beserta state awal. Setelah klik, controller memverifikasi resource/dompet atau receipt/countdown. Timeout menjadi uncertain; tidak ada retry klik. Rekonsiliasi tidak mengubah game. Receipt spesifik bisa mengonfirmasi klaim lama berdasarkan rute, waktu dan payout; source_key unik menjaga pencatatan idempoten.
+Empat tool MCP: snapshot, preview toko, beli satu item, aksi Ojol. Adapter hanya mengizinkan origin/path/metode game yang diperiksa. Snapshot membaca wallet/Ojol/kebutuhan/waktu server; milli-koin memakai Decimal, arrival memakai waktu server. Preview toko tidak mengirim POST perjalanan. Efek item berasal dari data bundle client tanpa mengeksekusi JavaScript, cache mengikuti `configVersion`.
 
-Hanya ekspresi DOM yang ditandai read_only mendapat retry: maksimal3pembacaan dengan backoff1/3detik pada timeout/koneksi putus. Jika habis, coba refresh tab milik worker sekali. Jika refresh gagal, worker meminta parent ControlService melalui file privat untuk restart Chromium dalam container. Parent memvalidasi PID worker aktif, parent PID, usia permintaan, STOP dan batas3restart/15menit. Worker yang sama tetap memegang run lock, ledger serta batas biaya/trip; setelah ACK, Harness menghubungkan ulang daemon dan membuat tab milik worker, lalu pembacaan/verifikasi dilanjutkan. Tidak ada replay klik transaksi. Tombol Stop membatalkan backoff/recovery; auth/UI tidak valid dan recovery yang gagal tetap terminal. Episode refresh/restart juga dibatasi3per15menit di worker.
+GET sementara gagal dicoba3kali dengan backoff1/2detik. Auth/redirect ditolak. POST satu percobaan; timeout write tidak menyebabkan retry. Batas request server MCP30detik, transport MCP35detik dan tunggu worker40detik. Stop diperiksa selama menunggu tool dan countdown.
 
-Snapshot panel normal memakai satu RPC dan viewport browser960×640 untuk mengurangi beban software rendering SwiftShader; tidak mengubah countdown, requestAnimationFrame atau clock game. Timeout pertama memicu probe browser-level dan native dialog dengan batas3detik per probe. Diagnostik privat mencatat hasil probe, counter cgroup dan PID/tipe/state/CPU ticks/RSS Chromium, tanpa argv/body/cookie. Retensi20file, CLI diagnostics menampilkan5terbaru. Browser-level responsif dengan evaluasi macet mempersempit masalah ke halaman/session/dialog; counter proses membantu menguji tekanan software GPU, tanpa menganggap korelasi sebagai trace penyebab.
+Journal menulis aksi pending sebelum write, memverifikasi saldo/resource/receipt sesudahnya, lalu membukukan keuangan. Aksi ambigu tetap pending/uncertain dan memblokir start. Rekonsiliasi membaca bukti sekarang, tanpa replay. Saldo minimum production20, threshold/cadangan resource, produk tanpa overflow dan batas belanja/trip/durasi tetap berlaku per akun.
 
-Pesan tidur mengalahkan tombol Cari order yang masih terlihat. Snapshot verifikasi terakhir dipertahankan meskipun predicate belum terpenuhi. Pencarian yang sudah dimulai dapat masuk status searching, kemudian ditunggu dengan batas30detik. Rekonsiliasi menutup lifecycle pencarian setelah dua observasi konsisten dari dokumen yang sudah di-refresh: saldo/payout/history tetap sama pada hari WIB yang sama dan resource tidak bertambah. UI tanpa order menjadi closed_idle. Tawaran, perjalanan berjalan atau perjalanan selesai dengan rute dan tombol yang cocok menjadi handed_off; countdown boleh menurun pada rute yang sama. Tidak mengklaim ongkos dalam rekonsiliasi. Worker yang dimulai kemudian mengikuti state saat ini dan mencatat aksi klaim baru sebelum klik, bukan mengulang pencarian lama. Sebab perubahan resource maupun hasil klik historis tidak disimpulkan; before/after dipertahankan, selisih resource dan original_outcome=uncertain dicatat atomik dengan status. Tidak menambah cashflow. Klaim/pembelian tetap memerlukan bukti sebelumnya. State yang tidak stabil atau perubahan finansial tetap diblokir dan ditampilkan dalam diagnostik.
+Error terminal menulis STOP/outbox akun dan dikirim hanya ke pemilik; kegagalan control global menghentikan semua worker. Outage Telegram menyimpan satu error per episode. Cloudflared exit menghentikan semua worker dan memberi tahu admin. Shutdown mencoba membersihkan seluruh worker dan tunnel sekalipun salah satu gagal; gameplay tidak diulang otomatis.
 
-Produk disaring ke kebutuhan motor/data yang didukung. Planner memilih biaya per poin aman, menunda refill yang belum muat, dan mengecek ulang produk/harga/dompet tepat sebelum Beli. Poin tidak boleh melebihi100%; saldo utama dijaga≥20 dengan margin tampilan0,01. Bank tidak dianggap cash.
+## Batas deployment dan pengujian
 
-## Data dan laporan
+Satu replica control service per volume/bot. Filesystem akun adalah pemisahan aplikasi, bukan sandbox OS: proses aplikasi tepercaya memakai UID sama. Resource container adalah batas bersama. File cookie/registry privat, tidak masuk image/Git/log. Domain production mengalahkan override public-url lokal lama. TLS publik ditangani Cloudflare; port6080 hanya loopback host, metrics2000 hanya loopback container.
 
-`history.sqlite3` memuat runs, actions, events dan cashflows. Uang memakai Decimal/TEXT. Mode WAL dan indeks waktu mendukung laporan ketika worker menulis. Laporan default hari ini Asia/Jakarta, dengan batas UTC yang sama untuk ringkasan, per sesi dan transaksi.
-
-Penerimaan memakai payout dari riwayat game; selisih cash dari aktivitas akun lain diabaikan. Potongan aplikasi yang sudah tercakup payout tidak dikurangi lagi. Event dan cashflow tidak dihapus oleh retensi log.
-
-## Auth dan control plane
-
-Telegram memvalidasi chat private, Chat ID dan sender ID. Callback tanggal diakui lalu diproses lewat grammar terbatas. Link import berupa tiket opaque sekali pakai; database hanya menyimpan hash. Viewer session HttpOnly15menit memiliki token CSRF HMAC khusus. Import dibatasi ukuran, hanya menerima cookie sesi game, diverifikasi melalui MCP dan mencabut sesi form setelah sukses.
-
-Cookie Google, password, bearer provider dan secret Telegram tidak diteruskan ke subprocess MCP. Token bot dikecualikan dari serialisasi Settings. Nilai cookie dibawa lewat body HTTPS atau pipe stdin lokal, tidak masuk argv/ledger/log.
-
-Production membutuhkan HTTPS, Telegram lengkap, browser terkelola dan saldo minimum20. Domain production dari konfigurasi mengalahkan override Quick Tunnel lokal yang mungkin tertinggal di volume. Compose hanya menerbitkan gateway loopback6080; TLS berada di Cloudflare. Satu container juga memuat cloudflared yang dipin digest; connector mengarah ke HTTP localhost6080. Secret token dimuat lewat file privat, tidak masuk argv/image/Git. Metrics/readiness hanya loopback2000.
-
-## Lifecycle dan operasi
-
-Control service memiliki child cloudflared dan memantaunya bersama browser/worker. Connector exit menghasilkan stage `tunnel.process_exit` dan menghentikan worker, sementara bot tetap bisa melaporkan error. Import Cookie/Jalankan Ojol dapat memulai connector kembali. Restart container menghentikan seluruh proses; shutdown membersihkan child tunnel sekalipun worker gagal berhenti.
-
-Error terminal worker/browser/control/tunnel menulis STOP dan antrean error dengan stage/action/run. Timeout baca dipulihkan melalui jalur terbatas di atas; hasil klik yang belum pasti tidak diputar ulang. Browser yang mati saat worker aktif diberi kesempatan dipulihkan pada pembacaan berikutnya. Notifikasi rutin termasuk event retry/recovery bisa ON/OFF dan persist setelah restart; mandatory error tetap aktif. Outage Telegram menghasilkan satu notice per outage, bukan ribuan error sama. Pengiriman pending dipertahankan sampai jaringan pulih; retry dapat menggandakan notifikasi, bukan transaksi.
-
-Log stdout dikelola rotasi Docker. Salinan delivery `.sent`/`.muted` kedaluwarsa7hari; file pending tidak dipangkas. Shutdown menunggu worker sebelum menutup browser. Restart service tidak menjalankan gameplay otomatis. Volume/browser lease juga mencegah dua controller berbagi profil aktif.
-
-CI hanya mem-build test stage: lint, format dan tests lewat `.env.testing` dummy di image. Secret runtime, browser profile dan database pengguna dikeluarkan dari build context dan Git.
+Test menggunakan runner `.env.testing` khusus dengan env shell dibuang dan network diblokir. Cakupan: whitelist/admin, ownership/callback/link, kuota paralel, batas worker, revoke/arsip/restore, sesi/CSRF, env child, HTTP MCP stdio, ledger dan rekonsiliasi tanpa replay. Pengujian offline tidak membuktikan kapasitas server atau kondisi endpoint game/Telegram live.

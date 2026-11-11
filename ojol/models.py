@@ -22,7 +22,6 @@ class Model(BaseModel):
 class Settings(Model):
     env: Literal["local", "production", "testing"] = "local"
     operator_authorized: bool = False
-    cdp_url: str = "http://127.0.0.1:9222"
     runtime_dir: Path = ROOT / ".local"
     threshold: Percent = 60
     resource_reserve_percent: Percent = 20
@@ -34,9 +33,10 @@ class Settings(Model):
     telegram_bot_token: SecretStr = Field(default=SecretStr(""), exclude=True, repr=False)
     telegram_chat_id: int | None = Field(default=None, gt=0)
     login_public_url: str = "http://localhost:6080"
-    managed_browser: bool = False
-    core: Literal["http", "browser"] = "http"
-    browser_fallback: bool = True
+    core: Literal["http"] = "http"
+    account_name: str = ""
+    max_accounts_per_user: int = Field(default=3, ge=1, le=100)
+    max_active_workers: int = Field(default=3, ge=1, le=100)
     tunnel_enabled: bool = False
 
     @field_validator("telegram_chat_id", mode="before")
@@ -77,35 +77,11 @@ class Settings(Model):
     def absolute_dir(cls, value):
         return (ROOT / value).resolve()
 
-    @field_validator("cdp_url")
-    @classmethod
-    def loopback_only(cls, value):
-        from urllib.parse import urlsplit
-
-        url = urlsplit(value)
-        if (
-            url.scheme != "http"
-            or url.hostname not in {"127.0.0.1", "localhost", "::1"}
-            or url.username
-            or url.password
-            or url.query
-            or url.fragment
-            or url.path not in {"", "/"}
-        ):
-            raise ValueError("Endpoint Chrome wajib HTTP loopback tanpa kredensial")
-        return value
-
     @model_validator(mode="after")
     def isolate_test(self):
         if self.env == "production":
-            if (
-                not self.managed_browser
-                or not self.telegram_bot_token.get_secret_value()
-                or not self.telegram_chat_id
-            ):
-                raise ValueError(
-                    "Production memerlukan browser Docker, token Telegram dan Chat ID pribadi"
-                )
+            if not self.telegram_bot_token.get_secret_value() or not self.telegram_chat_id:
+                raise ValueError("Production memerlukan token Telegram dan Chat ID admin pribadi")
             if not self.login_public_url.startswith("https://"):
                 raise ValueError("Production memerlukan origin HTTPS untuk Import Cookie")
             if self.min_balance < 20:
@@ -117,12 +93,11 @@ class Settings(Model):
         ):
             raise ValueError("Testing wajib resource lokal khusus dan tidak boleh authorized live")
         if self.env == "testing" and (
-            self.managed_browser
-            or self.tunnel_enabled
+            self.tunnel_enabled
             or self.telegram_bot_token.get_secret_value()
             or self.telegram_chat_id
         ):
-            raise ValueError("Testing tidak boleh memakai Chrome/Telegram live")
+            raise ValueError("Testing tidak boleh memakai tunnel/Telegram live")
         return self
 
 

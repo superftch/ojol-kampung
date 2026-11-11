@@ -1,6 +1,7 @@
 """Private Telegram buttons, daily reports, and one-use HTTPS cookie import."""
 
 import asyncio
+import html
 import json
 import os
 import re
@@ -18,11 +19,9 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .browser_runtime import BrowserRuntime
-from .cli import running
+from .cli import exclusive_lock, running
 from .config import load_settings
 from .finance import WIB, report_date
-from .healing import write_private
 from .journal import Journal
 from .login_access import LoginAccess
 from .models import ROOT, Settings
@@ -40,9 +39,8 @@ from .telegram import (
 
 
 class ControlService:
-    def __init__(self, settings, browser=None):
+    def __init__(self, settings):
         self.settings = settings
-        self.browser = browser or BrowserRuntime(settings)
         self.access = LoginAccess(settings.runtime_dir)
         self.worker = None
         self.tunnel_process = None
@@ -51,79 +49,22 @@ class ControlService:
         self.closing = False
         self.tasks = []
         self.lock = asyncio.Lock()
-        self.browser_recovering = False
-        self.browser_restarts = []
+        self.url_prefix = ""
+        self.account_id = None
 
     async def ensure_backend(self, require_session=False):
-        if self.settings.core == "browser":
-            await self.browser.switch("headless")
-            return
-        session = self.settings.runtime_dir / "http-session.json"
-        if not session.is_file():
-            from .session_transfer import migrate_browser_session
-
-            try:
-                await self.browser.switch("headless")
-                await migrate_browser_session(self.settings)
-            finally:
-                await self.browser.close()
-        else:
-            await self.browser.close()
-        if require_session and not session.is_file():
+        if require_session and not (self.settings.runtime_dir / "http-session.json").is_file():
             raise RuntimeError("Sesi HTTP belum tersedia. Gunakan tombol Import Cookie.")
-
-    async def handle_browser_recovery(self):
-        request = self.settings.runtime_dir / "browser-recovery-request.json"
-        if not request.is_file() or self.lock.locked():
-            return
-        payload = json.loads(request.read_text())
-        request.unlink(missing_ok=True)
-        identifier = payload.get("id")
-        if not isinstance(identifier, str) or not re.fullmatch(r"[a-f0-9]{32}", identifier):
-            return
-        ok = False
-        async with self.lock:
-            try:
-                if (
-                    not self.settings.managed_browser
-                    or not self.worker
-                    or self.worker.returncode is not None
-                    or self.worker.pid != payload.get("pid")
-                    or payload.get("parent_pid") != os.getpid()
-                    or self.expected_stop
-                    or (self.settings.runtime_dir / "STOP").exists()
-                    or not isinstance(payload.get("created"), (int, float))
-                    or not 0 <= time.time() - payload["created"] < 60
-                ):
-                    return
-                self.browser_restarts = [
-                    stamp for stamp in self.browser_restarts if time.monotonic() - stamp < 900
-                ]
-                if len(self.browser_restarts) >= 3:
-                    return
-                self.browser_restarts.append(time.monotonic())
-                self.browser_recovering = True
-                await self.browser.close()
-                await self.browser.switch("headless")
-                ok = not self.expected_stop and not (self.settings.runtime_dir / "STOP").exists()
-            except Exception:
-                ok = False
-            finally:
-                self.browser_recovering = False
-                write_private(
-                    self.settings.runtime_dir / "browser-recovery-reply.json",
-                    {"id": identifier, "ok": ok},
-                )
 
     def tunnel_alive(self):
         return bool(self.tunnel_process and self.tunnel_process.returncode is None)
 
-    async def start_tunnel(self):
+    async def start_tunnel(self, token_file=None):
         if not self.settings.tunnel_enabled or self.tunnel_alive():
             return
-        if not self.settings.managed_browser or not Path("/.dockerenv").is_file():
+        if not Path("/.dockerenv").is_file():
             raise RuntimeError("Tunnel terkelola hanya boleh dijalankan dalam container Docker")
-        token_file = self.settings.runtime_dir.parent / "cloudflared-token"
+        token_file = token_file or self.settings.runtime_dir.parent / "cloudflared-token"
         binary = shutil.which("cloudflared")
         if not binary or not token_file.is_file() or not token_file.stat().st_size:
             raise RuntimeError("Binary cloudflared atau secret cloudflared_token tidak tersedia")
@@ -162,7 +103,7 @@ class ControlService:
             ):
                 return
             await asyncio.sleep(0.25)
-        raise RuntimeError("Worker belum berhenti setelah 30 detik; browser tidak diganti")
+        raise RuntimeError("Worker belum berhenti setelah 30 detik; sesi tidak diganti")
 
     def status(self):
         path = self.settings.runtime_dir / "status.json"
@@ -181,7 +122,6 @@ class ControlService:
             f"Bensin {state.get('fuel', '?')}% | Kondisi {state.get('condition', '?')}% | Kuota {state.get('data', '?')}%\n"
             f"Saldo utama: {state.get('wallet', '?')} koin · minimum {self.settings.min_balance}\n"
             f"Notifikasi event: {'ON' if notifications_enabled(self.settings) else 'OFF'}"
-            + ("\nSelf-healing: restart browser berlangsung" if self.browser_recovering else "")
             + (
                 f"\nTunnel: proses {'aktif' if self.tunnel_alive() else 'berhenti'}"
                 if self.settings.tunnel_enabled
@@ -225,21 +165,22 @@ class ControlService:
 
     def profit_buttons(self, day=None):
         day = report_date(day)
+        prefix = f"acct:{self.account_id}:" if self.account_id else ""
         return {
             "inline_keyboard": [
                 [
                     {
                         "text": "◀ Hari sebelumnya",
-                        "callback_data": f"profit:{day - timedelta(days=1)}",
+                        "callback_data": prefix + f"profit:{day - timedelta(days=1)}",
                     },
                     {
                         "text": "Hari berikutnya ▶",
-                        "callback_data": f"profit:{day + timedelta(days=1)}",
+                        "callback_data": prefix + f"profit:{day + timedelta(days=1)}",
                     },
                 ],
                 [
-                    {"text": "Hari ini", "callback_data": f"profit:{report_date()}"},
-                    {"text": "Pilih tanggal", "callback_data": "choose_date"},
+                    {"text": "Hari ini", "callback_data": prefix + f"profit:{report_date()}"},
+                    {"text": "Pilih tanggal", "callback_data": prefix + "choose_date"},
                 ],
             ]
         }
@@ -249,10 +190,8 @@ class ControlService:
             await self.stop_worker()
             await self.start_tunnel()
             self.access.revoke()
-            if self.settings.core == "browser":
-                await self.browser.switch("headless")
             ticket = self.access.issue("ticket")
-            return f"{self.public_url()}/access/{ticket}"
+            return f"{self.public_url()}{self.url_prefix}/access/{ticket}"
 
     async def command(self, command):
         if command == "import_cookie":
@@ -279,7 +218,7 @@ class ControlService:
             )
         if command == "stop":
             await self.stop_worker()
-            return "🛑 Worker berhenti. Browser dan riwayat disimpan."
+            return "🛑 Worker berhenti. Sesi HTTP dan riwayat disimpan."
         if command == "run":
             async with self.lock:
                 if (self.worker and self.worker.returncode is None) or running(
@@ -297,18 +236,19 @@ class ControlService:
                     args += ["--env-file", config_file]
                 args += ["run", "--live"]
                 self.expected_stop = False
-                self.browser_restarts = []
                 # Docker owns stdout rotation; journal and status remain persistent in the volume.
                 self.worker = await asyncio.create_subprocess_exec(
-                    *args, stderr=asyncio.subprocess.STDOUT, start_new_session=True
+                    *args,
+                    stderr=asyncio.subprocess.STDOUT,
+                    start_new_session=True,
+                    env={
+                        **os.environ,
+                        "OJOL_RUNTIME_DIR": str(self.settings.runtime_dir),
+                        "OJOL_TELEGRAM_CHAT_ID": str(self.settings.telegram_chat_id or ""),
+                        "OJOL_ACCOUNT_NAME": self.settings.account_name,
+                    },
                 )
-                core = (
-                    "HTTP MCP khusus Ojol"
-                    + (", browser sebagai fallback" if self.settings.browser_fallback else "")
-                    if self.settings.core == "http"
-                    else "Browser Harness MCP headless"
-                )
-                return f"▶️ Worker dimulai melalui {core}. Tanpa batas trip/durasi default; saldo utama ≥20 koin. Pembacaan boleh retry, transaksi tidak diulang. Error yang tidak pulih: STOP dan lapor."
+                return "▶️ Worker HTTP MCP dimulai. Tanpa batas trip/durasi default; saldo utama ≥20 koin. Pembacaan boleh retry, transaksi tidak diulang. Error yang tidak pulih: STOP dan lapor."
         return "Pilih tombol: Import Cookie, Jalankan Ojol, Hentikan Ojol, Status, Laba Bersih, Notifikasi ON/OFF."
 
     async def execute(self, command):
@@ -384,7 +324,6 @@ class ControlService:
 
     async def supervise(self):
         while not self.closing:
-            await self.handle_browser_recovery()
             if (
                 self.tunnel_process
                 and self.tunnel_process.returncode is not None
@@ -414,22 +353,6 @@ class ControlService:
                         )
                 else:
                     queue_notice(self.settings, "Worker berhenti. " + self.status())
-                if self.settings.core == "http" and not self.lock.locked():
-                    await self.browser.close()
-            if (
-                self.browser.mode
-                and not self.browser.alive()
-                and not self.lock.locked()
-                and not (self.worker and self.worker.returncode is None)
-            ):
-                queue_error(
-                    self.settings,
-                    RuntimeError("Chromium berhenti di luar pergantian mode"),
-                    "browser.process_exit",
-                )
-                await self.stop_worker()
-                await self.browser.close()
-                await flush_notices(self.settings)
             commands = self.settings.runtime_dir / "control-commands"
             for path in sorted(commands.glob("*.json")):
                 payload = json.loads(path.read_text())
@@ -448,7 +371,7 @@ class ControlService:
             finally:
                 await flush_notices(self.settings)
 
-    async def start(self):
+    async def start(self, poll=True):
         if self.settings.env == "testing":
             return
         status_file = self.settings.runtime_dir / "status.json"
@@ -470,17 +393,15 @@ class ControlService:
                     },
                 )
         try:
-            await self.ensure_backend()
-        except Exception as exc:
-            queue_error(self.settings, exc, "control.startup.browser")
-            await self.browser.close()
-            await flush_notices(self.settings)
-        try:
             await self.start_tunnel()
         except Exception as exc:
             queue_error(self.settings, exc, "control.startup.tunnel")
             await flush_notices(self.settings)
-        if self.settings.telegram_bot_token.get_secret_value() and self.settings.telegram_chat_id:
+        if (
+            poll
+            and self.settings.telegram_bot_token.get_secret_value()
+            and self.settings.telegram_chat_id
+        ):
             self.tasks.append(
                 asyncio.create_task(self.guard_task(self.poll_telegram, "telegram.poll"))
             )
@@ -494,29 +415,47 @@ class ControlService:
         try:
             await self.stop_worker()
         finally:
-            try:
-                await self.browser.close()
-            finally:
-                if self.tunnel_process:
-                    await self.browser.terminate(self.tunnel_process)
-                    self.tunnel_process = None
+            if self.tunnel_process:
+                process = self.tunnel_process
+                if process.returncode is None:
+                    process.terminate()
+                    try:
+                        await asyncio.wait_for(process.wait(), 10)
+                    except TimeoutError:
+                        process.kill()
+                        await process.wait()
+                self.tunnel_process = None
 
 
 def create_app(settings, service=None):
-    service = service or ControlService(settings)
+    from .management import MultiAccountService
+
+    manager = MultiAccountService(settings) if service is None else None
+    lifecycle = manager or service
+
+    def resolve(request):
+        if manager is None:
+            return service
+        try:
+            identifier = request.path_params.get("account_id")
+            return manager.service(identifier) if identifier else manager.legacy()
+        except ValueError:
+            raise HTTPException(403, "Akun tidak tersedia / akses dicabut") from None
 
     @asynccontextmanager
     async def lifespan(app):
-        await service.start()
-        try:
-            yield
-        finally:
-            await service.close()
+        with exclusive_lock(settings.runtime_dir / "control-server"):
+            try:
+                await lifecycle.start()
+                yield
+            finally:
+                await lifecycle.close()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 
     def require_access(request):
-        if not service.access.expiry(request.cookies.get("ojol_import"), "session"):
+        scoped = resolve(request)
+        if not scoped.access.expiry(request.cookies.get("ojol_import"), "session"):
             raise HTTPException(403, "Link import diperlukan / sesi kedaluwarsa")
 
     @app.middleware("http")
@@ -537,18 +476,21 @@ def create_app(settings, service=None):
     async def health():
         return {
             "service": "ok",
-            "browser_mode": service.browser.mode,
-            "browser_alive": service.browser.alive(),
+            "core": "http",
             "tunnel_enabled": settings.tunnel_enabled,
-            "tunnel_process_alive": service.tunnel_alive(),
+            "tunnel_process_alive": manager.hub.tunnel_alive()
+            if manager
+            else service.tunnel_alive(),
         }
 
+    @app.get("/a/{account_id}/access/{ticket}")
     @app.get("/access/{ticket}")
-    async def access(ticket: str):
+    async def access(ticket: str, request: Request):
+        service = resolve(request)
         session = service.access.consume_ticket(ticket) if len(ticket) <= 100 else None
         if not session:
             raise HTTPException(403, "Link kedaluwarsa/sudah dipakai; tekan Import Cookie di bot")
-        response = RedirectResponse("/import-cookie", status_code=303)
+        response = RedirectResponse(service.url_prefix + "/import-cookie", status_code=303)
         response.set_cookie(
             "ojol_import",
             session,
@@ -556,19 +498,31 @@ def create_app(settings, service=None):
             httponly=True,
             secure=urlsplit(service.public_url()).scheme == "https",
             samesite="lax",
+            path=service.url_prefix + "/",
         )
         return response
 
+    @app.get("/a/{account_id}/import-cookie", response_class=HTMLResponse)
     @app.get("/import-cookie", response_class=HTMLResponse)
     async def form(request: Request):
+        service = resolve(request)
         require_access(request)
         token = service.access.csrf_token(request.cookies.get("ojol_import"))
         if token is None:
             raise HTTPException(403, "Sesi import kedaluwarsa; minta link baru di bot")
-        return (ROOT / "ojol/cookie_form.html").read_text().replace("{{CSRF_TOKEN}}", token)
+        return (
+            (ROOT / "ojol/cookie_form.html")
+            .read_text()
+            .replace("{{CSRF_TOKEN}}", token)
+            .replace("{{ACCOUNT_NAME}}", html.escape(service.settings.account_name or "Utama"))
+            .replace("{{IMPORT_PATH}}", service.url_prefix + "/import-cookie")
+        )
 
+    @app.post("/a/{account_id}/import-cookie", response_class=HTMLResponse)
     @app.post("/import-cookie", response_class=HTMLResponse)
     async def submit(request: Request):
+        service = resolve(request)
+        settings = service.settings
         require_access(request)
         if (
             request.headers.get("content-type", "").split(";")[0]
@@ -596,15 +550,24 @@ def create_app(settings, service=None):
                 "Cookie tidak valid. Kembali dan masukkan cookie sesi KampungSebelah saja.",
                 status_code=400,
             )
-        async with service.lock:
+        # Registry mutations and imports serialize, so revocation cannot race session installation.
+        async with manager.lock if manager else asyncio.Lock(), service.lock:
             require_access(request)
+            digest = None
+            if manager:
+                account = manager.registry.get(service.account_id)
+                try:
+                    digest = manager.registry.check_cookie(account["id"], payload)
+                except ValueError:
+                    return HTMLResponse(
+                        "Cookie sudah terhubung ke akun lain. Gunakan akun tersebut.",
+                        status_code=409,
+                    )
             await service.stop_worker()
             try:
-                if settings.core == "browser":
-                    await service.browser.switch("headless")
-                else:
-                    await service.browser.close()
                 await import_session(settings, json.dumps(payload))
+                if manager:
+                    manager.registry.bind_cookie(service.account_id, digest)
             except Exception as exc:
                 from .session_transfer import STAGE
 
@@ -623,9 +586,10 @@ def create_app(settings, service=None):
         response = HTMLResponse(
             "<html lang='id'><meta name='viewport' content='width=device-width,initial-scale=1'><title>Import berhasil</title><h1>Cookie berhasil diimpor</h1><p>Sesi game terverifikasi. Kembali ke Telegram dan tekan <strong>Jalankan Ojol</strong>.</p></html>"
         )
-        response.delete_cookie("ojol_import")
+        response.delete_cookie("ojol_import", path=service.url_prefix + "/")
         return response
 
+    app.state.management = manager
     return app
 
 

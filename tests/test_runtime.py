@@ -1,8 +1,6 @@
 import asyncio
 import json
-import sys
 from decimal import Decimal
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -11,8 +9,8 @@ import pytest
 from ojol.cli import exclusive_lock, main, running
 from ojol.config import load_settings
 from ojol.controller import Controller, StopRequested
+from ojol.http_api import HttpCoreError
 from ojol.journal import Journal
-from ojol.mcp_browser import TOOLS, BrowserError, McpBrowser
 from ojol.models import ROOT, Product
 
 
@@ -169,34 +167,7 @@ async def test_dry_run_never_performs_gameplay(settings, state):
     journal.close()
 
 
-async def test_real_harness_mcp_tool_discovery_no_chrome(settings):
-    command = str(Path(sys.executable).parent / "browser-harness-mcp")
-    async with McpBrowser(settings.runtime_dir / "harness", None, command=command) as browser:
-        assert set(browser.tools) == set(TOOLS)
-        assert "browser_click" not in browser.tools
-        assert "browser_http_get" not in browser.tools
-
-
-async def test_focus_emulation_only_raw_cdp_allowed(settings):
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    with pytest.raises(BrowserError):
-        await browser.call(
-            "browser_cdp", method="Target.activateTarget", params={"targetId": "fixture"}
-        )
-
-
-async def test_target_scoped_js_never_acts_on_current_user_tab(settings):
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    browser.tab_id = "owned-fixture"
-    browser.session_id = "owned-session"
-    browser.session_tab = browser.tab_id
-    browser.call = AsyncMock(return_value={"result": {"value": True}})
-    await browser.js("true")
-    assert browser.call.call_args.kwargs["params"]["session_id"] == "owned-session"
-    assert "location.origin" in browser.call.call_args.kwargs["params"]["expression"]
-
-
-def test_cli_live_and_browser_blocked_in_testing(settings, monkeypatch, capsys):
+def test_cli_live_and_http_blocked_in_testing(settings, monkeypatch, capsys):
     monkeypatch.setenv("OJOL_RUNTIME_DIR", str(settings.runtime_dir))
     assert main(["--env-file", str(ROOT / ".env.testing"), "run", "--live"]) == 2
     assert "izin operator" in capsys.readouterr().err
@@ -296,64 +267,6 @@ def test_status_shows_elapsed_countdown_in_wib(settings, monkeypatch, capsys):
     assert output["wait_until_wib"].endswith("+07:00")
 
 
-async def test_mcp_rejects_other_user_tabs(settings):
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    browser.tab_id = "owned-fixture"
-    for name, args in [
-        ("browser_js", {"expression": "true", "target_id": "user-tab"}),
-        ("browser_switch_tab", {"target": "user-tab"}),
-        ("browser_close_tab", {"target": "user-tab"}),
-    ]:
-        with pytest.raises(BrowserError):
-            await browser.call(name, **args)
-
-
-async def test_shop_eye_click_evidence_and_panel_identity():
-    from ojol.ui import GameUI
-
-    evidence = {
-        "method": "eye_preview",
-        "label": "Lihat SPBU Utara 1 di peta tanpa pergi",
-        "button": "👀",
-    }
-    browser = SimpleNamespace(
-        tab_id="owned-fixture",
-        js=AsyncMock(
-            side_effect=[
-                True,
-                False,
-                [
-                    {
-                        "name": "SPBU Utara 1",
-                        "text": "SPBU Pertamina SPBU Utara 1",
-                        "hours": "🟢 Buka 24 jam",
-                    }
-                ],
-                evidence,
-                False,
-                False,
-                True,
-            ]
-        ),
-    )
-    ui = GameUI(browser)
-    ui.close_views = AsyncMock()
-    ui.click_selector = AsyncMock()
-    ui.pause = AsyncMock()
-    product = Product(
-        name="Isi Pertalite", price="1", effects={"fuel": 60}, row_text="fixture", enabled=True
-    )
-    ui.products = AsyncMock(side_effect=[[], [], [product]])
-    name, _ = await ui.open_shop("fuel")
-    assert name == "SPBU Utara 1"
-    assert ui.last_navigation["method"] == "eye_preview"
-    assert ui.last_navigation["tab_id"] == "owned-fixture" and ui.last_navigation["panel_verified"]
-    assert ui.products.await_count == 3
-    eye_script = browser.js.call_args_list[3].args[0]
-    assert "Lihat di peta" in eye_script and "eye.click()" in eye_script
-    assert "tujuan-pergi" not in eye_script
-
-
 async def test_stuck_search_stops_without_clicking_again(settings, state):
     import time
 
@@ -369,116 +282,6 @@ async def test_stuck_search_stops_without_clicking_again(settings, state):
     ui.job_click.assert_not_awaited()
     assert not journal.history()["actions"]
     journal.close()
-
-
-async def test_owned_tab_loading_retries_only_readiness_without_replaying_navigation(
-    settings, monkeypatch
-):
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    browser.call = AsyncMock(
-        side_effect=[[], {"targetId": "owned-new"}, {"sessionId": "owned-session"}, {}, {}, {}]
-    )
-    browser.js = AsyncMock(
-        side_effect=[BrowserError("Runtime.evaluate timed out", operation="browser_js"), True]
-    )
-    monkeypatch.setattr("ojol.mcp_browser.asyncio.sleep", AsyncMock())
-    assert await browser.open_owned_tab() == "owned-new"
-    names = [c.args[0] for c in browser.call.await_args_list]
-    assert names.count("browser_new_tab") == names.count("browser_goto") == 1
-    assert browser.call.await_args_list[-1].kwargs["params"] == {"enabled": False}
-
-
-async def test_cookie_import_prepares_blank_owned_tab_before_loading_game(settings):
-    home = settings.runtime_dir / "harness"
-    home.mkdir()
-    (home / "owned-tab.json").write_text(json.dumps({"target_id": "owned-old"}))
-    browser = McpBrowser(home, None)
-    browser.call = AsyncMock(
-        side_effect=[
-            [
-                {"targetId": "owned-old", "url": "https://www.kampungsebelah.com/kampung"},
-                {"targetId": "user-other", "url": "https://example.com"},
-            ],
-            {},
-            {"targetId": "owned-new"},
-            {"sessionId": "owned-session"},
-        ]
-    )
-    assert await browser.open_owned_tab(prepare_session=True) == "owned-new"
-    assert [c.args[0] for c in browser.call.await_args_list] == [
-        "browser_list_tabs",
-        "browser_close_tab",
-        "browser_new_tab",
-        "browser_switch_tab",
-    ]
-    assert browser.call.await_args_list[1].kwargs["target"] == "owned-old"
-
-
-async def test_refresh_reuses_only_owned_tab_and_waits_for_a_new_document(settings, monkeypatch):
-    home = settings.runtime_dir / "harness"
-    home.mkdir()
-    (home / "owned-tab.json").write_text(json.dumps({"target_id": "owned"}))
-    browser = McpBrowser(home, None)
-    browser.call = AsyncMock(
-        side_effect=[
-            [
-                {"targetId": "owned", "url": "https://www.kampungsebelah.com/kampung"},
-                {"targetId": "foreign", "url": "https://example.com"},
-            ],
-            {"sessionId": "owned-session"},
-            {},
-            {},
-            {},
-        ]
-    )
-    browser.js = AsyncMock(side_effect=[1234.5, False, True])
-    monkeypatch.setattr("ojol.mcp_browser.asyncio.sleep", AsyncMock())
-    assert await browser.open_owned_tab(refresh=True) == "owned"
-    calls = browser.call.await_args_list
-    assert [call.args[0] for call in calls] == [
-        "browser_list_tabs",
-        "browser_switch_tab",
-        "browser_cdp",
-        "browser_cdp",
-        "browser_cdp",
-    ]
-    assert calls[1].kwargs == {"target": "owned"}
-    assert calls[2].kwargs == {
-        "method": "Page.reload",
-        "params": {"session_id": "owned-session", "ignoreCache": True, "_response_timeout": 15},
-    }
-    ready = browser.js.await_args_list[1].args[0]
-    assert "performance.timeOrigin !== 1234.5" in ready
-    assert "nav-kerja" in ready and "readyState" in ready
-    assert browser.js.await_count == 3
-
-
-async def test_page_reload_requires_owned_session_and_has_no_timeout_replay(settings):
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    browser.tab_id = browser.session_tab = "owned"
-    browser.session_id = "owned-session"
-    params = {"session_id": "foreign", "ignoreCache": True, "_response_timeout": 15}
-    with pytest.raises(BrowserError):
-        await browser.call("browser_cdp", method="Page.reload", params=params)
-    tool = SimpleNamespace(run_async=AsyncMock(side_effect=TimeoutError))
-    browser.tools = {"browser_cdp": tool}
-    params["session_id"] = "owned-session"
-    with pytest.raises(BrowserError, match="tanpa mengulang"):
-        await browser.call("browser_cdp", method="Page.reload", params=params)
-    tool.run_async.assert_awaited_once()
-
-
-async def test_refresh_readiness_failure_never_reloads_twice(settings):
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    browser.tab_id = browser.session_tab = "owned"
-    browser.session_id = "owned-session"
-    browser.js = AsyncMock(return_value=1234.5)
-    browser.call = AsyncMock(return_value={})
-    browser.wait_ready = AsyncMock(side_effect=BrowserError("Dokumen baru belum siap"))
-    with pytest.raises(BrowserError, match="Dokumen baru"):
-        await browser.refresh_owned_tab()
-    browser.call.assert_awaited_once()
-    assert browser.call.call_args.kwargs["method"] == "Page.reload"
 
 
 async def test_unlimited_run_passes_old_trip_and_duration_limits_but_manual_stop_works(
@@ -542,104 +345,6 @@ def test_background_start_omits_unlimited_flags(settings, monkeypatch):
     assert "--max-jobs" not in command and "--max-minutes" not in command and "None" not in command
 
 
-async def test_runtime_evaluation_rejects_foreign_sessions_and_never_replays_timeout(settings):
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    browser.tab_id = "owned"
-    browser.session_tab = "owned"
-    browser.session_id = "owned-session"
-    params = {
-        "session_id": "foreign-session",
-        "expression": "true",
-        "returnByValue": True,
-        "awaitPromise": False,
-        "_response_timeout": 15,
-    }
-    with pytest.raises(BrowserError):
-        await browser.call("browser_cdp", method="Runtime.evaluate", params=params)
-    tool = SimpleNamespace(run_async=AsyncMock(side_effect=TimeoutError))
-    browser.tools = {"browser_cdp": tool}
-    with pytest.raises(BrowserError):
-        await browser.js("document.querySelector('button').click()")
-    assert tool.run_async.await_count == 1
-    args = tool.run_async.call_args.kwargs["args"]["params"]
-    assert (
-        args["session_id"] == "owned-session"
-        and args["_response_timeout"] == 15
-        and args["awaitPromise"] is False
-    )
-
-
-async def test_runtime_timeout_does_not_expose_javascript_expression(settings):
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    browser.tab_id = "owned"
-    browser.session_tab = "owned"
-    browser.session_id = "owned-session"
-    tool = SimpleNamespace(
-        run_async=AsyncMock(
-            return_value={
-                "content": [
-                    {
-                        "type": "text",
-                        "text": json.dumps(
-                            {"error": "Runtime.evaluate timed out; expression: private script body"}
-                        ),
-                    }
-                ]
-            }
-        )
-    )
-    browser.tools = {"browser_cdp": tool}
-    with pytest.raises(BrowserError) as error:
-        await browser.js("true")
-    assert str(error.value) == "Runtime.evaluate timed out"
-
-
-@pytest.mark.parametrize("enabled", [True, False])
-async def test_focus_uses_owned_persistent_session_and_15_second_daemon_deadline(settings, enabled):
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    browser.tab_id = browser.session_tab = "owned"
-    browser.session_id = "owned-session"
-    tool = SimpleNamespace(
-        run_async=AsyncMock(return_value={"content": [{"type": "text", "text": "{}"}]})
-    )
-    browser.tools = {"browser_cdp": tool}
-    await browser.call(
-        "browser_cdp", method="Emulation.setFocusEmulationEnabled", params={"enabled": enabled}
-    )
-    assert tool.run_async.call_args.kwargs["args"]["params"] == {
-        "enabled": enabled,
-        "session_id": "owned-session",
-        "_response_timeout": 15,
-    }
-    browser.session_tab = "foreign"
-    with pytest.raises(BrowserError, match="di luar izin"):
-        await browser.call(
-            "browser_cdp", method="Emulation.setFocusEmulationEnabled", params={"enabled": enabled}
-        )
-    tool.run_async.assert_awaited_once()
-
-
-async def test_focus_cleanup_timeout_preserves_primary_verification_error(settings):
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    browser.call = AsyncMock(side_effect=BrowserError("Focus daemon timed out"))
-    primary = BrowserError("Verifikasi receipt gagal", operation="browser_cdp")
-    with pytest.raises(BrowserError) as error:
-        try:
-            raise primary
-        finally:
-            await browser.reset_focus()
-    assert error.value is primary
-    assert primary.__notes__ == ["Focus cleanup also failed: BrowserError"]
-    browser.call.assert_awaited_once()
-
-
-async def test_focus_cleanup_failure_without_primary_is_not_swallowed(settings):
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    browser.call = AsyncMock(side_effect=BrowserError("Focus daemon timed out"))
-    with pytest.raises(BrowserError, match="Focus daemon timed out"):
-        await browser.reset_focus()
-
-
 def test_start_error_does_not_inherit_previous_process_verification_stage(settings, monkeypatch):
     import ojol.app as app
     import ojol.cli as cli
@@ -658,99 +363,6 @@ def test_start_error_does_not_inherit_previous_process_verification_stage(settin
     assert error["stage"] == "cli.run"
 
 
-def test_mcp_request_deadline_exceeds_daemon_deadline_and_outer_call_is_bounded(
-    settings, monkeypatch
-):
-    from unittest.mock import Mock
-
-    import ojol.mcp_browser as module
-
-    factory = Mock()
-    monkeypatch.setattr(module, "McpToolset", factory)
-    McpBrowser(settings.runtime_dir / "harness", None)
-    effective = factory.call_args.kwargs["connection_params"].timeout
-    assert effective == module.MCP_REQUEST_TIMEOUT
-    assert module.DAEMON_RESPONSE_TIMEOUT + 5 < effective < module.TOOL_CALL_TIMEOUT
-
-
-@pytest.mark.parametrize("wrapped", [False, True])
-async def test_adk_timeout_error_is_preserved_instead_of_reported_as_invalid_json(
-    settings, monkeypatch, wrapped
-):
-    import ojol.mcp_browser as module
-
-    message = "MCP tool execution failed: Request 'tools/call' timed out"
-    raw = {"error": message}
-    if wrapped:
-        raw = {"content": [{"type": "text", "text": json.dumps(raw)}]}
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    browser.tab_id = browser.session_tab = "owned"
-    browser.session_id = "owned-session"
-    tool = SimpleNamespace(run_async=AsyncMock(return_value=raw))
-    browser.tools = {"browser_cdp": tool}
-    original = module.asyncio.wait_for
-
-    async def bounded(call, timeout):
-        assert timeout == module.TOOL_CALL_TIMEOUT
-        return await original(call, timeout)
-
-    monkeypatch.setattr(module.asyncio, "wait_for", bounded)
-    with pytest.raises(BrowserError) as error:
-        await browser.js("true")
-    assert str(error.value) == message
-    assert error.value.operation == "browser_cdp"
-    assert error.value.stage == "mcp.browser_cdp"
-    tool.run_async.assert_awaited_once()
-
-
-@pytest.mark.parametrize(
-    "content", [None, [], ["private payload"], [{"type": "text", "text": "private cookie body"}]]
-)
-async def test_malformed_response_reports_only_shape_and_tool_without_replay(settings, content):
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    tool = SimpleNamespace(run_async=AsyncMock(return_value={"content": content}))
-    browser.tools = {"browser_list_tabs": tool}
-    with pytest.raises(BrowserError) as error:
-        await browser.call("browser_list_tabs")
-    assert error.value.operation == "browser_list_tabs"
-    assert error.value.stage == "mcp.decode.browser_list_tabs"
-    assert "private" not in str(error.value)
-    tool.run_async.assert_awaited_once()
-
-
-async def test_known_mcp_timeout_does_not_send_a_second_focus_cleanup_command(settings):
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    browser.call = AsyncMock()
-    primary = BrowserError(
-        "MCP tool execution failed: Request 'tools/call' timed out", operation="browser_cdp"
-    )
-    with pytest.raises(BrowserError) as error:
-        try:
-            raise primary
-        finally:
-            await browser.reset_focus()
-    assert error.value is primary
-    browser.call.assert_not_awaited()
-
-
-@pytest.mark.parametrize("payload", [None, True, {}])
-async def test_invalid_cdp_evaluation_shape_stops_without_exposing_payload_or_retry(
-    settings, payload
-):
-    browser = McpBrowser(settings.runtime_dir / "harness", None)
-    browser.tab_id = browser.session_tab = "owned"
-    browser.session_id = "owned-session"
-    tool = SimpleNamespace(
-        run_async=AsyncMock(
-            return_value={"content": [{"type": "text", "text": json.dumps(payload)}]}
-        )
-    )
-    browser.tools = {"browser_cdp": tool}
-    with pytest.raises(BrowserError, match="Respons Runtime.evaluate tidak valid"):
-        await browser.js("true")
-    tool.run_async.assert_awaited_once()
-
-
 async def test_observation_failure_after_verified_claim_does_not_reopen_or_repeat_claim(
     settings, state
 ):
@@ -761,16 +373,14 @@ async def test_observation_failure_after_verified_claim_does_not_reopen_or_repea
             "wallet": before.wallet + Decimal("0.401"),
         }
     )
-    failure = BrowserError(
-        "MCP tool execution failed: Request 'tools/call' timed out", operation="browser_cdp"
-    )
+    failure = HttpCoreError("Pembacaan HTTP timeout", category="transport")
     ui = SimpleNamespace(
         job_click=AsyncMock(), snapshot=AsyncMock(side_effect=[before, paid, failure])
     )
     journal = Journal(settings.runtime_dir)
     try:
         controller = Controller(ui, settings, journal, journal.start(settings))
-        with pytest.raises(BrowserError):
+        with pytest.raises(HttpCoreError):
             await controller.run()
         ui.job_click.assert_awaited_once()
         assert journal.history()["actions"][0]["status"] == "verified"
