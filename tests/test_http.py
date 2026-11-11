@@ -13,7 +13,8 @@ from ojol.healing import write_private
 from ojol.http_api import ITEMS, ORIGIN, HttpCoreError, OjolHttpApi, extract_effects
 from ojol.http_core import HTTP_TOOLS, HttpUI
 from ojol.journal import Journal
-from ojol.models import Product
+from ojol.models import ShopPreview
+from ojol.planner import select_shop
 
 SHOP = "00000000-0000-4000-8000-000000000001"
 EFFECTS = {
@@ -33,7 +34,7 @@ EFFECTS = {
 
 @pytest.fixture
 def world():
-    return {
+    world = {
         "ojol": {
             "enabled": True,
             "mitra": True,
@@ -73,6 +74,39 @@ def world():
         },
     }
 
+    world["plots"] = {
+        "K22-U07": {
+            "business": {
+                "id": SHOP,
+                "catalogId": "konter-pulsa",
+                "name": "Konter fixture",
+                "desa": "fixture-desa",
+            }
+        }
+    }
+    world["shops"] = {SHOP: world["shop"]}
+    world["failed_paths"] = set()
+    return world
+
+
+def add_shop(world, number, name, category, item, product_name, price_milli, **catalog_fields):
+    shop_id = f"00000000-0000-4000-8000-{number:012}"
+    plot_id = f"K22-U{number:02}"
+    world["places"]["usaha"].append(
+        {"plotId": plot_id, "name": "Nama dari daftar", "item": category, "x": number, "y": 0}
+    )
+    world["plots"][plot_id] = {
+        "business": {"id": shop_id, "catalogId": category, "name": name, "desa": "fixture-desa"}
+    }
+    world["shops"][shop_id] = {
+        "mine": False,
+        "open": True,
+        "plang": name,
+        "menu": [{"item": item, "name": product_name, "priceMilli": price_milli}],
+        **catalog_fields,
+    }
+    return shop_id
+
 
 @pytest.fixture
 async def api(settings, world):
@@ -82,6 +116,8 @@ async def api(settings, world):
         calls.append(request)
         assert request.url.host == "www.kampungsebelah.com"
         path = request.url.path
+        if path in world["failed_paths"]:
+            return httpx.Response(404)
         if request.method == "POST":
             return httpx.Response(200, json={"ok": True})
         data = {
@@ -90,15 +126,8 @@ async def api(settings, world):
             "/api/kebutuhan": world["needs"],
             "/api/time": world["time"],
             "/api/tujuan": world["places"],
-            "/api/world/plots/K22-U07": {
-                "business": {
-                    "id": SHOP,
-                    "catalogId": "konter-pulsa",
-                    "name": "Konter fixture",
-                    "desa": "fixture-desa",
-                }
-            },
-            "/api/shops/" + SHOP: world["shop"],
+            **{"/api/world/plots/" + key: value for key, value in world["plots"].items()},
+            **{"/api/shops/" + key: value for key, value in world["shops"].items()},
         }
         if path == "/kampung":
             return httpx.Response(
@@ -156,17 +185,20 @@ async def test_preview_reads_catalog_effects_and_never_sends_travel(api):
     preview = await api.preview("data")
     assert preview["navigation"]["method"] == "eye_preview_http"
     assert preview["navigation"]["travel_request_sent"] is False
-    products = [Product.model_validate(p) for p in preview["products"]]
+    products = ShopPreview.model_validate(preview["shops"][0]).products
     assert products[0].effects == {"data": 40} and products[0].price == Decimal("0.5")
     assert all(r.method == "GET" for r in api.calls)
     assert not any(r.url.path == "/api/tujuan" and r.method == "POST" for r in api.calls)
     assert (api.directory / "http-effects.json").stat().st_mode & 0o777 == 0o600
 
 
-@pytest.mark.parametrize("case", ["wallet", "price", "floor", "overflow", "closed", "forged"])
+@pytest.mark.parametrize(
+    "case", ["wallet", "price", "floor", "overflow", "resource", "phase", "closed", "forged"]
+)
 async def test_purchase_rechecks_identity_price_cash_floor_and_no_overflow(api, world, case):
-    product = (await api.preview("data"))["products"][0]
+    product = (await api.preview("data"))["shops"][0]["products"][0]
     wallet = "35"
+    resource = 50
     if case == "wallet":
         world["me"]["balanceMilli"] -= 1
     if case == "price":
@@ -175,23 +207,120 @@ async def test_purchase_rechecks_identity_price_cash_floor_and_no_overflow(api, 
         wallet = "20.49"
         world["me"]["balanceMilli"] = 20490
     if case == "overflow":
-        world["ojol"]["bars"]["kuota"] = 61
+        resource = 61
+        world["ojol"]["bars"]["kuota"] = resource
+    if case == "resource":
+        world["ojol"]["bars"]["kuota"] = 49
+    if case == "phase":
+        world["ojol"]["trip"] = trip()
     if case == "closed":
         world["shop"]["open"] = False
     if case == "forged":
         product["price"] = "0.001"
     with pytest.raises(HttpCoreError):
-        await api.purchase(product, wallet, "0", str(uuid4()))
+        await api.purchase(product, wallet, resource, "0", str(uuid4()))
     assert not any(r.method == "POST" for r in api.calls)
 
 
 async def test_purchase_uses_fresh_observed_item_and_single_request_id(api):
-    product = (await api.preview("data"))["products"][0]
+    product = (await api.preview("data"))["shops"][0]["products"][0]
     request_id = str(uuid4())
-    await api.purchase(product, "35", "20", request_id)
+    await api.purchase(product, "35", 50, "20", request_id)
     posts = [r for r in api.calls if r.method == "POST"]
     assert len(posts) == 1 and posts[0].url.path == f"/api/shops/{SHOP}/buy"
     assert json.loads(posts[0].content) == {"item": "pulsa", "requestId": request_id}
+
+
+@pytest.mark.parametrize(
+    ("resource", "category", "item", "label"),
+    [
+        ("fuel", "spbu-pertamina", "isi-pertalite", "Isi Pertalite"),
+        ("condition", "bengkel-motor", "tambal-ban", "Tambal ban"),
+        ("data", "konter-pulsa", "pulsa", "Isi pulsa"),
+    ],
+)
+async def test_brand_wins_over_cheaper_fallback_and_ranks_branches(
+    api, world, settings, resource, category, item, label
+):
+    world["ojol"]["bars"]["kendaraan"] = 50
+    state = await api.snapshot()
+    add_shop(world, 8, "AkademisXai", category, item, label, 100)
+    add_shop(world, 9, "Cabang aKaDeMiS.AI Barat", category, item, label, 1200)
+    selected = add_shop(world, 20, "Cabang AKADEMIS.AI Timur", category, item, label, 900, plang="")
+    result = await api.preview(resource)
+    shops = [ShopPreview.model_validate(shop) for shop in result["shops"]]
+    (shop, plan), deferred = select_shop(state, resource, shops, settings, Decimal(0))
+    assert shop.id == selected and shop.preferred and plan.total_cost == Decimal("0.9")
+    assert not deferred
+    assert all(request.method == "GET" for request in api.calls)
+
+
+@pytest.mark.parametrize("cause", ["closed", "mine", "sold_out", "budget", "overflow"])
+async def test_fallback_when_preferred_shop_has_no_eligible_plan(api, world, settings, cause):
+    settings = settings.model_copy(update={"max_spend": Decimal(1)})
+    item, label = ("paket-data", "Paket data") if cause == "overflow" else ("pulsa", "Isi pulsa")
+    preferred = add_shop(
+        world, 8, "Akademis.ai", "konter-pulsa", item, label, 1200 if cause == "budget" else 800
+    )
+    catalog = world["shops"][preferred]
+    catalog["open"] = cause != "closed"
+    catalog["mine"] = cause == "mine"
+    catalog["menu"][0]["habis"] = cause == "sold_out"
+    state = await api.snapshot()
+    result = await api.preview("data")
+    shops = [ShopPreview.model_validate(shop) for shop in result["shops"]]
+    (shop, _), deferred = select_shop(state, "data", shops, settings, Decimal(0))
+    assert shop.id == SHOP and not shop.preferred and not deferred
+
+
+async def test_preferred_spbu_can_service_motor_but_regular_spbu_is_not_fallback(
+    api, world, settings
+):
+    world["ojol"]["bars"]["kendaraan"] = 50
+    state = await api.snapshot()
+    add_shop(world, 8, "SPBU biasa", "spbu-pertamina", "tambal-ban", "Tambal ban", 100)
+    preferred = add_shop(
+        world, 9, "SPBU Akademis.ai", "spbu-pertamina", "isi-angin", "Isi angin", 200
+    )
+    fallback = add_shop(
+        world, 10, "Bengkel biasa", "bengkel-motor", "tambal-ban", "Tambal ban", 300
+    )
+    for is_open, expected in ((True, preferred), (False, fallback)):
+        world["shops"][preferred]["open"] = is_open
+        result = await api.preview("condition")
+        shops = [ShopPreview.model_validate(shop) for shop in result["shops"]]
+        (shop, _), deferred = select_shop(state, "condition", shops, settings, Decimal(0))
+        assert shop.id == expected and not deferred
+
+
+async def test_incomplete_scan_clears_previous_preview_and_never_buys(api, world):
+    product = (await api.preview("data"))["shops"][0]["products"][0]
+    add_shop(world, 8, "Akademis.ai", "konter-pulsa", "pulsa", "Isi pulsa", 500)
+    world["failed_paths"].add("/api/world/plots/K22-U08")
+    with pytest.raises(HttpCoreError, match="HTTP404"):
+        await api.preview("data")
+    with pytest.raises(HttpCoreError, match="preview sesi"):
+        await api.purchase(product, "35", 50, "20", str(uuid4()))
+    assert all(request.method == "GET" for request in api.calls)
+
+
+async def test_preview_considers_more_than_twelve_matching_shops(api, world):
+    for number in range(8, 21):
+        add_shop(world, number, "Konter biasa", "konter-pulsa", "pulsa", "Isi pulsa", 500)
+    preferred = add_shop(world, 21, "Akademis.ai", "konter-pulsa", "pulsa", "Isi pulsa", 500)
+    result = await api.preview("data")
+    assert len(result["shops"]) == 15
+    assert result["shops"][-1]["id"] == preferred
+
+
+async def test_preview_timeout_leaves_no_buyable_catalog(api, monkeypatch):
+    product = (await api.preview("data"))["shops"][0]["products"][0]
+    monkeypatch.setattr(api, "preview_shop", AsyncMock(side_effect=TimeoutError))
+    with pytest.raises(HttpCoreError, match="Deadline preview"):
+        await api.preview("data")
+    with pytest.raises(HttpCoreError, match="preview sesi"):
+        await api.purchase(product, "35", 50, "20", str(uuid4()))
+    assert all(request.method == "GET" for request in api.calls)
 
 
 @pytest.mark.parametrize("method", ["GET", "POST"])
@@ -260,7 +389,13 @@ async def test_real_stdio_mcp_exposes_only_ojol_tools_and_blocks_test_network(se
         assert not hasattr(ui, "fallback")
 
 
-async def test_http_controller_keeps_pending_request_id_and_books_once(api, world, settings):
+@pytest.mark.parametrize("preferred", [False, True])
+async def test_http_controller_keeps_pending_request_id_and_books_once(
+    api, world, settings, preferred
+):
+    shop_id = SHOP
+    if preferred:
+        shop_id = add_shop(world, 8, "Akademis.ai", "konter-pulsa", "pulsa", "Isi pulsa", 500)
     journal = Journal(settings.runtime_dir)
     run = journal.start(settings)
     ui = HttpUI(settings.model_copy(update={"core": "http"}))
@@ -297,6 +432,14 @@ async def test_http_controller_keeps_pending_request_id_and_books_once(api, worl
         world["time"]["now"] = "2030-01-02T10:00:01Z"
         await controller.job_action(await ui.snapshot(), "complete")
         assert Decimal(journal.profit(run)["laba_bersih"]) == Decimal("0.220")
+        purchase = next(row for row in journal.history()["actions"] if row["kind"] == "purchase")
+        selection = json.loads(purchase["payload"])
+        assert selection["source"] == ("akademis" if preferred else "cadangan")
+        assert selection["shop_id"] == shop_id
+        assert any(
+            r.method == "POST" and r.url.path == f"/api/shops/{shop_id}/buy" for r in api.calls
+        )
+        assert "Akademis.ai" in selection["reason"]
         assert all(row["status"] == "verified" for row in journal.history()["actions"])
         assert len([r for r in api.calls if r.method == "POST"]) == 2
     finally:

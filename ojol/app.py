@@ -9,7 +9,7 @@ from google.adk.sessions import InMemorySessionService
 from google.adk.tools.tool_context import ToolContext
 from google.genai import types
 
-from .controller import Controller, StopRequested, load_catalog
+from .controller import Controller, StopRequested
 from .finance import completion_evidence
 from .http_core import HttpUI
 from .journal import Journal
@@ -43,17 +43,14 @@ class OjolAutomationAgent(BaseAgent):
                     "mcp": "Ojol HTTP stdio via ADK McpToolset",
                     "core": ui.core_name,
                     "snapshot": state.model_dump(mode="json"),
-                    "next": next_step(
-                        state, self.settings, load_catalog(self.settings.runtime_dir)
-                    ).model_dump(mode="json"),
+                    "next": next_step(state, self.settings).model_dump(mode="json"),
                 }
                 if self.shop:
-                    name, products = await ui.open_shop(self.shop)
-                    output["shop"] = {
-                        "name": name,
-                        "products": [item.model_dump(mode="json") for item in products],
-                    }
-                    await ui.work()
+                    shops = await ui.preview_shops(self.shop)
+                    output["shops"] = [
+                        {**shop.model_dump(mode="json"), "preferred": shop.preferred}
+                        for shop in shops
+                    ]
                 print(json.dumps(output, ensure_ascii=False, indent=2))
             elif self.command == "reconcile":
                 journal = Journal(self.settings.runtime_dir)

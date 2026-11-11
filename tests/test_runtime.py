@@ -40,13 +40,13 @@ def test_journal_write_before_click_blocks_unknown_replay(settings, state):
     journal.close()
 
 
-async def test_purchase_verified_by_wallet_and_resource(settings, state):
+async def test_purchase_verified_by_wallet_and_resource(settings, state, shop_preview):
     product = Product(
         name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
     )
     after = state.model_copy(update={"wallet": state.wallet - Decimal("0.5"), "data": 86})
     ui = SimpleNamespace(
-        open_shop=AsyncMock(return_value=("Konter fixture", [product])),
+        preview_shops=AsyncMock(return_value=[shop_preview([product])]),
         buy=AsyncMock(),
         snapshot=AsyncMock(return_value=after),
     )
@@ -59,12 +59,12 @@ async def test_purchase_verified_by_wallet_and_resource(settings, state):
     journal.close()
 
 
-async def test_timeout_does_not_repeat_purchase(settings, state):
+async def test_timeout_does_not_repeat_purchase(settings, state, shop_preview):
     product = Product(
         name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
     )
     ui = SimpleNamespace(
-        open_shop=AsyncMock(return_value=("Konter fixture", [product])),
+        preview_shops=AsyncMock(return_value=[shop_preview([product])]),
         buy=AsyncMock(side_effect=TimeoutError),
     )
     journal = Journal(settings.runtime_dir)
@@ -175,7 +175,7 @@ def test_cli_live_and_http_blocked_in_testing(settings, monkeypatch, capsys):
     assert "diblokir" in capsys.readouterr().err
 
 
-async def test_complete_loop_maintains_searches_waits_and_claims(settings, state):
+async def test_complete_loop_maintains_searches_waits_and_claims(settings, state, shop_preview):
     settings = settings.model_copy(update={"max_jobs": 1})
     product = Product(
         name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
@@ -203,7 +203,7 @@ async def test_complete_loop_maintains_searches_waits_and_claims(settings, state
         }
     )
     ui = SimpleNamespace(
-        open_shop=AsyncMock(return_value=("Konter fixture", [product])),
+        preview_shops=AsyncMock(return_value=[shop_preview([product])]),
         buy=AsyncMock(),
         job_click=AsyncMock(),
         snapshot=AsyncMock(
@@ -232,15 +232,43 @@ async def test_complete_loop_maintains_searches_waits_and_claims(settings, state
     journal.close()
 
 
+async def test_capacity_deferral_checks_next_resource_on_same_snapshot(
+    settings, state, shop_preview
+):
+    state = state.model_copy(update={"fuel": 45})
+    fuel = Product(
+        name="Isi Pertalite", price="0.5", effects={"fuel": 60}, row_text="fuel", enabled=True
+    )
+    data = Product(
+        name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="data", enabled=True
+    )
+    after = state.model_copy(update={"wallet": state.wallet - Decimal("0.5"), "data": 86})
+    ui = SimpleNamespace(
+        preview_shops=AsyncMock(side_effect=[[shop_preview([fuel])], [shop_preview([data])]]),
+        buy=AsyncMock(),
+        snapshot=AsyncMock(side_effect=[state, after, StopRequested("done")]),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        with pytest.raises(StopRequested, match="done"):
+            await controller.run()
+        assert [call.args for call in ui.preview_shops.await_args_list] == [("fuel",), ("data",)]
+        ui.buy.assert_awaited_once_with(data, state.wallet, state.data, settings.min_balance)
+        assert len(journal.history()["actions"]) == 1
+    finally:
+        journal.close()
+
+
 async def test_cancel_before_purchase_sends_nothing(settings, state):
-    ui = SimpleNamespace(open_shop=AsyncMock(), buy=AsyncMock())
+    ui = SimpleNamespace(preview_shops=AsyncMock(), buy=AsyncMock())
     journal = Journal(settings.runtime_dir)
     cancel = asyncio.Event()
     cancel.set()
     controller = Controller(ui, settings, journal, journal.start(settings), cancel)
     with pytest.raises(StopRequested):
         await controller.purchase(state, "data")
-    ui.open_shop.assert_not_awaited()
+    ui.preview_shops.assert_not_awaited()
     ui.buy.assert_not_awaited()
     assert not journal.history()["actions"]
     journal.close()

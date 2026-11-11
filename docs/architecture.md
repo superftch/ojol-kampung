@@ -40,7 +40,7 @@ Default3worker adalah pembatas operasional awal, bukan hasil pengukuran. Contain
 
 ## HTTP dan transaksi
 
-Empat tool MCP: snapshot, preview toko, beli satu item, aksi Ojol. Adapter hanya mengizinkan origin/path/metode game yang diperiksa. Snapshot membaca wallet/Ojol/kebutuhan/waktu server; milli-koin memakai Decimal, arrival memakai waktu server. Preview toko tidak mengirim POST perjalanan. Efek item berasal dari data bundle client tanpa mengeksekusi JavaScript, cache mengikuti `configVersion`.
+Empat tool MCP: snapshot, preview toko, beli satu item, aksi Ojol. Adapter hanya mengizinkan origin/path/metode game yang diperiksa. Snapshot membaca wallet/Ojol/kebutuhan/waktu server; milli-koin memakai Decimal, arrival memakai waktu server. Preview membaca kandidat toko satu desa dengan maksimal empat pemeriksaan paralel, tanpa POST perjalanan. Planner memilih rencana isi ulang yang layak dan mengurutkan Akademis.ai lebih dulu. Pembelian memeriksa ulang fase, saldo, resource, dan katalog sebelum POST. Efek item berasal dari data bundle client tanpa mengeksekusi JavaScript, cache mengikuti `configVersion`.
 
 GET sementara gagal dicoba3kali dengan backoff1/2detik. Auth/redirect ditolak. POST satu percobaan; timeout write tidak menyebabkan retry. Batas request server MCP30detik, transport MCP35detik dan tunggu worker40detik. Stop diperiksa selama menunggu tool dan countdown.
 

@@ -4,7 +4,7 @@ import pytest
 from pydantic import ValidationError
 
 from ojol.models import Product, Settings, Snapshot
-from ojol.planner import best_value_product, decimal_id, next_step, parse_snapshot, select_product
+from ojol.planner import decimal_id, next_step, parse_snapshot, select_shop
 
 
 @pytest.mark.parametrize(
@@ -81,14 +81,23 @@ def product(name, price, resource, gain, enabled=True):
     return Product(name=name, price=price, effects={resource: gain}, row_text=name, enabled=enabled)
 
 
-def test_economical_data_replenishment(state, settings):
+@pytest.fixture
+def select_product(shop_preview):
+    def select(state, resource, products, settings, spent):
+        selection, _ = select_shop(state, resource, [shop_preview(products)], settings, spent)
+        return selection[1] if selection else None
+
+    return select
+
+
+def test_economical_data_replenishment(state, settings, select_product):
     products = [product("Isi pulsa", "0.5", "data", 40), product("Paket data", "1", "data", 60)]
     plan = select_product(state, "data", products, settings, Decimal(0))
     assert plan.product.name == "Isi pulsa"
     assert plan.projected_percent == 86 and plan.total_cost == Decimal("0.5")
 
 
-def test_only_motor_fuel_not_solar_or_electric(state, settings):
+def test_only_motor_fuel_not_solar_or_electric(state, settings, select_product):
     state = state.model_copy(update={"fuel": 30})
     products = [
         product("Isi Solar (mobil)", "0.1", "fuel", 80),
@@ -99,15 +108,19 @@ def test_only_motor_fuel_not_solar_or_electric(state, settings):
     assert plan.product.name == "Isi Pertalite"
 
 
-def test_capacity_waste_accounted(state, settings):
+def test_capacity_waste_accounted(state, settings, select_product, shop_preview):
     state = state.model_copy(update={"fuel": 59})
     products = [
         product("Isi Pertalite", "1", "fuel", 60),
         product("Isi Pertamax", "1.5", "fuel", 100),
     ]
     assert select_product(state, "fuel", products, settings, Decimal(0)) is None
+    assert select_shop(state, "fuel", [shop_preview(products)], settings, Decimal(0)) == (
+        None,
+        True,
+    )
     assert (
-        next_step(state.model_copy(update={"data": 80}), settings, {"fuel": products}).action
+        next_step(state.model_copy(update={"data": 80}), settings, deferred={"fuel"}).action
         == "search"
     )
     plan = select_product(
@@ -116,15 +129,7 @@ def test_capacity_waste_accounted(state, settings):
     assert plan.product.name == "Isi Pertalite" and plan.projected_percent == 100
 
 
-def test_best_nominal_value_stays_within_safe_reserve(settings):
-    products = [
-        product("Isi Pertalite", "1", "fuel", 60),
-        product("Isi Pertamax", "1.5", "fuel", 100),
-    ]
-    assert best_value_product("fuel", products, settings).name == "Isi Pertalite"
-
-
-def test_no_purchase_can_overflow(state, settings):
+def test_no_purchase_can_overflow(state, settings, select_product):
     catalogs = {
         "fuel": [
             product("Isi Pertalite", "1", "fuel", 60),
@@ -148,7 +153,7 @@ def test_no_purchase_can_overflow(state, settings):
                 assert plan.projected_percent <= 100
 
 
-def test_workshop_best_value_is_tire_patch(state, settings):
+def test_workshop_best_value_is_tire_patch(state, settings, select_product):
     state = state.model_copy(update={"condition": 59})
     products = [
         product("Tambal ban", "0.5", "condition", 25),
@@ -159,7 +164,7 @@ def test_workshop_best_value_is_tire_patch(state, settings):
     assert plan.product.name == "Tambal ban" and plan.projected_percent == 84
 
 
-def test_budget_reserve_price_disabled(state, settings):
+def test_budget_reserve_price_disabled(state, settings, select_product):
     settings = settings.model_copy(update={"max_spend": Decimal(10), "min_balance": Decimal(5)})
     products = [product("Isi pulsa", "0.5", "data", 40)]
     assert select_product(state, "data", products, settings, Decimal("9.6")) is None
@@ -169,7 +174,7 @@ def test_budget_reserve_price_disabled(state, settings):
     assert select_product(state, "data", products, settings, Decimal(0)) is None
 
 
-def test_multi_unit_plan_never_assumes_one_click_sufficient(state, settings):
+def test_multi_unit_plan_never_assumes_one_click_sufficient(state, settings, select_product):
     state = state.model_copy(update={"data": 5})
     plan = select_product(
         state, "data", [product("Isi pulsa", "0.5", "data", 40)], settings, Decimal(0)

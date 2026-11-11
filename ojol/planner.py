@@ -1,7 +1,7 @@
 import re
 from decimal import ROUND_CEILING, Decimal
 
-from .models import Product, PurchasePlan, Settings, Snapshot, Step
+from .models import PurchasePlan, Resource, Settings, ShopPreview, Snapshot, Step
 
 SLEEPING_NOTICE = re.compile(r"(?:^|\n)\s*Kamu sedang tidur\b", re.IGNORECASE)
 
@@ -58,7 +58,7 @@ def parse_snapshot(data: dict) -> Snapshot:
 
 
 def next_step(
-    state: Snapshot, settings: Settings, catalog: dict[str, list[Product]] | None = None
+    state: Snapshot, settings: Settings, *, deferred: set[Resource] | None = None
 ) -> Step:
     if is_sleeping(state):
         return Step(
@@ -85,20 +85,10 @@ def next_step(
         return Step(action="stop", reason="Status Ojol tidak dikenal; tidak menebak tombol.")
     resources = sorted((getattr(state, key), key) for key in ("fuel", "condition", "data"))
     for value, resource in resources:
-        if value < settings.threshold:
-            products = (catalog or {}).get(resource)
-            best = best_value_product(resource, products, settings) if products else None
-            ceiling = (
-                min(settings.threshold, 100 - best.effects[resource])
-                if best
-                else settings.threshold
+        if value < settings.threshold and resource not in (deferred or ()):
+            return Step(
+                action="maintain", resource=resource, reason=f"{resource} {value}% di bawah target"
             )
-            if value <= ceiling or value <= settings.resource_reserve_percent:
-                return Step(
-                    action="maintain",
-                    resource=resource,
-                    reason=f"{resource} {value}%: batas isi tanpa efek terbuang {ceiling}%",
-                )
     if any("Cari order" in button for button in state.buttons):
         return Step(action="search", reason="Resource aman, cari order melalui UI.")
     if any(
@@ -115,67 +105,60 @@ ALLOWED_ITEMS = {
 }
 
 
-def best_value_product(
-    resource: str, products: list[Product], settings: Settings
-) -> Product | None:
-    safe = [
-        item
-        for item in products
-        if item.name in ALLOWED_ITEMS[resource]
-        and item.enabled
-        and 0 < item.effects.get(resource, 0) <= 100 - settings.resource_reserve_percent
-    ]
-    return (
-        min(safe, key=lambda item: (item.price / item.effects[resource], item.price, item.name))
-        if safe
-        else None
-    )
-
-
-def select_product(
-    state: Snapshot, resource: str, products: list[Product], settings: Settings, spent: Decimal
-) -> PurchasePlan | None:
+def select_shop(
+    state: Snapshot,
+    resource: Resource,
+    shops: list[ShopPreview],
+    settings: Settings,
+    spent: Decimal,
+) -> tuple[tuple[ShopPreview, PurchasePlan] | None, bool]:
     current = getattr(state, resource)
     if current >= settings.threshold:
-        return None
-    best = best_value_product(resource, products, settings)
-    if best is None:
-        return None
+        return None, False
+    above_reserve = current > settings.resource_reserve_percent
     candidates = []
-    for product in products:
-        gain = product.effects.get(resource, 0)
-        if product.name not in ALLOWED_ITEMS[resource] or not product.enabled or gain <= 0:
-            continue
-        if product != best and current > settings.resource_reserve_percent:
-            continue
-        quantity = int(
-            (Decimal(settings.threshold - current) / gain).to_integral_value(rounding=ROUND_CEILING)
-        )
-        total = product.price * quantity
-        projected = current + gain * quantity
-        if projected > 100:
-            continue
-        if (
-            settings.max_spend is not None and spent + total > settings.max_spend
-        ) or state.wallet - total < settings.min_balance + Decimal("0.01"):
-            continue
-        plan = PurchasePlan(
-            resource=resource,
-            product=product,
-            quantity=quantity,
-            total_cost=total,
-            projected_percent=projected,
-        )
-        candidates.append(plan)
-    return (
-        min(
-            candidates,
-            key=lambda plan: (
-                plan.total_cost / (plan.projected_percent - current),
-                plan.total_cost,
-                plan.product.name,
-            ),
-        )
-        if candidates
-        else None
+    capacity_blocked = False
+    for shop in shops:
+        for product in shop.products:
+            gain = product.effects.get(resource, 0)
+            if product.name not in ALLOWED_ITEMS[resource] or not product.enabled or gain <= 0:
+                continue
+            quantity = int(
+                (Decimal(settings.threshold - current) / gain).to_integral_value(
+                    rounding=ROUND_CEILING
+                )
+            )
+            total = product.price * quantity
+            if (
+                settings.max_spend is not None and spent + total > settings.max_spend
+            ) or state.wallet - total < max(Decimal(20), settings.min_balance + Decimal("0.01")):
+                continue
+            projected = current + gain * quantity
+            if projected > 100:
+                capacity_blocked = True
+                continue
+            candidates.append(
+                (
+                    shop,
+                    PurchasePlan(
+                        resource=resource,
+                        product=product,
+                        quantity=quantity,
+                        total_cost=total,
+                        projected_percent=projected,
+                    ),
+                )
+            )
+    selection = min(
+        candidates,
+        key=lambda choice: (
+            not choice[0].preferred,
+            choice[1].total_cost / (choice[1].projected_percent - current),
+            choice[1].total_cost,
+            choice[0].distance_squared,
+            choice[0].id,
+            choice[1].product.row_text,
+        ),
+        default=None,
     )
+    return selection, selection is None and above_reserve and capacity_blocked
