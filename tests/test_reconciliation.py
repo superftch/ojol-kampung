@@ -71,8 +71,9 @@ async def test_timed_out_claim_reconciles_receipt_without_another_post(settings,
         assert sync["snapshot"]["game_history"][0]["id"] == "fixture-trip"
 
 
+@pytest.mark.parametrize("legacy_snapshot", [False, True])
 async def test_old_claim_can_handoff_current_state_without_attributing_income(
-    settings, state, monkeypatch
+    settings, state, monkeypatch, legacy_snapshot
 ):
     before, after = claim_states(state)
     before = before.model_copy(update={"trip_id": None})
@@ -98,6 +99,13 @@ async def test_old_claim_can_handoff_current_state_without_attributing_income(
     with closing(Journal(settings.runtime_dir)) as journal:
         run = journal.start(settings)
         action = journal.begin(run, "complete", before, {})
+        if legacy_snapshot:
+            saved = before.model_dump(mode="json", exclude={"trip_id", "game_history"})
+            saved["history_done_at"] = []
+            with journal.db:
+                journal.db.execute(
+                    "UPDATE actions SET before_state=? WHERE id=?", (json.dumps(saved), action)
+                )
         journal.settle(action, False)
         await reconcile(ui, journal)
         assert journal.history()["actions"][0]["status"] == "handed_off"

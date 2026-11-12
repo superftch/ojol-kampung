@@ -15,6 +15,14 @@ UNRESOLVED_ACTION = (
 )
 
 
+def load_journal_snapshot(value):
+    data = json.loads(value)
+    if isinstance(data, dict):
+        # Older snapshots stored timestamps without the receipt IDs used today.
+        data.pop("history_done_at", None)
+    return Snapshot.model_validate(data)
+
+
 def unresolved_action(directory: Path):
     path = directory / "history.sqlite3"
     if not path.is_file():
@@ -96,7 +104,7 @@ class Journal:
         row = self.db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
         if not row or row["kind"] != "search" or row["status"] not in {"pending", "uncertain"}:
             return None
-        before = Snapshot.model_validate_json(row["before_state"])
+        before = load_journal_snapshot(row["before_state"])
         # Hand off the currently proven state without attributing it to the original click.
         if (
             before.phase not in {"idle", "sleeping"}
@@ -229,7 +237,7 @@ class Journal:
         row = self.db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
         if not row or row["kind"] != "complete" or row["status"] not in {"pending", "uncertain"}:
             return None
-        before = Snapshot.model_validate_json(row["before_state"])
+        before = load_journal_snapshot(row["before_state"])
         if (
             before.phase != "complete"
             or not before.observed_at <= observed.observed_at < after.observed_at
@@ -314,8 +322,8 @@ class Journal:
             return None
         payload = json.loads(row["payload"])
         before, after = (
-            Snapshot.model_validate_json(row["before_state"]),
-            Snapshot.model_validate_json(row["after_state"]),
+            load_journal_snapshot(row["before_state"]),
+            load_journal_snapshot(row["after_state"]),
         )
         detail = {
             "action_id": row["id"],

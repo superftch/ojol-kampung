@@ -100,8 +100,15 @@ def next_step(
 
 
 ALLOWED_ITEMS = {
-    "fuel": {"Isi Pertalite", "Isi Pertamax"},
-    "condition": {"Servis motor", "Ganti oli", "Tambal ban", "Isi angin", "Cuci motor"},
+    "fuel": {"Isi Pertalite", "Isi Pertamax", "Isi daya SPKLU (mobil listrik)"},
+    "condition": {
+        "Servis motor",
+        "Ganti oli",
+        "Tambal ban",
+        "Isi angin",
+        "Cuci motor",
+        "Servis mobil",
+    },
     "data": {"Isi pulsa", "Paket data", "Servis HP", "Casing HP"},
 }
 
@@ -125,6 +132,18 @@ def select_shop(
         for product in shop.products:
             gain = product.effects.get(resource, 0)
             if product.name not in ALLOWED_ITEMS[resource] or not product.enabled or gain <= 0:
+                continue
+            if (
+                resource == "condition"
+                and product.name == "Servis mobil"
+                and state.ojol_vehicle != "mobil"
+            ):
+                continue
+            if (
+                resource == "fuel"
+                and product.name == "Isi daya SPKLU (mobil listrik)"
+                and state.ojol_vehicle != "mobil"
+            ):
                 continue
             quantity = int(
                 (Decimal(settings.threshold - current) / gain).to_integral_value(
@@ -153,9 +172,12 @@ def select_shop(
                 )
             )
     last_purchases = last_purchases or {}
+    value_first = resource == "condition" and state.ojol_vehicle == "mobil"
     selection = min(
         candidates,
         key=lambda choice: (
+            choice[1].total_cost / (choice[1].projected_percent - current) if value_first else 0,
+            choice[1].total_cost if value_first else 0,
             not choice[0].preferred,
             last_purchases.get(choice[0].id, 0) if choice[0].preferred else 0,
             choice[1].total_cost / (choice[1].projected_percent - current),

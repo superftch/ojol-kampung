@@ -178,6 +178,7 @@ async def api(settings, world, monkeypatch):
             return httpx.Response(409, json=world["conflicting_catalogs"][path])
         data = {
             "/api/ojol": world["ojol"],
+            "/api/kendaraan": world.get("garage", {"items": []}),
             "/api/game/me": world["me"],
             "/api/kebutuhan": world["needs"],
             "/api/time": world["time"],
@@ -219,6 +220,87 @@ def trip():
         "arriveAt": "2030-01-02T10:00:00.001Z",
         "arrived": True,
     }
+
+
+@pytest.mark.parametrize(
+    ("inventory", "vehicle"),
+    [(None, "motor"), (["motor"], "motor"), (["mobil"], "mobil"), (["motor", "mobil"], "mobil")],
+)
+async def test_order_uses_available_car_before_motor(api, world, inventory, vehicle):
+    if inventory is not None:
+        world["ojol"]["vehicles"] = inventory
+    world["ojol"]["pakai"] = {"bensin": 5, "kendaraan": 2, "kuota": 4}
+    assert (await api.snapshot()).ojol_vehicle == vehicle
+    await api.job_action("search")
+    posts = [r for r in api.calls if r.method == "POST"]
+    assert [json.loads(r.content) for r in posts] == [{"action": "ambil", "vehicle": vehicle}]
+    assert not any(r.url.path == "/api/kendaraan" for r in api.calls)
+
+
+async def test_active_motor_trip_can_finish_after_buying_car(api, world):
+    world["ojol"].update(vehicle="mobil", vehicles=["motor", "mobil"], trip=trip())
+    world["time"]["now"] = "2030-01-02T10:01:00Z"
+    assert (await api.snapshot()).ojol_vehicle == "motor"
+    await api.job_action("complete")
+    assert [json.loads(r.content) for r in api.calls if r.method == "POST"] == [
+        {"action": "selesai"}
+    ]
+
+
+@pytest.mark.parametrize(
+    ("vehicle", "item", "name"),
+    [
+        ("motor", "isi-pertalite", "Isi Pertalite"),
+        ("mobil", "isi-daya", "Isi daya SPKLU (mobil listrik)"),
+    ],
+)
+async def test_refill_uses_matching_power_source(api, world, settings, vehicle, item, name):
+    world["ojol"].update(vehicle=vehicle, vehicles=[vehicle])
+    fuel = 20 if vehicle == "motor" else 4
+    world["ojol"]["bars"]["bensin"] = fuel
+    if vehicle == "mobil":
+        world["ojol"].update(problem="Daya tidak cukup", fix="bensin")
+        with pytest.raises(HttpCoreError, match="belum mengizinkan"):
+            await api.job_action("search")
+    world["garage"] = {"items": [{"family": vehicle, "listrik": vehicle == "mobil"}]}
+    world["need_effects"]["isi-daya"] = {"bensin": 70}
+    shop = add_shop(
+        world, 2, "SPBU fixture", CATEGORIES["fuel"], "isi-pertalite", "Isi Pertalite", 1000
+    )
+    world["shops"][shop]["menu"].append(
+        {"item": "isi-daya", "name": "Isi daya SPKLU (mobil listrik)", "priceMilli": 800}
+    )
+    state = await api.snapshot()
+    previews = [ShopPreview.model_validate(row) for row in (await api.preview("fuel"))["shops"]]
+    assert [product.name for product in previews[0].products] == [name]
+    selection, _ = select_shop(state, "fuel", previews, settings, Decimal(0))
+    product = selection[1].product
+    await api.purchase(product.model_dump(mode="json"), "35", fuel, "20", str(uuid4()))
+    posts = [r for r in api.calls if r.method == "POST"]
+    assert len(posts) == 1 and json.loads(posts[0].content)["item"] == item
+    assert any(r.url.path == "/api/kendaraan" for r in api.calls) == (vehicle == "mobil")
+
+
+async def test_car_condition_prefers_lower_cost_for_same_recovery(api, world, settings):
+    world["ojol"].update(vehicle="mobil", vehicles=["motor", "mobil"])
+    world["ojol"]["bars"]["kendaraan"] = 20
+    world["need_effects"]["servis-mobil"] = {"kendaraan": 60}
+    add_shop(
+        world, 2, "Akademis.ai Mobil", CATEGORIES["condition"], "servis-mobil", "Servis mobil", 2500
+    )
+    add_shop(
+        world, 3, "Bengkel fixture", CATEGORIES["condition"], "servis-motor", "Servis motor", 1500
+    )
+    state = await api.snapshot()
+    shops = [ShopPreview.model_validate(row) for row in (await api.preview("condition"))["shops"]]
+    selection, _ = select_shop(state, "condition", shops, settings, Decimal(0))
+    product = selection[1].product
+    assert product.name == "Servis motor"
+    assert selection[1].total_cost == Decimal("1.5")
+    await api.purchase(product.model_dump(mode="json"), "35", 20, "20", str(uuid4()))
+    assert [json.loads(r.content)["item"] for r in api.calls if r.method == "POST"] == [
+        "servis-motor"
+    ]
 
 
 async def test_snapshot_keeps_receipt_ids_game_totals_and_home(api, world):

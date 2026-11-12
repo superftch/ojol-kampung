@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 Coin = Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
 Percent = Annotated[int, Field(ge=0, le=100)]
 Resource = Literal["fuel", "condition", "data"]
+OjolVehicle = Literal["motor", "mobil"]
 Need = Literal["makan", "kesehatan", "fisik", "rekreasi", "penampilan", "rumah"]
 NEEDS = get_args(Need)
 
@@ -150,6 +151,7 @@ class Snapshot(Model):
     home_plot: str | None = None
     village: str | None = None
     sleep_schedule: SleepSchedule | None = None
+    ojol_vehicle: OjolVehicle | None = None
 
     def resource_value(self, resource: Resource | Need):
         return self.needs.get(resource) if resource in NEEDS else getattr(self, resource)

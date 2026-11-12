@@ -266,6 +266,9 @@ class ControlService:
         auto_start = "ON" if self.settings.auto_start else "OFF"
         if self.auto_start_pending:
             auto_start += " · menunggu maintenance" if maintenance else " · menunggu slot"
+        vehicle = state.get("ojol_vehicle")
+        if vehicle in ("motor", "mobil"):
+            lines.extend(["", f"Kendaraan Ojol • {vehicle.capitalize()}"])
         lines.extend(
             [
                 "",

@@ -9,8 +9,9 @@ from pathlib import Path
 from .finance import completion_evidence
 from .healing import write_private
 from .http_api import HttpCoreError
+from .journal import load_journal_snapshot
 from .maintenance import SCHEDULE_FILE, held_window
-from .models import NEEDS, Snapshot, now
+from .models import NEEDS, now
 from .telegram import queue_notice
 
 
@@ -32,7 +33,7 @@ async def reconcile(ui, journal):
     }
     state = None
     for action in journal.unresolved():
-        before = Snapshot.model_validate_json(action["before_state"])
+        before = load_journal_snapshot(action["before_state"])
         state = await ui.snapshot()
         evidence = None
         if action["kind"] == "search":

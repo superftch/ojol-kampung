@@ -12,7 +12,8 @@ Tabel ini mencakup seluruh request yang dipanggil adapter Ojol ke `https://www.k
 
 | Endpoint | Pemakaian | Bukti |
 |---|---|---|
-| GET `/api/ojol` | mitra, kendaraan, resource, trip, tarif, payout/history | HTTP200 dan konsumsi client |
+| GET `/api/ojol` | `vehicle` default, `vehicles` tersedia, `bars` dan `pakai` bersama, mitra, trip, tarif, payout/history | HTTP200 13 November 2026 dengan `vehicle: "mobil"`, `vehicles: ["motor", "mobil"]`, dan konsumsi `bensin: 5`, `kendaraan: 2`, `kuota: 4` |
+| GET `/api/kendaraan` | `items[]`, termasuk `family`, `listrik`, dan `name` | Bundle `3tkrjjmq3rsag.js` dan HTTP200 13 November 2026 dengan Motor bebek dan Mobil listrik |
 | GET `/api/game/me` | `balanceMilli`, `configVersion`, rumah/desa, `profile.resting`, `profile.sleep` | HTTP200 historis; field tidur dicocokkan dengan bundle client tersimpan pada 12 November 2026 |
 | GET `/api/kebutuhan` | `asleep`, status kebutuhan aktif, nilai per kebutuhan, dan kandidat tempat fisik | HTTP 200 untuk status kebutuhan. Bentuk kandidat fasilitas berasal dari bundle client. |
 | GET `/api/time` | waktu server untuk arrival/countdown | HTTP200 |
@@ -23,12 +24,16 @@ Tabel ini mencakup seluruh request yang dipanggil adapter Ojol ke `https://www.k
 | GET `/kampung` | baca HTML halaman untuk menemukan bundle yang dirujuk | kode `OjolHttpApi.effects` |
 | GET `/_next/static/{path}.js` | baca efek item dari bundle yang dirujuk halaman | kode `OjolHttpApi.effects` |
 | POST `/api/shops/{businessId}/buy` | `{item, requestId}` | live: Pertalite, Tambal ban, Isi pulsa; perubahan saldo/resource terverifikasi |
-| POST `/api/ojol` | `{action:"ambil", vehicle:"motor"}` | live: trip baru dengan countdown terverifikasi |
+| POST `/api/ojol` | `{action:"ambil", vehicle:"motor"\|"mobil"}` | Motor terverifikasi historis. Pilihan mobil dan payload berasal dari `aN` di bundle `3tkrjjmq3rsag.js`. |
 | POST `/api/ojol` | `{action:"selesai"}` | live: receipt payout baru terverifikasi setelah arrival server |
 | GET `/api/facilities/{id}` | Cek status, layanan, tarif, dan cooldown fasilitas fisik yang ditawarkan game | Bundle client; alur adapter diuji dengan mock |
 | POST `/api/facilities/{id}/use` | `{requestId}` untuk fasilitas fisik gratis yang lolos pemeriksaan | Bundle client; belum dieksekusi live oleh adapter |
 
 Capture historis `/api/ojol` dalam `.local/http-discovery/ojol.json` memuat `todayCount` dan receipt `history[]` dengan `id`, `doneAt`, `kind`, `from.label`, `to.label`, serta `netMilli`. Trip aktif memuat `id` dan `arriveAt`. Adapter memakai ID receipt dan waktu server untuk rekonsiliasi, serta `netMilli` untuk ongkos diterima. Snapshot menyimpan penghitung dan riwayat yang tersedia pada respons, bukan seluruh riwayat akun. Tidak ada endpoint baru atau asumsi idempotensi POST untuk fitur ini.
+
+Panel Ojol memilih dari `vehicles`, memakai `vehicle` sebagai default UI, dan menampilkan satu set `bars` dan `pakai` untuk motor dan mobil. Bundle `0xxms-_bv3y9s.js` mendefinisikan `servis-mobil` dengan efek `kendaraan: 60` dan `isi-daya` dengan efek `bensin: 70`. Pembacaan dua katalog SPBU Utara pada 13 November 2026 menemukan `isi-daya` berlabel **Isi daya SPKLU (mobil listrik)** seharga 800 mili-koin. Pembelian SPKLU belum diuji langsung.
+
+Pada tanggal yang sama, katalog Bengkel motor Gotei menawarkan **Servis motor** 1.500 mili-koin dan **Servis mobil** 2.500 mili-koin. Efek client keduanya `kendaraan: 60`, sesuai bar Kondisi mesin bersama pada respons Ojol. Bot membandingkan biaya per poin untuk perawatan mobil dan memverifikasi kenaikan bar setelah pembelian. Penerapan servis motor pada akun yang sedang memilih mobil belum diobservasi lewat POST live.
 
 ## Bukti jadwal tidur
 

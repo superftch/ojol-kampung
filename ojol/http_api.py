@@ -27,6 +27,9 @@ ITEMS = {
     "condition": {"servis-motor", "ganti-oli", "tambal-ban", "isi-angin", "cuci-motor"},
     "data": {"pulsa", "paket-data", "servis-hp", "casing-hp"},
 }
+CAR_SERVICE = "servis-mobil"
+EV_CHARGE = "isi-daya"
+VEHICLE_ICONS = {"motor": "🛵", "mobil": "🚗"}
 WALLET_PRODUCT_CATEGORIES = {
     " ".join(name.casefold().split()): resource
     for resource, names in ALLOWED_ITEMS.items()
@@ -112,6 +115,16 @@ def need_rows(payload):
     }
 
 
+def ojol_vehicle(payload, trip):
+    if trip:
+        vehicle = trip.get("vehicle", payload.get("vehicle"))
+        return vehicle if vehicle in ("motor", "mobil") else None
+    available = payload.get("vehicles", [payload.get("vehicle")])
+    if not isinstance(available, list):
+        raise HttpCoreError("Daftar kendaraan Ojol belum dapat dibaca", recoverable=True)
+    return next((vehicle for vehicle in ("mobil", "motor") if vehicle in available), None)
+
+
 def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
     if require_ojol and (ojol["enabled"] is not True or ojol["mitra"] is not True):
         raise HttpCoreError("Akun belum menjadi mitra Ojol", category="blocked")
@@ -133,24 +146,35 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
         else None
     )
     trip = ojol.get("trip") if not require_ojol and ojol.get("mitra") is False else ojol["trip"]
+    vehicle = ojol_vehicle(ojol, trip) if require_ojol else None
+    vehicle_icon = VEHICLE_ICONS.get(vehicle, "📍")
     phase, remaining, description = "idle", None, None
-    buttons, text = ["📲 Cari order", "Berhenti jadi mitra ojol"], "Narik pakai motor"
+    buttons = ["📲 Cari order", "Berhenti jadi mitra ojol"]
+    text = f"Narik pakai {vehicle}" if vehicle else ""
     if trip:
         icon, label = KINDS[trip["kind"]]
         remaining = max(0, ceil((timestamp(trip["arriveAt"]) - server_now).total_seconds()))
         phase = "complete" if remaining == 0 else "delivering"
-        description = f"{icon} {label} · 🛵 {integer(trip['distance'])} petak · ongkos {display(coin(trip['fareMilli']))} koin | 📍 {trip['from']['label']}🏁 {trip['to']['label']}"
+        description = f"{icon} {label} · {vehicle_icon} {integer(trip['distance'])} petak · ongkos {display(coin(trip['fareMilli']))} koin | 📍 {trip['from']['label']}🏁 {trip['to']['label']}"
         buttons = [
             "✅ Sampai! Terima ongkos"
             if phase == "complete"
-            else f"🛵 Mengantar… {remaining // 60}:{remaining % 60:02}",
+            else f"{vehicle_icon} Mengantar… {remaining // 60}:{remaining % 60:02}",
             "📍 Lihat di peta",
         ]
         text = description
     if needs["asleep"] or resting:
         phase, text = "sleeping", "Karakter sedang tidur. Semua Auto dijeda sampai bangun di game."
     elif require_ojol and ojol.get("problem") and not trip:
-        raise HttpCoreError("Game menolak Ojol: periksa kondisi akun di game", category="blocked")
+        if ojol.get("fix") not in RESOURCES:
+            raise HttpCoreError(
+                "Game menolak Ojol: periksa kondisi akun di game", category="blocked"
+            )
+        buttons = ["Berhenti jadi mitra ojol"]
+    if require_ojol and phase == "idle" and vehicle is None:
+        raise HttpCoreError(
+            "Tidak ada motor atau mobil yang tersedia untuk Ojol", category="blocked"
+        )
     history = []
     game_history = {}
     for receipt in ojol["history"] if require_ojol else ojol.get("history", []):
@@ -195,11 +219,12 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
         home_plot=(me.get("home") or {}).get("plotId"),
         village=(me.get("home") or {}).get("desa"),
         sleep_schedule=sleep_schedule,
+        ojol_vehicle=vehicle,
     )
 
 
 def extract_effects(source):
-    allowed = set.union(*ITEMS.values())
+    allowed = set.union(*ITEMS.values()) | {CAR_SERVICE, EV_CHARGE}
     result = {}
     for match in re.finditer(r'"([a-z-]+)":(\{[^{}]{1,220}\})', source):
         if match[1] not in allowed:
@@ -244,6 +269,8 @@ class OjolHttpApi:
         self.client = client
         self.owns_client = client is None
         self.catalog = {}
+        self.vehicle = None
+        self.usage = None
         self.retries = 0
         self.expires_at = None
 
@@ -289,6 +316,7 @@ class OjolHttpApi:
             path
             in {
                 "/api/ojol",
+                "/api/kendaraan",
                 "/api/game/me",
                 "/api/me/koin",
                 "/api/kebutuhan",
@@ -484,7 +512,6 @@ class OjolHttpApi:
         )
         self.config_version = me["configVersion"]
         self.home = me["home"]
-        self.vehicle = ojol.get("vehicle")
         places = need_rows(needs).get("fisik", {}).get("places")
         self.physical_places = (
             [place for place in places if isinstance(place, dict)]
@@ -496,21 +523,50 @@ class OjolHttpApi:
         state = snapshot_from_api(
             ojol, me, needs, timestamp(clock["now"]), require_ojol=require_ojol
         )
-        if require_ojol and self.vehicle != "motor":
-            raise HttpCoreError("Core HTTP hanya untuk Ojol motor", category="blocked")
+        self.vehicle = state.ojol_vehicle
+        self.usage = ojol.get("pakai")
         return state
 
-    async def effects(self, *, for_needs=False):
+    async def resource_items(self, resource):
+        if self.vehicle == "mobil":
+            if resource == "condition":
+                return ITEMS[resource] | {CAR_SERVICE}
+            if resource == "fuel":
+                garage = await self.request("/api/kendaraan")
+                cars = [item for item in garage["items"] if item["family"] == "mobil"]
+                if not cars or any(type(car.get("listrik")) is not bool for car in cars):
+                    raise HttpCoreError(
+                        "Jenis pengisian mobil belum terverifikasi", category="blocked"
+                    )
+                electric = {car["listrik"] for car in cars}
+                if len(electric) != 1:
+                    raise HttpCoreError(
+                        "Ada beberapa jenis pengisian mobil di garasi", category="blocked"
+                    )
+                if True in electric:
+                    return {EV_CHARGE}
+        return ITEMS[resource]
+
+    def ojol_shop_locations(self, resource):
+        shops = SHOPS_BY_VILLAGE.get((self.home or {}).get("desa"), {})
+        locations = tuple(shops.get(resource, ()))
+        if resource == "condition" and self.vehicle == "mobil":
+            locations += tuple(shops.get("fuel", ()))
+        return tuple(dict.fromkeys(locations))
+
+    async def effects(self, *, for_needs=False, required_items=()):
         version = getattr(self, "config_version", None)
         if version is None:
             await self.snapshot()
             version = self.config_version
         cache = self.directory / "http-effects.json"
         key = "needs_effects" if for_needs else "effects"
+        required = set.union(*ITEMS.values()) | set(required_items)
         if cache.is_file():
             data = json.loads(cache.read_text())
             if data.get("version") == version and data.get(key):
-                return data[key]
+                if for_needs or required <= data[key].keys():
+                    return data[key]
         html = await self.request("/kampung", text=True)
         effects = {}
         needs_effects = {}
@@ -527,9 +583,9 @@ class OjolHttpApi:
                 if needs_effects and found_needs != needs_effects:
                     raise HttpCoreError("Efek kebutuhan antar bundle berbeda", recoverable=True)
                 needs_effects.update(found_needs)
-            if set.union(*ITEMS.values()) <= effects.keys() and (needs_effects or not for_needs):
+            if required <= effects.keys() and (needs_effects or not for_needs):
                 break
-        if not set.union(*ITEMS.values()) <= effects.keys():
+        if not required <= effects.keys():
             raise HttpCoreError("Efek produk client belum dapat diverifikasi", recoverable=True)
         write_private(
             cache, {"version": version, "effects": effects, "needs_effects": needs_effects}
@@ -538,7 +594,7 @@ class OjolHttpApi:
             raise HttpCoreError("Efek barang kebutuhan belum dapat diverifikasi", recoverable=True)
         return needs_effects if for_needs else effects
 
-    async def products(self, shop_id, resource, effects):
+    async def products(self, shop_id, resource, effects, allowed_items=None):
         catalog = await self.request("/api/shops/" + shop_id)
         if type(catalog.get("mine")) is not bool or type(catalog.get("open")) is not bool:
             raise HttpCoreError("Status atau kepemilikan toko belum dapat diverifikasi")
@@ -561,7 +617,7 @@ class OjolHttpApi:
                 if isinstance(sold_out, str) and sold_out and not sold_out.strip():
                     raise HttpCoreError("Status stok produk kebutuhan belum terverifikasi")
             else:
-                if item not in ITEMS[resource]:
+                if item not in (ITEMS[resource] if allowed_items is None else allowed_items):
                     continue
                 effect = effects[item]
                 if resource not in effect:
@@ -578,9 +634,9 @@ class OjolHttpApi:
             products.append(product)
         return catalog, products
 
-    async def preview_shop(self, location, resource, effects):
+    async def preview_shop(self, location, resource, effects, allowed_items):
         try:
-            catalog, products = await self.products(location.id, resource, effects)
+            catalog, products = await self.products(location.id, resource, effects, allowed_items)
         except ShopClosed:
             return None
         if catalog.get("plang") and catalog["plang"] != location.name:
@@ -711,7 +767,7 @@ class OjolHttpApi:
         sold_out = False
         try:
             async with asyncio.timeout(25):
-                if not getattr(self, "home", None):
+                if resource in {"fuel", "condition"} or not getattr(self, "home", None):
                     await self.snapshot()
                 if not self.home:
                     raise HttpCoreError("Rumah akun belum tersedia", category="blocked")
@@ -727,14 +783,16 @@ class OjolHttpApi:
                         if sold_out:
                             shops = [await self.fallback_need_shop(resource, effects)]
                 else:
-                    locations = SHOPS_BY_VILLAGE.get(self.home["desa"], {}).get(resource, ())
+                    locations = self.ojol_shop_locations(resource)
                     if not locations:
                         raise HttpCoreError(
                             "Toko tetap belum dikonfigurasi untuk desa akun", category="blocked"
                         )
-                    effects = await self.effects()
+                    allowed_items = await self.resource_items(resource)
+                    effects = await self.effects(required_items=allowed_items)
                     shops = await self.read_previews(
-                        self.preview_shop(location, resource, effects) for location in locations
+                        self.preview_shop(location, resource, effects, allowed_items)
+                        for location in locations
                     )
         except TimeoutError:
             raise HttpCoreError(
@@ -775,12 +833,7 @@ class OjolHttpApi:
         resource = identity["resource"]
         is_need = resource in NEEDS
         shop = self.catalog.get(resource, {}).get(shop_id)
-        if (
-            shop is None
-            or (not is_need and identity["item"] not in ITEMS.get(resource, ()))
-            or product not in shop.products
-            or not product.enabled
-        ):
+        if shop is None or product not in shop.products or not product.enabled:
             raise HttpCoreError("Produk tidak berasal dari preview sesi ini", category="rejected")
         try:
             async with asyncio.timeout(15 if is_need else None):
@@ -821,10 +874,12 @@ class OjolHttpApi:
         is_need = resource in NEEDS
         fallback = is_need and resource != "fisik" and not shop.preferred
         version = self.config_version
+        vehicle = self.vehicle
+        allowed_items = None if is_need else await self.resource_items(resource)
         if resource != "fisik":
-            effects = await self.effects(for_needs=is_need)
+            effects = await self.effects(for_needs=is_need, required_items=allowed_items or ())
         if resource != "fisik" and not fallback:
-            catalog, fresh = await self.products(shop_id, resource, effects)
+            catalog, fresh = await self.products(shop_id, resource, effects, allowed_items)
             if product not in fresh or (
                 (is_need or catalog.get("plang")) and catalog.get("plang") != shop.name
             ):
@@ -849,8 +904,11 @@ class OjolHttpApi:
                 and product in fresh_shop.products
             )
         else:
-            registry = NEED_SHOPS_BY_VILLAGE if is_need else SHOPS_BY_VILLAGE
-            locations = registry.get((self.home or {}).get("desa"), {}).get(resource, ())
+            locations = (
+                NEED_SHOPS_BY_VILLAGE.get((self.home or {}).get("desa"), {}).get(resource, ())
+                if is_need
+                else self.ojol_shop_locations(resource)
+            )
             eligible = any(location.id == shop_id for location in locations)
         current = state.resource_value(resource)
         if (
@@ -859,6 +917,7 @@ class OjolHttpApi:
             or current is None
             or current != expected_resource
             or self.config_version != version
+            or (resource in {"fuel", "condition"} and state.ojol_vehicle != vehicle)
             or self.catalog.get(resource, {}).get(shop_id) is not shop
             or not eligible
         ):
@@ -879,7 +938,23 @@ class OjolHttpApi:
                 raise HttpCoreError(
                     "Auto Ojol dinonaktifkan sebelum mencari order", category="auto_disabled"
                 )
-            return await self.request("/api/ojol", {"action": "ambil", "vehicle": "motor"})
+            if "📲 Cari order" not in state.buttons:
+                raise HttpCoreError("Game belum mengizinkan pencarian order", category="rejected")
+            usage = (
+                self.usage if self.usage is not None else {"bensin": 5, "kendaraan": 2, "kuota": 4}
+            )
+            if not isinstance(usage, dict) or not all(key in usage for key in RESOURCES):
+                raise HttpCoreError("Konsumsi order belum dapat dibaca", category="rejected")
+            if any(
+                state.resource_value(resource) < integer(usage[key])
+                for key, resource in RESOURCES.items()
+            ):
+                raise HttpCoreError(
+                    "Resource kendaraan tidak cukup untuk order", category="rejected"
+                )
+            return await self.request(
+                "/api/ojol", {"action": "ambil", "vehicle": state.ojol_vehicle}
+            )
         if kind == "complete" and state.phase == "complete":
             return await self.request("/api/ojol", {"action": "selesai"})
         raise HttpCoreError("Aksi Ojol tidak sesuai state/waktu server", category="blocked")
