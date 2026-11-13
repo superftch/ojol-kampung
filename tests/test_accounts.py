@@ -12,13 +12,14 @@ from starlette.testclient import TestClient
 
 from ojol.accounts import Accounts
 from ojol.auto_settings import AUTO_LABELS, auto_flags
+from ojol.cli import main
 from ojol.control import create_app
 from ojol.healing import write_private
 from ojol.http_api import HttpCoreError
 from ojol.http_core import HttpUI
 from ojol.maintenance import read_window
 from ojol.management import MultiAccountService
-from ojol.models import Settings
+from ojol.models import ROOT, Settings
 from ojol.session_transfer import parse_cookie_input
 from ojol.telegram import TelegramClient, queue_error
 
@@ -35,6 +36,22 @@ async def click(manager, owner, label, profile=None):
 @pytest.fixture
 def managed(settings):
     return settings.model_copy(update={"telegram_chat_id": 111})
+
+
+def test_list_accounts_prints_names_and_ids_without_archived_accounts(managed, monkeypatch, capsys):
+    registry = Accounts(managed)
+    original = registry.selected(111)
+    second = registry.create(111, "Kedua")
+    archived = registry.create(111, "Arsip")
+    registry.archive(111, archived["id"])
+    monkeypatch.setenv("OJOL_RUNTIME_DIR", str(managed.runtime_dir))
+
+    assert main(["--env-file", str(ROOT / ".env.testing"), "list-accounts"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "NAMA\tACCOUNT_ID",
+        f"Kedua\t{second['id']}",
+        f"Utama\t{original['id']}",
+    ]
 
 
 async def test_auto_menu_saves_individual_settings_for_original_account(managed):

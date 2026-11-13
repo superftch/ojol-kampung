@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from ojol.journal import Journal
+from ojol.models import GameReceipt
+from ojol.reconciliation import reconcile
 
 
 @pytest.fixture
@@ -118,24 +120,79 @@ async def test_reconcile_idle_search_records_unknown_resource_deltas_without_rep
         journal.close()
 
 
+@pytest.mark.parametrize("extra_days", [0, 1])
+async def test_reconcile_idle_search_after_balance_drop_and_new_trips(
+    settings, search_before, monkeypatch, extra_days
+):
+    before = search_before.model_copy(
+        update={
+            "wallet": Decimal("21.031"),
+            "condition": 97,
+            "history": [],
+            "today_income": Decimal(0),
+        }
+    )
+    receipt = GameReceipt(
+        id="later-trip",
+        done_at=before.observed_at + timedelta(minutes=30, days=extra_days),
+        kind="PENUMPANG",
+        origin="Toko Contoh",
+        destination="Rumah Contoh",
+        amount=Decimal("0.418"),
+    )
+    after = before.model_copy(
+        update={
+            "observed_at": before.observed_at + timedelta(hours=1, days=extra_days),
+            "wallet": Decimal("20.814"),
+            "fuel": before.fuel + 1,
+            "condition": 77,
+            "today_income": Decimal("11.247"),
+            "history": ["22.42 Toko Contoh → Rumah Contoh · +0,418"],
+            "game_history": [receipt],
+        }
+    )
+    confirmed = after.model_copy(update={"observed_at": after.observed_at + timedelta(seconds=2)})
+    ui = SimpleNamespace(snapshot=AsyncMock(side_effect=[after, confirmed]), job_click=AsyncMock())
+    monkeypatch.setattr("ojol.reconciliation.asyncio.sleep", AsyncMock())
+    journal = Journal(settings.runtime_dir)
+    try:
+        run = journal.start(settings)
+        action = journal.begin(run, "search", before, {"label": "📲 Cari order"})
+        journal.settle(action, False)
+
+        assert await reconcile(ui, journal) == confirmed
+        row = journal.history()["actions"][0]
+        assert row["status"] == "closed_idle"
+        assert row["before_state"] == before.model_dump_json()
+        assert row["after_state"] == confirmed.model_dump_json()
+        proof = json.loads(
+            journal.db.execute(
+                "SELECT data FROM events WHERE event='pencarian_ditutup_tanpa_order_aktif'"
+            ).fetchone()[0]
+        )
+        assert proof["original_outcome"] == "uncertain"
+        assert proof["wallet_delta"] == "-0.217"
+        assert proof["wallet_delta_cause"] == "not_attributed"
+        assert journal.db.execute("SELECT COUNT(*) FROM cashflows").fetchone()[0] == 0
+        assert journal.start(settings) > run
+        ui.job_click.assert_not_awaited()
+    finally:
+        journal.close()
+
+
 @pytest.mark.parametrize(
     "change",
     [
-        {"wallet": Decimal("45.08")},
-        {"fuel": 49},
-        {"condition": 72},
-        {"data": 98},
-        {"today_income": Decimal("27.00")},
-        {"history": ["22.30 A → B · +0,72"]},
         {"phase": "delivering", "remaining_seconds": 10},
         {"phase": "searching"},
         {"buttons": ["📲 Cari order", "Terima order"]},
         {"buttons": []},
         {"trip": "📍 Toko Contoh 🏁 Rumah Contoh"},
-        {"observed_at": datetime.fromisoformat("2030-01-03T15:30:31+00:00")},
+        {"trip_id": "active-trip"},
+        {"arrive_at": datetime.fromisoformat("2030-01-02T16:00:00+00:00")},
     ],
 )
-def test_idle_search_remains_blocked_with_financial_changes_gains_or_active_orders(
+def test_idle_search_remains_blocked_with_active_or_ambiguous_orders(
     settings, search_before, change
 ):
     journal = Journal(settings.runtime_dir)
@@ -349,7 +406,11 @@ async def test_reconciled_search_hands_off_current_trip_without_claiming_early_o
         {"buttons": ["✅ Sampai! Terima ongkos", "Selesaikan"]},
         {"buttons": ["✅ Sampai! Terima ongkos", "Terima order"]},
         {"wallet": Decimal("45.81")},
+        {"wallet": Decimal("45.08")},
+        {"fuel": 49},
+        {"today_income": Decimal("27.00")},
         {"history": ["22.49 Other → Route · +0,72"]},
+        {"observed_at": datetime.fromisoformat("2030-01-03T15:30:31+00:00")},
         {"remaining_seconds": 1},
     ],
 )

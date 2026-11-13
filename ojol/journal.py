@@ -110,16 +110,6 @@ class Journal:
             before.phase not in {"idle", "sleeping"}
             or observed.observed_at >= after.observed_at
             or observed.observed_at < before.observed_at
-            or before.observed_at.astimezone(WIB).date() != after.observed_at.astimezone(WIB).date()
-            or before.today_income is None
-            or any(
-                getattr(before, field) != getattr(after, field)
-                for field in ("today_income", "history")
-            )
-            or any(
-                getattr(after, field) > getattr(before, field)
-                for field in ("fuel", "condition", "data")
-            )
         ):
             return None
         exclude = {"observed_at"}
@@ -143,6 +133,8 @@ class Journal:
         if (
             after.phase in {"idle", "sleeping"}
             and after.remaining_seconds is None
+            and after.trip_id is None
+            and after.arrive_at is None
             and count(r"Cari order") == 1
             and count(r"Mencari|Terima|Ambil|Antar sekarang|Mengantar|Sampai|Selesai") == 0
             and not re.search(r"📍|🏁|→", after.trip or "")
@@ -179,9 +171,18 @@ class Journal:
             status, handoff = "handed_off", "offer_available"
         else:
             return None
-        # A stable credit alone cannot prove a payout; allow only idle closure, never a debit.
-        if after.wallet != before.wallet and (
-            status != "closed_idle" or after.wallet < before.wallet
+        # An active order needs continuity with the original search; idle only proves no order remains.
+        if status == "handed_off" and (
+            before.observed_at.astimezone(WIB).date() != after.observed_at.astimezone(WIB).date()
+            or before.today_income is None
+            or any(
+                getattr(before, field) != getattr(after, field)
+                for field in ("wallet", "today_income", "history")
+            )
+            or any(
+                getattr(after, field) > getattr(before, field)
+                for field in ("fuel", "condition", "data")
+            )
         ):
             return None
         evidence = {

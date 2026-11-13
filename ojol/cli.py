@@ -3,10 +3,11 @@ import asyncio
 import fcntl
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime
 from math import ceil
 from pathlib import Path
@@ -47,8 +48,9 @@ def parser():
         description="Ojol background melalui HTTP MCP. Default dry-run."
     )
     result.add_argument("--env-file", type=Path)
-    result.add_argument("--account", help="ID akun dari menu Telegram; default akun lama")
+    result.add_argument("--account", help="ID dari list-accounts; default akun lama")
     commands = result.add_subparsers(dest="command", required=True)
+    commands.add_parser("list-accounts", help="Tampilkan nama dan ID akun yang belum diarsipkan")
     for name in ("run", "start"):
         command = commands.add_parser(name)
         command.add_argument(
@@ -86,6 +88,19 @@ def main(argv=None):
     args = parser().parse_args(argv)
     try:
         settings = load_settings(args.env_file)
+        if args.command == "list-accounts":
+            if args.account:
+                raise ValueError("Jalankan list-accounts tanpa --account")
+            path = settings.runtime_dir / "accounts.sqlite3"
+            if not path.is_file():
+                raise ValueError("Registry akun belum tersedia")
+            with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+                print("NAMA\tACCOUNT_ID")
+                for name, identifier in db.execute(
+                    "SELECT name, id FROM accounts WHERE archived=0 ORDER BY name, id"
+                ):
+                    print(f"{name}\t{identifier}")
+            return 0
         if args.account:
             from .accounts import Accounts
 
@@ -209,7 +224,11 @@ def main(argv=None):
         from pydantic import ValidationError
 
         message = "Konfigurasi/state tidak valid" if isinstance(exc, ValidationError) else str(exc)
-        if args.command != "cleanup-scan" and "settings" in locals() and settings.env != "testing":
+        if (
+            args.command not in {"cleanup-scan", "list-accounts"}
+            and "settings" in locals()
+            and settings.env != "testing"
+        ):
             from .telegram import flush_notices, queue_error, redact
 
             status_path = settings.runtime_dir / "status.json"
