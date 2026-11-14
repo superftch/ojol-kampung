@@ -12,6 +12,7 @@ from starlette.testclient import TestClient
 
 from ojol.control import ControlService, create_app
 from ojol.healing import write_private
+from ojol.http_api import HttpCoreError
 from ojol.login_access import LoginAccess
 from ojol.models import Settings, SleepSchedule
 from ojol.telegram import (
@@ -142,6 +143,114 @@ async def test_error_stops_before_send_retries_and_recovers_interrupted_outbox(s
     assert notice.with_suffix(".sent").exists()
 
 
+@pytest.mark.parametrize(
+    "error,stage,expected",
+    [
+        (HttpCoreError("fixture", category="auth"), "observe.ojol", "Import Cookie"),
+        (HttpCoreError("fixture", category="uncertain"), "job.search.click", "pemeriksaan hasil"),
+        (HttpCoreError("fixture", category="transport"), "observe.ojol", "Coba lagi"),
+        (HttpCoreError("fixture", category="schema"), "observe.ojol", "perubahan API"),
+        (HttpCoreError("fixture", category="blocked"), "job.search.click", "Cek kondisi akun"),
+        (TimeoutError(), "control.command.cleanup_scan", "responsnya terlalu lama"),
+        (RuntimeError("sedang tidur"), "job.search.click", "Bangunkan karakter"),
+        (RuntimeError("saldo minimum"), "shop.preview.data", "Cek saldo"),
+        (
+            RuntimeError("Tidak ada pembelian sesuai resource, anggaran, dan saldo minimum"),
+            "shop.preview.data",
+            "Cek stok toko",
+        ),
+        (RuntimeError("fixture"), "session.import.verify", "Import Cookie"),
+        (RuntimeError("fixture"), "tunnel.process_exit", "Hubungi admin"),
+        (RuntimeError("fixture"), "telegram.poll", "Cek Status"),
+        (RuntimeError("fixture"), "worker.auto_start", "Tekan Status"),
+        (RuntimeError("fixture"), "purchase.verify.data", "pemeriksaan hasil"),
+        (RuntimeError("fixture"), "control.command.visit_scan", "Coba lagi"),
+        (RuntimeError(), "unknown.stage", "Hubungi admin"),
+    ],
+)
+def test_all_error_notices_have_guidance_and_correlated_id(
+    settings, capsys, error, stage, expected
+):
+    bot = bot_settings(settings)
+    path = queue_error(bot, error, stage)
+    notice = json.loads(path.read_text())
+    saved = json.loads((bot.runtime_dir / "last-error.json").read_text())
+    logged = json.loads(capsys.readouterr().out)
+    reference = notice["context"]["error_id"]
+    assert reference.startswith("OJL-") and len(reference) == 16
+    assert reference in notice["text"]
+    assert saved["error_id"] == logged["error_id"] == reference
+    assert saved["stage"] == stage and saved["notice_id"] == path.stem
+    assert "Saat:" in notice["text"] and expected in notice["text"]
+    assert stage not in notice["text"]
+    assert f"Detail: {str(error) or type(error).__name__}" in notice["text"]
+    second = queue_error(bot, error, stage)
+    assert json.loads(second.read_text())["context"]["error_id"] != reference
+
+
+async def test_error_id_survives_delivery_retry_with_routine_notifications_off(settings):
+    bot = bot_settings(settings)
+    set_notifications(bot, False)
+    path = queue_error(bot, RuntimeError("fake-test-token"), "shop.preview.data")
+    reference = json.loads(path.read_text())["context"]["error_id"]
+    attempts = []
+
+    def handler(request):
+        attempts.append(json.loads(request.content)["text"])
+        ok = len(attempts) > 1
+        return httpx.Response(200 if ok else 503, json={"ok": ok, "result": {}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await flush_notices(bot, client) == 0
+        data = json.loads(path.read_text())
+        data["next_attempt"] = 0
+        path.write_text(json.dumps(data))
+        assert await flush_notices(bot, client) == 1
+    assert attempts[0] == attempts[1]
+    assert reference in attempts[1] and "kuota HP" in attempts[1]
+    assert "fake-test-token" not in attempts[1]
+    assert reference in ControlService(bot).status()
+
+
+@pytest.mark.parametrize("command", ["cleanup_scan", "visit_scan"])
+@pytest.mark.parametrize("error", [TimeoutError(), ValueError("fixture"), RuntimeError("fixture")])
+async def test_scan_errors_have_ids_without_stopping_worker(settings, monkeypatch, command, error):
+    service = ControlService(settings)
+    service.command = AsyncMock(side_effect=error)
+    monkeypatch.setattr("ojol.control.flush_notices", AsyncMock())
+    await service.execute(command)
+    path = next((settings.runtime_dir / "notifications").glob("*.json"))
+    data = json.loads(path.read_text())
+    assert data["context"]["error_id"] in data["text"]
+    assert data["context"]["message"] == str(error)
+    assert not (settings.runtime_dir / "STOP").exists()
+
+
+@pytest.mark.parametrize("fatal", [False, True])
+async def test_worker_crash_after_nonfatal_error_still_notifies(settings, monkeypatch, fatal):
+    service = ControlService(settings)
+    service.worker = SimpleNamespace(pid=123, returncode=2)
+    previous = queue_error(
+        settings,
+        RuntimeError("earlier fixture"),
+        "worker.reconcile",
+        {"pid": 123},
+        stop_worker=fatal,
+    )
+    previous_id = json.loads(previous.read_text())["context"]["error_id"]
+    monkeypatch.setattr("ojol.control.flush_notices", AsyncMock())
+
+    async def stop_loop(seconds):
+        service.closing = True
+
+    monkeypatch.setattr("ojol.control.asyncio.sleep", stop_loop)
+    await service.supervise()
+    details = json.loads((settings.runtime_dir / "last-error.json").read_text())
+    assert (details["error_id"] == previous_id) is fatal
+    if not fatal:
+        assert details["stage"] == "worker.process_exit"
+
+
 async def test_telegram_renders_pending_legacy_notices_without_debug_fields(settings):
     bot = bot_settings(settings)
     set_notifications(bot, True)
@@ -184,8 +293,9 @@ async def test_telegram_renders_pending_legacy_notices_without_debug_fields(sett
     assert all(
         field not in message
         for message in sent
-        for field in ("purchase.verify", "run_id", "stage:", "pid:", "internal-fixture")
+        for field in ("purchase.verify", "run_id", "stage:", "pid:")
     )
+    assert any("Detail: internal-fixture" in message for message in sent)
     diagnostics = json.loads((settings.runtime_dir / "last-error.json").read_text())
     assert diagnostics["stage"] == "purchase.verify.makan" and diagnostics["pid"] == 22
 
@@ -437,6 +547,71 @@ async def test_notification_toggle_persists_and_mutes_pending_events_but_not_err
     assert len(list((settings.runtime_dir / "notifications").glob("*.muted"))) == 3
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+async def test_critical_notices_keep_details_and_deliver_with_routine_toggle(
+    settings, monkeypatch, enabled
+):
+    from ojol.controller import Controller
+    from ojol.journal import Journal
+
+    bot = bot_settings(settings)
+    set_notifications(bot, enabled)
+    journal = Journal(bot.runtime_dir)
+    try:
+        controller = Controller(None, bot, journal, journal.start(bot))
+        for event, data in (
+            ("maintenance", {"sampai": "2026-11-14T06:30:00+00:00"}),
+            ("maintenance_selesai", {}),
+            ("tidur_mulai", {}),
+            ("bangun", {}),
+        ):
+            controller.report(event, **data)
+        # Already queued maintenance from an older worker may still carry the routine flag.
+        queue_notice(bot, "🛠 Maintenance lama", {"routine_event": True, "event": "maintenance"})
+        path = queue_error(
+            bot, RuntimeError("Stok konter habis; Cookie: secret-cookie"), "shop.preview.data"
+        )
+        reference = json.loads(path.read_text())["context"]["error_id"]
+    finally:
+        journal.close()
+    sent = []
+
+    def handler(request):
+        sent.append(json.loads(request.content)["text"])
+        return httpx.Response(200, json={"ok": True, "result": {}})
+
+    monkeypatch.setattr("ojol.telegram.asyncio.sleep", AsyncMock())
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        while await flush_notices(bot, client):
+            pass
+    assert len(sent) == 6
+    assert any("13:30 WIB" in text for text in sent)
+    assert any("Maintenance selesai" in text for text in sent)
+    assert any("Karakter sedang tidur" in text for text in sent)
+    assert any("Karakter sudah bangun" in text for text in sent)
+    assert any(reference in text and "Detail: Stok konter habis" in text for text in sent)
+    assert all("secret-cookie" not in text for text in sent)
+    assert not list((bot.runtime_dir / "notifications").glob("*.muted"))
+
+
+@pytest.mark.parametrize(
+    "message,secret",
+    [
+        ("Cookie: raw-session; extra=abc", "raw-session"),
+        ("Authorization: Bearer raw-auth", "raw-auth"),
+        ('password="raw-password"', "raw-password"),
+        ('{"token": "raw-token"}', "raw-token"),
+        ("__Secure-next-auth.session-token=raw-cookie", "raw-cookie"),
+    ],
+)
+def test_error_detail_redacts_credentials(settings, message, secret):
+    path = queue_error(settings, RuntimeError(message), "unknown.stage")
+    data = json.loads(path.read_text())
+    assert "Detail:" in data["text"]
+    assert secret not in path.read_text()
+    assert "[REDACTED]" in data["text"]
+
+
 def test_cookie_form_parser_only_imports_game_session():
     from ojol.session_transfer import parse_cookie_input
 
@@ -512,6 +687,8 @@ async def test_invalid_report_date_never_stops_gameplay(settings, monkeypatch):
     assert not (settings.runtime_dir / "STOP").exists()
     notice = next((settings.runtime_dir / "notifications").glob("*.json"))
     assert "Tanggal tidak valid" in json.loads(notice.read_text())["text"]
+    data = json.loads(notice.read_text())
+    assert data["context"]["error_id"] in data["text"]
 
 
 def test_status_snapshot_freshness_and_worker_stop_reason(settings, monkeypatch):

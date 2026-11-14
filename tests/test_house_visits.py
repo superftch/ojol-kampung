@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock
 
 import httpx
@@ -177,9 +178,9 @@ async def test_visit_search_only_allows_valid_house_get(settings, path, payload)
             "Menerima tamu sekarang dan belum kamu kunjungi hari ini",
         ),
         (None, "Belum ditemukan rumah"),
-        (TimeoutError(), "belum selesai"),
+        (TimeoutError(), "responsnya terlalu lama"),
         (HttpCoreError("fixture", category="auth"), "Import Cookie"),
-        (HttpCoreError("fixture"), "belum bisa diperiksa"),
+        (HttpCoreError("fixture"), "Respons game belum bisa dibaca"),
     ],
 )
 async def test_telegram_visit_search_messages_do_not_start_worker(
@@ -195,7 +196,14 @@ async def test_telegram_visit_search_messages_do_not_start_worker(
         else AsyncMock(return_value=outcome)
     )
     monkeypatch.setattr("ojol.control.find_unvisited", find)
-    assert expected in await service.command("visit_scan")
+    monkeypatch.setattr("ojol.control.flush_notices", AsyncMock())
+    await service.execute("visit_scan")
+    notice = next((settings.runtime_dir / "notifications").glob("*.json"))
+    data = json.loads(notice.read_text())
+    assert expected in data["text"]
+    if isinstance(outcome, Exception):
+        assert data["context"]["error_id"] in data["text"]
+    assert not (settings.runtime_dir / "STOP").exists()
     assert service.worker is None
     service.stop_worker.assert_not_awaited()
 

@@ -141,7 +141,13 @@ async def test_pending_claim_waits_automatically_until_receipt_is_visible(
 async def test_transient_read_failure_retries_without_replaying_claim(settings, state, monkeypatch):
     before, after = claim_states(state)
     ui = SimpleNamespace(
-        snapshot=AsyncMock(side_effect=[HttpCoreError("fixture", category="transport"), after]),
+        snapshot=AsyncMock(
+            side_effect=[
+                HttpCoreError("fixture", category="transport"),
+                HttpCoreError("fixture", category="transport"),
+                after,
+            ]
+        ),
         job_click=AsyncMock(),
         check_cancel=lambda: None,
     )
@@ -152,6 +158,15 @@ async def test_transient_read_failure_retries_without_replaying_claim(settings, 
         assert journal.profit()["pendapatan_ojol"] == "0.72"
         assert not journal.unresolved()
     ui.job_click.assert_not_awaited()
+    notices = [
+        json.loads(path.read_text())
+        for path in (settings.runtime_dir / "notifications").glob("*.json")
+    ]
+    errors = [notice for notice in notices if notice["context"].get("error_id")]
+    assert len(errors) == 1
+    assert errors[0]["context"]["error_id"] in errors[0]["text"]
+    assert "otomatis setiap 10 detik" in errors[0]["text"]
+    assert not (settings.runtime_dir / "STOP").exists()
 
 
 @pytest.mark.parametrize("stop", [False, True])

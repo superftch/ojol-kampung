@@ -560,6 +560,31 @@ async def test_fatal_control_error_stops_every_account_not_only_admin(managed, m
     )
 
 
+async def test_unexpected_management_error_shares_reference_with_user_and_admin(managed):
+    manager = MultiAccountService(managed)
+    manager.registry.whitelist(222)
+    manager.reply = AsyncMock()
+    manager._dispatch = AsyncMock(side_effect=RuntimeError("private fixture"))
+    await manager.dispatch(222, "Status")
+    details = json.loads((manager.hub.settings.runtime_dir / "last-error.json").read_text())
+    message = manager.reply.call_args.args[1]
+    assert manager.reply.call_args.args[0] == 222
+    assert details["error_id"] in message
+    assert "Tekan Status" in message and "Detail: private fixture" in message
+
+
+async def test_management_validation_error_has_id_without_stopping_worker(managed):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    manager._dispatch = AsyncMock(side_effect=ValueError("Pilih akun dahulu."))
+    await manager.dispatch(111, "Status")
+    settings = manager.notice_settings(111)
+    details = json.loads((settings.runtime_dir / "last-error.json").read_text())
+    message = manager.reply.call_args.args[1]
+    assert details["error_id"] in message and "Pilih akun dahulu." in message
+    assert not (settings.runtime_dir / "STOP").exists()
+
+
 async def test_telegram_outage_stops_all_accounts_once_and_queues_one_error(managed, monkeypatch):
     import ojol.management as module
     from ojol.telegram import TelegramError

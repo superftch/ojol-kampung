@@ -71,6 +71,10 @@ async def test_boot_defers_worker_during_maintenance_until_end(settings, monkeyp
         await manager.start()
         spawn.assert_not_awaited()
         assert all(service.auto_start_pending for service in manager.services.values())
+        for service in manager.services.values():
+            assert len(notices(service.settings)) == 1
+            assert "Aplikasi kembali aktif" in notices(service.settings)[0]
+            assert "maintenance" in notices(service.settings)[0]
         clock = window.end
         await manager.resume_workers()
         assert spawn.await_count == 2
@@ -109,13 +113,16 @@ async def test_boot_starts_all_saved_accounts_including_previously_stopped_and_n
         call.kwargs["env"]["OJOL_WORKER_AUTO_START"] == "1" for call in spawn.await_args_list
     )
     assert all(not s.auto_start_pending for s in manager.services.values())
-    assert all(not notices(s.settings) for s in manager.services.values())
+    assert all(
+        len(notices(s.settings)) == 1 and "Aplikasi kembali aktif" in notices(s.settings)[0]
+        for s in manager.services.values()
+    )
     await manager.close()
     for service in manager.services.values():
         assert (service.settings.runtime_dir / "STOP").exists()
         assert (service.settings.runtime_dir / WORKER_SHUTDOWN).exists()
-        assert len(notices(service.settings)) == 1
-        assert "Aplikasi sedang ditutup" in notices(service.settings)[0]
+        assert len(notices(service.settings)) == 2
+        assert any("Aplikasi sedang ditutup" in text for text in notices(service.settings))
     restored = MultiAccountService(manager.settings)
     await restored.start()
     assert spawn.await_count == 4 and restored.active_workers() == 2
@@ -209,15 +216,16 @@ async def test_auto_start_preserves_guards_and_other_accounts_can_start(
     )
     assert not bad.auto_start_pending
     if blocked in {"pending", "uncertain"}:
-        assert not notices(bad.settings)
+        assert len(notices(bad.settings)) == 1
+        assert "Aplikasi kembali aktif" in notices(bad.settings)[0]
         journal = Journal(bad.settings.runtime_dir)
         assert journal.history()["actions"][0]["status"] == blocked
         assert journal.db.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 1
         journal.close()
     elif blocked in {"no_cookie", "invalid_cookie"}:
-        assert "Import Cookie" in notices(bad.settings)[0]
+        assert any("Import Cookie" in text for text in notices(bad.settings))
         if blocked == "invalid_cookie":
-            assert "Login ulang diperlukan" in notices(bad.settings)[0]
+            assert any("Login ulang diperlukan" in text for text in notices(bad.settings))
     else:
         assert not notices(bad.settings)
     await manager.close()

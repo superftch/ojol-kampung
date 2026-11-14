@@ -248,6 +248,8 @@ class ControlService:
                 reason = "Dihentikan pengguna"
             if reason:
                 lines.append(f"⚠️ Alasan berhenti: {redact(reason, self.settings)}")
+            if error_updated >= status_updated and error.get("error_id"):
+                lines.append(f"ID error: {error['error_id']}")
 
         lines.extend(["", "Kebutuhan akun"])
         lines.extend(
@@ -503,19 +505,8 @@ class ControlService:
         if command == "visit_scan":
             if self.settings.env == "testing":
                 return "HTTP live diblokir dalam test environment."
-            try:
-                async with asyncio.timeout(12), OjolHttpApi(self.settings.runtime_dir) as api:
-                    house = await find_unvisited(api)
-            except TimeoutError:
-                return (
-                    "⏳ Pencarian rumah belum selesai. Tekan Cari Rumah Mampir untuk mencoba lagi."
-                )
-            except HttpCoreError as exc:
-                if exc.category == "auth":
-                    return (
-                        "🔑 Sesi game perlu dihubungkan ulang. Tekan Import Cookie, lalu cari lagi."
-                    )
-                return "⚠️ Status kunjungan belum bisa diperiksa. Coba lagi beberapa saat lagi."
+            async with asyncio.timeout(12), OjolHttpApi(self.settings.runtime_dir) as api:
+                house = await find_unvisited(api)
             if house is None:
                 return (
                     "👋 Belum ditemukan rumah yang sedang menerima tamu dan belum kamu kunjungi "
@@ -531,13 +522,8 @@ class ControlService:
         if command == "cleanup_scan":
             if self.settings.env == "testing":
                 return "HTTP live diblokir dalam test environment."
-            try:
-                async with asyncio.timeout(12), OjolHttpApi(self.settings.runtime_dir) as api:
-                    result = await scan(api, None, None, include_neighbors=True)
-            except TimeoutError:
-                return "Pencarian rumah kotor kehabisan waktu. Coba lagi."
-            except (HttpCoreError, ValueError):
-                return "⚠️ Rumah kotor belum bisa diperiksa. Coba lagi beberapa saat lagi."
+            async with asyncio.timeout(12), OjolHttpApi(self.settings.runtime_dir) as api:
+                result = await scan(api, None, None, include_neighbors=True)
             if not result["candidates"]:
                 return "🧹 Belum terlihat rumah kotor di sekitar rumahmu. Coba cek lagi nanti."
             plot = choice(result["candidates"])
@@ -558,7 +544,8 @@ class ControlService:
             return (
                 "🔔 Notifikasi ON\n\nBot akan mengabarkan hasil trip, pembelian, dan jeda maintenance."
                 if enabled
-                else "🔕 Notifikasi OFF\n\nBot tetap memberi tahu jika berhenti karena masalah atau perlu tindakan."
+                else "🔕 Notifikasi rutin OFF\n\nDetail error dan ID error, maintenance, "
+                "startup/restart Docker, serta kabar tidur dan bangun tetap dikirim."
             )
         if command == "stop":
             await self.stop_worker()
@@ -613,30 +600,23 @@ class ControlService:
                 else None
             )
             queue_notice(self.settings, response, reply_markup=markup)
-        except (ValueError, OverflowError):
-            if command.startswith("profit"):
-                queue_notice(
-                    self.settings,
-                    "❌ Tanggal tidak valid\n\nFormat: YYYY-MM-DD atau DD-MM-YYYY\nContoh: 2026-11-10",
-                )
-            else:
-                queue_error(
-                    self.settings,
-                    RuntimeError("Perintah tidak dikenal."),
-                    f"control.command.{command}",
-                )
+        except (ValueError, OverflowError) as exc:
+            queue_error(
+                self.settings,
+                exc,
+                f"control.command.{command}",
+                {"account_id": self.account_id},
+                stop_worker=not command.startswith("profit")
+                and command not in {"cleanup_scan", "visit_scan"},
+            )
         except Exception as exc:
-            if command == "cleanup_scan":
-                queue_notice(self.settings, "Pencarian rumah kotor gagal. Coba lagi.")
-            elif command == "visit_scan":
-                queue_notice(self.settings, "Pencarian rumah untuk mampir gagal. Coba lagi.")
-            else:
-                queue_error(
-                    self.settings,
-                    exc,
-                    f"control.command.{command}",
-                    {"account_id": self.account_id},
-                )
+            queue_error(
+                self.settings,
+                exc,
+                f"control.command.{command}",
+                {"account_id": self.account_id},
+                stop_worker=command not in {"cleanup_scan", "visit_scan"},
+            )
         await flush_notices(self.settings)
 
     async def poll_telegram(self):
@@ -709,7 +689,7 @@ class ControlService:
                     previous_error = (
                         json.loads(error_file.read_text()) if error_file.exists() else {}
                     )
-                    if previous_error.get("pid") != pid:
+                    if previous_error.get("pid") != pid or previous_error.get("fatal") is False:
                         queue_error(
                             self.settings,
                             RuntimeError(f"Worker mati tiba-tiba (exit code {code})."),

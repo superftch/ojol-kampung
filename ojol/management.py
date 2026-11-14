@@ -1,6 +1,7 @@
 """One Telegram poller, per-account HTTP workers, admin-managed whitelist."""
 
 import asyncio
+import json
 import re
 
 from .accounts import Accounts
@@ -17,6 +18,8 @@ from .telegram import (
     flush_notices,
     queue_error,
     queue_notice,
+    record_error,
+    redact,
 )
 
 HELP = (
@@ -476,19 +479,26 @@ class MultiAccountService:
                     return
                 await self._dispatch(owner, text.strip(), callback)
             except (ValueError, OverflowError) as exc:
+                details = record_error(
+                    self.notice_settings(owner), exc, "management.validation", {"fatal": False}
+                )
                 await self.reply(
                     owner,
-                    str(exc) if not isinstance(exc, OverflowError) else "Tanggal tidak valid",
+                    f"ID error: {details['error_id']}\n"
+                    + (
+                        redact(exc, self.settings)
+                        if not isinstance(exc, OverflowError)
+                        else "Tanggal tidak valid"
+                    ),
                     (CANCEL if owner in self.pending else KEYBOARD)
                     if self.registry.allowed(owner)
                     else ACCESS_STATUS,
                 )
             except Exception as exc:
-                queue_error(self.hub.settings, exc, "management.command")
+                notice = queue_error(self.hub.settings, exc, "management.command")
                 await self.reply(
                     owner,
-                    "⚠️ Permintaan belum berhasil\n\nTekan Status untuk memeriksa akun. "
-                    "Hubungi admin jika kendala berulang.",
+                    json.loads(notice.read_text())["text"],
                 )
 
     async def admin_action(self, owner, text):
@@ -945,6 +955,13 @@ class MultiAccountService:
                     # A new boot deliberately starts all eligible accounts, including previously stopped ones.
                     service.auto_start_pending = True
                     (directory / "STOP").unlink(missing_ok=True)
+                    message = (
+                        "♻️ Aplikasi kembali aktif\n\nBot menyiapkan akun setelah startup/restart "
+                        "Docker. Aktivitas dilanjutkan setelah sesi dan status game diperiksa."
+                    )
+                    if maintenance := held_window(self.maintenance_file):
+                        message += "\n\n" + maintenance.message()
+                    queue_notice(service.settings, message)
                 elif self.settings.auto_start or marker.exists():
                     action = "Jalankan Ojol" if has_session else "Import Cookie, lalu Jalankan Ojol"
                     reason = (

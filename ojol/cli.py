@@ -224,11 +224,7 @@ def main(argv=None):
         from pydantic import ValidationError
 
         message = "Konfigurasi/state tidak valid" if isinstance(exc, ValidationError) else str(exc)
-        if (
-            args.command not in {"cleanup-scan", "list-accounts"}
-            and "settings" in locals()
-            and settings.env != "testing"
-        ):
+        if "settings" in locals() and settings.env != "testing":
             from .telegram import flush_notices, queue_error, redact
 
             status_path = settings.runtime_dir / "status.json"
@@ -253,7 +249,13 @@ def main(argv=None):
                 and status.get("pid") == os.getpid()
                 else getattr(exc, "stage", f"cli.{args.command}")
             )
-            queue_error(settings, exc, stage or f"cli.{args.command}", context)
+            queue_error(
+                settings,
+                exc,
+                stage or f"cli.{args.command}",
+                context,
+                stop_worker=args.command not in {"cleanup-scan", "list-accounts"},
+            )
             try:
                 asyncio.run(flush_notices(settings))
             except Exception:

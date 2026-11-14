@@ -14,7 +14,7 @@ from .maintenance import SCHEDULE_FILE, held_window
 from .models import NEEDS, Step, now
 from .planner import is_sleeping, next_step, select_need, select_shop
 from .reconciliation import wait_until_resolved
-from .telegram import queue_notice
+from .telegram import queue_error, queue_notice
 
 
 class StopRequested(Exception):
@@ -90,15 +90,25 @@ class Controller:
         temporary.write_text(json.dumps(status, ensure_ascii=False, default=str, indent=2))
         temporary.chmod(0o600)
         temporary.replace(output)
-        from .telegram import event_text, notifications_enabled, queue_notice, redact
+        from .telegram import (
+            MANDATORY_EVENTS,
+            event_text,
+            notifications_enabled,
+            queue_notice,
+            redact,
+        )
 
-        if notifications_enabled(self.settings):
+        if event in MANDATORY_EVENTS or notifications_enabled(self.settings):
             text = event_text(event, data)
             if text:
                 queue_notice(
                     self.settings,
                     redact(text, self.settings),
-                    {"routine_event": True, "event": event, "run_id": self.run_id},
+                    {
+                        "routine_event": event not in MANDATORY_EVENTS,
+                        "event": event,
+                        "run_id": self.run_id,
+                    },
                 )
 
     async def wait(self, seconds):
@@ -130,6 +140,7 @@ class Controller:
             return 0
         self.sleep_started = time.monotonic()
         try:
+            self.report("tidur_mulai")
             while is_sleeping(self.state):
                 await self.wait(self.settings.idle_poll_seconds)
                 await self.wait_for_maintenance()
@@ -170,6 +181,7 @@ class Controller:
         while held_window(self.maintenance_file):
             self.check_cancel()
             await asyncio.sleep(1)
+        self.report("maintenance_selesai")
 
     async def purchase(self, before, resource):
         self.check_cancel()
@@ -184,7 +196,10 @@ class Controller:
         try:
             shops = await self.ui.preview_shops(resource)
         except HttpCoreError as exc:
-            if held_window(self.maintenance_file) or (is_need and exc.category != "auth"):
+            if held_window(self.maintenance_file):
+                return False
+            if is_need and exc.category != "auth":
+                queue_error(self.settings, exc, self.stage, stop_worker=False)
                 return False
             raise
         if held_window(self.maintenance_file) or not auto_flags(self.settings.runtime_dir)[feature]:
@@ -212,12 +227,16 @@ class Controller:
             selection, defer = select_shop(
                 before, resource, shops, self.settings, self.spent, last_purchases=last_purchases
             )
-        if defer:
+        if defer or (selection is None and current > self.settings.resource_reserve_percent):
             self.report(
                 "isi_ulang_ditunda",
                 resource=resource,
                 current=current,
-                reason="Menunggu ruang cukup agar efek tidak terbuang",
+                reason=(
+                    "Menunggu ruang cukup agar efek tidak terbuang"
+                    if defer
+                    else "Tidak ada pembelian layak; resource masih di atas batas cadangan"
+                ),
             )
             return False
         if selection is None:
@@ -304,6 +323,8 @@ class Controller:
                     await self.wait_for_wake()
                     return False
                 if is_need or exc.category == "auto_disabled":
+                    if is_need and exc.category == "rejected":
+                        queue_error(self.settings, exc, self.stage, stop_worker=False)
                     return False
             else:
                 self.journal.settle(action, False)

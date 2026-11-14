@@ -12,7 +12,7 @@ from .http_api import HttpCoreError
 from .journal import load_journal_snapshot
 from .maintenance import SCHEDULE_FILE, held_window
 from .models import NEEDS, now
-from .telegram import queue_notice
+from .telegram import queue_error, queue_notice
 
 
 async def reconcile(ui, journal):
@@ -125,14 +125,28 @@ async def reconcile(ui, journal):
 
 async def wait_until_resolved(ui, journal, settings):
     waiting = False
+    transport_outage = False
     while True:
         ui.check_cancel()
         try:
             state = await reconcile(ui, journal)
+            transport_outage = False
         except HttpCoreError as exc:
             if exc.category != "transport":
                 raise
             state = None
+            if not transport_outage:
+                queue_error(
+                    settings,
+                    exc,
+                    "worker.reconcile",
+                    {
+                        "tindakan": "Bot mencoba terhubung kembali otomatis setiap 10 detik. "
+                        "Tidak perlu menjalankan ulang. Cek Status untuk memantau."
+                    },
+                    stop_worker=False,
+                )
+                transport_outage = True
         pending = journal.unresolved()
         if state is not None and not pending:
             if waiting:
@@ -157,17 +171,13 @@ async def wait_until_resolved(ui, journal, settings):
                 snapshot=state.model_dump(mode="json"), snapshot_received_at=now().isoformat()
             )
         write_private(path, status)
-        if not waiting:
+        if not waiting and state is not None:
             queue_notice(
                 settings,
-                (
-                    "⏳ Koneksi game belum tersedia. Bot mencoba terhubung kembali otomatis. "
-                    if state is None
-                    else "⏳ Bot sedang memastikan hasil aksi terakhir. Pemeriksaan berjalan otomatis. "
-                )
+                "⏳ Bot sedang memastikan hasil aksi terakhir. Pemeriksaan berjalan otomatis. "
                 + "Status akan diperiksa lagi dalam 10 detik.",
             )
-            waiting = True
+        waiting = True
         for _ in range(40):
             ui.check_cancel()
             await asyncio.sleep(0.25)

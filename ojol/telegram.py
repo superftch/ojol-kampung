@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime
@@ -12,6 +13,8 @@ import httpx
 
 from .auto_settings import AUTO_LABELS
 from .finance import WIB
+from .healing import write_private
+from .models import now
 
 BUTTON_COMMANDS = {
     "Import Cookie": "import_cookie",
@@ -38,6 +41,7 @@ KEYBOARD = {
     "resize_keyboard": True,
     "is_persistent": True,
 }
+MANDATORY_EVENTS = {"maintenance", "maintenance_selesai", "tidur_mulai", "bangun"}
 
 
 def notifications_enabled(settings):
@@ -66,6 +70,17 @@ def redact(text, settings):
     value = re.sub(r"/login/[A-Za-z0-9_-]+", "/login/[REDACTED]", value)
     value = re.sub(r"/access/[A-Za-z0-9_-]+", "/access/[REDACTED]", value)
     value = re.sub(r"(https?://[^\s?]+)\?[^\s]+", r"\1?[REDACTED]", value)
+    value = re.sub(
+        r"(?im)\b(cookie|set-cookie|authorization)\s*[:=][^\r\n]+",
+        r"\1: [REDACTED]",
+        value,
+    )
+    value = re.sub(
+        r"(?i)([\"']?(?:password|token|session[-_]token|__Secure-next-auth\.session-token)"
+        r"[\"']?\s*[:=]\s*)(?:[\"'][^\"']*[\"']|[^\s,;]+)",
+        r"\1[REDACTED]",
+        value,
+    )
     return value[:1000]
 
 
@@ -187,6 +202,15 @@ def event_text(event, data):
     if event == "maintenance":
         end = datetime.fromisoformat(data["sampai"]).astimezone(WIB)
         return f"🛠 Aktivitas game dijeda untuk maintenance sampai {end:%d-%m-%Y pukul %H:%M} WIB."
+    if event == "maintenance_selesai":
+        return "✅ Maintenance selesai. Bot memeriksa status game sebelum melanjutkan aktivitas."
+    if event == "tidur_mulai":
+        return (
+            "😴 Karakter sedang tidur\n\nSemua Auto dijeda. Bot memeriksa status berkala "
+            "dan melanjutkan otomatis setelah karakter bangun di game."
+        )
+    if event == "bangun":
+        return "☀️ Karakter sudah bangun. Bot melanjutkan aktivitas sesuai pengaturan Auto."
     return None
 
 
@@ -198,7 +222,7 @@ def login_required(details):
     )
 
 
-def error_text(details):
+def _error_guidance(details):
     stage = details["stage"]
     diagnostic = (details.get("message") or "").casefold()
     action = details.get("tindakan")
@@ -226,9 +250,20 @@ def error_text(details):
     elif "sedang tidur" in diagnostic:
         reason = "Karakter sedang tidur."
         action = "Bangunkan karakter di game, lalu tekan Jalankan Ojol."
+    elif "tidak ada pembelian" in diagnostic:
+        reason = "Tidak ada barang isi ulang yang memenuhi syarat."
+        action = (
+            "Cek stok toko dan kapasitas resource di game, lalu saldo dan anggaran lewat Status. "
+            "Setelah tersedia, tekan Jalankan Ojol."
+        )
     elif "saldo minimum" in diagnostic:
         reason = "Pembelian tidak bisa dilanjutkan dengan saldo atau anggaran saat ini."
         action = "Cek saldo lewat Status sebelum melanjutkan."
+    elif stage.startswith("control.command.profit") and details.get("category") in {
+        "ValueError",
+        "OverflowError",
+    }:
+        return "❌ Tanggal tidak valid\n\nFormat: YYYY-MM-DD atau DD-MM-YYYY\nContoh: 2026-11-10"
     elif stage.startswith("session.import"):
         return "⚠️ Cookie belum berhasil diverifikasi. Tekan Import Cookie untuk mencoba lagi."
     elif stage.startswith(("tunnel.", "control.startup.tunnel")):
@@ -236,6 +271,22 @@ def error_text(details):
         action = "Hubungi admin untuk memeriksa koneksi server."
     elif stage.startswith("telegram."):
         return "⚠️ Bot sempat kehilangan koneksi ke Telegram. Cek Status akun sebelum melanjutkan."
+    elif details.get("http_category") == "transport" or details.get("category") in {
+        "TimeoutError",
+        "ConnectError",
+        "ReadTimeout",
+        "ConnectTimeout",
+    }:
+        reason = "Game belum bisa dihubungi atau responsnya terlalu lama."
+        action = action or "Coba lagi beberapa saat lagi. Cek Status sebelum menekan Jalankan Ojol."
+    elif details.get("http_category") == "schema":
+        reason = "Respons game belum bisa dibaca dengan aman."
+        action = "Hubungi admin untuk memeriksa perubahan API game sebelum menjalankan ulang."
+    elif details.get("http_category") in {"rejected", "blocked"}:
+        reason = "Game atau pemeriksaan keamanan bot belum mengizinkan aktivitas ini."
+        action = "Cek kondisi akun, resource, dan toko di game. Tekan Status sebelum mencoba lagi."
+    elif stage.endswith(("cleanup_scan", "visit_scan")):
+        return "⚠️ Pencarian rumah belum bisa diperiksa. Coba lagi beberapa saat lagi."
     elif stage == "worker.auto_start":
         reason = "Bot belum bisa memulai akun ini secara otomatis."
     elif stage.startswith(("job.", "purchase.", "shop.preview.")):
@@ -245,13 +296,51 @@ def error_text(details):
     return f"⚠️ {reason}\n\n{action or 'Tekan Status untuk memeriksa akun. Hubungi admin jika kendala berulang.'}"
 
 
+def error_text(details):
+    stage = details["stage"]
+    activity = next(
+        (
+            label
+            for prefix, label in (
+                ("shop.preview.", "memeriksa toko isi ulang"),
+                ("purchase.", "membeli atau memverifikasi isi ulang"),
+                ("job.", "menjalankan atau memverifikasi order"),
+                ("session.import", "menghubungkan cookie game"),
+                ("worker.reconcile", "memeriksa hasil transaksi sebelumnya"),
+                ("worker.", "menjalankan worker akun"),
+                ("telegram.", "menghubungkan Telegram"),
+                ("tunnel.", "menghubungkan halaman Import Cookie"),
+                ("control.command.cleanup_scan", "mencari rumah kotor"),
+                ("control.command.visit_scan", "mencari rumah untuk mampir"),
+            )
+            if stage.startswith(prefix)
+        ),
+        "memproses aktivitas akun",
+    )
+    resource = stage.rsplit(".", 1)[-1]
+    label = {"fuel": "bensin", "condition": "kondisi mesin", "data": "kuota HP"}.get(
+        resource, AUTO_LABELS.get(resource)
+    )
+    if label:
+        activity += f" ({label})"
+    reference = details.get("error_id")
+    diagnostic = details.get("message") or details.get("category") or "Detail belum tersedia"
+    return (
+        (f"ID error: {reference}\n" if reference else "")
+        + _error_guidance(details)
+        + f"\n\nSaat: {activity}.\nDetail: {diagnostic[:300]}"
+        + ("…" if len(diagnostic) > 300 else "")
+        + "\nSampaikan ID error ke admin jika perlu bantuan."
+    )
+
+
 def queued_text(data):
     context = data.get("context") or {}
     if context.get("stage"):
         return error_text(context)
     message = data["text"]
     event = context.get("event")
-    if context.get("routine_event") and event not in {
+    if context.get("routine_event") and event not in MANDATORY_EVENTS | {
         "mulai",
         "berhenti",
         "pembelian_terverifikasi",
@@ -323,8 +412,12 @@ async def flush_notices(settings, client=None):
             if data.get("next_attempt", 0) > time.time():
                 continue
             message = queued_text(data)
+            context = data.get("context", {})
             if message is None or (
-                data.get("context", {}).get("routine_event") and not notifications_enabled(settings)
+                context.get("routine_event")
+                and not context.get("stage")
+                and context.get("event") not in MANDATORY_EVENTS
+                and not notifications_enabled(settings)
             ):
                 path.rename(path.with_suffix(".muted"))
                 continue
@@ -352,16 +445,28 @@ async def flush_notices(settings, client=None):
     return count
 
 
-def queue_error(settings, error, stage, context=None):
+def record_error(settings, error, stage, context=None):
     settings.runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-    (settings.runtime_dir / "STOP").touch(mode=0o600)
     details = {
         "stage": stage,
         "category": type(error).__name__,
         "http_category": getattr(error, "category", None),
         "message": redact(error, settings),
+        "pid": os.getpid(),
         **(context or {}),
+        "error_id": "OJL-" + uuid4().hex[:12].upper(),
+        "time": now().isoformat(),
     }
+    write_private(settings.runtime_dir / "last-error.json", details)
+    print(json.dumps({"event": "error", **details}, ensure_ascii=False, default=str), flush=True)
+    return details
+
+
+def queue_error(settings, error, stage, context=None, *, stop_worker=True):
+    if stop_worker:
+        settings.runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        (settings.runtime_dir / "STOP").touch(mode=0o600)
+    details = record_error(settings, error, stage, {**(context or {}), "fatal": stop_worker})
     markup = None
     if login_required(details):
         buttons = [
@@ -374,7 +479,5 @@ def queue_error(settings, error, stage, context=None):
             )
         markup = {"inline_keyboard": buttons}
     path = queue_notice(settings, error_text(details), details, reply_markup=markup)
-    latest = settings.runtime_dir / "last-error.json"
-    latest.write_text(json.dumps({"notice_id": path.stem, **details}, ensure_ascii=False, indent=2))
-    latest.chmod(0o600)
+    write_private(settings.runtime_dir / "last-error.json", {"notice_id": path.stem, **details})
     return path
