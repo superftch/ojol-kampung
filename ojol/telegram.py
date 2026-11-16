@@ -258,6 +258,12 @@ def _error_guidance(details):
         action = (
             "Tekan Jalankan Ojol untuk menjalankan pemeriksaan hasil transaksi secara otomatis."
         )
+    elif "akun belum menjadi mitra ojol" in diagnostic:
+        reason = "Akun game terhubung, tetapi Ojol Desa belum aktif untuk akun ini."
+        action = (
+            "Di game, buka Kerja → Ojol desa dan pilih Daftar jadi mitra. "
+            "Setelah terdaftar, tekan Jalankan Ojol lagi di Telegram."
+        )
     elif "sedang tidur" in diagnostic:
         reason = "Karakter sedang tidur."
         action = "Bangunkan karakter di game, lalu tekan Jalankan Ojol."

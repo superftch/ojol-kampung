@@ -151,6 +151,11 @@ async def test_error_stops_before_send_retries_and_recovers_interrupted_outbox(s
         (HttpCoreError("fixture", category="transport"), "observe.ojol", "Coba lagi"),
         (HttpCoreError("fixture", category="schema"), "observe.ojol", "perubahan API"),
         (HttpCoreError("fixture", category="blocked"), "job.search.click", "Cek kondisi akun"),
+        (
+            HttpCoreError("Akun belum menjadi mitra Ojol", category="blocked"),
+            "worker.reconcile",
+            "Daftar jadi mitra",
+        ),
         (TimeoutError(), "control.command.cleanup_scan", "responsnya terlalu lama"),
         (RuntimeError("sedang tidur"), "job.search.click", "Bangunkan karakter"),
         (RuntimeError("saldo minimum"), "shop.preview.data", "Cek saldo"),
