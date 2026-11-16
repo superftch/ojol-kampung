@@ -1,4 +1,4 @@
-"""Validate and atomically install an account session through HTTP MCP."""
+"""Verify game authentication and atomically install an account session."""
 
 import asyncio
 import json
@@ -82,19 +82,20 @@ async def import_session(settings, payload):
     if set(data) != {"cookies"} or len(data["cookies"]) != 1:
         raise ValueError("Hanya satu cookie sesi game diizinkan")
     cookies = [session_cookie(item) for item in data["cookies"]]
-    if session_expired({"cookies": cookies}):
-        from .http_api import HttpCoreError
+    from .http_api import HttpCoreError, OjolHttpApi
 
+    if session_expired({"cookies": cookies}):
         raise HttpCoreError("Cookie sesi game sudah kedaluwarsa.", category="auth")
-    from .http_core import HttpUI
 
     candidate = settings.runtime_dir / "http-session.pending.json"
     with exclusive_lock(settings.runtime_dir):
         write_private(candidate, {"cookies": cookies})
         try:
             STAGE = "session.import.http_verify"
-            async with HttpUI(settings, session_file=candidate) as core:
-                await core.snapshot()
+            async with OjolHttpApi(settings.runtime_dir, session_file=candidate) as api:
+                account = await api.request("/api/game/me")
+                if not isinstance(account, dict) or type(account.get("balanceMilli")) is not int:
+                    raise HttpCoreError("Profil game tidak dapat diverifikasi.", category="schema")
             candidate.replace(settings.runtime_dir / "http-session.json")
         finally:
             candidate.unlink(missing_ok=True)

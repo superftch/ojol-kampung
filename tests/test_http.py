@@ -1144,47 +1144,44 @@ async def test_stop_cancels_waiting_http_tool_without_repeating(settings):
     tool.assert_awaited_once()
 
 
-@pytest.mark.parametrize(("valid", "expired"), [(True, False), (False, False), (False, True)])
+@pytest.mark.parametrize("outcome", ["valid", "rejected", "expired", "wrong_schema"])
 async def test_http_cookie_import_is_atomic_and_preserves_old_session_on_failure(
-    settings, monkeypatch, valid, expired
+    settings, monkeypatch, outcome
 ):
-    from pathlib import Path
-
-    import ojol.http_core as module
+    import ojol.http_api as module
     import ojol.session_transfer as transfer
 
     settings = settings.model_copy(update={"core": "http", "env": "local"})
     previous = transfer.parse_cookie_input("old-isolated-fixture")
     payload = transfer.parse_cookie_input("new-isolated-fixture")
-    if expired:
+    if outcome == "expired":
         payload["cookies"][0]["expires"] = 1
     active = settings.runtime_dir / "http-session.json"
     write_private(active, previous)
-    original = Path.is_file
-    monkeypatch.setattr(Path, "is_file", lambda p: True if str(p) == "/.dockerenv" else original(p))
 
-    async def verify():
+    async def verify(path):
+        assert path == "/api/game/me"
         pending = settings.runtime_dir / "http-session.pending.json"
         assert pending.stat().st_mode & 0o777 == 0o600
         assert json.loads(active.read_text()) == previous
-        if not valid:
+        if outcome == "rejected":
             raise HttpCoreError("Fixture session rejected", category="auth")
-        return SimpleNamespace(phase="idle", wallet=Decimal(35))
+        return {} if outcome == "wrong_schema" else {"balanceMilli": 35000}
 
-    core = SimpleNamespace(snapshot=verify)
+    core = SimpleNamespace(request=verify)
     context = AsyncMock()
     context.__aenter__.return_value = core
-    monkeypatch.setattr(module, "HttpUI", lambda *args, **kwargs: context)
+    monkeypatch.setattr(module, "OjolHttpApi", lambda *args, **kwargs: context)
     monkeypatch.setattr(transfer, "flush_notices", AsyncMock())
     monkeypatch.setattr(transfer, "queue_notice", Mock())
-    if valid:
+    if outcome == "valid":
         await transfer.import_session(settings, json.dumps(payload))
     else:
         with pytest.raises(HttpCoreError):
             await transfer.import_session(settings, json.dumps(payload))
-    assert json.loads(active.read_text()) == (payload if valid else previous)
+    assert json.loads(active.read_text()) == (payload if outcome == "valid" else previous)
     assert not (settings.runtime_dir / "http-session.pending.json").exists()
-    if expired:
+    if outcome == "expired":
         context.__aenter__.assert_not_awaited()
 
 
