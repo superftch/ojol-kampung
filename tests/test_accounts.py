@@ -466,6 +466,8 @@ async def test_single_poller_routes_whitelisted_private_users_and_rejects_foreig
     manager = MultiAccountService(managed)
     manager.registry.whitelist(222)
     manager.dispatch = AsyncMock()
+    fatal = AsyncMock(side_effect=AssertionError("Callback kedaluwarsa bukan outage"))
+    monkeypatch.setattr(module, "queue_error", fatal)
 
     def message(owner, chat_type="private", chat_id=None):
         return {
@@ -491,6 +493,15 @@ async def test_single_poller_routes_whitelisted_private_users_and_rejects_foreig
         {
             "update_id": 6,
             "callback_query": {
+                "id": "expired",
+                "from": {"id": 222},
+                "message": message(222),
+                "data": "add_account",
+            },
+        },
+        {
+            "update_id": 7,
+            "callback_query": {
                 "id": "valid",
                 "from": {"id": 222},
                 "message": message(222),
@@ -504,7 +515,12 @@ async def test_single_poller_routes_whitelisted_private_users_and_rejects_foreig
             assert kwargs["offset"] == 0
             manager.closing = True
             return updates
-        assert method == "answerCallbackQuery" and kwargs["callback_query_id"] == "valid"
+        assert method == "answerCallbackQuery"
+        if kwargs["callback_query_id"] == "expired":
+            raise module.TelegramError(
+                "Telegram API 400: Bad Request: query is too old and response timeout expired or query ID is invalid"
+            )
+        assert kwargs["callback_query_id"] == "valid"
 
     api = SimpleNamespace(call=AsyncMock(side_effect=call))
     context = AsyncMock()
@@ -517,7 +533,7 @@ async def test_single_poller_routes_whitelisted_private_users_and_rejects_foreig
         mock_call(333, "Status", False, profile={"id": 333}),
         mock_call(222, "select:fixture", True, profile={"id": 222}),
     ]
-    assert (managed.runtime_dir / "telegram-offset").read_text() == "7"
+    assert (managed.runtime_dir / "telegram-offset").read_text() == "8"
 
 
 async def test_manager_start_never_starts_account_pollers_or_gameplay(managed, monkeypatch):

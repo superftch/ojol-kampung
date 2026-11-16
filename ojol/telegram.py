@@ -146,6 +146,17 @@ class TelegramClient:
         )
 
 
+async def acknowledge_callback(api, callback_id):
+    try:
+        await api.call("answerCallbackQuery", callback_query_id=callback_id)
+    except TelegramError as error:
+        # An expired callback cannot be acknowledged again. Let the poller consume its update.
+        if str(error).lower().startswith("telegram api 400: bad request: query is too old"):
+            return False
+        raise
+    return True
+
+
 def authorized_message(update, settings):
     callback = update.get("callback_query")
     message = (

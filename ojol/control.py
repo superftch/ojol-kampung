@@ -34,6 +34,7 @@ from .telegram import (
     BUTTON_COMMANDS,
     TelegramClient,
     TelegramError,
+    acknowledge_callback,
     authorized_message,
     flush_notices,
     koin,
@@ -639,9 +640,8 @@ class ControlService:
                         if authorized_message(update, self.settings):
                             callback = update.get("callback_query")
                             if callback:
-                                await api.call(
-                                    "answerCallbackQuery", callback_query_id=callback["id"]
-                                )
+                                if not await acknowledge_callback(api, callback["id"]):
+                                    continue
                                 command = callback.get("data", "")
                                 if command == "choose_date" or re.fullmatch(
                                     r"profit:\d{4}-\d{2}-\d{2}", command

@@ -15,6 +15,7 @@ from .telegram import (
     KEYBOARD,
     TelegramClient,
     TelegramError,
+    acknowledge_callback,
     flush_notices,
     queue_error,
     queue_notice,
@@ -847,16 +848,15 @@ class MultiAccountService:
                             and type(sender) is int
                             and sender > 0
                         ):
-                            if callback:
-                                await api.call(
-                                    "answerCallbackQuery", callback_query_id=callback["id"]
+                            if not callback or await acknowledge_callback(api, callback["id"]):
+                                await self.dispatch(
+                                    sender,
+                                    callback.get("data", "")
+                                    if callback
+                                    else message.get("text", ""),
+                                    bool(callback),
+                                    profile=profile,
                                 )
-                            await self.dispatch(
-                                sender,
-                                callback.get("data", "") if callback else message.get("text", ""),
-                                bool(callback),
-                                profile=profile,
-                            )
                         offset = max(offset, update["update_id"] + 1)
                         cursor.write_text(str(offset))
                 except (TelegramError, OSError, ValueError) as exc:
