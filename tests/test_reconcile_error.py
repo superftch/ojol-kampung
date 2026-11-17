@@ -261,3 +261,96 @@ def test_cli_passes_action_id_and_rejects_two_selectors(settings, monkeypatch):
         cli.parser().parse_args(
             ["reconcile", "--action-id", "3095", "--error-id", "OJL-012345ABCDEF"]
         )
+
+
+@pytest.mark.parametrize("original_status", ["pending", "uncertain"])
+def test_cli_skip_preserves_evidence_and_other_actions_without_game_requests(
+    settings, state, monkeypatch, capsys, original_status
+):
+    import ojol.app as app
+    import ojol.cli as cli
+    from ojol.models import ROOT
+
+    monkeypatch.setattr(cli, "load_settings", lambda path: settings)
+    run_app = AsyncMock()
+    monkeypatch.setattr(app, "run_app", run_app)
+    journal = Journal(settings.runtime_dir)
+    try:
+        run = journal.start(settings)
+        before = state.model_copy(update={"phase": "complete", "trip_id": "old-trip"})
+        action = journal.begin(run, "complete", before, {"label": "Sampai! Terima ongkos"})
+        if original_status == "uncertain":
+            journal.settle(action, False)
+        other = journal.begin(run, "purchase", state, {"resource": "fuel"})
+        saved = dict(journal.db.execute("SELECT * FROM actions WHERE id=?", (action,)).fetchone())
+        args = [
+            "--env-file",
+            str(ROOT / ".env.testing"),
+            "reconcile",
+            "--action-id",
+            str(action),
+            "--skip",
+        ]
+        assert cli.main(args) == 0
+        result = dict(journal.db.execute("SELECT * FROM actions WHERE id=?", (action,)).fetchone())
+        assert result == {**saved, "status": "skipped"}
+        assert [row["id"] for row in journal.unresolved()] == [other]
+        assert journal.profit()["pendapatan_ojol"] == "0"
+        assert journal.profit()["pengeluaran"] == "0"
+        assert cli.main(args) == 0
+        events = journal.db.execute(
+            "SELECT data FROM events WHERE event='aksi_dilewati_operator'"
+        ).fetchall()
+        assert len(events) == 1
+        assert json.loads(events[0][0])["original_status"] == original_status
+        assert "Sisa aksi belum pasti: 1." in capsys.readouterr().out
+        run_app.assert_not_awaited()
+        assert not (settings.runtime_dir / "STOP").exists()
+    finally:
+        journal.close()
+
+
+def test_skipped_claim_unblocks_next_run_without_fabricating_payout(settings, state):
+    journal = Journal(settings.runtime_dir)
+    try:
+        run = journal.start(settings)
+        action = journal.begin(run, "complete", state, {})
+        journal.settle(action, False)
+        journal.skip(action)
+        assert journal.start(settings) > run
+        assert journal.profit()["pendapatan_ojol"] == "0"
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("status", ["verified", "handed_off", "closed_idle", "rejected"])
+def test_skip_cannot_rewrite_previously_resolved_action(settings, state, status):
+    journal = Journal(settings.runtime_dir)
+    try:
+        action = journal.begin(journal.start(settings), "search", state, {})
+        with journal.db:
+            journal.db.execute("UPDATE actions SET status=? WHERE id=?", (status, action))
+        with pytest.raises(ValueError, match="sudah berstatus"):
+            journal.skip(action)
+        assert journal.history()["actions"][0]["status"] == status
+    finally:
+        journal.close()
+
+
+def test_skip_requires_action_id_and_respects_worker_lock(settings, state, monkeypatch, capsys):
+    import ojol.cli as cli
+    from ojol.models import ROOT
+
+    monkeypatch.setattr(cli, "load_settings", lambda path: settings)
+    base = ["--env-file", str(ROOT / ".env.testing"), "reconcile"]
+    assert cli.main([*base, "--skip"]) == 2
+    assert "--skip memerlukan --action-id" in capsys.readouterr().err
+    journal = Journal(settings.runtime_dir)
+    try:
+        action = journal.begin(journal.start(settings), "complete", state, {})
+        with cli.exclusive_lock(settings.runtime_dir):
+            assert cli.main([*base, "--action-id", str(action), "--skip"]) == 2
+        assert journal.unresolved()[0]["id"] == action
+        assert not (settings.runtime_dir / "STOP").exists()
+    finally:
+        journal.close()

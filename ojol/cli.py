@@ -77,6 +77,11 @@ def parser():
     target = reconcile.add_mutually_exclusive_group()
     target.add_argument("--error-id", help="Periksa hanya aksi terkait ID error OJL-...")
     target.add_argument("--action-id", type=int, help="Periksa ID aksi ledger, misalnya 3095")
+    reconcile.add_argument(
+        "--skip",
+        action="store_true",
+        help="Lewati --action-id atas keputusan operator; hasil lama tetap belum terverifikasi",
+    )
     profit = commands.add_parser("profit")
     period = profit.add_mutually_exclusive_group()
     period.add_argument(
@@ -181,6 +186,20 @@ def main(argv=None):
                 )
             finally:
                 journal.close()
+        elif args.command == "reconcile" and args.skip:
+            if args.action_id is None:
+                raise ValueError("--skip memerlukan --action-id agar aksi yang dilewati jelas")
+            with exclusive_lock(directory), closing(Journal(directory)) as journal:
+                action = journal.skip(args.action_id)
+                print(
+                    f"Aksi #{action['id']} ({action['kind']}): {action['status']} → skipped. "
+                    "Hasil lama tetap belum terverifikasi; payout/biaya tidak ditambahkan."
+                )
+                print(f"Sisa aksi belum pasti: {len(journal.unresolved())}.")
+                if not journal.unresolved():
+                    print(
+                        "Ledger siap dilanjutkan. Tekan Jalankan Ojol untuk memulai dari kondisi game terbaru."
+                    )
         elif args.command == "start":
             if not live:
                 raise ValueError(

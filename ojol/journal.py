@@ -300,6 +300,43 @@ class Journal:
             )
         return evidence
 
+    def skip(self, action_id):
+        if action_id <= 0:
+            raise ValueError("ID aksi harus bilangan positif")
+        with self.db:
+            row = self.db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"Aksi #{action_id} tidak ditemukan pada akun ini")
+            if row["status"] == "skipped":
+                return dict(row)
+            if row["status"] not in {"pending", "uncertain"}:
+                raise ValueError(f"Aksi #{action_id} sudah berstatus {row['status']}")
+            changed = self.db.execute(
+                "UPDATE actions SET status='skipped' WHERE id=? AND status=?",
+                (action_id, row["status"]),
+            )
+            if changed.rowcount != 1:
+                raise RuntimeError("Status aksi berubah saat skip; periksa history lalu coba lagi")
+            self.db.execute(
+                "INSERT INTO events(run_id,created,event,data) VALUES(?,?,?,?)",
+                (
+                    row["run_id"],
+                    now().isoformat(),
+                    "aksi_dilewati_operator",
+                    json.dumps(
+                        {
+                            "action_id": action_id,
+                            "kind": row["kind"],
+                            "original_status": row["status"],
+                            "original_outcome": "uncertain",
+                            "payout_attributed": False,
+                            "expense_attributed": False,
+                        }
+                    ),
+                ),
+            )
+        return dict(row)
+
     def reject(self, action_id):
         with self.db:
             self.db.execute(
