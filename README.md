@@ -151,6 +151,8 @@ Jika katalog berhasil dibaca tetapi tidak ada pembelian Ojol yang layak, worker 
 
 Gunakan `list-accounts` untuk melihat nama dan ID akun yang belum diarsipkan. Salin ID ke `--account` untuk memilih akun di CLI. Hentikan worker akun dahulu sebelum inspect/reconcile. Shell server adalah akses operator tepercaya; gunakan Telegram untuk start dengan pengawasan kuota global.
 
+Penolakan lock atau kegagalan perintah CLI di luar sesi `run --live` tidak memasang `STOP`. Notifikasi tetap memuat ID error dan akun dari `--account`; konteks aksi hanya diambil dari status milik proses CLI yang sama, agar tidak mengaitkan error inspeksi ke transaksi worker lain.
+
 ```sh
 docker compose exec -u app app python main.py list-accounts
 docker compose exec -u app app python main.py --account ACCOUNT_ID profit
@@ -158,9 +160,19 @@ docker compose exec -u app app python main.py --account ACCOUNT_ID profit --date
 docker compose exec -u app app python main.py --account ACCOUNT_ID history
 docker compose exec -u app app python main.py --account ACCOUNT_ID inspect --shop data
 docker compose exec -u app app python main.py --account ACCOUNT_ID reconcile
+docker compose exec -u app app python main.py --account ACCOUNT_ID reconcile --error-id OJL-012345ABCDEF
+docker compose exec -u app app python main.py --account ACCOUNT_ID reconcile --action-id 3095
 ```
 
 Tanpa `--account`, CLI membaca direktori akun lama. `reconcile` melakukan satu pemeriksaan read-only; menjalankannya manual bersifat opsional. Worker otomatis menjalankan pemeriksaan yang sama sebelum start dan setelah timeout aksi Ojol. Ledger belum pasti menahan transaksi baru, bukan menghentikan pemeriksaan: bot menunggu dan membaca ulang setiap 10 detik, tetap bisa dihentikan lewat tombol Hentikan Ojol. Gangguan transport saat rekonsiliasi dicoba ulang; sesi kedaluwarsa tetap meminta Import Cookie.
+
+`reconcile --error-id OJL-...` memeriksa aksi ledger yang dirujuk catatan error pada akun pilihan. Output memuat ID aksi/run, jenis dan payload aksi, status sebelum/sesudah, alasan dan bukti, saldo/resource sebelum/sesudah beserta selisihnya, serta pembukuan terkait dan yang baru ditambahkan. Error tanpa referensi aksi menampilkan penjelasan. Aksi yang sudah selesai menampilkan catatan tersimpan. Total aksi belum pasti tetap dilaporkan untuk seluruh akun. Pembacaan game memakai GET; hasil verifikasi memperbarui ledger lokal.
+
+Angka `#3095` di log adalah ID aksi ledger. Gunakan `--action-id 3095` untuk memeriksa satu aksi langsung; pilih salah satu `--action-id` atau `--error-id`. Log menyertakan akun, nama aksi/produk/toko, perubahan status, dan alasan. Selama menunggu otomatis, Status menampilkan aksi tertahan, waktu aksi, alasan, dan saldo sebelum/sesudah. Detail pemeriksaan terbaru tersimpan di `game-sync.json`.
+
+Pembelian dan penerimaan order yang melewati jendela verifikasi lima menit dapat berstatus `handed_off` setelah dua snapshot baru berurutan membuktikan kondisi game stabil. Fase mencari atau tidak dikenal tetap menunggu. Countdown perjalanan harus berkurang, sedangkan saldo, resource, kebutuhan, trip, dan riwayat tetap sama di antara kedua snapshot. Bot melanjutkan dari kondisi terbaru dan menyimpan hasil aksi lama sebagai belum pasti, tanpa menambahkan biaya/pendapatan untuk aksi tersebut. Laporan laba ledger dapat kehilangan biaya pembelian lama yang hasilnya belum terbukti.
+
+Error baru disimpan privat per ID di `errors/`. ID lama bisa dibaca selama masih tersedia di `last-error.json` atau antrean/arsip notifikasi akun. Arsip notifikasi terkirim kedaluwarsa setelah tujuh hari. ID yang sudah hilang perlu ditelusuri dari log operator. Catatan lama tanpa referensi aksi memerlukan pemeriksaan `history` dan `reconcile` seluruh akun.
 
 Receipt yang ID trip dan waktunya cocok membuktikan klaim; jurnal lama tanpa ID memakai bukti rute/waktu/payout. Dua snapshot baru yang konsisten dan menunjukkan tidak ada order aktif dapat menutup pencarian lama sebagai `closed_idle`, meski saldo, resource, atau riwayat berubah sejak aksi. Hasil asli tetap dicatat sebagai belum pasti dan selisih saldo tidak masuk pembukuan bot. Untuk melanjutkan order aktif dari pencarian yang belum pasti, saldo dan riwayat harus tetap cocok dengan snapshot sebelum pencarian. Status `handed_off` mempertahankan hasil lama sebagai belum pasti tanpa membukukan pendapatan. Trip lama yang masih sama tidak diklaim ulang. Riwayat game disimpan di `game-sync.json` terpisah dari ledger: sinkronisasi tidak mengarang pendapatan bot atau menggandakan payout. Cakupannya mengikuti riwayat yang dikembalikan API, bukan seluruh riwayat sepanjang masa. Jangan hapus database atau paksa status transaksi.
 

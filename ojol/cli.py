@@ -71,8 +71,12 @@ def parser():
     cleanup = commands.add_parser("cleanup-scan", help="Baca kandidat rumah kotor melalui API")
     cleanup.add_argument("--blocks", nargs="+", help="Kode blok, default blok rumah sendiri")
     cleanup.add_argument("--limit", type=int, choices=range(1, 11), default=1)
-    for name in ("doctor", "status", "stop", "history", "reconcile"):
+    for name in ("doctor", "status", "stop", "history"):
         commands.add_parser(name)
+    reconcile = commands.add_parser("reconcile", help="Periksa hasil aksi dari bukti game")
+    target = reconcile.add_mutually_exclusive_group()
+    target.add_argument("--error-id", help="Periksa hanya aksi terkait ID error OJL-...")
+    target.add_argument("--action-id", type=int, help="Periksa ID aksi ledger, misalnya 3095")
     profit = commands.add_parser("profit")
     period = profit.add_mutually_exclusive_group()
     period.add_argument(
@@ -86,6 +90,8 @@ def parser():
 
 def main(argv=None):
     args = parser().parse_args(argv)
+    account = None
+    owns_live_run = False
     try:
         settings = load_settings(args.env_file)
         if args.command == "list-accounts":
@@ -105,7 +111,8 @@ def main(argv=None):
             from .accounts import Accounts
 
             registry = Accounts(settings)
-            settings = registry.scoped_settings(registry.get(args.account))
+            account = registry.get(args.account)
+            settings = registry.scoped_settings(account)
         changes = {
             key: getattr(args, key)
             for key in ("max_jobs", "max_minutes")
@@ -214,8 +221,20 @@ def main(argv=None):
 
             with exclusive_lock(directory):
                 if args.command == "run":
+                    owns_live_run = live
                     (directory / "STOP").unlink(missing_ok=True)
-                asyncio.run(run_app(settings, args.command, live, getattr(args, "shop", None)))
+                options = (
+                    {
+                        key: getattr(args, key)
+                        for key in ("error_id", "action_id")
+                        if getattr(args, key) is not None
+                    }
+                    if args.command == "reconcile"
+                    else {}
+                )
+                asyncio.run(
+                    run_app(settings, args.command, live, getattr(args, "shop", None), **options)
+                )
         return 0
     except KeyboardInterrupt:
         print("Dihentikan pengguna.", file=sys.stderr)
@@ -232,9 +251,13 @@ def main(argv=None):
                 status = json.loads(status_path.read_text()) if status_path.is_file() else {}
             except (OSError, ValueError):
                 status = {}
-            context = {key: status.get(key) for key in ("run_id", "last_action", "tab_id")}
+            context = (
+                {key: status.get(key) for key in ("run_id", "last_action", "tab_id")}
+                if status.get("pid") == os.getpid()
+                else {}
+            )
             context["pid"] = os.getpid()
-            context["account_id"] = os.environ.get("OJOL_ACCOUNT_ID")
+            context["account_id"] = account["id"] if account else os.environ.get("OJOL_ACCOUNT_ID")
             context["mcp_tool"] = getattr(exc, "operation", None)
             if args.command == "run" and os.environ.get("OJOL_WORKER_AUTO_START") == "1":
                 context["tindakan"] = (
@@ -254,7 +277,7 @@ def main(argv=None):
                 exc,
                 stage or f"cli.{args.command}",
                 context,
-                stop_worker=args.command not in {"cleanup-scan", "list-accounts"},
+                stop_worker=owns_live_run,
             )
             try:
                 asyncio.run(flush_notices(settings))

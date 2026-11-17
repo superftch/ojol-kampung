@@ -234,7 +234,7 @@ def test_same_unresolved_trip_cannot_be_handed_off(settings, state):
     after = observed.model_copy(update={"observed_at": observed.observed_at + timedelta(seconds=1)})
     with closing(Journal(settings.runtime_dir)) as journal:
         action = journal.begin(journal.start(settings), "complete", before, {})
-        assert not journal.handoff_complete(action, observed, after)
+        assert not journal.handoff_action(action, observed, after)
         assert journal.unresolved()[0]["id"] == action
 
 
@@ -288,3 +288,152 @@ def test_status_shows_game_totals_history_limits_and_individual_switches(setting
         "Sesi game",
     ):
         assert value in text
+
+
+@pytest.mark.parametrize("kind", ["purchase", "take"])
+@pytest.mark.parametrize("phase", ["idle", "sleeping", "delivering", "complete"])
+async def test_stale_action_hands_off_stable_game_without_booking_or_replay(
+    settings, state, monkeypatch, kind, phase, capsys
+):
+    observed = state.model_copy(
+        update={
+            "observed_at": state.observed_at + timedelta(minutes=20),
+            "phase": phase,
+            "wallet": Decimal("31.23"),
+            "remaining_seconds": 100 if phase == "delivering" else None,
+        }
+    )
+    after = observed.model_copy(
+        update={
+            "observed_at": observed.observed_at + timedelta(seconds=1),
+            "remaining_seconds": 99 if phase == "delivering" else None,
+        }
+    )
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[observed, after]),
+        job_click=AsyncMock(),
+        buy=AsyncMock(),
+        check_cancel=lambda: None,
+    )
+    monkeypatch.setattr("ojol.reconciliation.asyncio.sleep", AsyncMock())
+    with closing(Journal(settings.runtime_dir)) as journal:
+        payload = {
+            "resource": "data",
+            "shop": "Konter uji",
+            "product": {"name": "Pulsa", "price": "1"},
+        }
+        action = journal.begin(journal.start(settings), kind, state, payload)
+        journal.settle(action, False)
+        assert await wait_until_resolved(ui, journal, settings) == after
+        row = journal.history()["actions"][0]
+        assert row["status"] == "handed_off" and not journal.unresolved()
+        assert row["before_state"] == state.model_dump_json()
+        assert journal.profit()["pengeluaran"] == journal.profit()["pendapatan_ojol"] == "0"
+        proof = json.loads(
+            journal.db.execute(
+                "SELECT data FROM events WHERE event='aksi_lama_diserahkan_ke_state_teramati'"
+            ).fetchone()[0]
+        )
+        assert proof["original_outcome"] == "uncertain"
+        assert proof["expense_attributed"] is proof["payout_attributed"] is False
+        sync = json.loads((settings.runtime_dir / "game-sync.json").read_text())
+        assert sync["resolved"] == [action]
+        assert sync["reconciliation"][0]["status_after"] == "handed_off"
+        assert journal.start(settings) > row["run_id"]
+        assert "Hasil transaksi lama tetap belum pasti" in capsys.readouterr().out
+    ui.job_click.assert_not_awaited()
+    ui.buy.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "wallet",
+        "fuel",
+        "history",
+        "needs",
+        "trip_id",
+        "phase",
+        "time",
+        "searching",
+        "unknown",
+        "timer",
+    ],
+)
+def test_stale_handoff_requires_stable_resource_wallet_trip_and_advancing_time(
+    settings, state, change
+):
+    observed = state.model_copy(update={"observed_at": state.observed_at + timedelta(minutes=10)})
+    after = observed.model_copy(update={"observed_at": observed.observed_at + timedelta(seconds=1)})
+    if change == "time":
+        after = observed
+    elif change in {"searching", "unknown"}:
+        observed = observed.model_copy(update={"phase": change})
+        after = after.model_copy(update={"phase": change})
+    elif change == "timer":
+        observed = observed.model_copy(update={"phase": "delivering", "remaining_seconds": 30})
+        after = after.model_copy(update={"phase": "delivering", "remaining_seconds": 40})
+    else:
+        values = {
+            "wallet": Decimal("20"),
+            "fuel": 50,
+            "history": ["new"],
+            "needs": {"makan": 20},
+            "trip_id": "new-trip",
+            "phase": "complete",
+        }
+        after = after.model_copy(update={change: values[change]})
+    with closing(Journal(settings.runtime_dir)) as journal:
+        action = journal.begin(journal.start(settings), "purchase", state, {})
+        assert journal.handoff_action(action, observed, after) is None
+        assert journal.unresolved()[0]["id"] == action
+
+
+def test_recent_purchase_still_requires_transaction_evidence(settings, state):
+    observed = state.model_copy(update={"observed_at": state.observed_at + timedelta(seconds=300)})
+    after = observed.model_copy(update={"observed_at": observed.observed_at + timedelta(seconds=1)})
+    with closing(Journal(settings.runtime_dir)) as journal:
+        action = journal.begin(journal.start(settings), "purchase", state, {})
+        assert journal.handoff_action(action, observed, after) is None
+        assert journal.unresolved()[0]["id"] == action
+
+
+async def test_waiting_status_names_purchase_and_explains_unstable_game(
+    settings, state, monkeypatch
+):
+    import os
+
+    import ojol.control as control
+
+    observed = state.model_copy(update={"observed_at": state.observed_at + timedelta(minutes=10)})
+    after = observed.model_copy(
+        update={"observed_at": observed.observed_at + timedelta(seconds=1), "fuel": 50}
+    )
+    ui = SimpleNamespace(snapshot=AsyncMock(side_effect=[observed, after]))
+    monkeypatch.setattr("ojol.reconciliation.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr(control, "running", lambda _: True)
+    with closing(Journal(settings.runtime_dir)) as journal:
+        action = journal.begin(
+            journal.start(settings),
+            "purchase",
+            state,
+            {
+                "resource": "fuel",
+                "shop": "SPBU uji",
+                "product": {"name": "Pertalite", "price": "1"},
+            },
+        )
+        await reconcile(ui, journal)
+        (settings.runtime_dir / "status.json").write_text(
+            json.dumps(
+                {
+                    "pid": os.getpid(),
+                    "event": "rekonsiliasi_otomatis",
+                    "reconciliation_pending": 1,
+                }
+            )
+        )
+        text = ControlService(settings).status()
+        assert f"Aksi #{action}" in text and "Beli Pertalite di SPBU uji" in text
+        assert "Field berubah: fuel" in text and "Waktu aksi" in text and "Saldo" in text
+        assert "sebelum mulai" not in text

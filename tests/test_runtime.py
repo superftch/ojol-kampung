@@ -793,6 +793,64 @@ def test_start_error_does_not_inherit_previous_process_verification_stage(settin
     assert error["stage"] == "cli.run"
 
 
+@pytest.mark.parametrize("command", ["inspect", "doctor", "reconcile", "start", "run"])
+def test_cli_lock_conflict_notifies_without_stopping_existing_worker(
+    settings, monkeypatch, command
+):
+    import ojol.app as app
+    import ojol.cli as cli
+    from ojol.accounts import Accounts
+
+    local = settings.model_copy(
+        update={"env": "local", "operator_authorized": True, "telegram_chat_id": 111}
+    )
+    registry = Accounts(local)
+    account = registry.selected(111)
+    directory = registry.scoped_settings(account).runtime_dir
+    original_status = json.dumps(
+        {"pid": -1, "run_id": 31, "event": "observasi", "last_action": {"action_id": 1946}}
+    )
+    (directory / "status.json").write_text(original_status)
+    monkeypatch.setattr(cli, "load_settings", lambda path: local)
+    run_app = AsyncMock()
+    monkeypatch.setattr(app, "run_app", run_app)
+    monkeypatch.setattr("ojol.telegram.flush_notices", AsyncMock())
+    args = ["--env-file", str(ROOT / ".env.testing"), "--account", account["id"], command]
+    if command in {"run", "start"}:
+        args.append("--live")
+    with exclusive_lock(directory):
+        assert cli.main(args) == 2
+        assert running(directory)
+        assert not (directory / "STOP").exists()
+    run_app.assert_not_awaited()
+    details = json.loads((directory / "last-error.json").read_text())
+    assert details["fatal"] is False
+    assert details["stage"] == f"cli.{command}"
+    assert details["account_id"] == account["id"]
+    assert details.get("last_action") is None and details.get("run_id") is None
+    assert (directory / "status.json").read_text() == original_status
+    path = next((directory / "notifications").glob("*.json"))
+    assert details["error_id"] in json.loads(path.read_text())["text"]
+
+
+@pytest.mark.parametrize("live", [False, True])
+def test_cli_failure_only_stops_its_own_live_run(settings, monkeypatch, live):
+    import ojol.app as app
+    import ojol.cli as cli
+
+    local = settings.model_copy(update={"env": "local", "operator_authorized": True})
+    monkeypatch.setattr(cli, "load_settings", lambda path: local)
+    monkeypatch.setattr(app, "run_app", AsyncMock(side_effect=RuntimeError("fixture failure")))
+    monkeypatch.setattr("ojol.telegram.flush_notices", AsyncMock())
+    args = ["--env-file", str(ROOT / ".env.testing"), "run"]
+    if live:
+        args.append("--live")
+    assert cli.main(args) == 2
+    assert (settings.runtime_dir / "STOP").exists() is live
+    details = json.loads((settings.runtime_dir / "last-error.json").read_text())
+    assert details["fatal"] is live
+
+
 async def test_observation_failure_after_verified_claim_does_not_reopen_or_repeat_claim(
     settings, state
 ):

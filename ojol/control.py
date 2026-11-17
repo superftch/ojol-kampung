@@ -218,10 +218,22 @@ class ControlService:
         else:
             lines.extend([trip, "🕒 Update terakhir: belum ada data"])
         if data.get("event") in {"rekonsiliasi", "rekonsiliasi_otomatis"} and (active or starting):
-            lines.append("Bot sedang mencocokkan riwayat dengan game sebelum mulai.")
+            lines.append("Bot sedang mencocokkan hasil aksi terakhir dengan game.")
             if data.get("reconciliation_pending"):
                 lines.append(
                     f"{data['reconciliation_pending']} hasil aksi masih diperiksa otomatis."
+                )
+            for action in sync.get("reconciliation", []):
+                if action.get("status_after") not in {"pending", "uncertain"}:
+                    continue
+                lines.append(f"⏳ Aksi #{action['action_id']} • {action['description']}")
+                created = status_timestamp(action.get("created"))
+                if created:
+                    lines.append(f"Waktu aksi • {created.astimezone(WIB):%d-%m-%Y %H:%M:%S} WIB")
+                lines.append(f"Tertahan • {action['reason']}")
+                before, current = action.get("before", {}), action.get("observed", {})
+                lines.append(
+                    f"Saldo • {before.get('wallet', '?')} → {current.get('wallet', '?')} koin"
                 )
         if state.get("village") or state.get("home_plot"):
             lines.append(

@@ -5,7 +5,9 @@ import json
 import logging
 import os
 import re
+import sqlite3
 import time
+from contextlib import closing
 from datetime import datetime
 from uuid import uuid4
 
@@ -267,6 +269,12 @@ def _error_guidance(details):
     elif "sedang tidur" in diagnostic:
         reason = "Karakter sedang tidur."
         action = "Bangunkan karakter di game, lalu tekan Jalankan Ojol."
+    elif "automation sudah berjalan" in diagnostic:
+        reason = "Akun masih digunakan worker yang sedang berjalan."
+        action = (
+            "Tekan Status untuk memeriksa akun. Untuk inspeksi atau rekonsiliasi manual, "
+            "tekan Hentikan Ojol dan tunggu worker berhenti sebelum mencoba lagi."
+        )
     elif "tidak ada pembelian" in diagnostic:
         reason = "Tidak ada barang isi ulang yang memenuhi syarat."
         action = (
@@ -474,6 +482,24 @@ def record_error(settings, error, stage, context=None):
         "error_id": "OJL-" + uuid4().hex[:12].upper(),
         "time": now().isoformat(),
     }
+    if stage == "worker.reconcile":
+        history = settings.runtime_dir / "history.sqlite3"
+        if history.is_file():
+            try:
+                with closing(
+                    sqlite3.connect(history.resolve().as_uri() + "?mode=ro", uri=True)
+                ) as db:
+                    details["action_ids"] = [
+                        row[0]
+                        for row in db.execute(
+                            "SELECT id FROM actions WHERE status IN ('pending','uncertain') ORDER BY id"
+                        )
+                    ]
+            except sqlite3.Error:
+                logging.exception("Gagal membaca referensi aksi untuk catatan error")
+    directory = settings.runtime_dir / "errors"
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    write_private(directory / f"{details['error_id']}.json", details)
     write_private(settings.runtime_dir / "last-error.json", details)
     print(json.dumps({"event": "error", **details}, ensure_ascii=False, default=str), flush=True)
     return details

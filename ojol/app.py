@@ -24,6 +24,8 @@ class OjolAutomationAgent(BaseAgent):
     command: str
     live: bool = False
     shop: str | None = None
+    error_id: str | None = None
+    action_id: int | None = None
     cancel: Any = None
 
     async def _run_async_impl(self, ctx):
@@ -57,8 +59,12 @@ class OjolAutomationAgent(BaseAgent):
             elif self.command == "reconcile":
                 journal = Journal(self.settings.runtime_dir)
                 try:
-                    await reconcile(ui, journal)
-                    if journal.unresolved():
+                    await reconcile(ui, journal, self.error_id, self.action_id)
+                    if self.error_id or self.action_id is not None:
+                        print(
+                            f"Total aksi belum pasti di seluruh akun ini: {len(journal.unresolved())}."
+                        )
+                    elif journal.unresolved():
                         print(
                             "Masih ada hasil aksi yang belum pasti. Periksa riwayat sebelum melanjutkan."
                         )
@@ -130,7 +136,7 @@ class OjolAutomationAgent(BaseAgent):
         yield Event(author=self.name)
 
 
-async def run_app(settings, command, live=False, shop=None):
+async def run_app(settings, command, live=False, shop=None, error_id=None, action_id=None):
     cancel = asyncio.Event()
     import signal
 
@@ -147,6 +153,8 @@ async def run_app(settings, command, live=False, shop=None):
             command=command,
             live=live,
             shop=shop,
+            error_id=error_id,
+            action_id=action_id,
             cancel=cancel,
         ),
         session_service=sessions,

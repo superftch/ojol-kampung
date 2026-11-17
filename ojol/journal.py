@@ -75,7 +75,7 @@ class Journal:
             )
         ]
 
-    def sync_game(self, state, resolved=None):
+    def sync_game(self, state, resolved=None, reconciliation=None):
         write_private(
             self.directory / "game-sync.json",
             {
@@ -83,6 +83,7 @@ class Journal:
                 "snapshot": state.model_dump(mode="json"),
                 "resolved": resolved or [],
                 "unresolved": len(self.unresolved()),
+                "reconciliation": reconciliation or [],
             },
         )
 
@@ -234,18 +235,29 @@ class Journal:
                 ),
             ).lastrowid
 
-    def handoff_complete(self, action_id, observed, after):
+    def handoff_action(self, action_id, observed, after):
         row = self.db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
-        if not row or row["kind"] != "complete" or row["status"] not in {"pending", "uncertain"}:
+        if (
+            not row
+            or row["kind"] not in {"complete", "purchase", "take"}
+            or row["status"] not in {"pending", "uncertain"}
+        ):
             return None
         before = load_journal_snapshot(row["before_state"])
+        if row["kind"] == "complete":
+            if (
+                before.phase != "complete"
+                or (before.trip_id and before.trip_id in {observed.trip_id, after.trip_id})
+                or (after.phase == "complete" and not before.trip_id)
+            ):
+                return None
+        elif (observed.observed_at - before.observed_at).total_seconds() <= 300:
+            return None
         if (
-            before.phase != "complete"
-            or not before.observed_at <= observed.observed_at < after.observed_at
-            or (before.trip_id and before.trip_id in {observed.trip_id, after.trip_id})
-            or (after.phase == "complete" and not before.trip_id)
+            not before.observed_at <= observed.observed_at < after.observed_at
             or observed.phase != after.phase
             or after.phase == "unknown"
+            or (row["kind"] != "complete" and after.phase == "searching")
         ):
             return None
         excluded = {"observed_at", "remaining_seconds", "buttons", "raw_text"}
@@ -262,6 +274,7 @@ class Journal:
             "method": "two_consistent_current_observations",
             "original_outcome": "uncertain",
             "payout_attributed": False,
+            "expense_attributed": False,
             "old_trip_id": before.trip_id,
             "current_trip_id": after.trip_id,
             "observation_times": [observed.observed_at.isoformat(), after.observed_at.isoformat()],
@@ -279,7 +292,9 @@ class Journal:
                 (
                     row["run_id"],
                     now().isoformat(),
-                    "klaim_diserahkan_ke_state_teramati",
+                    "klaim_diserahkan_ke_state_teramati"
+                    if row["kind"] == "complete"
+                    else "aksi_lama_diserahkan_ke_state_teramati",
                     json.dumps(evidence),
                 ),
             )

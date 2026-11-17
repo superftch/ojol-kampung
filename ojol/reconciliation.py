@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import re
 from decimal import Decimal
 from pathlib import Path
 
@@ -15,7 +16,135 @@ from .models import NEEDS, now
 from .telegram import queue_error, queue_notice
 
 
-async def reconcile(ui, journal):
+def error_actions(journal, error_id):
+    error_id = error_id.upper()
+    if not re.fullmatch(r"OJL-[0-9A-F]{12}", error_id):
+        raise ValueError("ID error harus berformat OJL- diikuti 12 digit heksadesimal")
+    paths = [
+        journal.directory / "errors" / f"{error_id}.json",
+        journal.directory / "last-error.json",
+        *(journal.directory / "notifications").glob("*"),
+    ]
+    details = None
+    for path in paths:
+        if not path.is_file() or path.suffix not in {".json", ".sent", ".muted", ".sending"}:
+            continue
+        try:
+            data = json.loads(path.read_text())
+        except (FileNotFoundError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        data = data.get("context", data)
+        if isinstance(data, dict) and data.get("error_id") == error_id:
+            details = data
+            break
+    if details is None:
+        raise ValueError(f"ID error {error_id} tidak ditemukan pada akun ini")
+    print(
+        f"Error {error_id} | {details.get('time')} | {details.get('stage')} | "
+        f"{details.get('message')}"
+    )
+    last_action = details.get("last_action") or {}
+    identifiers = details.get("action_ids")
+    if identifiers is None:
+        identifiers = [last_action["action_id"]] if last_action.get("action_id") else []
+    actions = []
+    for identifier in dict.fromkeys(identifiers):
+        row = journal.db.execute("SELECT * FROM actions WHERE id=?", (identifier,)).fetchone()
+        if row is None:
+            raise ValueError(f"Aksi #{identifier} terkait error tidak ditemukan di ledger akun ini")
+        if (details.get("run_id") is not None and row["run_id"] != details["run_id"]) or (
+            last_action.get("kind") and row["kind"] != last_action["kind"]
+        ):
+            raise ValueError(f"Konteks aksi #{identifier} tidak cocok dengan error {error_id}")
+        actions.append(dict(row))
+    if not actions:
+        print("Error ini tidak memiliki referensi aksi ledger yang dapat direkonsiliasi.")
+    return actions
+
+
+def report_action(journal, action, state, evidence, reason, error_id):
+    before = load_journal_snapshot(action["before_state"])
+    payload = json.loads(action["payload"])
+    description = {
+        "search": "Cari order",
+        "take": "Terima order",
+        "complete": "Klaim ongkos",
+    }.get(action["kind"], action["kind"])
+    if action["kind"] == "purchase":
+        description = (
+            f"Beli {payload.get('product', {}).get('name', payload.get('resource', '?'))} "
+            f"di {payload.get('shop', '?')}"
+        )
+    fields = {
+        "observed_at",
+        "phase",
+        "wallet",
+        "fuel",
+        "condition",
+        "data",
+        "needs",
+        "trip_id",
+        "trip",
+    }
+    row = journal.db.execute("SELECT status FROM actions WHERE id=?", (action["id"],)).fetchone()
+    cashflows = [
+        dict(row)
+        for row in journal.db.execute(
+            "SELECT kind,category,amount FROM cashflows WHERE source_key=?",
+            (f"action:{action['id']}",),
+        )
+    ]
+    resources = {"fuel", "condition", "data", *before.needs, *state.needs}
+    detail = {
+        "account": journal.directory.name,
+        "error_id": error_id,
+        "action_id": action["id"],
+        "run_id": action["run_id"],
+        "kind": action["kind"],
+        "created": action["created"],
+        "payload": payload,
+        "description": description,
+        "status_before": action["status"],
+        "status_after": row["status"],
+        "reason": reason,
+        "evidence": evidence,
+        "before": before.model_dump(mode="json", include=fields),
+        "observed": state.model_dump(mode="json", include=fields),
+        "wallet_delta": str(state.wallet - before.wallet),
+        "resource_delta": {
+            key: state.resource_value(key) - before.resource_value(key)
+            for key in sorted(resources)
+            if state.resource_value(key) is not None and before.resource_value(key) is not None
+        },
+        "cashflows_recorded_for_action": cashflows,
+        "cashflows_added": cashflows if action["status"] != "verified" else [],
+    }
+    print(
+        f"Akun {detail['account']} | Aksi #{action['id']} ({description}) | "
+        f"{action['status']} → {row['status']} | {reason}",
+        flush=True,
+    )
+    print("Detail rekonsiliasi: " + json.dumps(detail, ensure_ascii=False), flush=True)
+    return detail
+
+
+async def reconcile(ui, journal, error_id=None, action_id=None):
+    if error_id and action_id is not None:
+        raise ValueError("Pilih salah satu --error-id atau --action-id")
+    error_id = error_id.upper() if error_id else None
+    if action_id is not None:
+        if action_id <= 0:
+            raise ValueError("ID aksi harus bilangan positif")
+        row = journal.db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
+        if row is None:
+            raise ValueError(f"Aksi #{action_id} tidak ditemukan pada akun ini")
+        actions = [dict(row)]
+    else:
+        actions = error_actions(journal, error_id) if error_id else journal.unresolved()
+    if error_id and not actions:
+        return None
     maintenance_file = Path(
         os.environ.get("OJOL_MAINTENANCE_FILE", str(journal.directory / SCHEDULE_FILE))
     )
@@ -23,6 +152,7 @@ async def reconcile(ui, journal):
         ui.check_cancel()
         await asyncio.sleep(1)
     resolved = []
+    reports = []
     claimed = {
         row[0]
         for row in journal.db.execute(
@@ -32,10 +162,26 @@ async def reconcile(ui, journal):
         if row[0]
     }
     state = None
-    for action in journal.unresolved():
+    for action in actions:
         before = load_journal_snapshot(action["before_state"])
+        if action["status"] not in {"pending", "uncertain"}:
+            print(f"Aksi #{action['id']}: sudah berstatus {action['status']}.")
+            reports.append(
+                report_action(
+                    journal,
+                    action,
+                    load_journal_snapshot(action["after_state"])
+                    if action["after_state"]
+                    else before,
+                    None,
+                    "Aksi sudah ditangani sebelumnya; menampilkan catatan ledger tersimpan.",
+                    error_id,
+                )
+            )
+            continue
         state = await ui.snapshot()
         evidence = None
+        reason = "Bukti game belum cukup untuk memastikan hasil aksi."
         if action["kind"] == "search":
             observed = state
             await asyncio.sleep(1)
@@ -51,6 +197,17 @@ async def reconcile(ui, journal):
                     print(
                         f"Selisih saldo {evidence['wallet_delta']} koin dicatat tanpa atribusi penyebab."
                     )
+                reports.append(
+                    report_action(
+                        journal,
+                        action,
+                        state,
+                        evidence,
+                        "Dua pengamatan konsisten membuktikan status order saat ini. "
+                        "Hasil pencarian asli tetap belum pasti; selisih saldo/resource tanpa atribusi.",
+                        error_id,
+                    )
+                )
                 continue
             fields = {
                 "observed_at",
@@ -76,6 +233,11 @@ async def reconcile(ui, journal):
                     ensure_ascii=False,
                 )
             )
+            reason = (
+                "Pencarian belum dapat diserahkan ke kondisi terbaru. "
+                "Dua pengamatan harus konsisten; order aktif juga perlu kesinambungan "
+                "saldo, pendapatan, riwayat, dan resource dengan aksi awal."
+            )
         payload = json.loads(action["payload"])
         valid = False
         if action["kind"] == "purchase":
@@ -89,8 +251,28 @@ async def reconcile(ui, journal):
                 and abs(before.wallet - state.wallet - Decimal(payload["product"]["price"]))
                 <= tolerance
             )
+            reason = (
+                "Resource bertambah dan pengurangan saldo cocok dengan harga satu produk."
+                if valid
+                else f"Pembelian belum terbukti: {resource} {previous} → {current}; "
+                f"saldo berkurang {before.wallet - state.wallet} koin, "
+                f"harga produk {payload['product']['price']} koin."
+            )
+            evidence = {
+                "resource": resource,
+                "previous": previous,
+                "current": current,
+                "expected_price": payload["product"]["price"],
+                "tolerance": str(tolerance),
+            }
         elif action["kind"] == "take":
             valid = state.phase == "delivering"
+            evidence = {"phase": state.phase}
+            reason = (
+                "Game menunjukkan order sedang diantar."
+                if valid
+                else f"Game masih berfase {state.phase}; penerimaan order belum terbukti."
+            )
         elif action["kind"] == "complete":
             evidence = None if before.trip_id in claimed else completion_evidence(before, state)
             valid = evidence is not None
@@ -100,12 +282,71 @@ async def reconcile(ui, journal):
                 state = await ui.snapshot()
                 evidence = None if before.trip_id in claimed else completion_evidence(before, state)
                 valid = evidence is not None
-                if not valid and journal.handoff_complete(action["id"], observed, state):
-                    resolved.append(action["id"])
-                    continue
+                if not valid:
+                    handoff = journal.handoff_action(action["id"], observed, state)
+                    if handoff:
+                        resolved.append(action["id"])
+                        reports.append(
+                            report_action(
+                                journal,
+                                action,
+                                state,
+                                handoff,
+                                "Dua pengamatan konsisten membuktikan game telah berpindah dari trip lama. "
+                                "Hasil klaim lama tetap belum pasti; pendapatan belum diatribusikan.",
+                                error_id,
+                            )
+                        )
+                        continue
+            reason = (
+                "Receipt game cocok dengan trip dan waktu klaim."
+                if valid
+                else f"Receipt untuk trip {before.trip_id or before.trip or '?'} belum cocok "
+                "atau sudah dibukukan. Trip yang masih sama menunggu bukti klaim."
+            )
         age = (state.observed_at - before.observed_at).total_seconds()
-        if age < 0 or (age > 300 and not evidence):
+        if age < 0 or (age > 300 and action["kind"] in {"purchase", "take"}):
             valid = False
+            reason = (
+                f"Waktu bukti di luar jendela verifikasi aksi (0–300 detik), "
+                f"selisih {int(age)} detik."
+            )
+        if age > 300 and action["kind"] in {"purchase", "take"}:
+            observed = state
+            await asyncio.sleep(1)
+            state = await ui.snapshot()
+            handoff = journal.handoff_action(action["id"], observed, state)
+            if handoff:
+                resolved.append(action["id"])
+                reports.append(
+                    report_action(
+                        journal,
+                        action,
+                        state,
+                        handoff,
+                        "Aksi melewati 5 menit. Dua snapshot stabil menjadi dasar melanjutkan game. "
+                        "Hasil transaksi lama tetap belum pasti; pembukuan transaksi tidak ditambahkan.",
+                        error_id,
+                    )
+                )
+                continue
+            excluded = {"observed_at", "remaining_seconds", "buttons", "raw_text"}
+            first = observed.model_dump(exclude=excluded)
+            second = state.model_dump(exclude=excluded)
+            changed = [key for key in first if first[key] != second[key]]
+            evidence["handoff_checks"] = {
+                "changed_fields": changed,
+                "observation_times": [
+                    observed.observed_at.isoformat(),
+                    state.observed_at.isoformat(),
+                ],
+                "phases": [observed.phase, state.phase],
+                "remaining_seconds": [observed.remaining_seconds, state.remaining_seconds],
+            }
+            reason += (
+                f" Dua snapshot belum layak diserahkan. Field berubah: {', '.join(changed) or 'nihil'}; "
+                f"fase {observed.phase} → {state.phase}. Periksa waktu dan countdown pada detail."
+            )
         if valid:
             journal.settle(action["id"], True, state)
             if action["kind"] == "complete" and before.trip_id:
@@ -116,10 +357,12 @@ async def reconcile(ui, journal):
                 {"action_id": action["id"], "evidence": evidence},
             )
             resolved.append(action["id"])
-        print(f"Aksi #{action['id']}: {'terverifikasi' if valid else 'belum dapat dipastikan'}.")
+        reports.append(report_action(journal, action, state, evidence, reason, error_id))
     if state is None:
+        if error_id or action_id is not None:
+            return None
         state = await ui.snapshot()
-    journal.sync_game(state, resolved)
+    journal.sync_game(state, resolved, reports)
     return state
 
 
