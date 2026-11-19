@@ -249,9 +249,15 @@ async def reconcile(ui, journal, error_id=None, action_id=None):
             valid = (
                 previous is not None
                 and current is not None
-                and current > previous
-                and abs(before.wallet - state.wallet - Decimal(payload["product"]["price"]))
-                <= tolerance
+                and (current > previous or (previous == 100 and current >= 100))
+                and (
+                    abs(before.wallet - state.wallet - Decimal(payload["product"]["price"]))
+                    <= tolerance
+                    or (
+                        Decimal(payload["product"]["price"]) == Decimal(0)
+                        and state.wallet >= before.wallet
+                    )
+                )
             )
             reason = (
                 "Resource bertambah dan pengurangan saldo cocok dengan harga satu produk."

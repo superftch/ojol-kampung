@@ -13,7 +13,15 @@ from .http_api import HttpCoreError, OjolHttpApi
 from .identity import save_profile, verified_profile
 from .maintenance import GAME_COMMANDS, SCHEDULE_FILE, MaintenanceWindow, held_window, read_window
 from .models import NEEDS
-from .study import STUDY_LABELS, SUBJECTS, set_subject, subjects
+from .study import (
+    STUDY_LABELS,
+    SUBJECTS,
+    cached_skills,
+    is_track_max,
+    save_skills,
+    set_subject,
+    subjects,
+)
 from .telegram import (
     BUTTON_COMMANDS,
     TelegramClient,
@@ -180,7 +188,9 @@ class MultiAccountService:
 
             lines = [f"{i}. {icon} {name}{tag}", f"   • Status: {status_desc}"]
 
-            wallet_part = f"Saldo {koin(summary['wallet'])}" if summary["wallet"] is not None else None
+            wallet_part = (
+                f"Saldo {koin(summary['wallet'])}" if summary["wallet"] is not None else None
+            )
             trips_part = f"{summary['trips']} trip" if summary["trips"] is not None else None
             if wallet_part and trips_part:
                 lines.append(f"   • {wallet_part} · {trips_part}")
@@ -191,7 +201,9 @@ class MultiAccountService:
 
             if any(summary[k] is not None for k in ("fuel", "condition", "data")):
                 f_str = f"⛽ {summary['fuel']}%" if summary["fuel"] is not None else "⛽ -%"
-                c_str = f"🔧 {summary['condition']}%" if summary["condition"] is not None else "🔧 -%"
+                c_str = (
+                    f"🔧 {summary['condition']}%" if summary["condition"] is not None else "🔧 -%"
+                )
                 d_str = f"📶 {summary['data']}%" if summary["data"] is not None else "📶 -%"
                 lines.append(f"   • Resource: {f_str} · {c_str} · {d_str}")
 
@@ -232,9 +244,12 @@ class MultiAccountService:
             return
         try:
             async with asyncio.timeout(6), OjolHttpApi(settings.runtime_dir) as api:
-                save_profile(
-                    settings.runtime_dir, verified_profile(await api.request("/api/game/me"))
-                )
+                me = await api.request("/api/game/me")
+                save_profile(settings.runtime_dir, verified_profile(me))
+                if isinstance(me.get("skill"), dict) and isinstance(
+                    me["skill"].get("tracks"), list
+                ):
+                    save_skills(settings.runtime_dir, me["skill"]["tracks"])
         except (HttpCoreError, OSError, ValueError, TypeError, AttributeError, TimeoutError):
             return
         self.service(account["id"])
@@ -326,7 +341,7 @@ class MultiAccountService:
             if not enabled:
                 confirmation += "Aksi otomatis baru untuk fitur ini dinonaktifkan. Hasil aksi yang sudah terkirim tetap diperiksa.\n\n"
             elif parts[1] in NEEDS:
-                confirmation += f"Saat worker berjalan, bot mengisi kebutuhan ini jika di bawah {self.settings.threshold}%, mengikuti anggaran dan saldo minimum.\n\n"
+                confirmation += f"Saat worker berjalan, bot mengisi kebutuhan ini jika di bawah {self.settings.threshold_for(parts[1])}%, mengikuti anggaran dan saldo minimum.\n\n"
             else:
                 confirmation += "Pengaturan tersimpan. Fitur aktif saat worker berjalan.\n\n"
         elif action != "auto":
@@ -334,6 +349,8 @@ class MultiAccountService:
         flags = auto_flags(directory)
         identifier = account["id"]
         choices = subjects(directory)
+        skills = cached_skills(directory)
+        skills_by_id = {t["id"]: t for t in skills if isinstance(t, dict)} if skills else {}
         summary = "\n".join(
             f"{label} • {'ON' if flags[key] else 'OFF'}" for key, label in AUTO_LABELS.items()
         )
@@ -363,7 +380,7 @@ class MultiAccountService:
                     *[
                         [
                             {
-                                "text": f"Bidang {'Perpus' if mode == 'perpus' else 'Kuliah'}: {SUBJECTS.get(choices[mode], 'belum dipilih')}",
+                                "text": f"Bidang {'Perpus' if mode == 'perpus' else 'Kuliah'}: {SUBJECTS.get(choices[mode], 'belum dipilih')}{' (Maks)' if choices[mode] and is_track_max(skills_by_id.get(choices[mode]), mode) else ''}",
                                 "callback_data": f"acct:{identifier}:study:{mode}",
                             }
                         ]
@@ -380,24 +397,60 @@ class MultiAccountService:
             raise ValueError("Pilihan belajar tidak valid.")
         mode = parts[1]
         directory = self.registry.scoped_settings(account).runtime_dir
+        skills = cached_skills(directory)
+        skills_by_id = {t["id"]: t for t in skills if isinstance(t, dict)} if skills else {}
         if len(parts) == 3:
-            set_subject(directory, mode, parts[2])
+            track = parts[2]
+            track_info = skills_by_id.get(track)
+            if track_info and is_track_max(track_info, mode):
+                reason = (
+                    "sudah maksimal di perpustakaan"
+                    if mode == "perpus"
+                    else "sudah mencapai level maksimal"
+                )
+                await self.reply(
+                    owner,
+                    f"⚠️ Bidang {SUBJECTS.get(track, track)} {reason} dan tidak dapat dipilih untuk {STUDY_LABELS[mode]}.",
+                    {
+                        "inline_keyboard": [
+                            [
+                                {
+                                    "text": "Kembali ke Pilihan Belajar",
+                                    "callback_data": f"acct:{account['id']}:study:{mode}",
+                                }
+                            ],
+                            [
+                                {
+                                    "text": "Kembali ke Auto",
+                                    "callback_data": f"acct:{account['id']}:auto",
+                                }
+                            ],
+                        ]
+                    },
+                )
+                return
+            set_subject(directory, mode, track, skills=skills)
             await self.auto_menu(owner, account)
             return
         selected = subjects(directory)[mode]
-        buttons = [
-            {
-                "text": f"{'✓ ' if selected == key else ''}{label}",
-                "callback_data": f"acct:{account['id']}:study:{mode}:{key}",
-            }
-            for key, label in SUBJECTS.items()
-        ]
+        buttons = []
+        for key, label in SUBJECTS.items():
+            track_info = skills_by_id.get(key)
+            is_max = is_track_max(track_info, mode) if track_info else False
+            tag = " (Maks)" if is_max else ""
+            check = "✓ " if selected == key else ""
+            buttons.append(
+                {
+                    "text": f"{check}{label}{tag}",
+                    "callback_data": f"acct:{account['id']}:study:{mode}:{key}",
+                }
+            )
         await self.reply(
             owner,
             f"📚 {STUDY_LABELS[mode]} · {account['name']}\n\n"
             "Pilih bidang untuk sesi belajar berikutnya. Kuis bacaan dikerjakan otomatis.\n"
             "Pilihan disimpan per akun; aktifkan ON dari menu Auto setelah memilih.\n"
-            "Bidang yang sedang dipelajari atau perlu kursus lanjutan akan ditunda.",
+            "Bidang yang sudah maksimal tidak dapat dipilih.",
             {
                 "inline_keyboard": [
                     *[buttons[index : index + 2] for index in range(0, len(buttons), 2)],
@@ -824,7 +877,9 @@ class MultiAccountService:
         if callback and text.startswith("access:"):
             await self.home(owner)
             return
-        if (text in {"Dashboard", "/dashboard"} and not callback) or (callback and text == "dashboard"):
+        if (text in {"Dashboard", "/dashboard"} and not callback) or (
+            callback and text == "dashboard"
+        ):
             self.pending.pop(owner, None)
             await self.dashboard(owner)
             return

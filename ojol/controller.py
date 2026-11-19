@@ -9,13 +9,14 @@ from pathlib import Path
 
 from .auto_settings import auto_flags
 from .finance import completion_evidence
+from .garden import run_garden
+from .gym import run_gym
 from .http_api import HttpCoreError
 from .journal import load_journal_snapshot
 from .maintenance import SCHEDULE_FILE, held_window
 from .models import NEEDS, Step, now
 from .planner import is_sleeping, next_step, select_need, select_shop
 from .reconciliation import wait_until_resolved
-from .garden import run_garden
 from .study import run_learning
 from .telegram import queue_error, queue_notice
 
@@ -50,6 +51,7 @@ class Controller:
         self.need_retry_at = {}
         self.study_retry_at = {}
         self.garden_retry_at = 0
+        self.gym_retry_at = 0
         self.maintenance_file = Path(
             os.environ.get("OJOL_MAINTENANCE_FILE", str(settings.runtime_dir / SCHEDULE_FILE))
         )
@@ -158,6 +160,8 @@ class Controller:
                 if value is not None:
                     setattr(self, field, value + paused)
             self.need_retry_at = {key: value + paused for key, value in self.need_retry_at.items()}
+            if hasattr(self, "gym_retry_at") and self.gym_retry_at > 0:
+                self.gym_retry_at += paused
             self.sleep_started = None
         self.report("bangun", phase=self.state.phase)
         return paused
@@ -214,6 +218,11 @@ class Controller:
             if sum(shop.preferred for shop in shops) > 1
             else {}
         )
+        streak_product, streak_count = (
+            self.journal.recent_product_streak(resource)
+            if resource == "makan" and hasattr(self.journal, "recent_product_streak")
+            else (None, 0)
+        )
         if is_need:
             selection = select_need(
                 before,
@@ -224,6 +233,8 @@ class Controller:
                 last_purchases,
                 allow_fallback=getattr(self.ui, "last_navigation", {}).get("akademis_sold_out")
                 is True,
+                streak_product=streak_product,
+                streak_count=streak_count,
             )
             if selection is None:
                 self.report(
@@ -317,8 +328,14 @@ class Controller:
             tolerance = Decimal(0) if is_need else Decimal("0.015")
             after = await self.verify(
                 lambda state: (
-                    (state.resource_value(resource) or 0) > current
-                    and abs((before.wallet - state.wallet) - plan.product.price) <= tolerance
+                    (
+                        (state.resource_value(resource) or 0) > current
+                        or (current == 100 and (state.resource_value(resource) or 0) >= 100)
+                    )
+                    and (
+                        abs((before.wallet - state.wallet) - plan.product.price) <= tolerance
+                        or (plan.product.price == Decimal(0) and state.wallet >= before.wallet)
+                    )
                 )
             )
         except BaseException as exc:
@@ -572,20 +589,28 @@ class Controller:
             if step.action == "stop":
                 raise RuntimeError(step.reason)
             if self.state.phase == "idle" and (
-                step.action in {"search", "take"} or not flags["ojol"]
+                step.action in {"search", "take"}
+                or not flags["ojol"]
+                or getattr(self.state, "ojol_resting", False)
             ):
                 if flags.get("kesehatan") and hasattr(self.ui, "ensure_bpjs"):
                     try:
                         await self.ui.ensure_bpjs()
                     except Exception:
                         pass
+                if await run_gym(self):
+                    continue
                 need = min(
                     (
                         need
                         for need, value in self.state.needs.items()
                         if flags[need]
-                        and value < self.settings.threshold
+                        and value < self.settings.threshold_for(need)
                         and time.monotonic() >= self.need_retry_at.get(need, 0)
+                        and (
+                            self.state.wallet >= Decimal(20)
+                            or need in {"fisik", "kesehatan", "makan"}
+                        )
                     ),
                     key=self.state.needs.__getitem__,
                     default=None,
@@ -597,6 +622,8 @@ class Controller:
                     ):
                         self.need_retry_at[need] = time.monotonic() + 300
                     continue
+            if self.state.phase == "idle" and await run_gym(self):
+                continue
             if self.state.phase == "idle" and await run_learning(self):
                 continue
             if self.state.phase == "idle" and await run_garden(self):

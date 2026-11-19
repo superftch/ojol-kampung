@@ -1,3 +1,4 @@
+import json
 import re
 from decimal import ROUND_CEILING, Decimal
 
@@ -42,6 +43,9 @@ def parse_snapshot(data: dict) -> Snapshot:
     wallet = re.search(r"([\d.,]+)\s*koin", data["wallet"], re.IGNORECASE)
     if not wallet:
         raise ValueError("Dompet cash belum terbaca")
+    ojol_resting = bool(
+        re.search(r"ojol\s*wajib\s*istirahat|istirahat\s*dulu\s*30\s*menit", text, re.IGNORECASE)
+    )
     return Snapshot(
         wallet=decimal_id(wallet[1]),
         fuel=percent("Bensin"),
@@ -54,6 +58,7 @@ def parse_snapshot(data: dict) -> Snapshot:
         history=data.get("history", []),
         today_income=decimal_id(tiles["Hasil hari ini"]) if "Hasil hari ini" in tiles else None,
         raw_text=text,
+        ojol_resting=ojol_resting,
     )
 
 
@@ -84,9 +89,21 @@ def next_step(
         return Step(action="complete", reason="UI menampilkan perjalanan siap diselesaikan.")
     if state.phase != "idle":
         return Step(action="stop", reason="Status Ojol tidak dikenal; tidak menebak tombol.")
+    if state.ojol_resting:
+        wait_seconds = settings.idle_poll_seconds
+        if state.ojol_rest_until and state.observed_at:
+            diff = (state.ojol_rest_until - state.observed_at).total_seconds()
+            if diff > 0:
+                wait_seconds = max(5, min(int(diff) + 1, 1800))
+        return Step(
+            action="wait",
+            reason="Mitra ojol sedang dalam masa wajib istirahat (30 menit setelah narik 3 jam).",
+            wait_seconds=wait_seconds,
+        )
     resources = sorted((getattr(state, key), key) for key in ("fuel", "condition", "data"))
     for value, resource in resources:
-        if value < settings.threshold and resource not in (deferred or ()):
+        thresh = settings.threshold_for(resource)
+        if value < thresh and resource not in (deferred or ()):
             return Step(
                 action="maintain", resource=resource, reason=f"{resource} {value}% di bawah target"
             )
@@ -123,7 +140,8 @@ def select_shop(
     last_purchases: dict[str, int] | None = None,
 ) -> tuple[tuple[ShopPreview, PurchasePlan] | None, bool]:
     current = getattr(state, resource)
-    if current >= settings.threshold:
+    thresh = settings.threshold_for(resource)
+    if current >= thresh:
         return None, False
     above_reserve = current > settings.resource_reserve_percent
     candidates = []
@@ -139,21 +157,13 @@ def select_shop(
                 and state.ojol_vehicle != "mobil"
             ):
                 continue
-            if (
-                resource == "fuel"
-                and product.name == "Isi daya SPKLU (mobil listrik)"
-                and state.ojol_vehicle != "mobil"
-            ):
-                continue
             quantity = int(
-                (Decimal(settings.threshold - current) / gain).to_integral_value(
-                    rounding=ROUND_CEILING
-                )
+                (Decimal(thresh - current) / gain).to_integral_value(rounding=ROUND_CEILING)
             )
             total = product.price * quantity
             if (
                 settings.max_spend is not None and spent + total > settings.max_spend
-            ) or state.wallet - total < max(Decimal(20), settings.min_balance + Decimal("0.01")):
+            ) or state.wallet - total < max(Decimal(5), settings.min_balance + Decimal("0.01")):
                 continue
             projected = current + gain * quantity
             if projected > 100:
@@ -191,6 +201,17 @@ def select_shop(
     return selection, selection is None and above_reserve and capacity_blocked
 
 
+def is_minigame_product(product, resource):
+    if resource != "fisik" or product.price != Decimal(0) or not product.enabled:
+        return False
+    if not product.row_text or not product.row_text.startswith("{"):
+        return False
+    try:
+        return json.loads(product.row_text).get("item") == "minigame"
+    except Exception:
+        return False
+
+
 def select_need(
     state: Snapshot,
     resource: Need,
@@ -200,20 +221,59 @@ def select_need(
     last_purchases: dict[str, int],
     *,
     allow_fallback=False,
+    streak_product: str | None = None,
+    streak_count: int = 0,
 ) -> tuple[ShopPreview, PurchasePlan] | None:
     current = state.needs.get(resource)
-    if current is None or current >= settings.threshold:
+    thresh = settings.threshold_for(resource)
+    has_free_minigame = resource == "fisik" and any(
+        any(is_minigame_product(p, resource) for p in s.products) for s in shops
+    )
+    if current is None or (current >= thresh and not has_free_minigame):
         return None
 
     def value_key(choice):
         shop, plan = choice
-        points = sum(
-            min(100 - value, plan.product.effects.get(need, 0))
-            for need, value in state.needs.items()
+        points = max(
+            1,
+            sum(
+                min(100 - value, plan.product.effects.get(need, 0))
+                for need, value in state.needs.items()
+            ),
+        )
+        is_minigame = False
+        is_bored = False
+        try:
+            data = json.loads(plan.product.row_text)
+            is_minigame = data.get("item") == "minigame" or (
+                resource == "kesehatan" and shop.category == "fasum"
+            )
+            is_bored = bool(data.get("bosan"))
+        except Exception:
+            pass
+        is_health_fasum = resource == "kesehatan" and shop.category == "fasum"
+        is_sppg_fasum = resource == "makan" and shop.category == "fasum"
+        is_rec_fasum = resource == "rekreasi" and shop.category == "fasum"
+        is_streak_exhausted = (
+            resource == "makan"
+            and not is_sppg_fasum
+            and (
+                is_bored
+                or (
+                    streak_product is not None
+                    and plan.product.name == streak_product
+                    and streak_count >= 3
+                )
+            )
         )
         return (
+            not is_minigame,
+            not is_health_fasum,
+            not is_sppg_fasum,
+            not is_rec_fasum,
+            is_streak_exhausted,
             plan.total_cost / points,
-            plan.projected_percent < settings.threshold,
+            plan.projected_percent < thresh,
             plan.total_cost,
             -points,
             last_purchases.get(shop.id, 0) if shop.preferred else 0,
@@ -227,18 +287,24 @@ def select_need(
         if resource == "fisik":
             if shop.category != "fasum":
                 continue
-        elif shop.category == "fasum" and resource == "kesehatan":
+        elif shop.category == "fasum" and resource in {"kesehatan", "makan", "rekreasi"}:
             pass
         elif not shop.preferred and not allow_fallback:
             continue
         for product in shop.products:
             gain = min(100 - current, product.effects.get(resource, 0))
-            if not product.enabled or gain <= 0:
+            is_free_mg = is_minigame_product(product, resource)
+            if not product.enabled or (gain <= 0 and not is_free_mg):
                 continue
-            if (
-                settings.max_spend is not None and spent + product.price > settings.max_spend
-            ) or state.wallet - product.price < max(
-                Decimal(20), settings.min_balance + Decimal("0.01")
+            if current >= thresh and not is_free_mg:
+                continue
+            if (settings.max_spend is not None and spent + product.price > settings.max_spend) or (
+                product.price > Decimal(0)
+                and (
+                    (resource != "makan" and state.wallet - product.price < Decimal(20))
+                    or state.wallet - product.price
+                    < max(Decimal(5), settings.min_balance + Decimal("0.01"))
+                )
             ):
                 continue
             candidates.append(
@@ -249,7 +315,7 @@ def select_need(
                         product=product,
                         quantity=1,
                         total_cost=product.price,
-                        projected_percent=current + gain,
+                        projected_percent=min(100, current + gain),
                     ),
                 )
             )

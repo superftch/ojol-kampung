@@ -356,6 +356,27 @@ class Journal:
         )
         return {shop_id: action_id for shop_id, action_id in rows}
 
+    def recent_product_streak(self, resource: str) -> tuple[str | None, int]:
+        rows = self.db.execute(
+            """SELECT json_extract(payload, '$.product.name') AS product_name
+               FROM actions
+               WHERE kind='purchase' AND status='verified'
+                 AND json_extract(payload, '$.resource') = ?
+               ORDER BY id DESC
+               LIMIT 10""",
+            (resource,),
+        ).fetchall()
+        if not rows or not rows[0][0]:
+            return None, 0
+        latest = rows[0][0]
+        streak = 0
+        for r in rows:
+            if r[0] == latest:
+                streak += 1
+            else:
+                break
+        return latest, streak
+
     def settle(self, action_id, verified, after=None):
         with self.db:
             self.db.execute(

@@ -13,7 +13,15 @@ from ojol.controller import Controller, StopRequested
 from ojol.http_api import HttpCoreError
 from ojol.journal import Journal
 from ojol.reconciliation import reconcile
-from ojol.study import extract_quiz_bank, run_learning, set_subject, subjects
+from ojol.study import (
+    cached_skills,
+    extract_quiz_bank,
+    is_track_max,
+    run_learning,
+    save_skills,
+    set_subject,
+    subjects,
+)
 
 
 def study_ui(state, mode="kuliah", *, quiz_available=False):
@@ -64,6 +72,42 @@ def test_learning_defaults_off_and_choices_are_separate(settings):
     assert not auto_flags(settings.runtime_dir)["kuliah"]
     with pytest.raises(ValueError):
         set_subject(settings.runtime_dir, "kuliah", "unknown")
+
+
+def test_max_study_track_cannot_be_selected(settings):
+    skills = [
+        {"id": "kesehatan", "name": "Kesehatan", "level": 10, "next": None},
+        {
+            "id": "administrasi",
+            "name": "Administrasi",
+            "level": 5,
+            "next": {"level": 6, "library": False},
+        },
+        {
+            "id": "boga",
+            "name": "Tata boga",
+            "level": 2,
+            "next": {"level": 3, "library": True},
+        },
+    ]
+    save_skills(settings.runtime_dir, skills)
+    assert cached_skills(settings.runtime_dir) == skills
+
+    assert is_track_max(skills[0], "perpus") is True
+    assert is_track_max(skills[0], "kuliah") is True
+    assert is_track_max(skills[1], "perpus") is True
+    assert is_track_max(skills[2], "perpus") is False
+
+    # Max track cannot be selected
+    with pytest.raises(ValueError, match="sudah mencapai batas maksimal"):
+        set_subject(settings.runtime_dir, "perpus", "kesehatan")
+
+    with pytest.raises(ValueError, match="sudah mencapai batas maksimal"):
+        set_subject(settings.runtime_dir, "perpus", "administrasi")
+
+    # Non-max track can be selected
+    set_subject(settings.runtime_dir, "perpus", "boga")
+    assert subjects(settings.runtime_dir)["perpus"] == "boga"
 
 
 @pytest.mark.parametrize("mode", ["perpus", "kuliah"])

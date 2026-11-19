@@ -162,7 +162,7 @@ class HttpUI:
         self.request_id = str(uuid4())
         return {"request_id": self.request_id, "core": self.core_name}
 
-    async def buy(self, product, expected_wallet, expected_resource, min_balance=20):
+    async def buy(self, product, expected_wallet, expected_resource, min_balance=5):
         return await self.call_tool(
             "ojol_purchase",
             product=product.model_dump(mode="json"),

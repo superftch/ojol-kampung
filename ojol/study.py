@@ -5,6 +5,7 @@ import json
 import re
 import time
 from datetime import timedelta
+from uuid import uuid4
 
 from .healing import write_private
 from .models import now
@@ -24,6 +25,39 @@ SUBJECTS = {
 }
 
 
+def is_track_max(track_data, mode):
+    if not isinstance(track_data, dict):
+        return False
+    next_info = track_data.get("next")
+    if not next_info:
+        return True
+    if next_info.get("library") is False:
+        return True
+    return False
+
+
+def save_skills(directory, tracks):
+    if not isinstance(tracks, list):
+        return
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    temporary = directory / f"game-skills-{uuid4().hex}.json"
+    try:
+        write_private(temporary, tracks)
+        temporary.replace(directory / "game-skills.json")
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def cached_skills(directory):
+    try:
+        data = json.loads((directory / "game-skills.json").read_text())
+        if isinstance(data, list):
+            return data
+    except (OSError, ValueError, TypeError):
+        pass
+    return []
+
+
 def subjects(directory):
     path = directory / "study-settings.json"
     saved = json.loads(path.read_text()) if path.is_file() else {}
@@ -34,9 +68,15 @@ def subjects(directory):
     return {mode: saved.get(mode) for mode in STUDY_LABELS}
 
 
-def set_subject(directory, mode, track):
+def set_subject(directory, mode, track, skills=None):
     if mode not in STUDY_LABELS or track not in SUBJECTS:
         raise ValueError("Pilihan bidang belajar tidak valid.")
+    if skills is None:
+        skills = cached_skills(directory)
+    if skills:
+        track_info = next((t for t in skills if isinstance(t, dict) and t.get("id") == track), None)
+        if track_info and is_track_max(track_info, mode):
+            raise ValueError("Bidang belajar sudah mencapai batas maksimal.")
     saved = {key: value for key, value in subjects(directory).items() if value is not None}
     saved[mode] = track
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -158,16 +198,18 @@ async def run_learning(controller):
                 price = Decimal(service["priceMilli"]) / 1000
                 if (
                     not skill
-                    or not skill.get("next")
+                    or is_track_max(skill, mode)
                     or skill.get("pending")
-                    or skill["next"].get("library") is False
                     or service.get("open") is not True
                     or (
                         service.get("studyTracks") is not None
                         and track not in service["studyTracks"]
                     )
                     or (c.settings.max_spend is not None and c.spent + price > c.settings.max_spend)
-                    or c.state.wallet - price < max(Decimal(20), c.settings.min_balance)
+                    or (
+                        price > Decimal(0)
+                        and c.state.wallet - price < max(Decimal(20), c.settings.min_balance)
+                    )
                 ):
                     c.study_retry_at[mode] = time.monotonic() + 300
                     continue

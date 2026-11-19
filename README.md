@@ -108,6 +108,8 @@ Isi `.env` di server; jangan commit:
 | `OJOL_LOGIN_PUBLIC_URL` | Origin HTTPS form, misalnya `https://ojolkampung.sftch.web.id` |
 | `OJOL_TUNNEL_ENABLED` | `true` untuk connector dalam container |
 | `OJOL_MIN_BALANCE` | `20` atau lebih |
+| `OJOL_THRESHOLD` | `60` default target isi ulang |
+| `OJOL_SMART_THRESHOLDS` | `true` default: gunakan threshold optimal dinamis per kebutuhan |
 | `OJOL_MAX_JOBS`, `OJOL_MAX_MINUTES`, `OJOL_MAX_SPEND` | Kosong untuk tanpa batas |
 
 Simpan token connector pada `.secrets/cloudflared-token`, mode0600. Cloudflared terpasang dalam image dengan versi/digest tetap; tidak perlu container kedua. Di dashboard Cloudflare, Published application route untuk domain harus menuju **HTTP `http://localhost:6080`**. Token dibaca lewat file privat, bukan argv/env. Port aplikasi hanya diterbitkan ke loopback6080; metrics connector loopback2000.
@@ -155,7 +157,67 @@ Untuk resource Ojol, worker memakai daftar toko tetap per desa dan resource di `
 
 Jika katalog berhasil dibaca tetapi tidak ada pembelian Ojol yang layak, worker menunda isi ulang selama resource masih di atas `OJOL_RESOURCE_RESERVE_PERCENT` (default 20), lalu memeriksa resource lain dan melanjutkan order. Isi ulang dicoba lagi pada observasi idle berikutnya. Saat resource mencapai atau di bawah batas cadangan dan pembelian tetap tidak tersedia, worker berhenti. Kegagalan HTTP tetap mengikuti penanganan error yang berlaku.
 
-**Auto kebutuhan** berjalan di worker yang sama lewat **Jalankan Ojol**. Saat idle, worker menyelesaikan isi ulang Ojol dulu, lalu mengecek makan, kesehatan, fisik, rekreasi, penampilan, dan kondisi rumah di bawah `OJOL_THRESHOLD` (default 60). Worker mengutamakan toko Akademis.ai dan memilih biaya terendah per poin manfaat yang masih muat sampai 100 pada seluruh kebutuhan terbaca. Efek makanan mengikuti selera akun dari katalog bila tersedia. Rotasi toko berlaku saat nilai, kecukupan dan biaya setara. Kondisi rumah diisi dengan membeli bahan di toko bangunan; bahan langsung dipakai oleh game. Jika rasio manfaat setara, worker mengutamakan item yang mencapai ambang kebutuhan utama, lalu total belanja lebih kecil. Produk hemat boleh memerlukan beberapa pembelian; setiap pembelian tetap membaca ulang kondisi dan katalog. Worker memilih toko cadangan hanya jika semua toko Akademis.ai terdaftar untuk kebutuhan itu melaporkan semua item relevan habis. Worker mengecek lagi sebelum membeli. Toko tutup, katalog kosong, atau pembacaan gagal membuat status stok belum pasti. Untuk fisik, worker memakai fasilitas yang ditawarkan game, termasuk Gym Desa berbayar dan manfaat sekundernya yang terverifikasi dari konfigurasi; harga kandidat harus cocok dengan layanan terbaru, fasilitas buka dan tanpa cooldown. Anggaran dan saldo minimum tetap berlaku. Jika kebutuhan belum bisa diisi, worker mencatat alasan penundaan, lanjut Ojol dan mencoba lagi setelah lima menit.
+**Auto kebutuhan** berjalan di worker yang sama lewat **Jalankan Ojol**. Saat idle, worker menyelesaikan isi ulang Ojol dulu, lalu mengecek makan, kesehatan, fisik, rekreasi, penampilan, dan kondisi rumah di bawah target threshold. Worker mengutamakan toko Akademis.ai dan memilih biaya terendah per poin manfaat yang masih muat sampai 100 pada seluruh kebutuhan terbaca. Efek makanan mengikuti selera akun dari katalog bila tersedia. Rotasi toko berlaku saat nilai, kecukupan dan biaya setara. Kondisi rumah diisi dengan membeli bahan di toko bangunan; bahan langsung dipakai oleh game. Jika rasio manfaat setara, worker mengutamakan item yang mencapai ambang kebutuhan utama, lalu total belanja lebih kecil. Produk hemat boleh memerlukan beberapa pembelian; setiap pembelian tetap membaca ulang kondisi dan katalog. Worker memilih toko cadangan hanya jika semua toko Akademis.ai terdaftar untuk kebutuhan itu melaporkan semua item relevan habis. Worker mengecek lagi sebelum membeli. Toko tutup, katalog kosong, atau pembacaan gagal membuat status stok belum pasti. Untuk fisik, worker memprioritaskan minigame gratis Angkat beban 3x sehari, lalu fallback ke Gym Desa berbayar hanya jika kuota habis dan fisik berada di bawah batas aman. Anggaran dan saldo minimum tetap berlaku. Jika kebutuhan belum bisa diisi, worker mencatat alasan penundaan, lanjut Ojol dan mencoba lagi setelah lima menit.
+
+## Pilihan Produk & Smart Dynamic Thresholds
+
+Bot dilengkapi optimasi seleksi produk dan **Smart Dynamic Thresholds** (`OJOL_SMART_THRESHOLDS=true`) untuk mencegah pemborosan koin dan efek yang terbuang sia-sia akibat overflow kapasitas bar (100). Setiap produk dievaluasi berdasarkan rasio biaya per poin efektif (`cost / points`), prioritas fasilitas gratis/minigame, dan threshold pemicu otomatis yang ideal.
+
+### Batas Threshold Dinamis (`OPTIMAL_THRESHOLDS`)
+
+| Kategori | Threshold Optimal | Alasan & Efisiensi Kapasitas |
+|---|---|---|
+| **Fisik (`fisik`)** | **45%** | Minigame Angkat beban (3x main $= +45$) langsung menaikkan fisik ke 90%. Jika jatah minigame habis dan fisik $\le 45\%$, fasilitas Gym berbayar ($+55$) mengisi tepat ke 100% tanpa ada poin/koin terbuang (0% overflow) dan tanpa memicu cooldown 12 jam terlalu dini. |
+| **Bensin (`fuel`)** | **30%** | Memanfaatkan kapasitas penuh pengisian SPKLU ($+70$) dari $\le 30\%$ langsung ke 100%. |
+| **Kondisi (`condition`)** | **40%** | Memanfaatkan kapasitas Servis motor/mobil ($+60$) dari $\le 40\%$ langsung ke 100%. |
+| **Data (`data`)** | **40%** | Memanfaatkan Paket data ($+60$) dari $\le 40\%$ langsung ke 100%. |
+| **Kebutuhan Lainnya (`makan`, `kesehatan`, `rekreasi`, `penampilan`, `rumah`)** | **50%** | Porsi pemulihan makanan, obat toko, dan layanan fasum rata-rata bernilai $+35$ hingga $+50$. Mengisi di ambang $\le 50\%$ menjaga kebutuhan tetap aman tanpa risiko kelaparan ($< 30\%$) dan tanpa overflow. |
+
+Jika `OJOL_SMART_THRESHOLDS=false`, bot menggunakan nilai global tunggal `OJOL_THRESHOLD` (default 60%). Threshold spesifik juga dapat dioverride manual via JSON `OJOL_NEED_THRESHOLDS='{"fuel": 30, "fisik": 45, ...}'`.
+
+### Inventaris Produk Paling Optimal (Hasil Audit Live 19 Nov 2026)
+
+Setiap produk dievaluasi berdasarkan rasio biaya per poin efektif (`cost / points`), prioritas fasilitas gratis/minigame, serta kemampuan pembelian berulang (*multiple purchase*) tanpa harus terbatas pada 1x transaksi:
+
+| Kategori | Produk Terpilih | Biaya | Efek (Gain) | Efisiensi | Keunggulan & Strategi (*Multiple Purchase*) |
+|---|---|---|---|---|---|
+| **Kondisi** | **Tambal ban (Bengkel)** | **0.50 koin** | **$+25$ kondisi** | **0.0200 koin/poin** | **JUARA 1 (Paling Murah & Efisien)**. Lebih hemat 20% dibanding Servis motor (0.0250). Beli **3x = 1.50 koin** menghasilkan **$+75$ kondisi** (unggul $+15$ poin dibanding 1x Servis motor yang hanya $+60$ pada harga sama). |
+| **Kuota** | **Isi pulsa (Konter)** | **0.50 koin** | **$+40$ kuota** | **0.0125 koin/poin** | **JUARA 1 (Paling Murah & Efisien)**. Lebih hemat 25% dibanding Paket data (0.0167). Beli **2x = 1.00 koin** menghasilkan **$+80$ kuota** (unggul $+20$ poin dibanding 1x Paket data yang hanya $+60$ pada harga sama). |
+| **Bensin** | **Isi daya SPKLU (mobil listrik)** | **0.80 koin** | **$+70$ bensin** | **0.0114 koin/poin** | **Paling Murah & Efisien**. Berlaku untuk motor maupun mobil. Lebih hemat 31.7% dibanding Pertalite (1.0 koin / $+60$) dan 24% dibanding Pertamax (1.5 koin / $+100$). |
+| **Fisik** | **Angkat beban (Gym desa)** | **Gratis (0 koin)** | $+15$ fisik per game ($+45$ sehari) | $\le 0$ *(Cuan)* | **Prioritas Mutlak #1**. Dijalankan langsung 3x sehari saat idle. Menghasilkan tambahan uang kas desa hingga $+3$ koin sehari. Gym berbayar ($+55$, 1.5 koin) hanya dipakai sebagai emergency fallback jika kuota harian habis dan fisik $\le 45\%$. |
+| **Kesehatan** | **Puskesmas / RS (BPJS)** | **Gratis (0 koin)** | $+15$ s/d $+40$ kesehatan | 0.0000 | **Prioritas Mutlak #1**. Memanfaatkan minigame tensi/detak gratis BPJS sebelum apotek berbayar. Fallback: obat apotek (0.8 koin / $+20$, rasio 0.0400). |
+| **Makan** | **SPPG (dapur Makan Bergizi Gratis)** / **Mi instan (Sembako)** / **Nasi Goreng / Soto (Restoran)** | **Gratis (0 koin)** (SPPG) / 0.40 koin (sembako) / 1.50 koin (restoran) | $+60$ makan $+5$ kesehatan (SPPG) / $+24$ makan (sembako) / $+63$ makan $+5$ rekreasi (restoran) | **0.0000** (SPPG) / 0.0167 (sembako) / 0.0221 (restoran) | **Prioritas Mutlak #1: SPPG MBG Gratis**. Sekali sehari (cooldown 24 jam) dengan minigame nampan gizi seimbang (+10 makan, +5 kesehatan, bonus upah +3%). **Fallback berbayar**: Mi instan untuk hemat ekstrem atau Nasi goreng/Soto restoran porsi besar, dengan rotasi max 3x streak. |
+| **Penampilan** | **Cukur jenggot / Potong rambut** | 0.50 koin (cukur) / 1.00 koin (potong) | $+30$ (cukur) / $+60$ (potong) | 0.0167 koin/poin | Rasio koin per poin terbaik di barbershop Akademis.ai. Beli 2x Cukur jenggot setara 1x Potong rambut. |
+| **Kondisi Rumah** | **Pipa paralon (Toko bangunan)** | 0.80 koin | $+20$ kondisi rumah | 0.0400 koin/poin | Bahan perbaikan paling murah per poin pemulihan dibanding Cat tembok (2.0 koin / $+40 = 0.0500$) dan Paku & Semen (1.5 koin / $+25 = 0.0600$). Beli 2x = 1.60 koin $\rightarrow +40$ rumah. |
+| **Rekreasi** | **Alun-alun / Taman Desa** / **Main warnet 1 jam (iCafe)** | **Gratis (0 koin)** (Fasum) / 0.50 koin (iCafe) | $+30$ rekreasi $+10$ fisik (Alun-alun) / $+20$ rekreasi (Taman) / $+25$ rekreasi (iCafe) | **0.0000** (Fasum) / 0.0200 (iCafe) | **Prioritas Mutlak #1: Fasum Rekreasi Gratis**. Alun-alun (1x sehari, upah +3%) dan Taman Desa (cooldown 1 jam) dengan minigame foto kenangan (+10 rekreasi). **Fallback berbayar**: Main warnet 1 jam di iCafe (0.5 koin / $+25$) jika seluruh fasum gratis sedang cooldown. |
+| **Belajar** | **Perpustakaan Desa (Perpus)** | **Gratis (0 koin)** | Kuis 3/3 benar, XP skill naik | 0.0000 | 100% Gratis. Otomatis mendeteksi dan memblokir bidang belajar yang sudah mencapai level maksimal `(Maks)`. Opsi berbayar: Kuliah (4 koin). |
+| **Kebun & Kolam** | **Panen, Rawat, Tanam Sayur** | Modal bibit 0.30 koin | Hasil panen sayur/ikan | Profitabel | Memprioritaskan panen tanaman siap panen $\rightarrow$ rawat/siram $\rightarrow$ tanam bibit sayur termurah. |
+
+> [!NOTE]
+> - **Pembelian Berulang (*Multiple Transactions*)**: Seluruh pembelian produk di game dieksekusi per satuan unit transaksi (`/api/shops/{id}/buy`). Worker bot secara otomatis menghitung jumlah unit yang diperlukan (`quantity`) dan melakukan pembelian berulang hingga target terpenuhi tanpa risiko overflow. Produk Ojol (Tambal ban, Isi pulsa, SPKLU) serta kebutuhan umum lainnya bebas dari penalti dan aman dibeli berulang kali secara maksimal.
+> - **Prioritas Utama & Minigame Makan Gratis SPPG (MBG)**: Untuk kebutuhan makan (`makan`), bot mengutamakan fasilitas umum **SPPG (dapur Makan Bergizi Gratis)** sebagai **prioritas mutlak #1**. Program ini 100% **gratis (0 koin)** dengan cooldown **1x sehari (24 jam)** pada jam operasional 06:00–14:00. Bot otomatis memainkan minigame **Isi nampan gizi (`nampan`)** dengan menyusun 5 kelompok gizi lengkap (makanan pokok, lauk, sayur, buah, susu) tanpa junk food untuk memperoleh poin sempurna (+60 makan, +5 kesehatan, bonus minigame +10 makan, +5 kesehatan, dan upah kerja +3% selama 24 jam).
+> - **Prioritas Utama & Minigame Rekreasi Fasum Gratis (Alun-alun & Taman Desa)**: Untuk kebutuhan rekreasi (`rekreasi`), bot mengutamakan fasum gratis di desa (**Alun-alun** dan **Taman Desa**) sebagai **prioritas mutlak #1**. Alun-alun (cooldown 24 jam, bonus upah +3%, $+30$ rekreasi, $+10$ fisik) dan Taman Desa (cooldown hanya 1 jam, $+20$ rekreasi) dilengkapi minigame **Ambil foto (`foto`)**. Bot otomatis menyimulasikan jepretan kamera tepat di tengah bingkai ($p = 0.50$, sempurna 100%) untuk menghasilkan kartu foto kenangan dan bonus tambahan **$+10$ rekreasi**. Jika fasum gratis sedang cooldown, bot otomatis fallback ke warnet iCafe berbayar (0.5 koin / $+25$).
+> - **Aturan Rotasi Cerdas Makanan Berbayar (Max 3x Beli)**: Saat jatah harian SPPG sedang cooldown, bot beralih ke toko makanan berbayar (warung/sembako/restoran). Game menerapkan mekanik kebosanan rasa (*diminishing returns*) jika mengonsumsi menu berbayar yang sama lebih dari 3 kali berturut-turut. Planner bot secara otomatis melacak streak pembelian di database dan status `rasa.bosan`. Setelah maksimal 3 kali pembelian menu yang sama, bot otomatis **merotasi** ke menu makanan alternatif berikutnya yang paling *worth it* (misal: Mi instan $\rightarrow$ Nasi goreng / Soto $\rightarrow$ Nasi pecel). Langkah ini mereset streak kebosanan sehingga efek pemulihan makanan selalu optimal 100%.
+
+### Manajemen Saldo Minimum Bertingkat (Tiered Balance Management)
+
+Konfigurasi `OJOL_MIN_BALANCE=5` (default 5 koin) menerapkan mekanisme proteksi modal darurat bertingkat:
+
+1. **Zona Darurat Ojol & Bertahan Hidup ($5 \le \text{Saldo} < 20$ koin)**:
+   - **Prioritas Utama**: Seluruh saldo dialokasikan khusus untuk kelancaran kerja Ojol dan bertahan hidup.
+   - **Aktivitas yang Diizinkan**:
+     - **Paket Darurat Ojol**: Isi daya SPKLU (0.8 koin), Tambal ban (0.5 koin), dan Isi pulsa (0.5 koin).
+     - **Kebutuhan Primer**: Makan nasi bungkus / mi instan / warung (0.4 - 0.7 koin).
+     - **Fasilitas & Minigame Gratis**: Angkat beban gym desa (0 koin), Puskesmas / RS BPJS gratis (0 koin), Perpustakaan belajar gratis (0 koin).
+   - **Aktivitas yang Ditunda (Hold)**: Belanja kebutuhan sekunder/tersier berbayar (potong rambut/salon penampilan, bioskop/warnet rekreasi, material bangunan rumah, gym berbayar, obat apotek berbayar, kuliah berbayar, dan tanam bibit kebun) otomatis **DITUNDA** agar modal kerja Ojol tidak terkuras.
+
+2. **Zona Bebas ($\text{Saldo} \ge 20$ koin)**:
+   - Seluruh kebutuhan sekunder (rekreasi, salon penampilan, renovasi rumah), kuliah berbayar, dan tanam bibit kebun **BEBAS DIJALANKAN**, selama sisa saldo setelah pembelian tidak menggerus batas cadangan darurat Ojol ($\ge 20$ koin) dan batas absolut saldo ($\ge 5$ koin).
+
+3. **Lantai Saldo Absolut ($< 5$ koin)**:
+   - Seluruh transaksi berbayar diblokir untuk melindungi akun dari risiko kehabisan uang total (*insolvency*).
+
+
 
 Gunakan `list-accounts` untuk melihat nama dan ID akun yang belum diarsipkan. Salin ID ke `--account` untuk memilih akun di CLI. Hentikan worker akun dahulu sebelum inspect/reconcile. Shell server adalah akses operator tepercaya; gunakan Telegram untuk start dengan pengawasan kuota global.
 

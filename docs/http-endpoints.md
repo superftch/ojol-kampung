@@ -34,6 +34,8 @@ Tabel ini mencakup seluruh request yang dipanggil adapter Ojol ke `https://www.k
 | POST `/api/bpjs/bayar` | `{projectId, requestId}` dengan header `Origin: https://www.kampungsebelah.com` | POST live terotorisasi 19 November 2026: kartu diterbitkan 30 hari, gratisSisa 1 |
 | GET `/api/facilities/{id}/kegiatan` | `available`, `visitId`, `kind` (`tensi` \| `detak`), `plan` | GET live dan bundle client tersimpan 19 November 2026 |
 | POST `/api/facilities/{id}/kegiatan` | `{visitId, stops: [...]}` untuk tensi; `{visitId, taps: [...]}` untuk detak | Bundle client modul kegiatan fasum 19 November 2026 |
+| GET `/api/minigame?projectId={id}&game=gym` | `game`, `name`, `icon`, `playsLeft`, `playsPerDay`, `maxRewardMilli`, `kebutuhan: {fisik: 15}`, papan juara | Bundle client `05bjqrf9rphsk.js` (modul 751355) dan tangkapan layar antarmuka pengguna 19 November 2026 |
+| POST `/api/minigame` | `{"action": "start", "projectId", "requestId", "game": "gym"}` mengembalikan `playId` dan `plan`; `{"action": "finish", "playId", "holds": [...]}` menyelesaikan latihan gym dengan efek `fisik: 15` dan hadiah kas desa. Bot menjalankan minigame ini langsung 3x sehari saat idle. | Bundle client `05bjqrf9rphsk.js`, modul kalkulasi skor `910615`, aturan kebutuhan `899117`, dan uji live 19 November 2026 |
 | GET `/api/daily/garden` | Status kebun dan kolam: `now`, `gardens[]` (`id`, `kind`, `state`, `readyAt`, `cared`, `seedMilli`, dll.), `perlengkapan`, `letak`, `ukuran`, `tas` | Bundle client `0wwcgg-bq-sxa.js`, `3g13rrtpxw-ld.js`, dan GET live terotorisasi 19 November 2026 |
 | POST `/api/daily/garden/{id}` | Aksi kebun/kolam: `{"action": "panen" \| "rawat" \| "tanam"}` | Bundle client `0wwcgg-bq-sxa.js` (komponen `#ks-kebun`, fungsi `a6`) dan bundle `3g13rrtpxw-ld.js` (modul 649755) |
 
@@ -93,6 +95,57 @@ Verifikasi live terotorisasi 19 November 2026:
   - **Rumah Sakit (`kind: "detak"`)**: Mengirim array `{visitId, taps: [...]}` dengan timestamps ketukan yang mencocokkan timestamps target `beats` dari GET `/kegiatan`.
   - Penyelesaian minigame memberikan bonus peningkatan kesehatan (`bonusGains.kesehatan`).
 - **Fallback Toko Obat**: Jika kuota periksa gratis harian sudah habis (`gratisSisa: 0`) atau fasilitas sedang cooldown, tetapi nilai kesehatan masih di bawah ambang batas (`threshold`), bot otomatis melanjutkan pembelian obat ke toko obat (Akademis Farma atau cadangan toko obat).
+
+## Bukti minigame fasilitas angkat beban (Gym desa / Gym mini desa)
+
+Verifikasi statis bundle client dan tangkapan layar antarmuka pengguna 19 November 2026:
+- **Ketersediaan dan Kuota**: `GET /api/minigame?projectId={id}&game=gym` mengembalikan status minigame angkat beban (`game: "gym"`, `name: "Angkat beban"`, `playsLeft: 0..3`, `playsPerDay: 3`, `maxRewardMilli: 1000`, `kebutuhan: {fisik: 15}`).
+- **Bypass Cooldown Layanan**: Minigame angkat beban tetap aktif (`Main sekarang (sisa 3x)`) dan dapat dimainkan meskipun layanan utama gym sedang mengalami cooldown (`nextAt` aktif).
+- **Gratis dan Efek Kebutuhan**: Minigame tidak memungut biaya koin (`priceMilli: 0`) dan memberikan pemenuhan fisik +15 serta potensi hadiah koin dari kas desa.
+- **Mekanisme Permainan dan Observasi Live 19 November 2026**:
+  - `POST /api/minigame` dengan `{"action": "start", "projectId", "requestId", "game": "gym"}` mengembalikan `playId` dan objek `plan: {"reps": [...]}` (8 repetisi dengan properti `fill`, `center`, `half`).
+  - Berdasarkan modul scoring `910615`, waktu tahan ideal tiap repetisi adalah `hold = round(fill * center)` untuk menghasilkan hasil angkatan `sempurna` (2 poin/rep, total 16 poin max score).
+  - Jeda simulasi waktu fisik per repetisi dijalankan sebelum mengirimkan hasil untuk menghindari penolakan backend `Permainan tidak sah (terlalu cepat)`.
+  - `POST /api/minigame` dengan `{"action": "finish", "playId", "holds": [...]}` diverifikasi live berhasil 100% sempurna (skor 16, reward 960 milli-koin, pemenuhan fisik +15).
+  - Fasilitas gym terdaftar permanen dalam `GYM_FACILITIES_BY_VILLAGE` agar selalu dievaluasi pada kebutuhan fisik tanpa bergantung batas radius 3 tempat terdekat dari `/api/kebutuhan`.
+  - Prioritas auto kebutuhan fisik: Minigame "Angkat beban" > Fasilitas Gym berbayar > Fasum olahraga lainnya.
+  - Prioritas auto kebutuhan kesehatan: Pemeriksaan BPJS Puskesmas/Rumah Sakit (minigame tensi/detak) > Toko Obat.
+  - Prioritas auto kebutuhan makan: SPPG Makan Bergizi Gratis (minigame nampan) > Warung / Restoran berbayar.
+  - Prioritas auto kebutuhan rekreasi: Fasum Rekreasi Gratis (Alun-alun & Taman Desa minigame foto) > iCafe / Kafe berbayar.
+
+## Bukti SPPG (Dapur Makan Bergizi Gratis) & Minigame Nampan
+
+Verifikasi bundle client `0wwcgg-bq-sxa.js` (modul `895979`), `087o49eachamv.js`, dan katalog fasilitas 19 November 2026:
+- **Karakteristik Layanan**:
+  - Fasilitas SPPG terdaftar per desa dalam `SPPG_FACILITIES_BY_VILLAGE` (Desa Utara: `04f36c8b-f2a6-4d24-945c-a0b62540cb56`, `a8d496e4-9d2d-46b8-860a-a54ea73d253d`; Kampung Sebelah: `c30281d2-de01-4fdc-a7a2-20aa039112a0`, `e21259ea-3a4e-4d16-8287-dbb1d989e6bf`, `f4b29614-e075-4af6-9962-f37853e71958`; Pulau Seberang: `a2c2d43b-d560-4a0d-a393-aa6ae71877b9`).
+  - Biaya: **Gratis (`price_milli: 0`)**.
+  - Jam Operasional: `06:00-14:00`.
+  - Cooldown: **24 jam (1x sehari)** via field `nextAt` dan `myVisitUntil`.
+  - Efek Layanan: `{"makan": 60, "kesehatan": 5}` dan bonus upah kerja +3% (`wage_bonus_bps: 300`) selama 24 jam.
+- **Alur Penggunaan**:
+  - `POST /api/facilities/{id}/use` dengan `{"requestId": request_id}` untuk memulai kunjungan makan bergizi.
+  - `GET /api/facilities/{id}/kegiatan` mengembalikan minigame `kind: "nampan"` dengan daftar makanan `plan.items`.
+  - `POST /api/facilities/{id}/kegiatan` mengirimkan payload `{"visitId": visit_id, "picks": [...]}` berisi 5 makanan bergizi seimbang dari 5 kelompok (pokok, lauk, sayur, buah, susu) tanpa junk food (mi instan, gorengan, es sirup, permen).
+  - Skor sempurna memberikan tambahan bonus kebutuhan: `{"makan": 10, "kesehatan": 5}`.
+
+## Bukti Fasum Rekreasi (Alun-alun, Taman Desa) & Minigame Foto
+
+Verifikasi bundle client `0wwcgg-bq-sxa.js` (modul `895979`), `kegiatan_fasum.js` (modul `13458`), dan `world-full.json` 19 November 2026:
+- **Karakteristik Layanan Rekreasi Gratis**:
+  - Fasilitas terdaftar per desa dalam `RECREATION_FACILITIES_BY_VILLAGE`:
+    - **Alun-alun**: `price_milli: 0` (gratis), efek `{"rekreasi": 30, "fisik": 10}`, bonus upah kerja +3% selama 24 jam, cooldown 24 jam (1x sehari), jam buka 05:00–23:00.
+    - **Taman Desa**: `price_milli: 0` (gratis), efek `{"rekreasi": 20}` (tier 0) s/d `{"rekreasi": 20}` + bonus upah tier 1–6, cooldown hanya 1 jam (`cooldown_hours: 1`).
+- **Alur & Solver Minigame Foto (`kind: "foto"`)**:
+  - Setelah `POST /api/facilities/{id}/use`, endpoint `GET /api/facilities/{id}/kegiatan` mengembalikan minigame `kind: "foto"` dengan `plan.periods: [...]` (array 3 periode dalam ms) dan `plan.scene`.
+  - Objek bergerak bolak-balik melintasi bingkai kamera dengan formula posisi gelombang segitiga:
+    $$\text{posisi } p = 2i \quad (\text{bila } i < 0.5) \quad \text{atau} \quad 2 - 2i \quad (\text{bila } i \ge 0.5)$$
+    di mana $t = (\text{shot} - \text{lead\_ms}) / \text{period}$ dan $i = t - \lfloor t \rfloor$.
+  - Objek tepat di tengah ($p = 0.50$, deviasi 0.0) saat waktu jepretan:
+    $$\text{shot} = \text{lead\_ms} + \text{round}(0.25 \times \text{period})$$
+    dengan `lead_ms = 600`.
+  - `POST /api/facilities/{id}/kegiatan` dengan payload `{"visitId": visit_id, "shots": [...]}` menghasilkan skor sempurna 6/6 dan bonus kartu foto kenangan serta tambahan **$+10$ rekreasi**.
+
+
 
 ## Bukti laporan harian
 

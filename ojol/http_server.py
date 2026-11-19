@@ -89,7 +89,7 @@ async def ojol_preview_shop(resource: str) -> dict:
 async def ojol_purchase(
     product: dict, expected_wallet: str, expected_resource: int, min_balance: str, request_id: str
 ) -> dict:
-    """Buy one observed item once, enforcing fresh price/resources and balance >=20."""
+    """Buy one observed item once, enforcing fresh price/resources and balance >=5."""
     return await invoke(
         "purchase",
         product=product,

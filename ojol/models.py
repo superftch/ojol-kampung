@@ -23,14 +23,29 @@ class Model(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_default=True)
 
 
+OPTIMAL_THRESHOLDS: dict[str, int] = {
+    "fuel": 30,
+    "condition": 40,
+    "data": 40,
+    "fisik": 45,
+    "makan": 50,
+    "kesehatan": 50,
+    "rekreasi": 50,
+    "penampilan": 50,
+    "rumah": 50,
+}
+
+
 class Settings(Model):
     env: Literal["local", "production", "testing"] = "local"
     operator_authorized: bool = False
     runtime_dir: Path = ROOT / ".local"
     threshold: Percent = 60
+    smart_thresholds: bool = False
+    need_thresholds: dict[str, Percent] = Field(default_factory=dict)
     resource_reserve_percent: Percent = 20
     max_spend: Coin | None = None
-    min_balance: Coin = 20
+    min_balance: Coin = 5
     max_jobs: int | None = Field(default=None, gt=0)
     max_minutes: int | None = Field(default=None, gt=0)
     idle_poll_seconds: int = Field(default=10, ge=3, le=60)
@@ -72,6 +87,29 @@ class Settings(Model):
             )
         return value.rstrip("/")
 
+    @field_validator("need_thresholds", mode="before")
+    @classmethod
+    def parse_need_thresholds(cls, value):
+        if isinstance(value, str):
+            if not value.strip():
+                return {}
+            import json
+
+            try:
+                parsed = json.loads(value)
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
+        return value or {}
+
+    def threshold_for(self, resource: str) -> int:
+        if self.need_thresholds and resource in self.need_thresholds:
+            return self.need_thresholds[resource]
+        if self.smart_thresholds and resource in OPTIMAL_THRESHOLDS:
+            return min(self.threshold, OPTIMAL_THRESHOLDS[resource])
+        return self.threshold
+
     @field_validator("max_spend", "max_jobs", "max_minutes", mode="before")
     @classmethod
     def unlimited_spending(cls, value):
@@ -89,8 +127,8 @@ class Settings(Model):
                 raise ValueError("Production memerlukan token Telegram dan Chat ID admin pribadi")
             if not self.login_public_url.startswith("https://"):
                 raise ValueError("Production memerlukan origin HTTPS untuk Import Cookie")
-            if self.min_balance < 20:
-                raise ValueError("Saldo minimum production tidak boleh di bawah 20 koin")
+            if self.min_balance < 5:
+                raise ValueError("Saldo minimum production tidak boleh di bawah 5 koin")
         if self.resource_reserve_percent >= self.threshold:
             raise ValueError("Cadangan resource wajib lebih rendah dari threshold")
         if self.env == "testing" and (
@@ -152,6 +190,8 @@ class Snapshot(Model):
     village: str | None = None
     sleep_schedule: SleepSchedule | None = None
     ojol_vehicle: OjolVehicle | None = None
+    ojol_resting: bool = False
+    ojol_rest_until: datetime | None = None
 
     def resource_value(self, resource: Resource | Need):
         return self.needs.get(resource) if resource in NEEDS else getattr(self, resource)

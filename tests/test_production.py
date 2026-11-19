@@ -28,7 +28,7 @@ def test_production_requires_https_telegram_and_cash_floor(settings):
         {"telegram_bot_token": ""},
         {"telegram_chat_id": None},
         {"login_public_url": "http://localhost:6080"},
-        {"min_balance": "19.99"},
+        {"min_balance": "4.99"},
     ):
         with pytest.raises(ValidationError):
             Settings(**{**values, **change})

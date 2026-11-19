@@ -328,13 +328,18 @@ class ControlService:
         )
         if synced_at:
             lines.append(f"Riwayat dicocokkan • {synced_at.astimezone(WIB):%d-%m-%Y %H:%M:%S} WIB")
+        target_display = (
+            f"Smart (Fisik {self.settings.threshold_for('fisik')}%, Bensin {self.settings.threshold_for('fuel')}%, dll.)"
+            if self.settings.smart_thresholds or self.settings.need_thresholds
+            else f"{self.settings.threshold}%"
+        )
         lines.extend(
             [
                 "",
                 "🤖 Sesi bot",
                 f"Trip selesai sesi ini • {data.get('completed', 0)}",
                 f"Belanja sesi ini • {koin(data.get('spent', 0))}",
-                f"Target isi ulang • {self.settings.threshold}%",
+                f"Target isi ulang • {target_display}",
                 f"Batas belanja • {koin(self.settings.max_spend) if self.settings.max_spend is not None else 'tanpa batas'}",
                 f"Batas trip • {self.settings.max_jobs if self.settings.max_jobs is not None else 'tanpa batas'}",
                 f"Batas waktu • {str(self.settings.max_minutes) + ' menit' if self.settings.max_minutes is not None else 'tanpa batas'}",
@@ -634,9 +639,9 @@ class ControlService:
             trips_str = f" · {s['trips']} trip" if s["trips"] is not None else ""
             res_str = ""
             if any(s[k] is not None for k in ("fuel", "condition", "data")):
-                f_val = f"{s['fuel']}%" if s['fuel'] is not None else "-%"
-                c_val = f"{s['condition']}%" if s['condition'] is not None else "-%"
-                d_val = f"{s['data']}%" if s['data'] is not None else "-%"
+                f_val = f"{s['fuel']}%" if s["fuel"] is not None else "-%"
+                c_val = f"{s['condition']}%" if s["condition"] is not None else "-%"
+                d_val = f"{s['data']}%" if s["data"] is not None else "-%"
                 res_str = f"\nResource • ⛽ {f_val} · 🔧 {c_val} · 📶 {d_val}"
             return (
                 f"📊 Dashboard Akun\n\n"

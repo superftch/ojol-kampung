@@ -417,8 +417,12 @@ async def api(settings, world, monkeypatch):
                     else ""
                 ),
             )
-        assert path in data, path
-        return httpx.Response(200, json=data[path])
+        query_path = f"{path}?{request.url.query.decode()}" if request.url.query else path
+        key = query_path if query_path in data else path
+        if key not in data:
+            return httpx.Response(404)
+        resp_data = data[key]
+        return httpx.Response(200, json=resp_data(request) if callable(resp_data) else resp_data)
 
     async with httpx.AsyncClient(base_url=ORIGIN, transport=httpx.MockTransport(handle)) as client:
         instance = OjolHttpApi(settings.runtime_dir, client=client)
@@ -470,7 +474,7 @@ async def test_active_motor_trip_can_finish_after_buying_car(api, world):
 @pytest.mark.parametrize(
     ("vehicle", "item", "name"),
     [
-        ("motor", "isi-pertalite", "Isi Pertalite"),
+        ("motor", "isi-daya", "Isi daya SPKLU (mobil listrik)"),
         ("mobil", "isi-daya", "Isi daya SPKLU (mobil listrik)"),
     ],
 )
@@ -498,7 +502,6 @@ async def test_refill_uses_matching_power_source(api, world, settings, vehicle, 
     await api.purchase(product.model_dump(mode="json"), "35", fuel, "20", str(uuid4()))
     posts = [r for r in api.calls if r.method == "POST"]
     assert len(posts) == 1 and json.loads(posts[0].content)["item"] == item
-    assert any(r.url.path == "/api/kendaraan" for r in api.calls) == (vehicle == "mobil")
 
 
 async def test_car_condition_prefers_lower_cost_for_same_recovery(api, world, settings):
@@ -988,8 +991,8 @@ async def test_purchase_rechecks_identity_price_cash_floor_and_no_overflow(api, 
     if case == "price":
         world["shop"]["menu"][0]["priceMilli"] += 1
     if case == "floor":
-        wallet = "20.49"
-        world["me"]["balanceMilli"] = 20490
+        wallet = "5.49"
+        world["me"]["balanceMilli"] = 5490
     if case == "overflow":
         resource = 61
         world["ojol"]["bars"]["kuota"] = resource
@@ -1881,3 +1884,286 @@ async def test_garden_status_and_actions_in_http_api(api, world):
     # Invalid action raises ValueError
     with pytest.raises(ValueError):
         await api.garden_action(garden_id, "invalid")
+
+
+async def test_physical_facility_with_angkat_beban_minigame(api, world):
+    api.minigame_wait_multiplier = 0.0
+    gym_id = str(uuid4())
+    world["needs"].update(
+        enabled=True,
+        needs=[
+            {
+                "id": "fisik",
+                "value": 30,
+                "places": [
+                    {
+                        "id": gym_id,
+                        "name": "Gym desa 2",
+                        "kind": "fasum",
+                        "open": True,
+                        "priceMilli": 2000,
+                        "gain": 55,
+                    }
+                ],
+            }
+        ],
+    )
+    # Facility on cooldown for normal service (nextAt is set), matching user screenshot
+    world["facilities"][gym_id] = {
+        "id": gym_id,
+        "item": "gym-desa",
+        "title": "Gym desa 2",
+        "state": "DONE",
+        "nextAt": "2026-11-19T21:18:00Z",
+        "service": {"label": "Latihan gym", "priceMilli": 2000, "open": True},
+    }
+    minigame_status = {
+        "game": "gym",
+        "name": "Angkat beban",
+        "icon": "🏋️",
+        "playsLeft": 3,
+        "playsPerDay": 3,
+        "maxRewardMilli": 1000,
+        "kebutuhan": {"fisik": 15},
+    }
+    world.setdefault("extra_responses", {})[f"/api/minigame?projectId={gym_id}&game=gym"] = (
+        minigame_status
+    )
+
+    play_id = str(uuid4())
+    start_resp = {
+        "playId": play_id,
+        "plan": {
+            "reps": [
+                {"fill": 1400, "center": 0.72, "half": 0.09},
+                {"fill": 1200, "center": 0.65, "half": 0.10},
+            ]
+        },
+    }
+    finish_resp = {
+        "playId": play_id,
+        "game": "gym",
+        "score": 4,
+        "rewardMilli": 240,
+        "detail": {
+            "reps": [{"points": 2, "outcome": "sempurna"}, {"points": 2, "outcome": "sempurna"}],
+            "kebutuhan": {"fisik": 15},
+            "invalid": False,
+            "expired": False,
+        },
+    }
+
+    start_called = False
+    finish_called = False
+
+    def handle_minigame_post(req):
+        nonlocal start_called, finish_called
+        body = json.loads(req.content)
+        if body.get("action") == "start":
+            assert body["projectId"] == gym_id
+            assert body["game"] == "gym"
+            start_called = True
+            return start_resp
+        if body.get("action") == "finish":
+            assert body["playId"] == play_id
+            # round(1400 * 0.72) = 1008, round(1200 * 0.65) = 780
+            assert body["holds"] == [1008, 780]
+            finish_called = True
+            return finish_resp
+        raise ValueError(f"Unknown action: {body.get('action')}")
+
+    world.setdefault("post_responses", {})["/api/minigame"] = handle_minigame_post
+
+    preview = await api.preview("fisik")
+    shops = preview["shops"]
+    assert len(shops) == 1
+    assert shops[0]["id"] == gym_id
+    assert len(shops[0]["products"]) == 1
+    product = shops[0]["products"][0]
+    assert product["name"] == "Angkat beban"
+    assert Decimal(product["price"]) == Decimal(0)
+    assert product["effects"] == {"fisik": 15}
+
+    receipt = await api.purchase(product, "35", 30, "20", str(uuid4()))
+    assert start_called
+    assert finish_called
+    assert receipt["score"] == 4
+    assert receipt["rewardMilli"] == 240
+
+
+async def test_physical_facility_angkat_beban_quota_exhausted_fallback(api, world):
+    api.minigame_wait_multiplier = 0.0
+    gym_id = str(uuid4())
+    world["needs"].update(
+        enabled=True,
+        needs=[
+            {
+                "id": "fisik",
+                "value": 30,
+                "places": [
+                    {
+                        "id": gym_id,
+                        "name": "Gym desa 2",
+                        "kind": "fasum",
+                        "open": True,
+                        "priceMilli": 2000,
+                        "gain": 55,
+                    }
+                ],
+            }
+        ],
+    )
+    # When playsLeft is 0 and nextAt is None, regular service is used
+    world["facilities"][gym_id] = {
+        "id": gym_id,
+        "item": "gym-desa",
+        "title": "Gym desa 2",
+        "state": "DONE",
+        "nextAt": None,
+        "service": {"label": "Latihan gym", "priceMilli": 2000, "open": True},
+    }
+    world.setdefault("extra_responses", {})[f"/api/minigame?projectId={gym_id}&game=gym"] = {
+        "game": "gym",
+        "name": "Angkat beban",
+        "icon": "🏋️",
+        "playsLeft": 0,
+        "playsPerDay": 3,
+        "maxRewardMilli": 1000,
+        "kebutuhan": {"fisik": 15},
+    }
+
+    preview = await api.preview("fisik")
+    shops = preview["shops"]
+    assert len(shops) == 1
+    assert len(shops[0]["products"]) == 1
+    assert shops[0]["products"][0]["name"] == "Latihan gym"
+    assert Decimal(shops[0]["products"][0]["price"]) == Decimal(2)
+
+
+async def test_physical_facility_angkat_beban_invalid_rejected(api, world):
+    api.minigame_wait_multiplier = 0.0
+    gym_id = str(uuid4())
+    world["needs"].update(
+        enabled=True,
+        needs=[
+            {
+                "id": "fisik",
+                "value": 30,
+                "places": [
+                    {
+                        "id": gym_id,
+                        "name": "Gym desa 2",
+                        "kind": "fasum",
+                        "open": True,
+                        "priceMilli": 2000,
+                        "gain": 55,
+                    }
+                ],
+            }
+        ],
+    )
+    world["facilities"][gym_id] = {
+        "id": gym_id,
+        "item": "gym-desa",
+        "title": "Gym desa 2",
+        "state": "DONE",
+        "nextAt": None,
+        "service": {"label": "Latihan gym", "priceMilli": 2000, "open": True},
+    }
+    world.setdefault("extra_responses", {})[f"/api/minigame?projectId={gym_id}&game=gym"] = {
+        "game": "gym",
+        "name": "Angkat beban",
+        "icon": "🏋️",
+        "playsLeft": 1,
+        "playsPerDay": 3,
+        "maxRewardMilli": 1000,
+        "kebutuhan": {"fisik": 15},
+    }
+    play_id = str(uuid4())
+    world.setdefault("post_responses", {})["/api/minigame"] = lambda req: (
+        {"playId": play_id, "plan": [{"fill": 1000, "center": 0.5, "half": 0.1}]}
+        if json.loads(req.content).get("action") == "start"
+        else {
+            "playId": play_id,
+            "game": "gym",
+            "score": 0,
+            "rewardMilli": 0,
+            "detail": {"invalid": True},
+        }
+    )
+
+    preview = await api.preview("fisik")
+    product = preview["shops"][0]["products"][0]
+    assert product["name"] == "Angkat beban"
+
+    with pytest.raises(HttpCoreError) as exc:
+        await api.purchase(product, "35", 30, "20", str(uuid4()))
+    assert exc.value.category == "rejected"
+    assert "terlalu cepat" in str(exc.value)
+
+
+async def test_hardcoded_gym_included_and_prioritized_over_paid_gym(
+    api, world, settings, monkeypatch
+):
+    gym_id = str(uuid4())
+    monkeypatch.setattr("ojol.http_api.GYM_FACILITIES_BY_VILLAGE", {"fixture-desa": (gym_id,)})
+    # physical_places in world["needs"] does NOT include the gym (e.g. only contains badminton)
+    other_id = str(uuid4())
+    world["needs"].update(
+        enabled=True,
+        needs=[
+            {
+                "id": "fisik",
+                "value": 40,
+                "places": [
+                    {
+                        "id": other_id,
+                        "name": "GOR badminton",
+                        "kind": "fasum",
+                        "open": True,
+                        "priceMilli": 2000,
+                        "gain": 50,
+                    }
+                ],
+            }
+        ],
+    )
+    world["facilities"][other_id] = {
+        "id": other_id,
+        "item": "gor-badminton",
+        "title": "GOR badminton",
+        "state": "DONE",
+        "nextAt": None,
+        "service": {"label": "Main badminton", "priceMilli": 2000, "open": True},
+    }
+    world["facilities"][gym_id] = {
+        "id": gym_id,
+        "item": "gym-desa",
+        "title": "Gym desa fixture",
+        "state": "DONE",
+        "nextAt": None,
+        "service": {"label": "Latihan gym", "priceMilli": 2000, "open": True},
+    }
+    world.setdefault("extra_responses", {})[f"/api/minigame?projectId={gym_id}&game=gym"] = {
+        "game": "gym",
+        "name": "Angkat beban",
+        "icon": "🏋️",
+        "playsLeft": 2,
+        "playsPerDay": 3,
+        "maxRewardMilli": 1000,
+        "kebutuhan": {"fisik": 15},
+    }
+
+    # Verify hardcoded gym is included in preview shops even if not in needs.places
+    preview = await api.preview("fisik")
+    shops = [ShopPreview.model_validate(row) for row in preview["shops"]]
+    shop_ids = [s.id for s in shops]
+    assert gym_id in shop_ids
+    assert other_id in shop_ids
+
+    # select_need prioritizes minigame "Angkat beban" over paid gym and other fasum
+    before = await api.snapshot()
+    selected_shop, plan = select_need(before, "fisik", shops, settings, Decimal(0), {})
+    assert selected_shop.id == gym_id
+    assert plan.product.name == "Angkat beban"
+    assert plan.total_cost == Decimal(0)

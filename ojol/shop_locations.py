@@ -190,3 +190,48 @@ HEALTH_FACILITIES_BY_VILLAGE = {
         "eaa4fb55-489c-4b81-9cbf-cd4b110d260f",  # Rumah sakit
     ),
 }
+
+GYM_FACILITIES_BY_VILLAGE = {
+    "desa-utara": (
+        "296dc278-b765-4caf-9349-469385d6fc03",  # Gym desa 2
+        "d645f8b3-b82f-4172-ba39-7b5f116dd6ba",  # Gym desa
+    ),
+    "kampung-sebelah": (),
+    "pulau-seberang": (),
+}
+
+SPPG_FACILITIES_BY_VILLAGE = {
+    "desa-utara": (
+        "04f36c8b-f2a6-4d24-945c-a0b62540cb56",
+        "a8d496e4-9d2d-46b8-860a-a54ea73d253d",
+    ),
+    "kampung-sebelah": (
+        "c30281d2-de01-4fdc-a7a2-20aa039112a0",
+        "e21259ea-3a4e-4d16-8287-dbb1d989e6bf",
+        "f4b29614-e075-4af6-9962-f37853e71958",
+    ),
+    "pulau-seberang": ("a2c2d43b-d560-4a0d-a393-aa6ae71877b9",),
+}
+
+RECREATION_FACILITIES_BY_VILLAGE = {
+    "desa-utara": (
+        "763067a5-755d-4b76-8ce8-1049f895bbe7",  # Alun-alun
+        "c7927aee-ef62-4552-8666-1f564c0300b4",  # Alun-alun
+        "9ba191a6-5803-48b7-87a8-f0397b800ca7",  # Taman desa
+        "37e255ac-1c00-4755-9a27-1a9967a2534f",  # Taman desa
+        "2c7bcbc1-c55e-4e43-bbb5-ca1a5993f8b6",  # Taman desa
+    ),
+    "kampung-sebelah": (
+        "62106435-e70f-4ac2-9514-c3be0c0057e0",  # Alun-alun
+        "a1fee99c-4812-49dd-b02a-8c4be0b3f855",  # Alun-alun
+        "dc0d53d2-7b96-49cc-b174-6feadeee1cc7",  # Alun-alun
+        "e16c7ea8-aabe-436e-b7cf-3c39fd3fd104",  # Taman hijau
+        "975d3496-1e13-4413-b7e1-6033922f115c",  # Taman desa
+        "14d8dc53-f28a-466a-81ab-2e612f744917",  # Taman desa
+    ),
+    "pulau-seberang": (
+        "bd9cf9f9-2789-4e29-acc4-e7fb0e0e8ca3",  # Alun-alun desa seberang
+        "1919456a-3011-43df-8e5a-7242ef4bb2c3",  # Taman desa
+        "020e81d0-dcbb-46c3-ab5a-ef58c33c5942",  # Taman desa 16
+    ),
+}
