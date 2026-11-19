@@ -281,3 +281,34 @@ def test_need_value_saves_coins_counts_capacity_and_handles_free_facilities(
         )
         is None
     )
+
+
+def test_planner_ojol_shift_done_waits_until_midnight_wib(state, settings):
+    from ojol.planner import next_step
+
+    shift_done_state = state.model_copy(
+        update={
+            "phase": "idle",
+            "ojol_shift_done": True,
+            "buttons": ["Berhenti jadi mitra ojol"],
+        }
+    )
+    step = next_step(shift_done_state, settings)
+    assert step.action == "wait"
+    assert "8 jam" in step.reason
+    assert "00.00 WIB" in step.reason
+    assert step.wait_seconds > 0
+
+
+def test_parse_snapshot_detects_shift_done_from_text():
+    from ojol.planner import parse_snapshot
+
+    raw = {
+        "text": "Mitra ojol bisa narik paling lama 8 jam per hari, lanjut besok mulai jam 00.00.",
+        "wallet": "35 koin",
+        "tiles": {"Bensin": "72%", "Kondisi": "97%", "Kuota HP": "46%"},
+        "buttons": [{"text": "Berhenti jadi mitra ojol", "disabled": False}],
+    }
+    snapshot = parse_snapshot(raw)
+    assert snapshot.ojol_shift_done is True
+

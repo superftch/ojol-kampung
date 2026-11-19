@@ -20,7 +20,7 @@ from ojol.http_core import HttpUI
 from ojol.identity import save_profile, verified_profile
 from ojol.maintenance import read_window
 from ojol.management import MultiAccountService
-from ojol.models import ROOT, Settings
+from ojol.models import ROOT, Settings, now
 from ojol.session_transfer import parse_cookie_input
 from ojol.study import subjects
 from ojol.telegram import TelegramClient, queue_error
@@ -174,6 +174,64 @@ async def test_maintenance_schedule_is_admin_only_and_persistent(managed, monkey
     await restored.dispatch(111, "admin:maintenance", callback=True)
     await click(restored, 111, "Hapus / Akhiri")
     assert read_window(restored.maintenance_file) is None
+
+
+async def test_maintenance_manual_on_off_without_schedule(managed):
+    manager = MultiAccountService(managed)
+    manager.registry.whitelist(222)
+    manager.reply = AsyncMock()
+
+    # 1. Non-admin attempting to turn ON maintenance is rejected
+    await manager.dispatch(222, "admin:maintenance:on", callback=True)
+    assert "untuk admin" in manager.reply.call_args.args[1]
+    assert not manager.maintenance_file.exists()
+
+    # 2. Open maintenance menu
+    await manager.dispatch(111, "Management")
+    await click(manager, 111, "Maintenance")
+    menu_text = manager.reply.call_args.args[1]
+    assert "Status: Nonaktif" in menu_text
+
+    # Verify buttons include ON and OFF
+    markup = manager.reply.call_args.args[2]
+    button_texts = [b["text"] for row in markup["inline_keyboard"] for b in row]
+    assert "🟢 ON" in button_texts
+    assert "🔴 OFF" in button_texts
+    assert "Atur Jadwal" in button_texts
+    assert "Hapus / Akhiri" in button_texts
+
+    # 3. Admin clicks ON
+    await click(manager, 111, "🟢 ON")
+    assert manager.maintenance_file.is_file()
+    window = read_window(manager.maintenance_file)
+    assert window is not None
+    assert window.manual is True
+    assert window.end is None
+    assert window.held(now()) is True
+
+    # Menu updates to show manual ON status
+    updated_text = manager.reply.call_args.args[1]
+    assert "Manual ON tanpa jadwal" in updated_text
+
+    # Commands are held while manual maintenance is ON
+    for command in ("Jalankan Ojol", "Import Cookie"):
+        await manager.dispatch(111, command)
+        assert "secara manual (ON)" in manager.reply.call_args.args[1]
+
+    # 4. Admin clicks OFF
+    await manager.dispatch(111, "admin:maintenance", callback=True)
+    await click(manager, 111, "🔴 OFF")
+    assert not manager.maintenance_file.exists()
+    assert read_window(manager.maintenance_file) is None
+
+    cleared_text = manager.reply.call_args.args[1]
+    assert "Status: Nonaktif" in cleared_text
+
+    # 5. Toggle works
+    await manager.dispatch(111, "admin:maintenance:toggle", callback=True)
+    assert read_window(manager.maintenance_file).manual is True
+    await manager.dispatch(111, "admin:maintenance:toggle", callback=True)
+    assert read_window(manager.maintenance_file) is None
 
 
 def test_whitelist_admin_ownership_and_legacy_preservation(managed):

@@ -2178,3 +2178,24 @@ async def test_hardcoded_gym_included_and_prioritized_over_paid_gym(
     assert selected_shop.id == gym_id
     assert plan.product.name == "Angkat beban"
     assert plan.total_cost == Decimal(0)
+
+
+async def test_snapshot_handles_ojol_daily_8_hour_limit(api, world):
+    world["ojol"].update(
+        problem="Mitra ojol bisa narik paling lama 8 jam per hari, lanjut besok mulai jam 00.00.",
+        fix=None,
+        sisaJam=0,
+    )
+    state = await api.snapshot()
+    assert state.ojol_shift_done is True
+    assert state.ojol_hours_left == 0.0
+    assert "8 jam per hari" in state.raw_text
+    assert "Berhenti jadi mitra ojol" in state.buttons
+
+
+async def test_snapshot_tracks_ojol_remaining_hours(api, world):
+    world["ojol"].update(sisaJam=4.5)
+    state = await api.snapshot()
+    assert state.ojol_shift_done is False
+    assert state.ojol_hours_left == 4.5
+

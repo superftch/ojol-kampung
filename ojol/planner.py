@@ -1,8 +1,12 @@
 import json
 import re
+from datetime import timedelta
 from decimal import ROUND_CEILING, Decimal
+from zoneinfo import ZoneInfo
 
-from .models import Need, PurchasePlan, Resource, Settings, ShopPreview, Snapshot, Step
+from .models import Need, PurchasePlan, Resource, Settings, ShopPreview, Snapshot, Step, now
+
+WIB = ZoneInfo("Asia/Jakarta")
 
 SLEEPING_NOTICE = re.compile(r"(?:^|\n)\s*Kamu sedang tidur\b", re.IGNORECASE)
 
@@ -46,6 +50,13 @@ def parse_snapshot(data: dict) -> Snapshot:
     ojol_resting = bool(
         re.search(r"ojol\s*wajib\s*istirahat|istirahat\s*dulu\s*30\s*menit", text, re.IGNORECASE)
     )
+    shift_done = bool(
+        re.search(
+            r"8\s*jam|maksimal.*(?:hari|00[.:]00)|lanjut\s*besok|paling\s*lama\s*8\s*jam",
+            text,
+            re.IGNORECASE,
+        )
+    )
     return Snapshot(
         wallet=decimal_id(wallet[1]),
         fuel=percent("Bensin"),
@@ -59,6 +70,7 @@ def parse_snapshot(data: dict) -> Snapshot:
         today_income=decimal_id(tiles["Hasil hari ini"]) if "Hasil hari ini" in tiles else None,
         raw_text=text,
         ojol_resting=ojol_resting,
+        ojol_shift_done=shift_done,
     )
 
 
@@ -98,6 +110,18 @@ def next_step(
         return Step(
             action="wait",
             reason="Mitra ojol sedang dalam masa wajib istirahat (30 menit setelah narik 3 jam).",
+            wait_seconds=wait_seconds,
+        )
+    if state.ojol_shift_done:
+        now_wib = (state.observed_at or now()).astimezone(WIB)
+        tomorrow_midnight = (now_wib + timedelta(days=1)).replace(
+            hour=0, minute=0, second=5, microsecond=0
+        )
+        diff = max(1, int((tomorrow_midnight - now_wib).total_seconds()))
+        wait_seconds = min(diff, max(settings.idle_poll_seconds, 60))
+        return Step(
+            action="wait",
+            reason="Batas narik 8 jam hari ini tercapai. Lanjut besok mulai jam 00.00 WIB.",
             wait_seconds=wait_seconds,
         )
     resources = sorted((getattr(state, key), key) for key in ("fuel", "condition", "data"))

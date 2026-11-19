@@ -10,9 +10,24 @@ Bundle awal `0wwcgg-bq-sxa.js` SHA256: `29798a21c5b7a06ea883e76e804e9629f30f07bc
 
 Tabel ini mencakup seluruh request yang dipanggil adapter Ojol ke `https://www.kampungsebelah.com`. Kolom bukti membedakan hasil probe live sebelumnya dari pemeriksaan kode adapter saat ini.
 
+### Mimikri Header Browser (Browser Header Mimicry)
+Setiap request ke `https://www.kampungsebelah.com` kini menyertakan header browser lengkap untuk menghindari deteksi otomasi dan WAF:
+1. **Identitas Browser Statis Per-Akun (`browser-identity.json`)**:
+   - Setiap akun wajib memiliki 1 identitas browser (`User-Agent`, `sec-ch-ua`, `sec-ch-ua-platform`, `sec-ch-ua-mobile`) yang disimpan secara persisten di `<runtime_dir>/browser-identity.json`.
+   - Header identitas ini bersifat statis permanen untuk akun tersebut dan tidak pernah berubah antar request, meniru satu instalasi browser desktop yang konsisten.
+   - Pilihan profil diambil secara deterministik dari kumpulan browser desktop modern (Chrome/Edge pada Windows dan macOS) atau profil kustom yang telah ditentukan pengguna.
+2. **Variasi Header Acak Per-Request**:
+   - Header request yang dinamis di-generate secara acak realistis pada setiap pemanggilan API:
+     - `Accept`: variasi realistis (`application/json, text/plain, */*`, `*/*`, dsb., serta `text/html` untuk halaman `/kampung` dan script untuk file `_next/static`).
+     - `Accept-Language`: variasi bobot bahasa pengguna Indonesia (`id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7`, dsb.).
+     - `Priority`: `u=1, i`, `u=1`.
+     - `Cache-Control`: `no-cache`, `max-age=0`, dsb.
+     - `Sec-Fetch-*`: `Sec-Fetch-Site: same-origin`, `Sec-Fetch-Mode`, dan `Sec-Fetch-Dest` sesuai jenis resource.
+     - `Origin` dan `Referer`: `https://www.kampungsebelah.com`.
+
 | Endpoint | Pemakaian | Bukti |
 |---|---|---|
-| GET `/api/ojol` | `vehicle` default, `vehicles` tersedia, `bars` dan `pakai` bersama, mitra, trip, tarif, payout/history | HTTP200 13 November 2026 dengan `vehicle: "mobil"`, `vehicles: ["motor", "mobil"]`, dan konsumsi `bensin: 5`, `kendaraan: 2`, `kuota: 4` |
+| GET `/api/ojol` | `vehicle` default, `vehicles` tersedia, `bars` dan `pakai` bersama, mitra, trip, tarif, payout/history, sisa jam narik harian (maksimal 8 jam per hari) | HTTP200 13 November 2026 dengan `vehicle: "mobil"`, `vehicles: ["motor", "mobil"]`, dan konsumsi `bensin: 5`, `kendaraan: 2`, `kuota: 4`. Update #15 tanggal 19 November 2026: batas narik maksimal 8 jam/hari (reset 00.00 WIB) terbaca pada panel Ojol; saat kuota habis, worker menjeda aktivitas order ojol hingga reset jam 00.00 WIB tanpa blocking error. |
 | GET `/api/kendaraan` | `items[]`, termasuk `family`, `listrik`, dan `name` | Bundle `3tkrjjmq3rsag.js` dan HTTP200 13 November 2026 dengan Motor bebek dan Mobil listrik |
 | GET `/api/game/me` | `balanceMilli`, `configVersion`, rumah/desa, `profile.nickname`, `profile.resting`, `profile.sleep` | HTTP200 historis; nickname dan saldo teramati lagi saat validasi Browser Harness 19 November 2026; field tidur dicocokkan dengan bundle client tersimpan pada 12 November 2026 |
 | GET `/api/kebutuhan` | `asleep`, status kebutuhan aktif, nilai per kebutuhan, dan kandidat tempat fisik | HTTP 200 untuk status kebutuhan. Bentuk kandidat fasilitas berasal dari bundle client. |
@@ -38,6 +53,7 @@ Tabel ini mencakup seluruh request yang dipanggil adapter Ojol ke `https://www.k
 | POST `/api/minigame` | `{"action": "start", "projectId", "requestId", "game": "gym"}` mengembalikan `playId` dan `plan`; `{"action": "finish", "playId", "holds": [...]}` menyelesaikan latihan gym dengan efek `fisik: 15` dan hadiah kas desa. Bot menjalankan minigame ini langsung 3x sehari saat idle. | Bundle client `05bjqrf9rphsk.js`, modul kalkulasi skor `910615`, aturan kebutuhan `899117`, dan uji live 19 November 2026 |
 | GET `/api/daily/garden` | Status kebun dan kolam: `now`, `gardens[]` (`id`, `kind`, `state`, `readyAt`, `cared`, `seedMilli`, dll.), `perlengkapan`, `letak`, `ukuran`, `tas` | Bundle client `0wwcgg-bq-sxa.js`, `3g13rrtpxw-ld.js`, dan GET live terotorisasi 19 November 2026 |
 | POST `/api/daily/garden/{id}` | Aksi kebun/kolam: `{"action": "panen" \| "rawat" \| "tanam"}` | Bundle client `0wwcgg-bq-sxa.js` (komponen `#ks-kebun`, fungsi `a6`) dan bundle `3g13rrtpxw-ld.js` (modul 649755) |
+| GET `/api/realtime/token` | Token koneksi realtime / presence client | Bundle client `0wwcgg-bq-sxa.js`, `087o49eachamv.js`, dan katalog API. Mengembalikan `{url}` token realtime; dipanggil bersama `/api/game/me` dan `/api/time` untuk menjaga status akun tetap online |
 
 Capture historis `/api/ojol` dalam `.local/http-discovery/ojol.json` memuat `todayCount` dan receipt `history[]` dengan `id`, `doneAt`, `kind`, `from.label`, `to.label`, serta `netMilli`. Trip aktif memuat `id` dan `arriveAt`. Adapter memakai ID receipt dan waktu server untuk rekonsiliasi, serta `netMilli` untuk ongkos diterima. Snapshot menyimpan penghitung dan riwayat yang tersedia pada respons, bukan seluruh riwayat akun. Tidak ada endpoint baru atau asumsi idempotensi POST untuk fitur ini.
 
@@ -144,6 +160,20 @@ Verifikasi bundle client `0wwcgg-bq-sxa.js` (modul `895979`), `kegiatan_fasum.js
     $$\text{shot} = \text{lead\_ms} + \text{round}(0.25 \times \text{period})$$
     dengan `lead_ms = 600`.
   - `POST /api/facilities/{id}/kegiatan` dengan payload `{"visitId": visit_id, "shots": [...]}` menghasilkan skor sempurna 6/6 dan bonus kartu foto kenangan serta tambahan **$+10$ rekreasi**.
+
+## Bukti status dan presence online
+
+Verifikasi client bundle `0gw8r7_0xl80t.js`, `2suhvd2g415c_.js` (modul `309513`), dan `087o49eachamv.js` (modul `129929`):
+- **Parameter Presence Client**:
+  - `presenceWriteSec: 45`
+  - `onlineWindowSec: 120`
+- **Mekanisme Penentuan Online**:
+  - Client menentukan status "Online" bila selisih waktu sekarang dengan aktivitas terakhir (`lastOnlineAt`) tidak melebihi `onlineWindowSec` (120 detik). Jika lebih, status turun menjadi "Aktif X mnt lalu" atau "Lama tidak online".
+  - Status online warga di peta direpresentasikan oleh flag boolean `t.w.o` (online) pada plot kavling (`/api/world/plots`).
+- **Strategi Pemeliharaan Presence Online**:
+  - Endpoint `GET /api/game/me` dan `GET /api/time` (didampingi `GET /api/realtime/token`) memperbarui timestamp aktivitas akun pada server.
+  - Adapter `OjolHttpApi.fetch_online_status()` dipanggil secara berkala ($\le 35$ detik) baik oleh worker aktif (termasuk saat menunggu trip countdown/tidur/idle) maupun oleh supervisor multi-akun `MultiAccountService` untuk semua akun terdaftar, sehingga setiap akun selalu berada dalam status presence online tanpa terputus.
+
 
 
 

@@ -1,9 +1,11 @@
 """Observed Ojol endpoints only. GETs may retry; writes are always one attempt."""
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
+import secrets
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -198,6 +200,43 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
             except Exception:
                 pass
 
+    is_shift_done = False
+    hours_left = None
+    for key in (
+        "sisaJam",
+        "sisaJamNarik",
+        "sisaNarik",
+        "jamNarikSisa",
+        "hoursLeft",
+        "sisaWaktu",
+        "dailyHoursLeft",
+    ):
+        if key in ojol and isinstance(ojol[key], (int, float)):
+            hours_left = float(ojol[key])
+            break
+    if hours_left is None:
+        match = re.search(
+            r"(?:sisa\s*(?:jam\s*narik|waktu)?|tersisa)\s*[:]?\s*(\d+(?:[.,]\d+)?)\s*jam",
+            problem_text or str(ojol.get("text") or ""),
+            re.IGNORECASE,
+        )
+        if match:
+            hours_left = float(match[1].replace(",", "."))
+
+    if (
+        bool(
+            re.search(
+                r"8\s*jam|maksimal.*(?:hari|00[.:]00)|batas.*(?:harian|narik)|lanjut\s*besok|paling\s*lama\s*8\s*jam",
+                problem_text,
+                re.IGNORECASE,
+            )
+        )
+        or ojol.get("shiftDone") is True
+        or ojol.get("dailyLimitReached") is True
+        or (hours_left is not None and hours_left <= 0)
+    ):
+        is_shift_done = True
+
     if trip:
         order_code = trip.get("cek")
         if order_code is not None and not isinstance(order_code, str):
@@ -232,6 +271,12 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
         buttons = ["Berhenti jadi mitra ojol"]
         text = (
             problem_text or "Mitra ojol wajib istirahat 30 menit setelah 3 jam narik tanpa henti."
+        )
+    elif is_shift_done:
+        buttons = ["Berhenti jadi mitra ojol"]
+        text = (
+            problem_text
+            or "Mitra ojol bisa narik paling lama 8 jam per hari, lanjut besok mulai jam 00.00."
         )
     elif require_ojol and ojol.get("problem") and not trip:
         if ojol.get("fix") not in RESOURCES:
@@ -291,6 +336,8 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
         ojol_vehicle=vehicle,
         ojol_resting=is_ojol_resting,
         ojol_rest_until=ojol_rest_until,
+        ojol_shift_done=is_shift_done,
+        ojol_hours_left=hours_left,
     )
 
 
@@ -338,10 +385,96 @@ def extract_need_effects(source, group="barang"):
     return {}
 
 
+BROWSER_PROFILES = [
+    {
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        "sec_ch_ua_mobile": "?0",
+        "sec_ch_ua_platform": '"Windows"',
+    },
+    {
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+        "sec_ch_ua_mobile": "?0",
+        "sec_ch_ua_platform": '"Windows"',
+    },
+    {
+        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        "sec_ch_ua_mobile": "?0",
+        "sec_ch_ua_platform": '"macOS"',
+    },
+    {
+        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+        "sec_ch_ua_mobile": "?0",
+        "sec_ch_ua_platform": '"macOS"',
+    },
+    {
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
+        "sec_ch_ua": '"Microsoft Edge";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        "sec_ch_ua_mobile": "?0",
+        "sec_ch_ua_platform": '"Windows"',
+    },
+    {
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Google Chrome";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
+        "sec_ch_ua_mobile": "?0",
+        "sec_ch_ua_platform": '"Windows"',
+    },
+]
+
+ACCEPT_VARIANTS = [
+    "application/json, text/plain, */*",
+    "*/*",
+    "application/json",
+    "application/json, text/javascript, */*; q=0.01",
+]
+
+ACCEPT_LANGUAGE_VARIANTS = [
+    "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+    "id-ID,id;q=0.9,en;q=0.8",
+    "id,en-US;q=0.9,en;q=0.8",
+    "id-ID,id;q=0.8,en-US;q=0.6,en;q=0.4",
+    "en-US,en;q=0.9,id;q=0.8",
+]
+
+PRIORITY_VARIANTS = [
+    "u=1, i",
+    "u=1",
+]
+
+CACHE_CONTROL_VARIANTS = [
+    "no-cache",
+    "max-age=0",
+    "no-cache, no-store, max-age=0",
+]
+
+
+def ensure_browser_identity(directory: Path) -> dict:
+    identity_file = directory / "browser-identity.json"
+    if identity_file.is_file():
+        try:
+            data = json.loads(identity_file.read_text())
+            if isinstance(data, dict) and data.get("user_agent"):
+                return data
+        except (OSError, ValueError):
+            pass
+
+    index = int(hashlib.sha256(str(directory).encode()).hexdigest(), 16) % len(BROWSER_PROFILES)
+    identity = dict(BROWSER_PROFILES[index])
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        write_private(identity_file, identity)
+    except OSError:
+        pass
+    return identity
+
+
 class OjolHttpApi:
     def __init__(self, directory: Path, session_file=None, client=None):
-        self.directory = directory
-        self.session_file = session_file or directory / "http-session.json"
+        self.directory = Path(directory)
+        self.session_file = session_file or self.directory / "http-session.json"
         self.client = client
         self.owns_client = client is None
         self.catalog = {}
@@ -349,6 +482,35 @@ class OjolHttpApi:
         self.usage = None
         self.retries = 0
         self.expires_at = None
+        self.browser_identity = ensure_browser_identity(self.directory)
+
+    def browser_headers(self, path: str, method: str = "GET") -> dict:
+        is_html = path == "/kampung"
+        is_script = path.endswith(".js")
+        headers = {
+            "User-Agent": self.browser_identity["user_agent"],
+            "Accept": (
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+                if is_html
+                else ("*/*" if is_script else secrets.choice(ACCEPT_VARIANTS))
+            ),
+            "Accept-Language": secrets.choice(ACCEPT_LANGUAGE_VARIANTS),
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "navigate" if is_html else ("no-cors" if is_script else "cors"),
+            "Sec-Fetch-Dest": "document" if is_html else ("script" if is_script else "empty"),
+            "Origin": ORIGIN,
+            "Referer": f"{ORIGIN}/kampung",
+            "Cache-Control": secrets.choice(CACHE_CONTROL_VARIANTS),
+        }
+        if "sec_ch_ua" in self.browser_identity:
+            headers["sec-ch-ua"] = self.browser_identity["sec_ch_ua"]
+        if "sec_ch_ua_mobile" in self.browser_identity:
+            headers["sec-ch-ua-mobile"] = self.browser_identity["sec_ch_ua_mobile"]
+        if "sec_ch_ua_platform" in self.browser_identity:
+            headers["sec-ch-ua-platform"] = self.browser_identity["sec_ch_ua_platform"]
+        if not is_html and not is_script:
+            headers["Priority"] = secrets.choice(PRIORITY_VARIANTS)
+        return headers
 
     async def __aenter__(self):
         logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -372,6 +534,7 @@ class OjolHttpApi:
                 follow_redirects=False,
                 timeout=5,
                 headers={
+                    "User-Agent": self.browser_identity["user_agent"],
                     "Origin": ORIGIN,
                     "Referer": ORIGIN + "/kampung",
                     "Cache-Control": "no-cache",
@@ -407,6 +570,7 @@ class OjolHttpApi:
                 "/api/bpjs",
                 "/api/bpjs/bayar",
                 "/api/daily/garden",
+                "/api/realtime/token",
             }
             or re.fullmatch(
                 r"/api/world/plots\?v=2&blocks=[A-Z][0-9]{2}(?:,[A-Z][0-9]{2}){0,23}", path
@@ -436,11 +600,13 @@ class OjolHttpApi:
         if self.expires_at is not None and self.expires_at <= time.time():
             raise HttpCoreError("Cookie sesi game sudah kedaluwarsa.", category="auth")
         for attempt in range(3 if payload is None else 1):
+            headers = self.browser_headers(path, "GET" if payload is None else "POST")
             try:
                 response = await self.client.request(
                     "GET" if payload is None else "POST",
                     path,
                     json=payload,
+                    headers=headers,
                     **({"params": {"after": after}} if after is not None else {}),
                 )
             except httpx.TransportError:
@@ -621,7 +787,56 @@ class OjolHttpApi:
         )
         self.vehicle = state.ojol_vehicle
         self.usage = ojol.get("pakai")
+        status_file = self.directory / "online-status.json"
+        write_private(
+            status_file,
+            {
+                "online": True,
+                "nickname": (me.get("profile") or {}).get("nickname"),
+                "server_time": clock.get("now"),
+                "balance_milli": me.get("balanceMilli"),
+                "resting": (me.get("profile") or {}).get("resting", False),
+                "sleep": (me.get("profile") or {}).get("sleep"),
+                "fetched_at": now().isoformat(),
+            },
+        )
         return state
+
+    async def fetch_online_status(self):
+        """Fetch online presence endpoints (/api/game/me, /api/time, /api/realtime/token).
+
+        Touches the session on KampungSebelah, keeping the player within the
+        online window (120s) and writing online status to online-status.json.
+        """
+        me, clock = await asyncio.gather(
+            self.request("/api/game/me"),
+            self.request("/api/time"),
+        )
+        rt = None
+        try:
+            rt = await self.request("/api/realtime/token")
+        except Exception:
+            pass
+
+        self.config_version = me.get("configVersion")
+        self.home = me.get("home")
+        profile = me.get("profile") or {}
+        if profile.get("nickname") is not None:
+            save_profile(self.directory, verified_profile(me))
+
+        status_info = {
+            "online": True,
+            "nickname": profile.get("nickname"),
+            "server_time": clock.get("now"),
+            "balance_milli": me.get("balanceMilli"),
+            "resting": profile.get("resting", False),
+            "sleep": profile.get("sleep"),
+            "realtime_connected": bool(rt and isinstance(rt, dict) and rt.get("url")),
+            "fetched_at": now().isoformat(),
+        }
+        status_file = self.directory / "online-status.json"
+        write_private(status_file, status_info)
+        return status_info
 
     async def resource_items(self, resource):
         if self.vehicle == "mobil" and resource == "condition":

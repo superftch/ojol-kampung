@@ -193,6 +193,8 @@ class Snapshot(Model):
     ojol_vehicle: OjolVehicle | None = None
     ojol_resting: bool = False
     ojol_rest_until: datetime | None = None
+    ojol_shift_done: bool = False
+    ojol_hours_left: float | None = None
 
     def resource_value(self, resource: Resource | Need):
         return self.needs.get(resource) if resource in NEEDS else getattr(self, resource)

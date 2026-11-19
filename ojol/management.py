@@ -3,11 +3,12 @@
 import asyncio
 import json
 import re
+import time
 
 from .accounts import DRAFT_NAME, Accounts
 from .auto_settings import AUTO_LABELS, auto_flags, set_auto_flag
 from .cli import running
-from .control import WORKER_SHUTDOWN, ControlService
+from .control import WORKER_SHUTDOWN, ControlService, status_record
 from .healing import write_private
 from .http_api import HttpCoreError, OjolHttpApi
 from .identity import save_profile, verified_profile
@@ -483,13 +484,23 @@ class MultiAccountService:
 
     async def maintenance_menu(self, owner):
         window = read_window(self.maintenance_file)
-        status = window.description() if window else "Belum ada jadwal."
+        if window and getattr(window, "manual", False):
+            status = "🔴 Status: Aktif (Manual ON tanpa jadwal)"
+        elif window:
+            status = f"🟡 Status: Terjadwal ({window.description()})"
+        else:
+            status = "⚪ Status: Nonaktif (OFF / Belum ada jadwal)"
         await self.reply(
             owner,
             f"🛠 Maintenance game\n\n{status}\n\n"
-            "Atur waktu mulai dan selesai dalam WIB. Bot akan menjeda aktivitas dua menit sebelumnya.",
+            "Gunakan tombol ON / OFF untuk mengaktifkan maintenance langsung tanpa jadwal, "
+            "atau Atur Jadwal untuk menjeda aktivitas otomatis berdasarkan waktu WIB.",
             {
                 "inline_keyboard": [
+                    [
+                        {"text": "🟢 ON", "callback_data": "admin:maintenance:on"},
+                        {"text": "🔴 OFF", "callback_data": "admin:maintenance:off"},
+                    ],
                     [{"text": "Atur Jadwal", "callback_data": "admin:maintenance:set"}],
                     [{"text": "Hapus / Akhiri", "callback_data": "admin:maintenance:clear"}],
                     [{"text": "Management", "callback_data": "admin:menu"}],
@@ -747,6 +758,20 @@ class MultiAccountService:
             await self.admin_menu(owner)
         elif text == "admin:maintenance":
             await self.maintenance_menu(owner)
+        elif text == "admin:maintenance:on":
+            window = MaintenanceWindow.create_manual()
+            write_private(self.maintenance_file, window.payload())
+            await self.maintenance_menu(owner)
+        elif text in {"admin:maintenance:off", "admin:maintenance:clear"}:
+            self.maintenance_file.unlink(missing_ok=True)
+            await self.maintenance_menu(owner)
+        elif text == "admin:maintenance:toggle":
+            if held_window(self.maintenance_file):
+                self.maintenance_file.unlink(missing_ok=True)
+            else:
+                window = MaintenanceWindow.create_manual()
+                write_private(self.maintenance_file, window.payload())
+            await self.maintenance_menu(owner)
         elif text == "admin:maintenance:set":
             await self.prompt(
                 owner,
@@ -756,9 +781,6 @@ class MultiAccountService:
                 "Format\nYYYY-MM-DD HH:MM / YYYY-MM-DD HH:MM\n\n"
                 "Bot mulai menjeda aktivitas dua menit sebelumnya.",
             )
-        elif text == "admin:maintenance:clear":
-            self.maintenance_file.unlink(missing_ok=True)
-            await self.maintenance_menu(owner)
         elif text.startswith("admin:requests:"):
             await self.requests_menu(owner, int(text.rsplit(":", 1)[1]))
         elif text.startswith("request:"):
@@ -1032,8 +1054,11 @@ class MultiAccountService:
                 return
             command = action
         else:
-            command = BUTTON_COMMANDS.get(text)
-            if text.startswith("/"):
+            if text.lower() in {"online", "/online"}:
+                command = "online"
+            else:
+                command = BUTTON_COMMANDS.get(text)
+            if text.startswith("/") and command != "online":
                 await self.home(owner)
                 return
             if command is None:
@@ -1164,9 +1189,73 @@ class MultiAccountService:
                         {"tindakan": action, "account_id": service.account_id},
                     )
 
+    async def fetch_all_online_status(self):
+        """Fetch online presence status for every registered account with a session cookie."""
+        results = {}
+        for row in self.registry.list():
+            if not self.registry.allowed(row["owner"]):
+                continue
+            service = self.service(row["id"])
+            session_path = service.settings.runtime_dir / "http-session.json"
+            if not session_path.is_file():
+                results[row["id"]] = {
+                    "name": row["name"],
+                    "online": False,
+                    "error": "Belum ada sesi cookie",
+                }
+                continue
+            try:
+                status = await service.fetch_online_status()
+                results[row["id"]] = {
+                    "name": row["name"],
+                    "online": True,
+                    "nickname": status.get("nickname"),
+                    "server_time": status.get("server_time"),
+                    "status": status,
+                }
+            except Exception as exc:
+                results[row["id"]] = {
+                    "name": row["name"],
+                    "online": False,
+                    "error": str(exc),
+                }
+        return results
+
+    async def maintain_online_presence(self):
+        """Periodically refresh online presence for every account so all accounts remain online."""
+        if self.closing or self.settings.env == "testing":
+            return
+        now_mono = time.monotonic()
+        if now_mono - getattr(self, "_last_presence_mono", 0) < 30:
+            return
+        self._last_presence_mono = now_mono
+        for row in self.registry.list():
+            if not self.registry.allowed(row["owner"]):
+                continue
+            service = self.service(row["id"])
+            directory = service.settings.runtime_dir
+            if not (directory / "http-session.json").is_file():
+                continue
+            data, status_updated = status_record(directory / "status.json")
+            online_data, online_updated = status_record(directory / "online-status.json")
+            latest_touch = max(
+                status_updated.timestamp() if status_updated else 0,
+                online_updated.timestamp() if online_updated else 0,
+            )
+            is_worker_active = (service.worker and service.worker.returncode is None) or running(
+                directory
+            )
+            if is_worker_active and (time.time() - latest_touch < 35):
+                continue
+            try:
+                await service.fetch_online_status()
+            except Exception:
+                pass
+
     async def supervise(self):
         while not self.closing:
             await self.resume_workers()
+            await self.maintain_online_presence()
             if self.hub.tunnel_process and self.hub.tunnel_process.returncode is not None:
                 self.hub.tunnel_process = None
                 queue_error(

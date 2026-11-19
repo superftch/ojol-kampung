@@ -7,8 +7,9 @@ import os
 import re
 import shutil
 import sys
+import time
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from math import ceil
 from pathlib import Path
@@ -147,6 +148,10 @@ class ControlService:
                 return
             await asyncio.sleep(0.25)
         raise RuntimeError("Worker belum berhenti setelah 30 detik. Sesi game tidak diganti.")
+
+    async def fetch_online_status(self):
+        async with OjolHttpApi(self.settings.runtime_dir) as api:
+            return await api.fetch_online_status()
 
     def status(self):
         directory = self.settings.runtime_dir
@@ -303,6 +308,10 @@ class ControlService:
         vehicle = state.get("ojol_vehicle")
         if vehicle in ("motor", "mobil"):
             lines.extend(["", f"Kendaraan Ojol • {vehicle.capitalize()}"])
+        if state.get("ojol_hours_left") is not None:
+            lines.append(f"⏱ Sisa Jam Narik • {state.get('ojol_hours_left')} jam")
+        elif state.get("ojol_shift_done"):
+            lines.append("⏱ Sisa Jam Narik • Habis (Lanjut besok 00.00 WIB)")
         lines.extend(
             [
                 "",
@@ -463,6 +472,13 @@ class ControlService:
         condition = state.get("condition")
         kuota = state.get("data")
 
+        online_data, online_updated = status_record(directory / "online-status.json")
+        is_online = False
+        if online_updated:
+            age = time.time() - (online_updated / 1e9)
+            if age <= 120 and online_data.get("online"):
+                is_online = True
+
         return {
             "active": active,
             "has_cookie": has_cookie,
@@ -475,6 +491,12 @@ class ControlService:
             "fuel": fuel,
             "condition": condition,
             "data": kuota,
+            "online": is_online or active,
+            "online_updated": (
+                datetime.fromtimestamp(online_updated / 1e9, tz=UTC).isoformat()
+                if online_updated
+                else None
+            ),
         }
 
     async def account_profit(self, day):
@@ -633,6 +655,17 @@ class ControlService:
             )
         if command == "status":
             return self.status()
+        if command == "online":
+            status = await self.fetch_online_status()
+            nick = status.get("nickname") or self.settings.account_name or "Akun"
+            bal = status.get("balance_milli")
+            bal_str = f" · Saldo {Decimal(bal) / 1000} koin" if bal is not None else ""
+            return (
+                f"🟢 Presence Online · {nick}\n\n"
+                f"Akun aktif di game (presence online terkonfirmasi){bal_str}.\n"
+                f"Waktu server: {status.get('server_time')}\n"
+                f"Terakhir diperbarui: {now().astimezone(WIB):%H:%M:%S} WIB"
+            )
         if command == "dashboard":
             s = self.summary()
             wallet_str = f" · Saldo {koin(s['wallet'])}" if s["wallet"] is not None else ""

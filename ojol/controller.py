@@ -130,9 +130,17 @@ class Controller:
         self.wait_until = (now() + timedelta(seconds=seconds)).isoformat()
         self.report("tidur" if sleeping else "menunggu", seconds=round(seconds, 3))
         deadline = time.monotonic() + seconds
+        last_presence = time.monotonic()
         while time.monotonic() < deadline:
             self.check_cancel()
             await asyncio.sleep(min(0.25, max(0, deadline - time.monotonic())))
+            if time.monotonic() - last_presence >= 35:
+                if hasattr(self.ui, "fetch_online_status"):
+                    try:
+                        await self.ui.fetch_online_status()
+                    except Exception:
+                        pass
+                last_presence = time.monotonic()
         self.wait_until = None
 
     async def read_snapshot(self):
@@ -184,7 +192,7 @@ class Controller:
         if window is None:
             return
         self.stage = "maintenance"
-        self.report("maintenance", sampai=window.end.isoformat())
+        self.report("maintenance", sampai=window.end.isoformat() if window.end else "manual")
         self.active_trip = None
         self.busy_since = None
         while held_window(self.maintenance_file):
@@ -512,6 +520,11 @@ class Controller:
                 if dry_run:
                     self.report("dry_run", reason="Semua fitur Auto nonaktif.")
                     return
+                if hasattr(self.ui, "fetch_online_status"):
+                    try:
+                        await self.ui.fetch_online_status()
+                    except Exception:
+                        pass
                 await self.wait(self.settings.idle_poll_seconds)
                 continue
             self.stage = "observe.ojol"
@@ -539,6 +552,7 @@ class Controller:
                     today_income=str(self.state.today_income),
                     wallet=str(self.state.wallet),
                 )
+                continue
             if not flags["ojol"] and self.state.phase in {"idle", "sleeping"}:
                 step = Step(
                     action="wait",

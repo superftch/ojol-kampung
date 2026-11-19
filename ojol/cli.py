@@ -73,6 +73,12 @@ def parser():
     cleanup.add_argument("--limit", type=int, choices=range(1, 11), default=1)
     for name in ("doctor", "status", "stop", "history", "dashboard"):
         commands.add_parser(name)
+    online_cmd = commands.add_parser(
+        "online", help="Fetch API status online untuk memastikan akun presence online"
+    )
+    online_cmd.add_argument(
+        "--all", action="store_true", help="Fetch online status untuk semua akun"
+    )
     reconcile = commands.add_parser("reconcile", help="Periksa hasil aksi dari bukti game")
     target = reconcile.add_mutually_exclusive_group()
     target.add_argument("--error-id", help="Periksa hanya aksi terkait ID error OJL-...")
@@ -171,6 +177,21 @@ def main(argv=None):
 
             service = ControlService(settings)
             print(asyncio.run(service.command("dashboard")))
+        elif args.command == "online":
+            if getattr(args, "all", False):
+                from .management import MultiAccountService
+
+                manager = MultiAccountService(settings)
+                res = asyncio.run(manager.fetch_all_online_status())
+                print(json.dumps(res, ensure_ascii=False, indent=2))
+            else:
+                from .http_api import OjolHttpApi
+
+                async def fetch_one():
+                    async with OjolHttpApi(directory) as api:
+                        return await api.fetch_online_status()
+
+                print(json.dumps(asyncio.run(fetch_one()), ensure_ascii=False, indent=2))
         elif args.command == "stop":
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             (directory / "STOP").touch(mode=0o600)
