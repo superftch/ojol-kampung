@@ -14,7 +14,7 @@ Tabel ini mencakup seluruh request yang dipanggil adapter Ojol ke `https://www.k
 |---|---|---|
 | GET `/api/ojol` | `vehicle` default, `vehicles` tersedia, `bars` dan `pakai` bersama, mitra, trip, tarif, payout/history | HTTP200 13 November 2026 dengan `vehicle: "mobil"`, `vehicles: ["motor", "mobil"]`, dan konsumsi `bensin: 5`, `kendaraan: 2`, `kuota: 4` |
 | GET `/api/kendaraan` | `items[]`, termasuk `family`, `listrik`, dan `name` | Bundle `3tkrjjmq3rsag.js` dan HTTP200 13 November 2026 dengan Motor bebek dan Mobil listrik |
-| GET `/api/game/me` | `balanceMilli`, `configVersion`, rumah/desa, `profile.resting`, `profile.sleep` | HTTP200 historis; field tidur dicocokkan dengan bundle client tersimpan pada 12 November 2026 |
+| GET `/api/game/me` | `balanceMilli`, `configVersion`, rumah/desa, `profile.nickname`, `profile.resting`, `profile.sleep` | HTTP200 historis; nickname dan saldo teramati lagi saat validasi Browser Harness 19 November 2026; field tidur dicocokkan dengan bundle client tersimpan pada 12 November 2026 |
 | GET `/api/kebutuhan` | `asleep`, status kebutuhan aktif, nilai per kebutuhan, dan kandidat tempat fisik | HTTP 200 untuk status kebutuhan. Bentuk kandidat fasilitas berasal dari bundle client. |
 | GET `/api/time` | waktu server untuk arrival/countdown | HTTP200 |
 | GET `/api/daily/house?plotId={plotId}` | Baca status kunjungan akun ke rumah kandidat; harus `visitedToday: false` | Bundle client dan HTTP200 pada 12 November 2026 |
@@ -26,14 +26,22 @@ Tabel ini mencakup seluruh request yang dipanggil adapter Ojol ke `https://www.k
 | POST `/api/shops/{businessId}/buy` | `{item, requestId}` | live: Pertalite, Tambal ban, Isi pulsa; perubahan saldo/resource terverifikasi |
 | POST `/api/ojol` | `{action:"ambil", vehicle:"motor"\|"mobil"}` | Motor terverifikasi historis. Pilihan mobil dan payload berasal dari `aN` di bundle `3tkrjjmq3rsag.js`. |
 | POST `/api/ojol` | `{action:"selesai"}` | live: receipt payout baru terverifikasi setelah arrival server |
-| GET `/api/facilities/{id}` | Cek status, layanan, tarif, dan cooldown fasilitas fisik yang ditawarkan game | Bundle client; alur adapter diuji dengan mock |
-| POST `/api/facilities/{id}/use` | `{requestId}` untuk fasilitas fisik gratis yang lolos pemeriksaan | Bundle client; belum dieksekusi live oleh adapter |
+| GET `/api/facilities/{id}` | Status, layanan, tarif, cooldown, serta bidang belajar | Browser Harness dan GET terotorisasi 19 November 2026; lihat validasi kebutuhan/belajar di bawah |
+| POST `/api/facilities/{id}/use` | `{requestId}` untuk fisik; `{requestId, track}` untuk perpus/kuliah | POST live terotorisasi 19 November 2026: gym, perpus, universitas |
+| GET `/api/facilities/{id}/kuis` | `available`, `visitId`, `track`, `bacaan`, `soal[].{q,options}`, `need`; selesai: `reason: selesai`, `track`, `bonus` | Browser Harness dan GET live 19 November 2026 |
+| POST `/api/facilities/{id}/kuis` | `{visitId, answers: [index, ...]}` | POST live 19 November 2026: perpus 3/3 dan kuliah 5/5 benar; indeks mengikuti urutan opsi dari GET, bukan urutan bank soal |
+| GET `/api/bpjs` | `rules`, `kartu` (`noKartu`, `aktif`, `sisaHari`), `gratisSisa`, `walletMilli` | GET live terotorisasi 19 November 2026 |
+| POST `/api/bpjs/bayar` | `{projectId, requestId}` dengan header `Origin: https://www.kampungsebelah.com` | POST live terotorisasi 19 November 2026: kartu diterbitkan 30 hari, gratisSisa 1 |
+| GET `/api/facilities/{id}/kegiatan` | `available`, `visitId`, `kind` (`tensi` \| `detak`), `plan` | GET live dan bundle client tersimpan 19 November 2026 |
+| POST `/api/facilities/{id}/kegiatan` | `{visitId, stops: [...]}` untuk tensi; `{visitId, taps: [...]}` untuk detak | Bundle client modul kegiatan fasum 19 November 2026 |
+| GET `/api/daily/garden` | Status kebun dan kolam: `now`, `gardens[]` (`id`, `kind`, `state`, `readyAt`, `cared`, `seedMilli`, dll.), `perlengkapan`, `letak`, `ukuran`, `tas` | Bundle client `0wwcgg-bq-sxa.js`, `3g13rrtpxw-ld.js`, dan GET live terotorisasi 19 November 2026 |
+| POST `/api/daily/garden/{id}` | Aksi kebun/kolam: `{"action": "panen" \| "rawat" \| "tanam"}` | Bundle client `0wwcgg-bq-sxa.js` (komponen `#ks-kebun`, fungsi `a6`) dan bundle `3g13rrtpxw-ld.js` (modul 649755) |
 
 Capture historis `/api/ojol` dalam `.local/http-discovery/ojol.json` memuat `todayCount` dan receipt `history[]` dengan `id`, `doneAt`, `kind`, `from.label`, `to.label`, serta `netMilli`. Trip aktif memuat `id` dan `arriveAt`. Adapter memakai ID receipt dan waktu server untuk rekonsiliasi, serta `netMilli` untuk ongkos diterima. Snapshot menyimpan penghitung dan riwayat yang tersedia pada respons, bukan seluruh riwayat akun. Tidak ada endpoint baru atau asumsi idempotensi POST untuk fitur ini.
 
 Panel Ojol memilih dari `vehicles`, memakai `vehicle` sebagai default UI, dan menampilkan satu set `bars` dan `pakai` untuk motor dan mobil. Bundle `0xxms-_bv3y9s.js` mendefinisikan `servis-mobil` dengan efek `kendaraan: 60` dan `isi-daya` dengan efek `bensin: 70`. Pembacaan dua katalog SPBU Utara pada 13 November 2026 menemukan `isi-daya` berlabel **Isi daya SPKLU (mobil listrik)** seharga 800 mili-koin. Pembelian SPKLU belum diuji langsung.
 
-Pada tanggal yang sama, katalog Bengkel motor Gotei menawarkan **Servis motor** 1.500 mili-koin dan **Servis mobil** 2.500 mili-koin. Efek client keduanya `kendaraan: 60`, sesuai bar Kondisi mesin bersama pada respons Ojol. Bot membandingkan biaya per poin untuk perawatan mobil dan memverifikasi kenaikan bar setelah pembelian. Penerapan servis motor pada akun yang sedang memilih mobil belum diobservasi lewat POST live.
+Pada tanggal yang sama, katalog Bengkel motor Gotei menawarkan **Servis motor** 1.500 mili-koin dan **Servis mobil** 2.500 mili-koin. Efek client keduanya `kendaraan: 60`, sesuai bar Kondisi mesin bersama pada respons Ojol. **Konfirmasi pengguna pada 19 November 2026: Servis motor dapat dipakai untuk mobil.** Adapter tetap memasukkan item perawatan motor saat mobil aktif; planner membandingkan biaya per poin dan total biaya, lalu memverifikasi kenaikan bar setelah pembelian. Dengan efek sama +60 dan harga 1,5 vs 2,5 koin, Servis motor dipilih. Tes HTTP terisolasi `test_car_condition_prefers_lower_cost_for_same_recovery` mencakup pemilihan dan satu POST `servis-motor` saat kendaraan mobil. Konfirmasi pengguna dan tes simulasi ini dibedakan dari observasi POST live oleh agen, yang belum dilakukan untuk kasus tersebut. Batas anggaran, saldo minimum, kapasitas resource, dan pemeriksaan perubahan kendaraan tetap berlaku.
 
 ## Bukti jadwal tidur
 
@@ -49,13 +57,42 @@ Tombol mata memanggil onLook → centerOn + pembukaan panel. Panel membaca detai
 
 Auto kebutuhan memeriksa semua katalog Akademis.ai yang terdaftar untuk desa dan kebutuhan akun. Cadangan hanya tersedia jika setiap katalog yang cocok berisi produk relevan dan semuanya ditandai habis oleh game. Adapter memeriksa lagi status ini dan detail usaha cadangan sebelum POST. Pergantian stok sebelum POST diuji lewat simulasi HTTP.
 
-Efek resource tidak ada di response katalog. Client memakai konfigurasi JSON dalam bundle, misalnya `pulsa` untuk kuota dan `nasi-goreng` untuk makan. Adapter membaca efek barang kebutuhan dari konfigurasi `barang`. Pembelian kebutuhan memakai katalog toko Akademis.ai terdaftar dan menyaring layanan atau barang yang langsung dipakai menurut client. Cache diikat ke configVersion. Pembelian kebutuhan dan pemakaian fasilitas baru diverifikasi di simulasi HTTP. GET live pada pemeriksaan lanjutan mengembalikan HTTP 503, sehingga konfirmasi live fasilitas masih tertunda.
+Efek resource Ojol dibaca dari konfigurasi JSON dalam bundle, misalnya `pulsa` untuk kuota. Untuk kebutuhan, adapter memakai `menu[].rasa.isi` bila tersedia dan konfigurasi `barang` sebagai fallback; efek tambahan fasilitas dibaca dari `fasum`. Pembelian kebutuhan memakai katalog toko Akademis.ai terdaftar dan menyaring layanan atau barang yang langsung dipakai menurut client. Cache diikat ke configVersion dan versi skema parser kebutuhan. Sebelum validasi 19 November di bawah, pembelian kebutuhan dan pemakaian fasilitas baru diverifikasi di simulasi HTTP; GET live saat itu mengembalikan HTTP 503.
 
 Client helper memakai JSON body, sesi cookie same-origin dan tidak menambahkan token CSRF khusus pada request game yang teramati. Form import aplikasi tetap memakai CSRF sendiri. HTTP adapter mengirim Origin/Referer game, memvalidasi sesi lewat GET, menolak redirect serta error auth; tidak mencoba melewati login atau challenge.
 
-Keterbatasan: endpoint internal bisa berubah, tidak membuktikan kontrak API publik. Tidak menyimpulkan idempotensi endpoint Ojol dari adanya requestId pada pembelian; semua POST tetap satu kali. Perubahan harga/efek/resource, error auth, dan hasil transaksi yang belum pasti tetap dapat menghentikan worker. Runtime kini hanya HTTP MCP; kegagalan terminal menghentikan akun tanpa fallback browser.
+Keterbatasan: endpoint internal bisa berubah, tidak membuktikan kontrak API publik. Tidak menyimpulkan idempotensi endpoint Ojol dari adanya requestId pada pembelian; semua POST tetap satu kali. Perubahan harga/efek/resource dan error auth tetap menahan transaksi; hasil belum pasti direkonsiliasi tanpa mengulang POST. Runtime kini hanya HTTP MCP; kegagalan terminal menghentikan akun tanpa fallback browser.
+
+## Validasi kebutuhan dan belajar 19 November 2026
+
+Pemeriksaan nilai kebutuhan read-only **19 November 2026, 10.20 WIB** memakai GET katalog, detail fasilitas, detail plot dan konfigurasi client aktif; **nol POST**. Capture privat: `.local/needs-value-audit-20261119/`. Katalog makanan menyediakan `menu[].rasa.isi`, yaitu efek sesuai selera akun/dapur; gunakan nilai ini bila tersedia, dengan validasi integer 0–100 untuk kebutuhan yang dikenal, dan konfigurasi `barang` sebagai fallback saat field tidak tersedia. Contoh akun pemeriksaan: Mi instan Sembako 400 mili memberi makan +24, sedangkan Mi instan Warung Jajan 400 mili memberi makan +36 dan rekreasi +5. Efek ini bisa berbeda antar akun dan waktu.
+
+GET plot dan katalog mengonfirmasi dua pemasok makan tambahan Desa Utara (juga diperiksa untuk rekreasi bersama Restaurant, karena efek makanan mencakup rekreasi): **Akademis.ai Warung Jajan**, `K22-U10`, `kios`, ID `e42f8d13-2911-4d21-b499-e608f43dedaf`; **Akademis.ai Pecel Lele & Ayam**, `O39-U01`, `lamongan`, ID `88b0c25a-1297-4c41-88b1-4c7df5e887e0`. Keduanya buka dan bukan milik akun pemeriksaan. Kepemilikan, nama, buka, stok, harga dan efek tetap dibaca ulang sebelum pembelian.
+
+Konfigurasi `fasum` di bundle aktif `3jnzibg21c0eb.js` memuat Gym desa: fisik +55/kesehatan +15; Kolam renang: fisik +50/rekreasi +15. GET detail keduanya menawarkan tarif 2.000 mili. Kandidat fisik tetap menentukan efek primer; efek sekunder hanya dipakai jika item fasilitas dan kenaikan primer cocok dengan konfigurasi. Gym sedang cooldown pada pemeriksaan ini. Ranking membandingkan biaya per jumlah kenaikan yang benar-benar muat sampai 100 pada seluruh kebutuhan terbaca, setelah penyaringan Akademis.ai dan anggaran. Efek durasi, bonus upah, dan optimasi rangkaian belanja tidak diberi nilai koin.
+
+Pengguna mengizinkan Browser Harness dengan cookie sementara, kemudian secara eksplisit mengizinkan pembelian live. Cookie dipisahkan dalam konteks browser sementara; sesi bot tersimpan tidak diganti. Capture privat di `.local/needs-learning-inspection/`, diabaikan Git.
+
+Pembelian **Pipa paralon** di Akademis.ai Bangunan (`K40-U01`) seharga 800 mili-koin berhasil: rumah 40 → 60, saldo turun tepat 800. Respons POST memuat `eaten: true` dan `kebutuhan.gains.rumah: 20`, walaupun katalog memberi `service: false`. Efek bahan juga terbukti pada bundle `3jnzibg21c0eb.js`: paku-semen +25, cat-tembok +40, pasir +15, bata +20, pipa +20. Pemeriksaan preview source lokal berhasil membaca kelima produk tersebut; kegagalan rumah pada deployment sebelumnya belum direproduksi.
+
+**Gym desa 2** (`296dc278-b765-4caf-9349-469385d6fc03`) berharga 2.000 mili-koin, bukan gratis. Satu POST menaikkan fisik 31 → 86 dan kesehatan 67 → 82; receipt menyertakan `id`, `projectId`, `requestId`, `priceMilli`, `startedAt`, `visitUntil`, `ledgerTxId`, dan `kebutuhan.gains`. GET menawarkan `nextAt` untuk cooldown 12 jam. Fasilitas dipilih dari kandidat `places` kebutuhan fisik dan tarif harus cocok lagi sebelum transaksi.
+
+**Perpustakaan desa** (`90ae44da-6d71-495d-83f7-5b0b69400504`, varian `perpustakaan-desa-t6`) gratis; **Universitas** (`0fb7ae51-34da-434e-a04f-050b0dd82f9b`) berharga 4.000 mili-koin. Keduanya memakai `track: administrasi` dalam validasi live. Perpus menghasilkan kunjungan dan kuis 3/3 benar, universitas 5/5 benar. Administrasi naik 2 → 3 → 4. `studySessions` positif menandai layanan belajar; `studyTracks` dapat membatasi bidang. Bidang harus mempunyai `next`, tanpa `pending`, dan `next.library` bukan false, sesuai guard UI. Keduanya dapat dipakai sekali sehari secara terpisah. GET setelah kunjungan mengembalikan `nextAt: 2026-11-20T00:00:00.000Z`; gunakan waktu server tersebut, jangan mengasumsikan reset tengah malam WIB dari teks UI.
+
+Bundle aktif `087o49eachamv.js` memuat bank bacaan/soal/opsi benar di konfigurasi JSON `facilities` dan `tracks`. Komponen lazy `26kxp4sri85ut.js` (SHA256 `9cbdb73b09dffbd1fbbcfcb0277059d71ecfdce408ab1c611fae52f213537155`) membaca endpoint kuis, menampilkan bacaan selama enam detik, lalu mengirim satu array indeks jawaban bersama `visitId`. GET kuis tersedia mengikat soal ke kunjungan tersebut; setelah submit, GET memberi `available: false`, `reason: selesai`, bidang dan bonus. Kuis diperlakukan sebagai satu kesempatan per kunjungan; POST tidak diputar ulang setelah timeout. Harga, sesi, dan kuis yang diamati adalah bukti akun/waktu tersebut, bukan kontrak tetap untuk seluruh fasilitas.
 
 Probe transaksi lokal dilakukan setelah pengguna menghentikan worker production, melalui ADK → stdio MCP → HTTP tanpa Chromium. Lima aksi (klaim, tiga pembelian, ambil) tercatat verified pada ledger lokal, tanpa pending/uncertain. Sesuai instruksi pengguna, probe sementara melewati planner threshold dan mengizinkan efek pembelian terpotong di100%, dengan anggaran maksimal2koin dan saldo minimum20. Pengecualian hanya pada proses probe sementara; guard source production tidak diubah. Script bypass dan salinan cookie dihapus setelah proses berhenti. Bukti finansial/account tetap privat di `.local/live-verification/report.json` dan ledger lokal, tidak dikomit.
+
+## Bukti BPJS dan pemeriksaan kesehatan gratis (Puskesmas / Rumah Sakit)
+
+Verifikasi live terotorisasi 19 November 2026:
+- **Pengecekan dan Pembelian BPJS**: `GET /api/bpjs` mengembalikan konfigurasi iuran (`iuranMilli: 5000` / 5 koin), masa aktif (`masaHari: 30`), kuota gratis periksa (`gratisPerHari: 1`), sisa gratis hari ini (`gratisSisa`), dan kartu aktif (`kartu`). Jika kartu belum ada atau tidak aktif, pembelian dilakukan via `POST /api/bpjs/bayar` dengan `{projectId, requestId}` ke Kantor BPJS terdekat di desa akun (misal `5149bd70-4b0b-4b4e-be2e-839b7099f8dc` untuk Desa Utara). Header `Origin: https://www.kampungsebelah.com` wajib disertakan untuk lolos proteksi CSRF. Verifikasi live menghasilkan kartu `0001197727537` dengan `aktif: true`, `sisaHari: 30`, dan `gratisSisa: 1`.
+- **Prioritas Pemeriksaan Kesehatan Gratis**: Jika BPJS aktif dan `gratisSisa > 0`, bot memprioritaskan pemeriksaan 1x gratis di fasilitas kesehatan (Puskesmas atau Rumah Sakit) yang telah berstatus `DONE` dan tidak sedang cooldown (`nextAt` kosong). Pemanggilan `POST /api/facilities/{id}/use` mengonsumsi kuota gratis (`priceMilli: 0`).
+- **Minigame Fasilitas Kesehatan**: Setelah `/use`, endpoint `GET /api/facilities/{id}/kegiatan` mengembalikan minigame interaktif. Modul client `13458` (`0wwcgg-bq-sxa.js` modul `895979`) mengonfirmasi format payload:
+  - **Puskesmas (`kind: "tensi"`)**: Mengirim array `{visitId, stops: [...]}` di mana setiap elemen bernilai `round(lead_ms + period * 0.25)` untuk menghasilkan rasio ideal 0.5 (tekanan darah normal 120/80 pada zona hijau tensimeter).
+  - **Rumah Sakit (`kind: "detak"`)**: Mengirim array `{visitId, taps: [...]}` dengan timestamps ketukan yang mencocokkan timestamps target `beats` dari GET `/kegiatan`.
+  - Penyelesaian minigame memberikan bonus peningkatan kesehatan (`bonusGains.kesehatan`).
+- **Fallback Toko Obat**: Jika kuota periksa gratis harian sudah habis (`gratisSisa: 0`) atau fasilitas sedang cooldown, tetapi nilai kesehatan masih di bawah ambang batas (`threshold`), bot otomatis melanjutkan pembelian obat ke toko obat (Akademis Farma atau cadangan toko obat).
 
 ## Bukti laporan harian
 
@@ -65,29 +102,65 @@ Payout Ojol memiliki `type: OJOL_ONGKOS`. Pembelian yang terlihat memakai `SHOP_
 
 ## Inventaris Akademis.ai
 
-Inspeksi read-only lewat CDP pada 11 November 2026 mencocokkan nama tanpa membedakan kapital di respons `GET /api/tujuan`. Ada **19 kecocokan dari 782 usaha** yang terlihat oleh sesi. Detail plot dan katalog mengonfirmasi **Akademis.ai Motor** dan **Akademis.ai Konter** di Desa Utara. Pemeriksaan 13 katalog SPBU yang terdaftar tidak menemukan nama Akademis.ai.
+Pemeriksaan ulang read-only **19 November 2026, 09.58 WIB** melalui `GET /api/tujuan` (HTTP200) menemukan **26 usaha bernama Akademis.ai dari 1.146 usaha** yang terlihat oleh sesi, mencakup **22 jenis usaha**. Pencocokan memakai substring `akademis.ai` tanpa membedakan kapital. Nama, plot, jenis, dan pemilik pada tabel berasal dari direktori saat pemeriksaan; stok/harga tidak diperiksa ulang dalam inventaris ini.
 
-| Nama di direktori | Plot | Kategori |
-|---|---|---|
-| Akademis.ai - Kebun Ziraf | `Q42-B2-1` | `kebun-kopi` |
-| Akademis.ai - Ziraf Kopisop | `H35-U03` | `kedai-kopi` |
-| Akademis.ai Bangunan | `K40-U01` | `toko-bangunan` |
-| Akademis.ai Barbershop | `K40-U07` | `barbershop` |
-| Akademis.ai Coffee | `K40-U09` | `coffee-shop` |
-| Akademis.ai Coffee Farm | `C75-B3-1` | `kebun-kopi` |
-| Akademis.ai Farm | `C80-B4-1` | `sapi-perah` |
-| Akademis.ai Farma | `K40-U06` | `toko-obat` |
-| Akademis.ai GamingHouse | `B37-U07` | `warnet` |
-| Akademis.ai iCafe | `K39-U04` | `warnet` |
-| Akademis.ai Konter | `O38-U06` | `konter-pulsa` |
-| Akademis.ai Motor | `K40-U03` | `bengkel-motor` |
-| Akademis.ai MyAnabul | `C08-U07` | `pet-shop` |
-| Akademis.ai Restaurant | `K40-U04` | `restoran` |
-| Akademis.ai Sabe | `C75-B4-1` | `sawah` |
-| Akademis.ai Sembako | `K40-U08` | `warung-sembako` |
-| Akademis.ai Tahu Tempe | `O37-U09` | `pabrik-tahu` |
-| Bidan Akademis.ai | `Q36-U09` | `praktik-bidan` |
-| PT Akademis.ai Sawit | `H77-B4-1` | `kebun-kelapa` |
+Katalog pembanding adalah **39 jenis usaha aktif** (`category: usaha`, `mechanic: business`, `status: active`) dari bundle client `0q9be105b3nja.js`, diambil ulang pada pemeriksaan ini. GET `/api/game/me` mengembalikan `configVersion: file-1.0` dan 38 jenis pada `catalog.business` untuk akun pemeriksaan. Capture direktori, katalog, SHA256 sumber, dan hasil perbandingan tersimpan privat di `.local/akademis-inventory-20261119/`, diabaikan Git. Cookie tidak disimpan pada artefak.
+
+Catatan 11 November memuat 19 kecocokan dari 782 usaha. Ada **tujuh lokasi tambahan** terhadap catatan tersebut: Venture, Marine, Pecel Lele & Ayam, Rumah Makan, Warung Jajan, Hutan Pohon Kayu B, dan Motor di `F35-U01`. Ini tambahan pada hasil inventaris; waktu pembangunannya tidak disimpulkan dari perbandingan. Nama di `C75-B4-1` sekarang **Akademis.ai Sawah**, sebelumnya tercatat Akademis.ai Sabe.
+
+| Nama di direktori | Plot | Kategori | Pemilik di direktori |
+|---|---|---|---|
+| Akademis.ai - Kebun Ziraf | `Q42-B2-1` | `kebun-kopi` | Ziraf |
+| Akademis.ai - Motor | `F35-U01` | `bengkel-motor` | Williamw1293 |
+| Akademis.ai - Ziraf Kopisop | `H35-U03` | `kedai-kopi` | Ziraf |
+| Akademis.ai Bangunan | `K40-U01` | `toko-bangunan` | Williamw1293 |
+| Akademis.ai Barbershop | `K40-U07` | `barbershop` | Yumika |
+| Akademis.ai Coffee | `K40-U09` | `coffee-shop` | yakis |
+| Akademis.ai Coffee Farm | `C75-B3-1` | `kebun-kopi` | Williamw1293 |
+| Akademis.ai Farm | `C80-B4-1` | `sapi-perah` | Pokonyang |
+| Akademis.ai Farma | `K40-U06` | `toko-obat` | Yumika |
+| Akademis.ai GamingHouse | `B37-U07` | `warnet` | jeta |
+| Akademis.ai Hutan Pohon Kayu B | `B73-B4-1` | `hutan-produksi` | Yumika |
+| Akademis.ai iCafe | `K39-U04` | `warnet` | jeta |
+| Akademis.ai Konter | `O38-U06` | `konter-pulsa` | Yumika |
+| Akademis.ai Marine | `P17-D17` | `kapal-nelayan` | Williamw1293 |
+| Akademis.ai Motor | `K40-U03` | `bengkel-motor` | Williamw1293 |
+| Akademis.ai MyAnabul | `C08-U07` | `pet-shop` | jeta |
+| Akademis.ai Pecel Lele & Ayam | `O39-U01` | `lamongan` | Yumika |
+| Akademis.ai Restaurant | `K40-U04` | `restoran` | Williamw1293 |
+| Akademis.ai Sawah | `C75-B4-1` | `sawah` | anunyakamu |
+| Akademis.ai Sembako | `K40-U08` | `cek ` | anunyakamu |
+| Akademis.ai Tahu Tempe | `O37-U09` | `pabrik-tahu` | Yumika |
+| Akademis.ai Venture | `P17-D04` | `kapal-nelayan` | Yumika |
+| Akademis.ai Warung Jajan | `K22-U10` | `kios` | Yumika |
+| Bidan Akademis.ai | `Q36-U09` | `praktik-bidan` | Pokonyang |
+| PT Akademis.ai Sawit | `H77-B4-1` | `kebun-kelapa` | yakis |
+| Rumah Makan - Akademis.ai | `G05-U07` | `rumah-makan` | Williamw1293 |
+
+### Jenis usaha yang ditawarkan untuk dibeli dan belum terdeteksi dimiliki Akademis.ai
+
+Dengan filter hanya jenis yang **ditawarkan pada `catalog.business` akun pemeriksaan**, ada **16 dari 38 jenis** yang belum tercakup pada usaha bernama Akademis.ai. Pemeriksaan tambahan terhadap seluruh usaha milik tujuh nickname pemilik pada tabel (jeta, Yumika, Ziraf, yakis, anunyakamu, Williamw1293, Pokonyang) juga tidak menemukan jenis yang kosong ini dengan nama usaha lain. Cakupan kepemilikan mengikuti pemilik yang terlihat pada direktori; akun tim lainnya dan usaha yang belum muncul di direktori belum terverifikasi. Katalog membuktikan jenis yang ditawarkan; kelayakan lahan, kuota, saldo, dan persyaratan pembelian tiap akun tidak diuji dengan transaksi.
+
+| Jenis usaha | ID katalog | Jumlah terlihat di direktori |
+|---|---|---:|
+| Kebun rempah | `kebun-rempah` | 5 |
+| Kebun tebu | `kebun-tebu` | 3 |
+| Kebun sayur | `ladang-sayur` | 4 |
+| Minimarket | `minimarket` | 23 |
+| Pabrik batako | `pabrik-batako` | 6 |
+| Pabrik es | `pabrik-es` | 8 |
+| Pabrik pakan ternak | `pabrik-pakan` | 17 |
+| Pabrik tepung & mi | `pabrik-tepung` | 31 |
+| Percetakan | `percetakan` | 11 |
+| Peternakan ayam | `peternakan-ayam` | 21 |
+| Peternakan lele | `peternakan-lele` | 9 |
+| Spa | `spa` | 11 |
+| Tambang pasir & batu | `tambang-pasir` | 4 |
+| Toko pakaian | `toko-pakaian` | 19 |
+| Toko perabot | `toko-perabot` | 30 |
+| Warung | `warung` | 19 |
+
+SPBU Pertamina dikeluarkan dari daftar pembelian di atas karena tidak muncul pada `catalog.business` akun pemeriksaan. Jenis ini tetap ada pada bundle client dan 14 entri direktori, seluruhnya tanpa kecocokan nama/pemilik Akademis.ai pada pemeriksaan ini; syarat untuk membukanya belum diverifikasi. Semua jenis pada tabel di atas ada di `catalog.business` saat pemeriksaan. Jumlah direktori mencatat usaha yang terlihat, bukan bukti stok, profitabilitas, atau izin mendirikan usaha baru.
 
 ## Tool MCP Ojol
 
@@ -99,6 +172,9 @@ Adapter tersedia melalui stdio MCP dengan tool yang dideklarasikan di [`ojol/htt
 | `ojol_preview_shop` | `resource` (`fuel`, `condition`, `data`, `makan`, `kesehatan`, `fisik`, `rekreasi`, `penampilan`, atau `rumah`) | Baca katalog toko tetap untuk desa dan resource akun, atau fasilitas gratis untuk fisik |
 | `ojol_purchase` | `product`, `expected_wallet`, `expected_resource`, `min_balance`, `request_id` | Validasi katalog dan snapshot terbaru, lalu beli satu item |
 | `ojol_job_action` | `kind` (`search` atau `complete`) | Ambil order atau klaim trip yang sudah tiba |
+| `ojol_study_status` | `mode` (`perpus` atau `kuliah`) | Baca fasilitas terdaftar untuk desa akun, bidang, cooldown dan kuis kunjungan |
+| `ojol_study_start` | `mode`, `track`, `expected_price`, `expected_wallet`, `min_balance`, `request_id` | Satu kunjungan setelah opt-in dan validasi ulang bidang/harga/saldo; mengembalikan receipt server |
+| `ojol_study_quiz` | `mode`, `visit_id`, `track` | Baca ulang kuis kunjungan, cocokkan soal/opsi dengan bank bacaan client, submit satu kali |
 
 ## HTTP service aplikasi
 
@@ -145,3 +221,14 @@ Fitur Telegram **Cari Rumah Mampir** memakai GET saja. Filter peta memakai `k ==
 Debug HTTP terotorisasi 12 November 2026 membuktikan rumah `K39-R08` memiliki `visitedToday: false`, tetapi GET lihat interior mengembalikan HTTP403 `FORBIDDEN` dengan pesan rumah hanya menerima tamu 06.00–21.00 WIB. Jadi `visitedToday` tidak membuktikan rumah sedang buka. Bundle terbaru `1xhiowffvsf0w.js` memanggil route lihat interior untuk akses tamu; bundle `3culysozx9orn.js` mencantumkan beberapa pilihan jam tamu termasuk 24 jam. Adapter mengikuti penolakan server, tanpa hardcode jam global. Hanya HTTP403 dengan kode `FORBIDDEN` pada route lihat rumah ini yang menjadi `HouseUnavailable` dan dilewati; HTTP401 `UNAUTHENTICATED` serta error auth pada route lain tetap meminta login ulang. Respons sukses harus memuat `bentuk` string dan `layout` array. Status masih dapat berubah setelah pemeriksaan.
 
 Pemindaian read-only pada sesi debug memeriksa 38 kandidat di area rumah dan blok tetangga. Tiga sudah dikunjungi; 35 lainnya ditolak akses interior sehingga tidak ada kandidat yang ditawarkan. Ini hasil sesaat untuk area tersebut, bukan bukti seluruh desa tutup. Capture debug berada di `.local/visit-hours-inspection`, diabaikan Git; cookie hanya dipakai dalam memori proses dan tidak mengganti sesi bot tersimpan.
+
+## Kebun & kolam
+
+Inspeksi statis bundle `0wwcgg-bq-sxa.js` (komponen UI `#ks-kebun`, fungsi `a6`) dan `3g13rrtpxw-ld.js` (modul 649755) serta GET live 19 November 2026:
+- `GET /api/daily/garden` menghasilkan objek `{now, gardens: [...], perlengkapan, letak, ukuran, tas}`.
+- Elemen dalam `gardens` mencakup `id`, `kind` (`"kebun-sayur"` | `"kolam-ikan"`), `label`, `icon`, `state`, `seedMilli`, `growHours`, `readyAt`, `cared`, `careLabel`, `plantLabel`, `item`, `yield`, dan `caredYield`.
+- Siklus state kebun:
+  1. `"siap"`: Hasil kebun/kolam sudah matang dan siap dipanen. Request `POST /api/daily/garden/{id}` dengan body `{"action": "panen"}` memanen item ke tas. Jumlah hasil panen adalah `cared ? caredYield : yield`.
+  2. `"tumbuh"`: Tanaman/ikan sedang bertumbuh sampai timestamp `readyAt`. Bila `cared: false`, dapat dirawat/disiram satu kali lewat `POST /api/daily/garden/{id}` dengan body `{"action": "rawat"}` untuk meningkatkan hasil panen. Bila sudah dirawat (`cared: true`), kebun menunggu hingga waktu `readyAt` tiba (beralih ke state `"siap"`).
+  3. `"kosong"`: Lahan belum ditanami. Request `POST /api/daily/garden/{id}` dengan body `{"action": "tanam"}` menanam bibit baru dengan biaya `seedMilli` jika saldo koin mencukupi.
+- Manajemen cooldown: Saat ada kebun/kolam dalam kondisi `"tumbuh"` dan sudah dirawat (`cared: true`), cooldown worker dijadwalkan berdasarkan nilai terkecil dari `readyAt` yang akan datang sehingga worker tidak melakukan polling berulang sebelum panen siap.

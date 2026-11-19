@@ -239,7 +239,7 @@ class Journal:
         row = self.db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
         if (
             not row
-            or row["kind"] not in {"complete", "purchase", "take"}
+            or row["kind"] not in {"complete", "purchase", "take", "study", "study_quiz", "garden"}
             or row["status"] not in {"pending", "uncertain"}
         ):
             return None
@@ -383,10 +383,14 @@ class Journal:
             "wallet_before": str(before.wallet),
             "wallet_after": str(after.wallet),
         }
-        if row["kind"] == "purchase" and isinstance(payload.get("product"), dict):
+        if row["kind"] in {"purchase", "study"} and isinstance(payload.get("product"), dict):
             amount = Decimal(payload["product"]["price"])
+            if row["kind"] == "study" and amount == 0:
+                return None
             kind, category = "expense", payload["resource"]
             detail.update(shop=payload["shop"], product=payload["product"]["name"])
+            if row["kind"] == "study":
+                detail.update(source="facility_study_visit", receipt=payload.get("receipt"))
         elif row["kind"] == "complete":
             observed = received_income(before, after)
             if observed is None:
@@ -394,6 +398,12 @@ class Journal:
             amount, entries = observed
             kind, category = "income", "ojol"
             detail.update(history_entries=entries, source="observed_game_history_received_payout")
+        elif row["kind"] == "garden":
+            amount = Decimal(str(payload.get("cost", 0)))
+            if amount <= Decimal(0):
+                return None
+            kind, category = "expense", "kebun"
+            detail.update(garden_id=payload.get("garden_id"), action=payload.get("action"))
         else:
             return None
         self.db.execute(
@@ -413,7 +423,7 @@ class Journal:
     def backfill_cashflows(self):
         rows = self.db.execute(
             "SELECT a.* FROM actions a LEFT JOIN cashflows c ON c.source_key='action:'||a.id "
-            "WHERE a.status='verified' AND a.kind IN ('purchase','complete') AND c.id IS NULL"
+            "WHERE a.status='verified' AND a.kind IN ('purchase','complete','study','garden') AND c.id IS NULL"
         ).fetchall()
         with self.db:
             for row in rows:

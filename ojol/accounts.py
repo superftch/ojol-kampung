@@ -7,6 +7,10 @@ import time
 from contextlib import closing, contextmanager
 from uuid import uuid4
 
+from .identity import cached_profile
+
+DRAFT_NAME = "Menunggu cookie"
+
 
 class Accounts:
     def __init__(self, settings):
@@ -210,7 +214,9 @@ class Accounts:
             )
         if not self.allowed(row["owner"]):
             raise ValueError("Akses pemilik akun belum aktif. Hubungi admin.")
-        return dict(row)
+        account = dict(row)
+        self.scoped_settings(account)
+        return account
 
     def selected(self, owner):
         if not self.allowed(owner):
@@ -230,7 +236,7 @@ class Accounts:
             raise ValueError("Nama akun harus 1 sampai 40 karakter dalam satu baris.")
         return value.strip()
 
-    def create(self, owner, name):
+    def create(self, owner, name=DRAFT_NAME):
         if not self.allowed(owner):
             raise ValueError("Akses Anda belum aktif. Hubungi admin untuk meminta akses.")
         name = self.name(name)
@@ -271,11 +277,21 @@ class Accounts:
             db.execute("UPDATE users SET selected=NULL WHERE selected=?", (identifier,))
 
     def scoped_settings(self, account):
+        directory = (
+            self.settings.runtime_dir
+            if account["legacy"]
+            else self.settings.runtime_dir / "accounts" / account["id"]
+        )
+        profile = cached_profile(directory)
+        if profile and profile["nickname"] != account["name"]:
+            with self.db() as db:
+                db.execute(
+                    "UPDATE accounts SET name=? WHERE id=?", (profile["nickname"], account["id"])
+                )
+            account["name"] = profile["nickname"]
         return self.settings.model_copy(
             update={
-                "runtime_dir": self.settings.runtime_dir
-                if account["legacy"]
-                else self.settings.runtime_dir / "accounts" / account["id"],
+                "runtime_dir": directory,
                 "telegram_chat_id": account["owner"],
                 "account_name": account["name"],
                 "tunnel_enabled": False,

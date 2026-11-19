@@ -9,17 +9,27 @@ from datetime import datetime
 from decimal import Decimal
 from math import ceil
 from pathlib import Path
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 
 from .auto_settings import auto_flags
 from .finance import WIB, day_bounds, report_date
 from .healing import write_private
+from .identity import save_profile, verified_profile
 from .models import NEEDS, GameReceipt, Product, ShopPreview, SleepSchedule, Snapshot, now
 from .planner import ALLOWED_ITEMS
 from .session_transfer import DOMAIN, parse_cookie_input, session_expired
-from .shop_locations import NEED_FALLBACK_PLOTS, NEED_SHOPS_BY_VILLAGE, SHOPS_BY_VILLAGE, NeedShop
+from .shop_locations import (
+    BPJS_KANTOR_BY_VILLAGE,
+    HEALTH_FACILITIES_BY_VILLAGE,
+    NEED_FALLBACK_PLOTS,
+    NEED_SHOPS_BY_VILLAGE,
+    SHOPS_BY_VILLAGE,
+    STUDY_FACILITIES_BY_VILLAGE,
+    NeedShop,
+)
+from .study import STUDY_LABELS, SUBJECTS, extract_quiz_bank, quiz_answers, subjects
 
 ORIGIN = "https://www.kampungsebelah.com"
 ITEMS = {
@@ -243,13 +253,18 @@ def extract_effects(source):
     return result
 
 
-def extract_need_effects(source):
-    for match in re.finditer(r'"barang"\s*:\s*\{', source):
+def extract_need_effects(source, group="barang"):
+    for match in re.finditer(r'"' + group + r'"\s*:\s*\{', source):
         try:
             items, _ = json.JSONDecoder().raw_decode(source, match.end() - 1)
         except ValueError:
             continue
-        if not {"nasi-goreng", "tambal-ban", "pulsa"} <= items.keys():
+        required = (
+            {"nasi-goreng", "tambal-ban", "pulsa"}
+            if group == "barang"
+            else {"gym-desa", "kolam-renang"}
+        )
+        if not required <= items.keys():
             continue
         return {
             item: {key: value for key, value in effects.items() if key in NEEDS}
@@ -312,6 +327,7 @@ class OjolHttpApi:
         house_view = re.fullmatch(
             r"/api/rumah/interior/lihat\?plotId=[A-Z][0-9]{2}-[A-Z][0-9]{2}", path
         )
+        garden_action = bool(re.fullmatch(r"/api/daily/garden/[a-zA-Z0-9_-]+", path))
         allowed = (
             path
             in {
@@ -322,6 +338,9 @@ class OjolHttpApi:
                 "/api/kebutuhan",
                 "/api/time",
                 "/kampung",
+                "/api/bpjs",
+                "/api/bpjs/bayar",
+                "/api/daily/garden",
             }
             or re.fullmatch(
                 r"/api/world/plots\?v=2&blocks=[A-Z][0-9]{2}(?:,[A-Z][0-9]{2}){0,23}", path
@@ -330,7 +349,8 @@ class OjolHttpApi:
             or re.fullmatch(r"/api/daily/house\?plotId=[A-Z][0-9]{2}-[A-Z][0-9]{2}", path)
             or house_view
             or re.fullmatch(r"/api/world/plots/[A-Z][0-9]{2}-U[0-9]{2}\?t=[0-9]{1,15}", path)
-            or re.fullmatch(r"/api/facilities/[a-f0-9-]{36}(?:/use)?", path)
+            or re.fullmatch(r"/api/facilities/[a-f0-9-]{36}(?:/(?:use|kuis|kegiatan))?", path)
+            or garden_action
             or re.fullmatch(r"/_next/static/[a-zA-Z0-9_./-]+\.js", path)
         )
         if (
@@ -338,7 +358,12 @@ class OjolHttpApi:
             or (after is not None and (path != "/api/me/koin" or not self.valid_cursor(after)))
             or ".." in path.split("/")
             or "//" in path
-            or (payload is not None and path != "/api/ojol" and not path.endswith(("/buy", "/use")))
+            or (
+                payload is not None
+                and path != "/api/ojol"
+                and not garden_action
+                and not path.endswith(("/buy", "/use", "/kuis", "/bayar", "/kegiatan"))
+            )
         ):
             raise HttpCoreError("Endpoint di luar izin Ojol", category="blocked")
         if self.expires_at is not None and self.expires_at <= time.time():
@@ -512,6 +537,8 @@ class OjolHttpApi:
         )
         self.config_version = me["configVersion"]
         self.home = me["home"]
+        if (me.get("profile") or {}).get("nickname") is not None:
+            save_profile(self.directory, verified_profile(me))
         places = need_rows(needs).get("fisik", {}).get("places")
         self.physical_places = (
             [place for place in places if isinstance(place, dict)]
@@ -564,7 +591,11 @@ class OjolHttpApi:
         required = set.union(*ITEMS.values()) | set(required_items)
         if cache.is_file():
             data = json.loads(cache.read_text())
-            if data.get("version") == version and data.get(key):
+            if (
+                data.get("version") == version
+                and data.get(key)
+                and (not for_needs or data.get("needs_schema") == 2)
+            ):
                 if for_needs or required <= data[key].keys():
                     return data[key]
         html = await self.request("/kampung", text=True)
@@ -579,8 +610,12 @@ class OjolHttpApi:
                 raise HttpCoreError("Efek produk antar bundle berbeda", recoverable=True)
             effects.update(found)
             found_needs = extract_need_effects(source)
+            found_needs.update(extract_need_effects(source, "fasum"))
             if found_needs:
-                if needs_effects and found_needs != needs_effects:
+                if any(
+                    item in needs_effects and needs_effects[item] != value
+                    for item, value in found_needs.items()
+                ):
                     raise HttpCoreError("Efek kebutuhan antar bundle berbeda", recoverable=True)
                 needs_effects.update(found_needs)
             if required <= effects.keys() and (needs_effects or not for_needs):
@@ -588,7 +623,13 @@ class OjolHttpApi:
         if not required <= effects.keys():
             raise HttpCoreError("Efek produk client belum dapat diverifikasi", recoverable=True)
         write_private(
-            cache, {"version": version, "effects": effects, "needs_effects": needs_effects}
+            cache,
+            {
+                "version": version,
+                "effects": effects,
+                "needs_effects": needs_effects,
+                "needs_schema": 2,
+            },
         )
         if for_needs and not needs_effects:
             raise HttpCoreError("Efek barang kebutuhan belum dapat diverifikasi", recoverable=True)
@@ -606,6 +647,18 @@ class OjolHttpApi:
             sold_out = row.get("habis")
             if resource in NEEDS:
                 effect = effects.get(item, {})
+                taste = row.get("rasa")
+                if isinstance(taste, dict) and "isi" in taste:
+                    effect = taste["isi"]
+                    if (
+                        not isinstance(effect, dict)
+                        or not effect
+                        or any(
+                            key not in NEEDS or type(value) is not int or not 0 <= value <= 100
+                            for key, value in effect.items()
+                        )
+                    ):
+                        raise HttpCoreError("Efek selera makanan belum terverifikasi")
                 # The shop applies services and consumables with these effects immediately.
                 if not effect.get(resource) or not (
                     row.get("service") is True
@@ -716,14 +769,14 @@ class OjolHttpApi:
         identifier = str(UUID(business["id"]))
         return await self.need_shop(NeedShop(identifier, plot, name, category), resource, effects)
 
-    async def physical_facility(self, place):
+    async def physical_facility(self, place, effects=None):
         identifier = place.get("id")
         gain = place.get("gain")
         if (
             place.get("kind") != "fasum"
             or place.get("open") is not True
             or type(place.get("priceMilli")) is not int
-            or place["priceMilli"] != 0
+            or place["priceMilli"] < 0
             or type(gain) is not int
             or not 0 < gain <= 100
             or not isinstance(identifier, str)
@@ -739,10 +792,15 @@ class OjolHttpApi:
             or details.get("myVisitUntil")
             or not isinstance(service, dict)
             or service.get("studySessions")
+            or service.get("open") is not True
             or type(service.get("priceMilli")) is not int
-            or service["priceMilli"] != 0
+            or service["priceMilli"] != place["priceMilli"]
         ):
             return None
+        item = re.sub(r"-t[0-9]+$", "", details.get("item", ""))
+        effect = (effects or {}).get(item, {})
+        if effect.get("fisik") != gain:
+            effect = {"fisik": gain}
         return ShopPreview(
             id=identifier,
             plot_id=identifier,
@@ -752,13 +810,209 @@ class OjolHttpApi:
             products=[
                 Product(
                     name=service["label"],
-                    price=0,
-                    effects={"fisik": gain},
+                    price=coin(service["priceMilli"]),
+                    effects=effect,
                     row_text=json.dumps({"shop": identifier, "item": "use", "resource": "fisik"}),
                     enabled=True,
                 )
             ],
         )
+
+    async def study_status(self, mode):
+        if mode not in STUDY_LABELS:
+            raise HttpCoreError("Type belajar tidak didukung", category="blocked")
+        me = await self.request("/api/game/me")
+        self.config_version = me["configVersion"]
+        identifier = STUDY_FACILITIES_BY_VILLAGE.get((me.get("home") or {}).get("desa"), {}).get(
+            mode
+        )
+        if identifier is None:
+            raise HttpCoreError(
+                "Fasilitas belajar desa akun belum terverifikasi", category="blocked"
+            )
+        facility, quiz = await asyncio.gather(
+            self.request(f"/api/facilities/{identifier}"),
+            self.request(f"/api/facilities/{identifier}/kuis"),
+        )
+        service = facility.get("service") or {}
+        expected_item = "perpustakaan-desa" if mode == "perpus" else "universitas"
+        if (
+            facility.get("id") != identifier
+            or re.sub(r"-t[0-9]+$", "", facility.get("item", "")) != expected_item
+            or facility.get("state") != "DONE"
+            or type(service.get("priceMilli")) is not int
+            or service["priceMilli"] < 0
+            or (mode == "perpus" and service["priceMilli"] != 0)
+            or (mode == "kuliah" and service["priceMilli"] == 0)
+            or type(service.get("studySessions")) is not int
+            or service["studySessions"] <= 0
+            or type(quiz.get("available")) is not bool
+        ):
+            raise HttpCoreError("Fasilitas/tarif belajar belum terverifikasi", category="schema")
+        return {"facility": facility, "quiz": quiz, "tracks": me["skill"]["tracks"]}
+
+    async def quiz_bank(self):
+        cache = self.directory / "http-quiz-bank.json"
+        version = self.config_version
+        if cache.is_file():
+            saved = json.loads(cache.read_text())
+            if saved.get("version") == version and saved.get("tracks"):
+                return saved["tracks"]
+        html = await self.request("/kampung", text=True)
+        for path in re.findall(r"<script[^>]+src=[\"\x27]([^\"\x27]+)", html):
+            if not path.startswith("/_next/static/"):
+                continue
+            bank = extract_quiz_bank(await self.request(path, text=True))
+            if bank:
+                write_private(cache, {"version": version, "tracks": bank})
+                return bank
+        raise HttpCoreError("Bacaan dan bank soal client belum terverifikasi", category="schema")
+
+    async def study_start(
+        self, mode, track, expected_price, expected_wallet, min_balance, request_id
+    ):
+        request_id = str(UUID(request_id))
+        if track not in SUBJECTS or subjects(self.directory).get(mode) != track:
+            raise HttpCoreError("Pilihan bidang belajar berubah", category="rejected")
+        status = await self.study_status(mode)
+        facility = status["facility"]
+        service = facility["service"]
+        skill = next((row for row in status["tracks"] if row["id"] == track), None)
+        price = coin(service["priceMilli"])
+        if (
+            not skill
+            or not skill.get("next")
+            or skill.get("pending")
+            or skill["next"].get("library") is False
+            or facility.get("nextAt")
+            or facility.get("myVisitUntil")
+            or service.get("open") is not True
+            or (service.get("studyTracks") is not None and track not in service["studyTracks"])
+            or price != Decimal(expected_price)
+        ):
+            raise HttpCoreError(
+                "Bidang, tarif, jadwal, atau cooldown belajar berubah", category="rejected"
+            )
+        state = await self.snapshot()
+        if state.phase == "sleeping":
+            raise HttpCoreError("Karakter sedang tidur", category="sleeping")
+        if (
+            state.phase != "idle"
+            or state.wallet != Decimal(expected_wallet)
+            or state.wallet - price < max(Decimal(20), Decimal(min_balance))
+        ):
+            raise HttpCoreError("Fase atau saldo berubah sebelum belajar", category="rejected")
+        if not auto_flags(self.directory)[mode]:
+            raise HttpCoreError("Auto belajar dinonaktifkan", category="auto_disabled")
+        result = await self.request(
+            f"/api/facilities/{facility['id']}/use", {"requestId": request_id, "track": track}
+        )
+        if (
+            not isinstance(result, dict)
+            or result.get("requestId") != request_id
+            or result.get("projectId") != facility["id"]
+            or type(result.get("priceMilli")) is not int
+            or result.get("priceMilli") != service["priceMilli"]
+            or not isinstance(result.get("id"), str)
+        ):
+            raise HttpCoreError(
+                "Receipt belajar belum cocok; transaksi tidak diulang", category="uncertain"
+            )
+        return result
+
+    async def study_quiz(self, mode, visit_id, track):
+        visit_id = str(UUID(visit_id))
+        status = await self.study_status(mode)
+        quiz = status["quiz"]
+        if (
+            quiz.get("available") is not True
+            or quiz.get("visitId") != visit_id
+            or quiz.get("track", {}).get("id") != track
+        ):
+            raise HttpCoreError("Kunjungan/kuis belajar berubah", category="rejected")
+        try:
+            answers = quiz_answers(quiz, await self.quiz_bank())
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HttpCoreError(
+                "Soal belum cocok dengan bacaan client; jawaban tidak ditebak", category="rejected"
+            ) from exc
+        state = await self.snapshot()
+        if state.phase == "sleeping":
+            raise HttpCoreError("Karakter sedang tidur", category="sleeping")
+        if state.phase != "idle" or not auto_flags(self.directory)[mode]:
+            raise HttpCoreError(
+                "Auto belajar nonaktif atau akun tidak idle", category="auto_disabled"
+            )
+        result = await self.request(
+            f"/api/facilities/{status['facility']['id']}/kuis",
+            {"visitId": visit_id, "answers": answers},
+        )
+        if (
+            not isinstance(result, dict)
+            or not isinstance(result.get("track"), dict)
+            or result.get("track", {}).get("id") != track
+            or type(result.get("benar")) is not int
+            or type(result.get("total")) is not int
+            or result.get("total") != len(answers)
+            or not 0 <= result["benar"] <= len(answers)
+            or type(result.get("bonus")) is not int
+            or not 0 <= result["bonus"] <= 1
+        ):
+            raise HttpCoreError(
+                "Hasil kuis belum terverifikasi; submit tidak diulang", category="uncertain"
+            )
+        return result
+
+    async def bpjs_status(self):
+        return await self.request("/api/bpjs")
+
+    async def ensure_bpjs(self):
+        if not getattr(self, "home", None):
+            await self.snapshot()
+        try:
+            status = await self.bpjs_status()
+        except HttpCoreError:
+            return {}
+        kartu = status.get("kartu")
+        rules = status.get("rules", {})
+        wallet_milli = status.get("walletMilli", 0)
+        iuran_milli = rules.get("iuranMilli", 5000)
+        village = (self.home or {}).get("desa")
+        kantor_id = BPJS_KANTOR_BY_VILLAGE.get(village)
+        if (not kartu or not kartu.get("aktif") or kartu.get("sisaHari", 0) <= 0) and kantor_id:
+            if wallet_milli >= iuran_milli:
+                await self.request(
+                    "/api/bpjs/bayar",
+                    {"projectId": kantor_id, "requestId": str(uuid4())},
+                )
+                status = await self.bpjs_status()
+        return status
+
+    async def complete_facility_kegiatan(self, facility_id):
+        try:
+            kegiatan = await self.request(f"/api/facilities/{facility_id}/kegiatan")
+        except HttpCoreError:
+            return None
+        if not isinstance(kegiatan, dict) or not kegiatan.get("available"):
+            return None
+        visit_id = kegiatan.get("visitId")
+        kind = kegiatan.get("kind")
+        plan = kegiatan.get("plan") or {}
+        if kind == "tensi":
+            periods = plan.get("periods") or []
+            stops = [round(p * 0.25) for p in periods]
+            return await self.request(
+                f"/api/facilities/{facility_id}/kegiatan",
+                {"visitId": visit_id, "stops": stops},
+            )
+        if kind == "detak":
+            beats = plan.get("beats") or []
+            taps = [int(b) for b in beats]
+            return await self.request(
+                f"/api/facilities/{facility_id}/kegiatan",
+                {"visitId": visit_id, "taps": taps},
+            )
+        return None
 
     async def preview(self, resource):
         if resource not in CATEGORIES and resource not in NEEDS:
@@ -772,12 +1026,64 @@ class OjolHttpApi:
                 if not self.home:
                     raise HttpCoreError("Rumah akun belum tersedia", category="blocked")
                 if resource == "fisik":
+                    effects = {}
+                    if self.physical_places:
+                        try:
+                            effects = await self.effects(for_needs=True)
+                        except HttpCoreError:
+                            effects = {}
                     shops = await self.read_previews(
-                        self.physical_facility(place) for place in self.physical_places
+                        self.physical_facility(place, effects) for place in self.physical_places
                     )
                 elif resource in NEEDS:
                     shops = []
-                    if NEED_SHOPS_BY_VILLAGE.get(self.home["desa"], {}).get(resource):
+                    if resource == "kesehatan":
+                        try:
+                            bpjs = await self.ensure_bpjs()
+                        except HttpCoreError:
+                            bpjs = {}
+                        kartu = bpjs.get("kartu") or {}
+                        gratis_sisa = bpjs.get("gratisSisa", 0)
+                        village = (self.home or {}).get("desa")
+                        facility_ids = HEALTH_FACILITIES_BY_VILLAGE.get(village, ())
+                        if kartu.get("aktif") and gratis_sisa > 0 and facility_ids:
+                            for fid in facility_ids:
+                                try:
+                                    details = await self.request(f"/api/facilities/{fid}")
+                                except HttpCoreError:
+                                    continue
+                                service = details.get("service") or {}
+                                if (
+                                    details.get("state") == "DONE"
+                                    and not details.get("nextAt")
+                                    and not details.get("myVisitUntil")
+                                    and service.get("open") is not False
+                                ):
+                                    title = details.get("title", "Puskesmas")
+                                    label = service.get("label", "Periksa kesehatan")
+                                    identity = json.dumps(
+                                        {"shop": fid, "item": "use", "resource": "kesehatan"}
+                                    )
+                                    shops = [
+                                        ShopPreview(
+                                            id=fid,
+                                            plot_id=fid,
+                                            name=title,
+                                            category="fasum",
+                                            distance_squared=0,
+                                            products=[
+                                                Product(
+                                                    name=label,
+                                                    price=Decimal(0),
+                                                    effects={"kesehatan": 15},
+                                                    row_text=identity,
+                                                    enabled=True,
+                                                )
+                                            ],
+                                        )
+                                    ]
+                                    break
+                    if not shops and NEED_SHOPS_BY_VILLAGE.get(self.home["desa"], {}).get(resource):
                         effects = await self.effects(for_needs=True)
                         shops, sold_out = await self.akademis_need_shops(resource, effects)
                         if sold_out:
@@ -861,8 +1167,13 @@ class OjolHttpApi:
             raise HttpCoreError(
                 "Fitur Auto dinonaktifkan sebelum pembelian", category="auto_disabled"
             )
-        if resource == "fisik":
-            return await self.request(f"/api/facilities/{shop_id}/use", {"requestId": request_id})
+        if shop.category == "fasum":
+            receipt = await self.request(
+                f"/api/facilities/{shop_id}/use", {"requestId": request_id}
+            )
+            if resource == "kesehatan":
+                await self.complete_facility_kegiatan(shop_id)
+            return receipt
         return await self.request(
             f"/api/shops/{shop_id}/buy", {"item": identity["item"], "requestId": request_id}
         )
@@ -872,20 +1183,21 @@ class OjolHttpApi:
     ):
         shop_id = shop.id
         is_need = resource in NEEDS
-        fallback = is_need and resource != "fisik" and not shop.preferred
+        is_facility = shop.category == "fasum"
+        fallback = is_need and not is_facility and not shop.preferred
         version = self.config_version
         vehicle = self.vehicle
         allowed_items = None if is_need else await self.resource_items(resource)
-        if resource != "fisik":
+        if not is_facility:
             effects = await self.effects(for_needs=is_need, required_items=allowed_items or ())
-        if resource != "fisik" and not fallback:
-            catalog, fresh = await self.products(shop_id, resource, effects, allowed_items)
-            if product not in fresh or (
-                (is_need or catalog.get("plang")) and catalog.get("plang") != shop.name
-            ):
-                raise HttpCoreError(
-                    "Nama toko atau katalog berubah sebelum pembelian", category="rejected"
-                )
+            if not fallback:
+                catalog, fresh = await self.products(shop_id, resource, effects, allowed_items)
+                if product not in fresh or (
+                    (is_need or catalog.get("plang")) and catalog.get("plang") != shop.name
+                ):
+                    raise HttpCoreError(
+                        "Nama toko atau katalog berubah sebelum pembelian", category="rejected"
+                    )
         state = await self.snapshot()
         if state.phase == "sleeping":
             raise HttpCoreError("Karakter sedang tidur; transaksi ditunda", category="sleeping")
@@ -893,7 +1205,21 @@ class OjolHttpApi:
             place = next(
                 (place for place in self.physical_places if place.get("id") == shop_id), {}
             )
-            eligible = await self.physical_facility(place) == shop
+            effects = {}
+            try:
+                effects = await self.effects(for_needs=True)
+            except HttpCoreError:
+                effects = {}
+            eligible = await self.physical_facility(place, effects) == shop
+        elif is_facility and resource == "kesehatan":
+            details = await self.request(f"/api/facilities/{shop_id}")
+            service = details.get("service") or {}
+            eligible = (
+                details.get("state") == "DONE"
+                and not details.get("nextAt")
+                and not details.get("myVisitUntil")
+                and service.get("open") is not False
+            )
         elif fallback and self.home:
             _, sold_out = await self.akademis_need_shops(resource, effects)
             fresh_shop = await self.fallback_need_shop(resource, effects) if sold_out else None
@@ -958,3 +1284,14 @@ class OjolHttpApi:
         if kind == "complete" and state.phase == "complete":
             return await self.request("/api/ojol", {"action": "selesai"})
         raise HttpCoreError("Aksi Ojol tidak sesuai state/waktu server", category="blocked")
+
+    async def garden_status(self):
+        result = await self.request("/api/daily/garden")
+        if not isinstance(result, dict) or "gardens" not in result:
+            raise HttpCoreError("Format status kebun & kolam tidak valid", recoverable=True)
+        return result
+
+    async def garden_action(self, garden_id: str, action: str):
+        if action not in {"panen", "rawat", "tanam"}:
+            raise ValueError(f"Aksi kebun tidak valid: {action}")
+        return await self.request(f"/api/daily/garden/{garden_id}", payload={"action": action})

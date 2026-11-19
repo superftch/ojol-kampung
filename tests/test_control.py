@@ -10,9 +10,11 @@ import pytest
 from pydantic import SecretStr, ValidationError
 from starlette.testclient import TestClient
 
+from ojol.auto_settings import set_auto_flag
 from ojol.control import ControlService, create_app
 from ojol.healing import write_private
 from ojol.http_api import HttpCoreError
+from ojol.identity import save_profile, verified_profile
 from ojol.login_access import LoginAccess
 from ojol.models import Settings, SleepSchedule
 from ojol.telegram import (
@@ -90,7 +92,55 @@ async def test_telegram_private_message_and_sanitized_network_error(settings):
             with pytest.raises(TelegramError) as error:
                 await api.send("fixture")
     assert "fake-test-token" not in str(error.value)
+    assert error.value.retryable
+    assert "sendMessage: ConnectError" in str(error.value)
     assert "telegram_bot_token" not in settings.model_dump()
+
+
+@pytest.mark.parametrize("status", [401, 403, 409, 429, 500, 502, 503])
+@pytest.mark.parametrize("json_response", [False, True])
+async def test_telegram_only_retries_transient_responses(settings, status, json_response):
+    def handle(request):
+        if json_response:
+            return httpx.Response(status, json={"ok": False, "description": "fixture"})
+        return httpx.Response(status, text="fixture upstream response")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        async with TelegramClient(bot_settings(settings), client) as api:
+            with pytest.raises(TelegramError) as error:
+                await api.call("getUpdates", timeout=20)
+    assert error.value.retryable is (status == 429 or status >= 500)
+    assert str(status) in str(error.value) and "getUpdates" in str(error.value)
+
+
+@pytest.mark.parametrize("payload", ["not-json", "[]"])
+async def test_telegram_malformed_success_response_is_retryable(settings, payload):
+    async with httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda request: httpx.Response(200, text=payload))
+    ) as client:
+        async with TelegramClient(bot_settings(settings), client) as api:
+            with pytest.raises(TelegramError) as error:
+                await api.call("getUpdates", timeout=20)
+    assert error.value.retryable
+    assert "HTTP 200" in str(error.value)
+
+
+async def test_notification_header_uses_verified_nickname_over_old_account_name(settings):
+    settings = bot_settings(settings).model_copy(update={"account_name": "Old Manual Name"})
+    save_profile(
+        settings.runtime_dir,
+        verified_profile({"profile": {"nickname": "Current Nick"}, "balanceMilli": 35000}),
+    )
+    sent = []
+
+    def handle(request):
+        sent.append(json.loads(request.content)["text"])
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
+        async with TelegramClient(settings, client) as api:
+            await api.send("fixture")
+    assert sent == ["👤 Current Nick\n\nfixture"]
 
 
 def test_only_configured_private_sender_can_control(settings):
@@ -294,7 +344,7 @@ async def test_telegram_renders_pending_legacy_notices_without_debug_fields(sett
     async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
         assert await flush_notices(bot, client) == 2
     assert any("pemeriksaan hasil transaksi secara otomatis" in message for message in sent)
-    assert any("Soto berhasil dibeli" in message and "55% ke 90%" in message for message in sent)
+    assert any("Aksi • Soto" in message and "Makan • 55% → 90%" in message for message in sent)
     assert all(
         field not in message
         for message in sent
@@ -502,6 +552,54 @@ async def test_status_profit_and_date_buttons_are_distinct(settings):
         "profit:2026-01-01" in values and "profit:2026-01-03" in values and "choose_date" in values
     )
     assert "YYYY-MM-DD" in await service.command("choose_date") and service.awaiting_date
+
+
+def test_status_lists_need_percentage_and_auto_state_together(settings, state):
+    state = state.model_copy(update={"needs": {"makan": 55, "fisik": 31, "rumah": 40}})
+    write_private(settings.runtime_dir / "status.json", {"snapshot": state.model_dump(mode="json")})
+    set_auto_flag(settings.runtime_dir, "makan", False)
+    message = ControlService(settings).status()
+    assert "Makan • OFF • 55%" in message
+    assert "Fisik • ON • 31%" in message
+    assert "Kondisi rumah • ON • 40%" in message
+    assert message.count("Makan • OFF") == 1
+    assert "Auto Perpus (gratis) • OFF" in message
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+@pytest.mark.parametrize(
+    "resource,label,cost",
+    [
+        ("makan", "Makan", "0.7"),
+        ("fisik", "Fisik", "2"),
+        ("fisik", "Fisik", "0"),
+        ("rumah", "Kondisi rumah", "0.8"),
+    ],
+)
+def test_need_update_message_shows_verified_change_real_cost_and_auto_state(
+    resource, label, cost, enabled
+):
+    message = event_text(
+        "pembelian_terverifikasi",
+        {
+            "resource": resource,
+            "product": "Produk fixture",
+            "shop": "Tempat fixture",
+            "cost": cost,
+            "before": 40,
+            "after": 60,
+            "wallet": "30",
+            "auto_enabled": enabled,
+        },
+    )
+    assert f"✅ {label} berhasil diperbarui" in message
+    assert f"{label} • 40% → 60%" in message
+    assert f"Auto {label} • {'ON' if enabled else 'OFF'}" in message
+    assert f"Biaya • {cost.replace('.', ',')} koin" in message
+    assert "Tempat • Tempat fixture" in message and "Aksi • Produk fixture" in message
+    assert "Saldo tersisa • 30 koin" in message
+    if resource == "fisik" and cost == "2":
+        assert "gratis" not in message
 
 
 async def test_notification_toggle_persists_and_mutes_pending_events_but_not_errors(settings):

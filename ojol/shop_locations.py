@@ -86,15 +86,20 @@ GAMING_HOUSE = NeedShop(
     "36620a87-317d-40d9-b9eb-e7a372ef73df", "B37-U07", "Akademis.ai GamingHouse", "warnet"
 )
 
+RESTAURANT = NeedShop(
+    "2df7cc17-29d4-4620-bad1-3602991f0dd5", "K40-U04", "Akademis.ai Restaurant", "restoran"
+)
+JAJAN = NeedShop(
+    "e42f8d13-2911-4d21-b499-e608f43dedaf", "K22-U10", "Akademis.ai Warung Jajan", "kios"
+)
+PECEL = NeedShop(
+    "88b0c25a-1297-4c41-88b1-4c7df5e887e0", "O39-U01", "Akademis.ai Pecel Lele & Ayam", "lamongan"
+)
+
 NEED_SHOPS_BY_VILLAGE = {
     "desa-utara": {
         "makan": (
-            NeedShop(
-                "2df7cc17-29d4-4620-bad1-3602991f0dd5",
-                "K40-U04",
-                "Akademis.ai Restaurant",
-                "restoran",
-            ),
+            RESTAURANT,
             NeedShop(
                 "0495428a-7039-40b6-8837-166bafec0d6a",
                 "K40-U08",
@@ -103,13 +108,15 @@ NEED_SHOPS_BY_VILLAGE = {
             ),
             COFFEE,
             ICAFE,
+            JAJAN,
+            PECEL,
         ),
         "kesehatan": (
             NeedShop(
                 "cc73f5cd-2f05-4e9f-867e-19445c2065b3", "K40-U06", "Akademis.ai Farma", "toko-obat"
             ),
         ),
-        "rekreasi": (COFFEE, ICAFE),
+        "rekreasi": (COFFEE, ICAFE, RESTAURANT, JAJAN, PECEL),
         "penampilan": (
             NeedShop(
                 "f55d08f3-b0dd-46b9-83bd-b8fb46be542f",
@@ -148,4 +155,38 @@ NEED_FALLBACK_PLOTS = {
         "kesehatan": ("D02-U02", "toko-obat"),
         "rekreasi": ("A02-U04", "coffee-shop"),
     },
+}
+
+STUDY_FACILITIES_BY_VILLAGE = {
+    "desa-utara": {
+        "perpus": "90ae44da-6d71-495d-83f7-5b0b69400504",
+        "kuliah": "0fb7ae51-34da-434e-a04f-050b0dd82f9b",
+    },
+    "kampung-sebelah": {
+        "perpus": "2bc6a97e-82b9-48a1-8244-a37827ea6273",
+        "kuliah": "8022c941-4160-4ac4-a124-35d3dda85798",
+    },
+}
+
+BPJS_KANTOR_BY_VILLAGE = {
+    "desa-utara": "5149bd70-4b0b-4b4e-be2e-839b7099f8dc",
+    "kampung-sebelah": "592934a3-27b0-44ab-bb00-5c2cf53bfcb6",
+    "pulau-seberang": "c9d1635a-a08b-4c33-9e0f-27bd50b17fd6",
+}
+
+HEALTH_FACILITIES_BY_VILLAGE = {
+    "desa-utara": (
+        "2ff500f4-fe31-438b-be99-801eb4e6b363",  # Puskesmas
+        "dbc8fb79-43d3-4b75-b3ab-dac2d0c17b10",  # Rumah sakit desa
+        "66c40451-aba1-4b58-92e3-e58a18e1e02a",  # Puskesmas
+    ),
+    "kampung-sebelah": (
+        "c00b9433-b7a8-4ad9-874e-b4f50001723d",  # Puskesmas
+        "c2b33dec-a385-4076-8733-5729a1ac3e5c",  # Rumah Sakit
+        "0c04898c-20b1-434b-8c96-ebafef082aee",  # Puskesmas
+    ),
+    "pulau-seberang": (
+        "48b978dd-c139-4ac6-a4d9-f178dd010882",  # Puskesmas
+        "eaa4fb55-489c-4b81-9cbf-cd4b110d260f",  # Rumah sakit
+    ),
 }

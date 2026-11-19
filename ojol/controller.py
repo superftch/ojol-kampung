@@ -10,10 +10,13 @@ from pathlib import Path
 from .auto_settings import auto_flags
 from .finance import completion_evidence
 from .http_api import HttpCoreError
+from .journal import load_journal_snapshot
 from .maintenance import SCHEDULE_FILE, held_window
 from .models import NEEDS, Step, now
 from .planner import is_sleeping, next_step, select_need, select_shop
 from .reconciliation import wait_until_resolved
+from .garden import run_garden
+from .study import run_learning
 from .telegram import queue_error, queue_notice
 
 
@@ -45,6 +48,8 @@ class Controller:
         self.last_action = None
         self.busy_since = None
         self.need_retry_at = {}
+        self.study_retry_at = {}
+        self.garden_retry_at = 0
         self.maintenance_file = Path(
             os.environ.get("OJOL_MAINTENANCE_FILE", str(settings.runtime_dir / SCHEDULE_FILE))
         )
@@ -221,6 +226,11 @@ class Controller:
                 is True,
             )
             if selection is None:
+                self.report(
+                    "kebutuhan_ditunda",
+                    resource=resource,
+                    reason="Tidak ada produk/fasilitas yang memenuhi stok, kapasitas, saldo, dan anggaran.",
+                )
                 return False
             defer = False
         else:
@@ -258,9 +268,9 @@ class Controller:
         if is_need:
             if supplier.category == "fasum":
                 source = "fasum"
-                reason = "Fasilitas olahraga gratis dengan kenaikan fisik tertinggi"
+                reason = "Fasilitas dengan manfaat terpakai per koin terbaik"
             elif supplier.preferred:
-                reason = "Giliran toko Akademis.ai, item dipilih dari manfaat dibanding harga"
+                reason = "Manfaat terpakai per koin terbaik di toko Akademis.ai; rotasi saat setara"
             else:
                 reason = "Seluruh stok relevan Akademis.ai terkonfirmasi habis"
         self.report(
@@ -328,9 +338,26 @@ class Controller:
                     return False
             else:
                 self.journal.settle(action, False)
-            raise
-        self.journal.settle(action, True, after)
-        self.spent += plan.product.price
+            if isinstance(exc, VerificationPending) or (
+                isinstance(exc, HttpCoreError) and exc.category in {"uncertain", "transport"}
+            ):
+                # Reserve the attempted cost even if recovery cannot attribute the purchase.
+                self.spent += plan.product.price
+                self.state = await wait_until_resolved(self.ui, self.journal, self.settings)
+                self.snapshot_received_at = now().isoformat()
+                self.snapshot_read_at = time.monotonic()
+                self.report("rekonsiliasi_selesai", action="purchase", resource=resource)
+                resolved = self.journal.db.execute(
+                    "SELECT status,after_state FROM actions WHERE id=?", (action,)
+                ).fetchone()
+                if resolved["status"] != "verified":
+                    return True
+                after = load_journal_snapshot(resolved["after_state"])
+            else:
+                raise
+        else:
+            self.journal.settle(action, True, after)
+            self.spent += plan.product.price
         self.report(
             "pembelian_terverifikasi",
             shop=shop,
@@ -344,6 +371,7 @@ class Controller:
             advertised_gain=plan.product.effects[resource],
             observed_gain=after.resource_value(resource) - current,
             overflow_points=max(0, current + plan.product.effects[resource] - 100),
+            auto_enabled=auto_flags(self.settings.runtime_dir)[resource if is_need else "ojol"],
         )
         return True
 
@@ -546,6 +574,11 @@ class Controller:
             if self.state.phase == "idle" and (
                 step.action in {"search", "take"} or not flags["ojol"]
             ):
+                if flags.get("kesehatan") and hasattr(self.ui, "ensure_bpjs"):
+                    try:
+                        await self.ui.ensure_bpjs()
+                    except Exception:
+                        pass
                 need = min(
                     (
                         need
@@ -564,6 +597,10 @@ class Controller:
                     ):
                         self.need_retry_at[need] = time.monotonic() + 300
                     continue
+            if self.state.phase == "idle" and await run_learning(self):
+                continue
+            if self.state.phase == "idle" and await run_garden(self):
+                continue
             if step.action == "wait":
                 if self.state.phase in {"idle", "sleeping"}:
                     await self.wait(step.wait_seconds)

@@ -16,12 +16,217 @@ from ojol.controller import Controller, StopRequested
 from ojol.healing import write_private
 from ojol.http_api import CATEGORIES, ITEMS, ORIGIN, HttpCoreError, OjolHttpApi, extract_effects
 from ojol.http_core import HTTP_TOOLS, HttpUI
+from ojol.identity import cached_profile, save_profile, verified_profile
 from ojol.journal import Journal
 from ojol.models import ShopPreview
 from ojol.planner import select_need, select_shop
 from ojol.shop_locations import NeedShop, ShopLocation
+from ojol.study import set_subject
 
 SHOP = "00000000-0000-4000-8000-000000000001"
+
+
+def study_fixture(world, settings, monkeypatch, mode):
+    identifier, visit_id = str(uuid4()), str(uuid4())
+    price = 0 if mode == "perpus" else 4000
+    facility = {
+        "id": identifier,
+        "title": "Belajar fixture",
+        "state": "DONE",
+        "item": "perpustakaan-desa-t6" if mode == "perpus" else "universitas",
+        "nextAt": None,
+        "myVisitUntil": None,
+        "service": {
+            "label": "Belajar",
+            "priceMilli": price,
+            "studySessions": 1,
+            "open": True,
+            "studyTracks": None,
+        },
+    }
+    skill = {"id": "administrasi", "next": {"library": True}, "pending": None}
+    world["me"]["skill"] = {"tracks": [skill]}
+    world["facilities"][identifier] = facility
+    quiz = {
+        "available": True,
+        "visitId": visit_id,
+        "track": {"id": "administrasi"},
+        "bacaan": ["Notulen adalah catatan rapat."],
+        "soal": [{"q": "Catatan rapat disebut?", "options": ["Brosur", "Notulen", "Kuitansi"]}],
+    }
+    world["extra_responses"] = {f"/api/facilities/{identifier}/kuis": quiz}
+    world["quiz_bank"] = {
+        "facilities": {"perpustakaan-desa": {"bonus_sessions": 1}},
+        "tracks": {
+            "administrasi": [
+                {
+                    "q": "Catatan rapat disebut?",
+                    "a": "Notulen",
+                    "fakta": "Notulen adalah catatan rapat.",
+                }
+            ]
+        },
+    }
+    world["post_responses"] = {
+        f"/api/facilities/{identifier}/use": lambda req: {
+            "id": visit_id,
+            "projectId": identifier,
+            "priceMilli": price,
+            "requestId": json.loads(req.content)["requestId"],
+        },
+        f"/api/facilities/{identifier}/kuis": {
+            "track": {"id": "administrasi"},
+            "benar": 1,
+            "total": 1,
+            "bonus": 1,
+        },
+    }
+    monkeypatch.setattr(
+        "ojol.http_api.STUDY_FACILITIES_BY_VILLAGE", {"fixture-desa": {mode: identifier}}
+    )
+    set_subject(settings.runtime_dir, mode, "administrasi")
+    set_auto_flag(settings.runtime_dir, mode, True)
+    return facility, skill, quiz
+
+
+@pytest.mark.parametrize("mode", ["perpus", "kuliah"])
+async def test_study_start_validates_and_posts_one_observed_visit(
+    api, world, settings, monkeypatch, mode
+):
+    facility, _, _ = study_fixture(world, settings, monkeypatch, mode)
+    request_id = str(uuid4())
+    price = Decimal(facility["service"]["priceMilli"]) / 1000
+    result = await api.study_start(mode, "administrasi", str(price), "35", "20", request_id)
+    posts = [request for request in api.calls if request.method == "POST"]
+    assert len(posts) == 1
+    assert json.loads(posts[0].content) == {"requestId": request_id, "track": "administrasi"}
+    assert result["requestId"] == request_id
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "off",
+        "subject",
+        "price",
+        "cooldown",
+        "closed",
+        "pending",
+        "advanced",
+        "wallet",
+        "sleeping",
+        "floor",
+    ],
+)
+async def test_study_guards_reject_without_charging(api, world, settings, monkeypatch, change):
+    facility, skill, _ = study_fixture(world, settings, monkeypatch, "kuliah")
+    if change == "off":
+        set_auto_flag(settings.runtime_dir, "kuliah", False)
+    elif change == "subject":
+        set_subject(settings.runtime_dir, "kuliah", "boga")
+    elif change == "price":
+        facility["service"]["priceMilli"] = 5000
+    elif change == "cooldown":
+        facility["nextAt"] = "2030-01-03T00:00:00Z"
+    elif change == "closed":
+        facility["service"]["open"] = False
+    elif change == "pending":
+        skill["pending"] = {"level": 3}
+    elif change == "advanced":
+        skill["next"]["library"] = False
+    elif change == "wallet":
+        world["me"]["balanceMilli"] = 34999
+    elif change == "sleeping":
+        world["needs"]["asleep"] = True
+    elif change == "floor":
+        world["me"]["balanceMilli"] = 23000
+    with pytest.raises(HttpCoreError):
+        await api.study_start(
+            "kuliah", "administrasi", "4", "23" if change == "floor" else "35", "20", str(uuid4())
+        )
+    assert not any(request.method == "POST" for request in api.calls)
+
+
+async def test_study_quiz_uses_current_visit_and_shuffled_options(
+    api, world, settings, monkeypatch
+):
+    facility, _, quiz = study_fixture(world, settings, monkeypatch, "perpus")
+    result = await api.study_quiz("perpus", quiz["visitId"], "administrasi")
+    posts = [request for request in api.calls if request.method == "POST"]
+    assert len(posts) == 1 and posts[0].url.path == f"/api/facilities/{facility['id']}/kuis"
+    assert json.loads(posts[0].content) == {"visitId": quiz["visitId"], "answers": [1]}
+    assert result["benar"] == 1
+
+
+@pytest.mark.parametrize("change", ["visit", "done", "unknown", "ambiguous", "off", "sleeping"])
+async def test_study_quiz_never_guesses_or_submits_stale_visit(
+    api, world, settings, monkeypatch, change
+):
+    _, _, quiz = study_fixture(world, settings, monkeypatch, "perpus")
+    visit_id = quiz["visitId"]
+    if change == "visit":
+        visit_id = str(uuid4())
+    elif change == "done":
+        quiz["available"] = False
+    elif change == "unknown":
+        quiz["soal"][0]["q"] = "Pertanyaan baru"
+    elif change == "ambiguous":
+        quiz["soal"][0]["options"] = ["Notulen", "Notulen"]
+    elif change == "off":
+        set_auto_flag(settings.runtime_dir, "perpus", False)
+    elif change == "sleeping":
+        world["needs"]["asleep"] = True
+    with pytest.raises(HttpCoreError):
+        await api.study_quiz("perpus", visit_id, "administrasi")
+    assert not any(request.method == "POST" for request in api.calls)
+
+
+@pytest.mark.parametrize("quiz_action", [False, True])
+async def test_study_transport_loss_never_replays_post(
+    api, world, settings, monkeypatch, quiz_action
+):
+    facility, _, quiz = study_fixture(world, settings, monkeypatch, "kuliah")
+    world["lost_response"] = f"/api/facilities/{facility['id']}/{'kuis' if quiz_action else 'use'}"
+    with pytest.raises(HttpCoreError) as error:
+        if quiz_action:
+            await api.study_quiz("kuliah", quiz["visitId"], "administrasi")
+        else:
+            await api.study_start("kuliah", "administrasi", "4", "35", "20", str(uuid4()))
+    assert error.value.category == "uncertain"
+    assert len([request for request in api.calls if request.method == "POST"]) == 1
+
+
+async def test_house_material_is_bought_and_applied_even_when_not_service(api, world, settings):
+    world["need_locations"]["rumah"] = [
+        NeedShop(SHOP, "K40-U01", "Akademis.ai Bangunan", "toko-bangunan")
+    ]
+    world["shop"].update(
+        plang="Akademis.ai Bangunan",
+        menu=[{"item": "pipa", "name": "Pipa paralon", "priceMilli": 800, "service": False}],
+    )
+    world["need_effects"].update({"nasi-goreng": {"makan": 35}, "pipa": {"rumah": 20}})
+    world["needs"].update(enabled=True, needs=[{"id": "rumah", "value": 40}])
+    ui = HttpUI(settings)
+
+    async def call(name, **args):
+        if name == "ojol_preview_shop":
+            return await api.preview(args["resource"])
+        if name == "ojol_snapshot":
+            return (await api.snapshot()).model_dump(mode="json")
+        assert name == "ojol_purchase"
+        await api.purchase(**args)
+        world["me"]["balanceMilli"] -= 800
+        world["needs"]["needs"][0]["value"] += 20
+        return {"accepted": True}
+
+    ui.call_tool = call
+    with closing(Journal(settings.runtime_dir)) as journal:
+        c = Controller(ui, settings, journal, journal.start(settings))
+        assert await c.purchase(await ui.snapshot(), "rumah")
+        assert c.state.needs["rumah"] == 60
+        assert Decimal(journal.profit()["pengeluaran"]) == Decimal("0.8")
+        assert journal.history()["actions"][0]["status"] == "verified"
+    assert len([request for request in api.calls if request.method == "POST"]) == 1
 
 
 async def test_cleanup_scan_uses_get_and_ranks_dirty_houses(settings):
@@ -116,6 +321,10 @@ def world():
         "need_fallback": {},
         "plot_details": {},
         "need_effects": {},
+        "facility_effects": {
+            "gym-desa": {"fisik": 55, "kesehatan": 15},
+            "kolam-renang": {"fisik": 50, "rekreasi": 15},
+        },
         "facilities": {},
         "time": {"now": "2030-01-02T10:00:00Z"},
         "shop": {
@@ -173,7 +382,8 @@ async def api(settings, world, monkeypatch):
         if request.method == "POST":
             if path == world.get("lost_response"):
                 raise httpx.ReadTimeout("fixture response lost", request=request)
-            return httpx.Response(200, json={"ok": True})
+            response = world.get("post_responses", {}).get(path, {"ok": True})
+            return httpx.Response(200, json=response(request) if callable(response) else response)
         if path in world["conflicting_catalogs"]:
             return httpx.Response(409, json=world["conflicting_catalogs"][path])
         data = {
@@ -185,6 +395,7 @@ async def api(settings, world, monkeypatch):
             **{"/api/shops/" + key: value for key, value in world["shops"].items()},
             **{"/api/facilities/" + key: value for key, value in world["facilities"].items()},
             **{"/api/world/plots/" + key: value for key, value in world["plot_details"].items()},
+            **world.get("extra_responses", {}),
         }
         if path == "/kampung":
             return httpx.Response(
@@ -194,7 +405,16 @@ async def api(settings, world, monkeypatch):
             return httpx.Response(
                 200,
                 text=json.dumps(
-                    {"barang": {**EFFECTS, **world["need_effects"]}}, separators=(",", ":")
+                    {
+                        "barang": {**EFFECTS, **world["need_effects"]},
+                        "fasum": world.get("facility_effects", {}),
+                    },
+                    separators=(",", ":"),
+                )
+                + (
+                    ";JSON.parse(" + repr(json.dumps(world["quiz_bank"])) + ")"
+                    if "quiz_bank" in world
+                    else ""
                 ),
             )
         assert path in data, path
@@ -521,7 +741,7 @@ async def test_need_disabled_during_preflight_never_posts(api, world, settings, 
     assert all(request.method == "GET" for request in api.calls)
 
 
-async def test_need_value_prefers_item_that_fills_multiple_needs_within_budget(
+async def test_need_value_counts_multiple_needs_without_overpaying_for_thresholds(
     api, world, settings
 ):
     setup_food_catalog(world)
@@ -533,9 +753,17 @@ async def test_need_value_prefers_item_that_fills_multiple_needs_within_budget(
     before = await api.snapshot()
     shops = [ShopPreview.model_validate(row) for row in (await api.preview("makan"))["shops"]]
     _, plan = select_need(before, "makan", shops, settings, Decimal(0), {})
+    assert plan.product.name == "Soto"
+
+    world["shop"]["menu"][-1]["priceMilli"] = 100
+    shops = [ShopPreview.model_validate(row) for row in (await api.preview("makan"))["shops"]]
+    _, plan = select_need(before, "makan", shops, settings, Decimal(0), {})
     assert plan.product.name == "Wedang jahe"
 
     limited = settings.model_copy(update={"max_spend": Decimal("0.7")})
+    assert select_need(before, "makan", shops, limited, Decimal("0.65"), {}) is None
+    world["shop"]["menu"][-1]["habis"] = "bahan"
+    shops = [ShopPreview.model_validate(row) for row in (await api.preview("makan"))["shops"]]
     _, plan = select_need(before, "makan", shops, limited, Decimal(0), {})
     assert plan.product.name == "Soto"
 
@@ -588,16 +816,21 @@ def add_food_supplier(world, name, price, *, fallback=False):
     return shop_id
 
 
-async def test_need_rotation_uses_oldest_eligible_akademis_shop(api, world, settings):
+async def test_need_value_beats_rotation_and_rotates_only_equivalent_plans(api, world, settings):
     setup_food_catalog(world)
     other = add_food_supplier(world, "Akademis.ai Cabang", 1200)
     before = await api.snapshot()
     shops = [ShopPreview.model_validate(row) for row in (await api.preview("makan"))["shops"]]
     choice, _ = select_need(before, "makan", shops, settings, Decimal(0), {SHOP: 20, other: 10})
-    assert choice.id == other
+    assert choice.id == SHOP
     limited = settings.model_copy(update={"max_spend": Decimal(1)})
     choice, _ = select_need(before, "makan", shops, limited, Decimal(0), {SHOP: 20, other: 10})
     assert choice.id == SHOP
+
+    world["shops"][other]["menu"][0]["priceMilli"] = 700
+    shops = [ShopPreview.model_validate(row) for row in (await api.preview("makan"))["shops"]]
+    choice, _ = select_need(before, "makan", shops, settings, Decimal(0), {SHOP: 20, other: 10})
+    assert choice.id == other
 
 
 @pytest.mark.parametrize("status", ["in_stock", "closed", "own_shop", "empty_menu", "unknown"])
@@ -671,7 +904,10 @@ async def test_need_purchase_keeps_uncertain_post_single_attempt(api, world, set
 
 
 @pytest.mark.parametrize("blocked", ["cooldown", "sleeping"])
-async def test_physical_facility_requires_free_active_service_on_second_read(api, world, blocked):
+@pytest.mark.parametrize("price_milli", [0, 2000])
+async def test_physical_facility_requires_matching_active_service_on_second_read(
+    api, world, blocked, price_milli
+):
     facility_id = str(uuid4())
     world["needs"].update(
         enabled=True,
@@ -685,7 +921,7 @@ async def test_physical_facility_requires_free_active_service_on_second_read(api
                         "name": "Gym fixture",
                         "kind": "fasum",
                         "open": True,
-                        "priceMilli": 0,
+                        "priceMilli": price_milli,
                         "gain": 55,
                     }
                 ],
@@ -696,11 +932,12 @@ async def test_physical_facility_requires_free_active_service_on_second_read(api
         "id": facility_id,
         "state": "DONE",
         "nextAt": None,
-        "service": {"label": "Latihan", "priceMilli": 0},
+        "service": {"label": "Latihan", "priceMilli": price_milli, "open": True},
     }
     world["facilities"][facility_id] = details
     preview = await api.preview("fisik")
     product = preview["shops"][0]["products"][0]
+    assert Decimal(product["price"]) == Decimal(price_milli) / 1000
     if blocked == "cooldown":
         details["nextAt"] = "2030-01-02T12:00:00Z"
     else:
@@ -1144,7 +1381,18 @@ async def test_stop_cancels_waiting_http_tool_without_repeating(settings):
     tool.assert_awaited_once()
 
 
-@pytest.mark.parametrize("outcome", ["valid", "rejected", "expired", "wrong_schema"])
+@pytest.mark.parametrize(
+    "outcome",
+    [
+        "valid",
+        "rejected",
+        "expired",
+        "wrong_schema",
+        "missing_nickname",
+        "invalid_nickname",
+        "negative_balance",
+    ],
+)
 async def test_http_cookie_import_is_atomic_and_preserves_old_session_on_failure(
     settings, monkeypatch, outcome
 ):
@@ -1158,6 +1406,10 @@ async def test_http_cookie_import_is_atomic_and_preserves_old_session_on_failure
         payload["cookies"][0]["expires"] = 1
     active = settings.runtime_dir / "http-session.json"
     write_private(active, previous)
+    save_profile(
+        settings.runtime_dir,
+        verified_profile({"profile": {"nickname": "Old Nick"}, "balanceMilli": 40000}),
+    )
 
     async def verify(path):
         assert path == "/api/game/me"
@@ -1166,7 +1418,14 @@ async def test_http_cookie_import_is_atomic_and_preserves_old_session_on_failure
         assert json.loads(active.read_text()) == previous
         if outcome == "rejected":
             raise HttpCoreError("Fixture session rejected", category="auth")
-        return {} if outcome == "wrong_schema" else {"balanceMilli": 35000}
+        if outcome == "wrong_schema":
+            return {}
+        return {
+            "balanceMilli": -1 if outcome == "negative_balance" else 35000,
+            "profile": {}
+            if outcome == "missing_nickname"
+            else {"nickname": "Bad\nNick" if outcome == "invalid_nickname" else "Game Nick"},
+        }
 
     core = SimpleNamespace(request=verify)
     context = AsyncMock()
@@ -1175,14 +1434,31 @@ async def test_http_cookie_import_is_atomic_and_preserves_old_session_on_failure
     monkeypatch.setattr(transfer, "flush_notices", AsyncMock())
     monkeypatch.setattr(transfer, "queue_notice", Mock())
     if outcome == "valid":
-        await transfer.import_session(settings, json.dumps(payload))
+        profile = await transfer.import_session(settings, json.dumps(payload))
+        assert profile["nickname"] == "Game Nick"
+        assert transfer.queue_notice.call_args.args[0].account_name == "Game Nick"
+        assert "Saldo profil • 35 koin" in transfer.queue_notice.call_args.args[1]
     else:
         with pytest.raises(HttpCoreError):
             await transfer.import_session(settings, json.dumps(payload))
     assert json.loads(active.read_text()) == (payload if outcome == "valid" else previous)
     assert not (settings.runtime_dir / "http-session.pending.json").exists()
+    assert cached_profile(settings.runtime_dir)["nickname"] == (
+        "Game Nick" if outcome == "valid" else "Old Nick"
+    )
     if outcome == "expired":
         context.__aenter__.assert_not_awaited()
+
+
+async def test_worker_snapshot_refreshes_cached_game_nickname_and_balance(api, world, settings):
+    world["me"]["profile"] = {"nickname": "Game Nick"}
+    await api.snapshot()
+    assert cached_profile(settings.runtime_dir)["nickname"] == "Game Nick"
+    assert cached_profile(settings.runtime_dir)["balanceMilli"] == 35000
+    world["me"]["profile"]["nickname"] = "Changed In Game"
+    await api.snapshot()
+    assert cached_profile(settings.runtime_dir)["nickname"] == "Changed In Game"
+    assert (settings.runtime_dir / "game-profile.json").stat().st_mode & 0o777 == 0o600
 
 
 async def test_effect_cache_invalidates_when_server_config_version_changes(api, world):
@@ -1282,3 +1558,326 @@ async def test_daily_wallet_page_limit_is_partial(settings, monkeypatch):
         result = await OjolHttpApi(settings.runtime_dir, client=client).daily_wallet("2026-11-11")
     assert len(calls) == 10
     assert not result["complete"] and result["issue"] == "Batas 10 halaman tercapai"
+
+
+async def test_bpjs_auto_buy_when_not_owned(api, world, monkeypatch):
+    kantor_id = "5149bd70-4b0b-4b4e-be2e-839b7099f8dc"
+    monkeypatch.setattr("ojol.http_api.BPJS_KANTOR_BY_VILLAGE", {"fixture-desa": kantor_id})
+    bpjs_state = {
+        "rules": {"iuranMilli": 5000, "masaHari": 30, "gratisPerHari": 1},
+        "kartu": None,
+        "gratisSisa": 0,
+        "walletMilli": 15000,
+    }
+    world["extra_responses"] = {"/api/bpjs": bpjs_state}
+    paid = False
+
+    def handle_pay(req):
+        nonlocal paid
+        body = json.loads(req.content)
+        assert body["projectId"] == kantor_id
+        assert "requestId" in body
+        paid = True
+        bpjs_state["kartu"] = {"noKartu": "0001", "aktif": True, "sisaHari": 30}
+        bpjs_state["gratisSisa"] = 1
+        return {"ok": True}
+
+    world["post_responses"] = {"/api/bpjs/bayar": handle_pay}
+    res = await api.ensure_bpjs()
+    assert paid
+    assert res["kartu"]["aktif"] is True
+    assert res["gratisSisa"] == 1
+
+
+async def test_kesehatan_free_checkup_at_puskesmas_with_tensi_minigame(api, world, monkeypatch):
+    puskesmas_id = "2ff500f4-fe31-438b-be99-801eb4e6b363"
+    monkeypatch.setattr(
+        "ojol.http_api.HEALTH_FACILITIES_BY_VILLAGE", {"fixture-desa": (puskesmas_id,)}
+    )
+    world["needs"].update(enabled=True, needs=[{"id": "kesehatan", "value": 50}])
+    bpjs_state = {
+        "rules": {"iuranMilli": 5000, "masaHari": 30, "gratisPerHari": 1},
+        "kartu": {"noKartu": "0001", "aktif": True, "sisaHari": 30},
+        "gratisSisa": 1,
+        "walletMilli": 35000,
+    }
+    facility_data = {
+        "id": puskesmas_id,
+        "title": "Puskesmas Desa",
+        "state": "DONE",
+        "nextAt": None,
+        "myVisitUntil": None,
+        "service": {
+            "label": "Pemeriksaan tensi darah",
+            "priceMilli": 0,
+            "open": True,
+        },
+    }
+    visit_id = str(uuid4())
+    kegiatan_data = {
+        "available": True,
+        "visitId": visit_id,
+        "kind": "tensi",
+        "plan": {"periods": [1000, 1200, 1100], "lead_ms": 0},
+    }
+    world["extra_responses"] = {
+        "/api/bpjs": bpjs_state,
+        f"/api/facilities/{puskesmas_id}": facility_data,
+        f"/api/facilities/{puskesmas_id}/kegiatan": kegiatan_data,
+    }
+    tensi_submitted = False
+
+    def handle_kegiatan(req):
+        nonlocal tensi_submitted
+        body = json.loads(req.content)
+        assert body["visitId"] == visit_id
+        assert body["stops"] == [250, 300, 275]
+        tensi_submitted = True
+        return {"score": 3, "maxScore": 3, "bonus": 1, "bonusGains": {"kesehatan": 10}}
+
+    world["post_responses"] = {
+        f"/api/facilities/{puskesmas_id}/use": {"id": visit_id, "ok": True},
+        f"/api/facilities/{puskesmas_id}/kegiatan": handle_kegiatan,
+    }
+
+    data = await api.preview("kesehatan")
+    shops = data["shops"]
+    assert len(shops) == 1
+    assert shops[0]["id"] == puskesmas_id
+    assert shops[0]["products"][0]["price"] == "0"
+
+    product = shops[0]["products"][0]
+    await api.purchase(product, "35", 50, "20", str(uuid4()))
+    assert tensi_submitted
+
+
+async def test_kesehatan_free_checkup_at_rs_with_detak_minigame(api, world, monkeypatch):
+    rs_id = "dbc8fb79-43d3-4b75-b3ab-dac2d0c17b10"
+    monkeypatch.setattr("ojol.http_api.HEALTH_FACILITIES_BY_VILLAGE", {"fixture-desa": (rs_id,)})
+    world["needs"].update(enabled=True, needs=[{"id": "kesehatan", "value": 50}])
+    bpjs_state = {
+        "rules": {"iuranMilli": 5000, "masaHari": 30, "gratisPerHari": 1},
+        "kartu": {"noKartu": "0001", "aktif": True, "sisaHari": 30},
+        "gratisSisa": 1,
+        "walletMilli": 35000,
+    }
+    facility_data = {
+        "id": rs_id,
+        "title": "Rumah Sakit Desa",
+        "state": "DONE",
+        "nextAt": None,
+        "myVisitUntil": None,
+        "service": {
+            "label": "Pemeriksaan detak jantung",
+            "priceMilli": 0,
+            "open": True,
+        },
+    }
+    visit_id = str(uuid4())
+    kegiatan_data = {
+        "available": True,
+        "visitId": visit_id,
+        "kind": "detak",
+        "plan": {"beats": [500, 1000, 1500], "bpm": 72},
+    }
+    world["extra_responses"] = {
+        "/api/bpjs": bpjs_state,
+        f"/api/facilities/{rs_id}": facility_data,
+        f"/api/facilities/{rs_id}/kegiatan": kegiatan_data,
+    }
+    detak_submitted = False
+
+    def handle_kegiatan(req):
+        nonlocal detak_submitted
+        body = json.loads(req.content)
+        assert body["visitId"] == visit_id
+        assert body["taps"] == [500, 1000, 1500]
+        detak_submitted = True
+        return {"score": 3, "maxScore": 3, "bonus": 1, "bonusGains": {"kesehatan": 10}}
+
+    world["post_responses"] = {
+        f"/api/facilities/{rs_id}/use": {"id": visit_id, "ok": True},
+        f"/api/facilities/{rs_id}/kegiatan": handle_kegiatan,
+    }
+
+    data = await api.preview("kesehatan")
+    shops = data["shops"]
+    assert len(shops) == 1
+    assert shops[0]["id"] == rs_id
+    assert shops[0]["products"][0]["price"] == "0"
+
+    product = shops[0]["products"][0]
+    await api.purchase(product, "35", 50, "20", str(uuid4()))
+    assert detak_submitted
+
+
+async def test_kesehatan_fallback_to_medicine_when_no_free_quota(api, world, monkeypatch):
+    puskesmas_id = "2ff500f4-fe31-438b-be99-801eb4e6b363"
+    monkeypatch.setattr(
+        "ojol.http_api.HEALTH_FACILITIES_BY_VILLAGE", {"fixture-desa": (puskesmas_id,)}
+    )
+    bpjs_state = {
+        "rules": {"iuranMilli": 5000, "masaHari": 30, "gratisPerHari": 1},
+        "kartu": {"noKartu": "0001", "aktif": True, "sisaHari": 30},
+        "gratisSisa": 0,
+        "walletMilli": 35000,
+    }
+    world["needs"].update(enabled=True, needs=[{"id": "kesehatan", "value": 50}])
+    world["need_effects"].update(
+        {
+            "nasi-goreng": {"makan": 35},
+            "tambal-ban": {"kendaraan": 30},
+            "pulsa": {"kuota": 30},
+            "obat-flu": {"kesehatan": 25},
+        }
+    )
+    toko_id = "00000000-0000-4000-8000-000000000999"
+    toko_shop = NeedShop(toko_id, "K40-U06", "Akademis.ai Farma", "toko-obat")
+    world["need_locations"]["kesehatan"] = (toko_shop,)
+    monkeypatch.setattr(
+        "ojol.http_api.NEED_SHOPS_BY_VILLAGE", {"fixture-desa": {"kesehatan": (toko_shop,)}}
+    )
+    world["shops"][toko_id] = {
+        "mine": False,
+        "open": True,
+        "plang": "Akademis.ai Farma",
+        "menu": [{"item": "obat-flu", "name": "Obat flu", "priceMilli": 1500}],
+    }
+    world["extra_responses"] = {"/api/bpjs": bpjs_state}
+
+    data = await api.preview("kesehatan")
+    shops = data["shops"]
+    assert len(shops) == 1
+    assert shops[0]["id"] == toko_id
+    assert shops[0]["name"] == "Akademis.ai Farma"
+    assert shops[0]["products"][0]["name"] == "Obat flu"
+
+
+@pytest.mark.parametrize("gain", [None, True, -1, 101, "36"])
+async def test_need_taste_effect_rejects_malformed_values(api, world, gain):
+    setup_food_catalog(world)
+    world["shop"]["menu"][0]["rasa"] = {"isi": {"makan": gain}}
+    with pytest.raises(HttpCoreError, match="selera"):
+        await api.preview("makan")
+    assert all(request.method == "GET" for request in api.calls)
+
+
+@pytest.mark.parametrize("resource", ["makan", "rekreasi"])
+async def test_need_taste_effect_drives_value_and_is_rechecked_before_purchase(
+    api, world, settings, resource
+):
+    setup_food_catalog(world)
+    world["needs"]["needs"].append({"id": "rekreasi", "value": 67})
+    if resource == "rekreasi":
+        world["needs"]["needs"][-1]["value"] = 55
+        world["need_locations"]["rekreasi"] = world["need_locations"]["makan"]
+    row = world["shop"]["menu"][0]
+    row["rasa"] = {"isi": {"makan": 63, "rekreasi": 5}}
+    before = await api.snapshot()
+    shops = [ShopPreview.model_validate(row) for row in (await api.preview(resource))["shops"]]
+    _, plan = select_need(before, resource, shops, settings, Decimal(0), {})
+    assert plan.product.name == "Nasi goreng"
+    assert plan.product.effects == {"makan": 63, "rekreasi": 5}
+    row["rasa"]["isi"]["makan"] = 35
+    with pytest.raises(HttpCoreError) as error:
+        await api.purchase(plan.product.model_dump(mode="json"), "35", 55, "20", str(uuid4()))
+    assert error.value.category == "rejected"
+    assert all(request.method == "GET" for request in api.calls)
+
+
+async def test_physical_value_uses_verified_secondary_effects_and_refreshes_old_cache(
+    api, world, settings
+):
+    world["facility_effects"] = {
+        "gym-desa": {"fisik": 55, "kesehatan": 15},
+        "kolam-renang": {"fisik": 50, "rekreasi": 15},
+    }
+    places = []
+    for item, gain in [("gym-desa", 55), ("kolam-renang", 50)]:
+        identifier = str(uuid4())
+        places.append(
+            {
+                "id": identifier,
+                "name": item,
+                "kind": "fasum",
+                "open": True,
+                "priceMilli": 2000,
+                "gain": gain,
+            }
+        )
+        world["facilities"][identifier] = {
+            "id": identifier,
+            "item": item,
+            "state": "DONE",
+            "nextAt": None,
+            "service": {"label": item, "priceMilli": 2000, "open": True},
+        }
+    world["needs"].update(
+        enabled=True,
+        needs=[
+            {"id": "fisik", "value": 25, "places": places},
+            {"id": "kesehatan", "value": 99},
+            {"id": "rekreasi", "value": 20},
+        ],
+    )
+    write_private(
+        api.directory / "http-effects.json",
+        {
+            "version": "fixture-v1",
+            "effects": EFFECTS,
+            "needs_effects": {"gym-desa": {"fisik": 55}},
+        },
+    )
+    before = await api.snapshot()
+    preview = await api.preview("fisik")
+    shops = [ShopPreview.model_validate(row) for row in preview["shops"]]
+    gym = next(shop for shop in shops if shop.name == "gym-desa")
+    assert gym.products[0].effects == {"fisik": 55, "kesehatan": 15}
+    supplier, plan = select_need(before, "fisik", shops, settings, Decimal(0), {})
+    assert supplier.name == "kolam-renang"
+    assert plan.product.effects == {"fisik": 50, "rekreasi": 15}
+    await api.purchase(plan.product.model_dump(mode="json"), "35", 25, "20", str(uuid4()))
+    assert sum(request.method == "POST" for request in api.calls) == 1
+    places[1]["gain"] = 40
+    await api.snapshot()
+    preview = await api.preview("fisik")
+    pool = next(shop for shop in preview["shops"] if shop["name"] == "kolam-renang")
+    assert pool["products"][0]["effects"] == {"fisik": 40}
+
+
+async def test_garden_status_and_actions_in_http_api(api, world):
+    garden_id = "garden-sayur-1"
+    now_str = "2026-11-19T10:00:00Z"
+    world.setdefault("extra_responses", {})["/api/daily/garden"] = {
+        "now": now_str,
+        "gardens": [
+            {
+                "id": garden_id,
+                "kind": "kebun-sayur",
+                "label": "Kebun sayur",
+                "state": "siap",
+                "readyAt": now_str,
+                "cared": False,
+                "seedMilli": 300,
+            }
+        ],
+    }
+
+    status = await api.garden_status()
+    assert status["gardens"][0]["id"] == garden_id
+
+    # Test panen action
+    res_panen = await api.garden_action(garden_id, "panen")
+    assert res_panen.get("ok") is True
+
+    # Test rawat action
+    res_rawat = await api.garden_action(garden_id, "rawat")
+    assert res_rawat.get("ok") is True
+
+    # Test tanam action
+    res_tanam = await api.garden_action(garden_id, "tanam")
+    assert res_tanam.get("ok") is True
+
+    # Invalid action raises ValueError
+    with pytest.raises(ValueError):
+        await api.garden_action(garden_id, "invalid")

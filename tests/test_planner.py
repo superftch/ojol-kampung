@@ -239,3 +239,45 @@ def test_unknown_and_invalid_stop(state, settings):
         Snapshot(wallet=1, fuel=101, condition=97, data=46, phase="idle")
     with pytest.raises(ValidationError):
         Settings(env="testing", operator_authorized=True)
+
+
+@pytest.mark.parametrize(
+    ("need", "value", "offers", "expected"),
+    [
+        ("makan", 25, [("Nasi", "1.5", 35), ("Mi", "0.4", 20)], "Mi"),
+        ("rumah", 25, [("Cat", "2", 40), ("Pipa", "0.8", 20)], "Pipa"),
+        ("kesehatan", 55, [("Obat", "0.8", 20), ("Plester", "0.2", 5)], "Plester"),
+        ("penampilan", 40, [("Potong", "1", 60), ("Cukur", "0.5", 30)], "Cukur"),
+        ("makan", 55, [("Soto", "0.7", 35), ("Besar", "1.5", 100)], "Soto"),
+        ("fisik", 25, [("Gratis kecil", "0", 20), ("Gratis besar", "0", 50)], "Gratis besar"),
+    ],
+)
+def test_need_value_saves_coins_counts_capacity_and_handles_free_facilities(
+    state, settings, shop_preview, need, value, offers, expected
+):
+    from ojol.planner import select_need
+
+    products = [
+        Product(name=name, price=price, effects={need: gain}, row_text=name, enabled=True)
+        for name, price, gain in offers
+    ]
+    shop = shop_preview(products).model_copy(
+        update={
+            "name": "Akademis.ai fixture",
+            "category": "fasum" if need == "fisik" else "restoran",
+        }
+    )
+    snapshot = state.model_copy(update={"needs": {need: value}})
+    _, plan = select_need(snapshot, need, [shop], settings, Decimal(0), {})
+    assert plan.product.name == expected
+    assert (
+        select_need(
+            snapshot.model_copy(update={"needs": {need: 60}}),
+            need,
+            [shop],
+            settings,
+            Decimal(0),
+            {},
+        )
+        is None
+    )

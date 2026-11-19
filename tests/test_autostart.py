@@ -295,7 +295,10 @@ async def test_operator_authorization_still_required(settings, monkeypatch):
     await manager.resume_workers()
     spawn.assert_not_awaited()
     assert not any(s.auto_start_pending for s in manager.services.values())
-    assert all("izin operator" in notices(s.settings)[0] for s in manager.services.values())
+    assert all(
+        any("izin operator" in text for text in notices(s.settings))
+        for s in manager.services.values()
+    )
     await manager.close()
 
 

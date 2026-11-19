@@ -71,6 +71,8 @@ def report_action(journal, action, state, evidence, reason, error_id):
         "search": "Cari order",
         "take": "Terima order",
         "complete": "Klaim ongkos",
+        "study": "Mulai belajar",
+        "study_quiz": "Kuis belajar",
     }.get(action["kind"], action["kind"])
     if action["kind"] == "purchase":
         description = (
@@ -265,6 +267,55 @@ async def reconcile(ui, journal, error_id=None, action_id=None):
                 "expected_price": payload["product"]["price"],
                 "tolerance": str(tolerance),
             }
+        elif action["kind"] in {"study", "study_quiz"}:
+            status = await ui.study_status(payload["mode"])
+            quiz, facility = status["quiz"], status["facility"]
+            track_matches = quiz.get("track", {}).get("id") == payload["track"]
+            receipt = payload.get("receipt") or {}
+            if action["kind"] == "study":
+                receipt_matches = (
+                    receipt.get("requestId") == payload["request_id"]
+                    and receipt.get("projectId") == payload["facility_id"]
+                    and receipt.get("priceMilli")
+                    == int(Decimal(payload["product"]["price"]) * 1000)
+                    and bool(receipt.get("id"))
+                )
+                new_visit = (
+                    quiz.get("available") is True
+                    and quiz.get("visitId")
+                    and quiz["visitId"] != payload.get("before_visit_id")
+                    and track_matches
+                    and facility.get("nextAt")
+                )
+                valid = receipt_matches or bool(
+                    new_visit
+                    and before.wallet - state.wallet == Decimal(payload["product"]["price"])
+                )
+            else:
+                receipt_matches = (
+                    isinstance(receipt.get("track"), dict)
+                    and receipt["track"].get("id") == payload["track"]
+                    and type(receipt.get("benar")) is int
+                    and type(receipt.get("total")) is int
+                    and 0 <= receipt["benar"] <= receipt["total"]
+                )
+                valid = receipt_matches or (
+                    quiz.get("available") is False
+                    and quiz.get("reason") == "selesai"
+                    and track_matches
+                    and facility.get("nextAt") == payload.get("next_at")
+                )
+            evidence = {
+                "mode": payload["mode"],
+                "track": payload["track"],
+                "quiz": quiz,
+                "next_at": facility.get("nextAt"),
+            }
+            reason = (
+                "Kunjungan/kuis belajar terkonfirmasi oleh receipt atau status game."
+                if valid
+                else "Hasil belajar belum terbukti; POST kunjungan/kuis tidak diulang."
+            )
         elif action["kind"] == "take":
             valid = state.phase == "delivering"
             evidence = {"phase": state.phase}
@@ -311,7 +362,11 @@ async def reconcile(ui, journal, error_id=None, action_id=None):
                 f"Waktu bukti di luar jendela verifikasi aksi (0–300 detik), "
                 f"selisih {int(age)} detik."
             )
-        if age > 300 and action["kind"] in {"purchase", "take"}:
+        if (
+            age > 300
+            and not valid
+            and action["kind"] in {"purchase", "take", "study", "study_quiz"}
+        ):
             observed = state
             await asyncio.sleep(1)
             state = await ui.snapshot()
@@ -369,7 +424,7 @@ async def reconcile(ui, journal, error_id=None, action_id=None):
 async def wait_until_resolved(ui, journal, settings):
     waiting = False
     transport_outage = False
-    while True:
+    for attempt in range(1, 4):
         ui.check_cancel()
         try:
             state = await reconcile(ui, journal)
@@ -384,8 +439,8 @@ async def wait_until_resolved(ui, journal, settings):
                     exc,
                     "worker.reconcile",
                     {
-                        "tindakan": "Bot mencoba terhubung kembali otomatis setiap 10 detik. "
-                        "Tidak perlu menjalankan ulang. Cek Status untuk memantau."
+                        "tindakan": "Bot mencoba terhubung kembali otomatis setiap 10 detik, "
+                        "maksimal 3 pemeriksaan. Cek Status untuk memantau."
                     },
                     stop_worker=False,
                 )
@@ -408,17 +463,28 @@ async def wait_until_resolved(ui, journal, settings):
             event="rekonsiliasi_otomatis",
             stage="worker.reconcile",
             reconciliation_pending=len(pending),
+            reconciliation_attempt=attempt,
+            reconciliation_limit=3,
         )
         if state is not None:
             status.update(
                 snapshot=state.model_dump(mode="json"), snapshot_received_at=now().isoformat()
             )
+        if attempt == 3:
+            error = HttpCoreError(
+                "Auto rekonsiliasi gagal setelah 3 percobaan. Bot dihentikan; "
+                "hasil transaksi terakhir masih belum pasti.",
+                category="reconciliation_failed",
+            )
+            status.update(event="gagal", reason=str(error))
+            write_private(path, status)
+            raise error
         write_private(path, status)
         if not waiting and state is not None:
             queue_notice(
                 settings,
                 "⏳ Bot sedang memastikan hasil aksi terakhir. Pemeriksaan berjalan otomatis. "
-                + "Status akan diperiksa lagi dalam 10 detik.",
+                + "Status akan diperiksa lagi dalam 10 detik, maksimal 3 pemeriksaan.",
             )
         waiting = True
         for _ in range(40):

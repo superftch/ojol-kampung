@@ -26,10 +26,12 @@ from .cli import exclusive_lock, running
 from .config import load_settings
 from .finance import WIB, report_date
 from .http_api import HttpCoreError, OjolHttpApi
+from .identity import cached_profile
 from .journal import Journal, unresolved_action
 from .login_access import LoginAccess
 from .maintenance import GAME_COMMANDS, SCHEDULE_FILE, held_window, read_window
-from .models import ROOT, Settings, now
+from .models import NEEDS, ROOT, Settings, now
+from .study import STUDY_LABELS, SUBJECTS, subjects
 from .telegram import (
     BUTTON_COMMANDS,
     TelegramClient,
@@ -37,6 +39,7 @@ from .telegram import (
     acknowledge_callback,
     authorized_message,
     flush_notices,
+    keyboard_status,
     koin,
     notifications_enabled,
     queue_error,
@@ -195,7 +198,9 @@ class ControlService:
         }
         moment = now()
         seconds = state.get("remaining_seconds")
-        lines = [f"🛵 Status Ojol · {self.settings.account_name or 'Utama'}", "", worker]
+        profile = cached_profile(directory)
+        name = profile["nickname"] if profile else self.settings.account_name or "Utama"
+        lines = [f"🛵 Status Ojol · {name}", "", worker]
         trip = f"📍 Trip: {phases.get(phase, 'belum terbaca')}"
         if observed:
             age = max(0, int((moment - observed).total_seconds()))
@@ -219,6 +224,8 @@ class ControlService:
             lines.extend([trip, "🕒 Update terakhir: belum ada data"])
         if data.get("event") in {"rekonsiliasi", "rekonsiliasi_otomatis"} and (active or starting):
             lines.append("Bot sedang mencocokkan hasil aksi terakhir dengan game.")
+            if data.get("reconciliation_attempt"):
+                lines.append(f"Pemeriksaan otomatis {data['reconciliation_attempt']}/3.")
             if data.get("reconciliation_pending"):
                 lines.append(
                     f"{data['reconciliation_pending']} hasil aksi masih diperiksa otomatis."
@@ -248,7 +255,12 @@ class ControlService:
             pending = unresolved_action(directory)
             error, error_updated = status_record(directory / "last-error.json")
             reason = None
-            if pending:
+            if (
+                error_updated >= status_updated
+                and error.get("http_category") == "reconciliation_failed"
+            ):
+                reason = error["message"]
+            elif pending:
                 reason = (
                     f"Aksi #{pending[0]} ({pending[1]}) menunggu rekonsiliasi "
                     "(hasil klik terakhir belum pasti, dicek dulu sebelum lanjut)"
@@ -264,16 +276,23 @@ class ControlService:
             if error_updated >= status_updated and error.get("error_id"):
                 lines.append(f"ID error: {error['error_id']}")
 
-        lines.extend(["", "Kebutuhan akun"])
-        lines.extend(
-            f"{label} • {state.get('needs', {}).get(key, '?')}%"
-            for key, label in AUTO_LABELS.items()
-            if key != "ojol"
-        )
         flags = auto_flags(directory)
+        lines.extend(["", "Kebutuhan akun · Auto ON/OFF"])
+        lines.extend(
+            f"{label} • {'ON' if flags[key] else 'OFF'} • {state.get('needs', {}).get(key, '?')}%"
+            for key, label in AUTO_LABELS.items()
+            if key in NEEDS
+        )
         lines.extend(["", "Pengaturan Auto"])
         lines.extend(
-            f"{label} • {'ON' if flags[key] else 'OFF'}" for key, label in AUTO_LABELS.items()
+            f"{label} • {'ON' if flags[key] else 'OFF'}"
+            for key, label in AUTO_LABELS.items()
+            if key not in NEEDS
+        )
+        choices = subjects(directory)
+        lines.extend(
+            f"Bidang {'Perpus' if mode == 'perpus' else 'Kuliah'} • {SUBJECTS.get(choices[mode], 'belum dipilih')}"
+            for mode in STUDY_LABELS
         )
         maintenance = held_window(self.maintenance_file)
         if maintenance:
@@ -607,11 +626,12 @@ class ControlService:
     async def execute(self, command):
         try:
             response = await self.command(command)
-            markup = (
-                self.profit_buttons(command.split(":", 1)[1] if ":" in command else None)
-                if command == "profit" or command.startswith("profit:")
-                else None
-            )
+            if command == "status":
+                markup = keyboard_status()
+            elif command == "profit" or command.startswith("profit:"):
+                markup = self.profit_buttons(command.split(":", 1)[1] if ":" in command else None)
+            else:
+                markup = None
             queue_notice(self.settings, response, reply_markup=markup)
         except (ValueError, OverflowError) as exc:
             queue_error(
@@ -635,7 +655,7 @@ class ControlService:
     async def poll_telegram(self):
         cursor_file = self.settings.runtime_dir / "telegram-offset"
         offset = int(cursor_file.read_text()) if cursor_file.exists() else 0
-        outage = False
+        outage = None
         async with TelegramClient(self.settings) as api:
             while not self.closing:
                 try:
@@ -645,7 +665,7 @@ class ControlService:
                         timeout=20,
                         allowed_updates=["message", "callback_query"],
                     )
-                    outage = False
+                    outage = None
                     for update in updates:
                         offset = max(offset, update["update_id"] + 1)
                         cursor_file.write_text(str(offset))
@@ -672,9 +692,15 @@ class ControlService:
                                 else:
                                     await self.execute("help")
                 except (TelegramError, OSError, ValueError) as exc:
-                    if not outage:
-                        queue_error(self.settings, exc, "telegram.poll")
-                    outage = True
+                    retryable = isinstance(exc, TelegramError) and exc.retryable
+                    if outage is None or outage != retryable:
+                        queue_error(
+                            self.settings,
+                            exc,
+                            "telegram.poll",
+                            stop_worker=not retryable,
+                        )
+                    outage = retryable
                     await flush_notices(self.settings)
                     await asyncio.sleep(15)
 
@@ -953,6 +979,7 @@ def create_app(settings, service=None):
                 await import_session(settings, json.dumps(payload))
                 if manager:
                     manager.registry.bind_cookie(service.account_id, digest)
+                    manager.service(service.account_id)
             except Exception as exc:
                 from .session_transfer import STAGE
 

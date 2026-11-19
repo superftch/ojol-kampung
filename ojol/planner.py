@@ -204,22 +204,19 @@ def select_need(
     current = state.needs.get(resource)
     if current is None or current >= settings.threshold:
         return None
-    low_needs = {need: value for need, value in state.needs.items() if value < settings.threshold}
 
     def value_key(choice):
         shop, plan = choice
-        gains = [
-            (value, min(100 - value, plan.product.effects.get(need, 0)))
-            for need, value in low_needs.items()
-        ]
-        points = sum(gain for _, gain in gains)
-        filled = sum(value + gain >= settings.threshold for value, gain in gains)
+        points = sum(
+            min(100 - value, plan.product.effects.get(need, 0))
+            for need, value in state.needs.items()
+        )
         return (
-            last_purchases.get(shop.id, 0) if shop.preferred else 0,
-            plan.projected_percent < settings.threshold,
-            -filled,
             plan.total_cost / points,
+            plan.projected_percent < settings.threshold,
+            plan.total_cost,
             -points,
+            last_purchases.get(shop.id, 0) if shop.preferred else 0,
             shop.id,
             plan.product.row_text,
         )
@@ -230,6 +227,8 @@ def select_need(
         if resource == "fisik":
             if shop.category != "fasum":
                 continue
+        elif shop.category == "fasum" and resource == "kesehatan":
+            pass
         elif not shop.preferred and not allow_fallback:
             continue
         for product in shop.products:

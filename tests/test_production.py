@@ -68,7 +68,8 @@ async def test_delivered_notice_retention_never_deletes_pending(settings):
     assert (directory / "recent.sent").exists() and (directory / "pending.json").exists()
 
 
-async def test_one_error_notice_per_telegram_outage(settings, monkeypatch):
+@pytest.mark.parametrize("retryable", [False, True])
+async def test_one_error_notice_per_telegram_outage(settings, monkeypatch, retryable):
     import ojol.control as module
 
     service = ControlService(settings)
@@ -77,20 +78,20 @@ async def test_one_error_notice_per_telegram_outage(settings, monkeypatch):
     async def fail(*args, **kwargs):
         nonlocal count
         count += 1
-        raise TelegramError("Offline fixture")
-
-    async def wait(seconds):
-        if count == 2:
-            service.closing = True
+        if count <= 2:
+            raise TelegramError("Offline fixture", retryable=retryable)
+        service.closing = True
+        return []
 
     context = AsyncMock()
     context.__aenter__.return_value = SimpleNamespace(call=AsyncMock(side_effect=fail))
     monkeypatch.setattr(module, "TelegramClient", lambda settings: context)
     monkeypatch.setattr(module, "flush_notices", AsyncMock())
-    monkeypatch.setattr(module.asyncio, "sleep", wait)
+    monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
     await service.poll_telegram()
+    assert count == 3
     assert len(list((settings.runtime_dir / "notifications").glob("*.json"))) == 1
-    assert (settings.runtime_dir / "STOP").exists()
+    assert (settings.runtime_dir / "STOP").exists() is not retryable
 
 
 async def test_extreme_report_date_does_not_stop_worker(settings, monkeypatch):

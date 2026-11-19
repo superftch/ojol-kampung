@@ -220,6 +220,60 @@ async def test_needs_only_worker_skips_disabled_need_and_all_ojol_actions(
         journal.close()
 
 
+async def test_worker_auto_kesehatan_bpjs_priority_then_medicine_fallback(
+    settings, state, shop_preview
+):
+    set_auto_flag(settings.runtime_dir, "ojol", False)
+    set_auto_flag(settings.runtime_dir, "kesehatan", True)
+
+    s1 = state.model_copy(update={"wallet": Decimal("35"), "needs": {"kesehatan": 40}})
+    s2 = state.model_copy(update={"wallet": Decimal("35"), "needs": {"kesehatan": 55}})
+    s3 = state.model_copy(update={"wallet": Decimal("33.5"), "needs": {"kesehatan": 80}})
+
+    puskesmas_prod = Product(
+        name="Periksa tensi", price="0", effects={"kesehatan": 15}, row_text="p1", enabled=True
+    )
+    puskesmas_shop = shop_preview([puskesmas_prod]).model_copy(
+        update={"name": "Puskesmas Desa", "category": "fasum"}
+    )
+
+    obat_prod = Product(
+        name="Obat flu", price="1.5", effects={"kesehatan": 25}, row_text="p2", enabled=True
+    )
+    farma_shop = shop_preview([obat_prod]).model_copy(
+        update={"name": "Akademis.ai Farma", "category": "toko-obat"}
+    )
+
+    preview_calls = []
+
+    async def mock_preview(res):
+        preview_calls.append(res)
+        if len(preview_calls) == 1:
+            return [puskesmas_shop]
+        return [farma_shop]
+
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[s1, s2, s2, s3, s3]),
+        preview_shops=AsyncMock(side_effect=mock_preview),
+        buy=AsyncMock(),
+        job_click=AsyncMock(),
+        ensure_bpjs=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.wait = AsyncMock(side_effect=StopRequested("selesai fixture"))
+        with pytest.raises(StopRequested):
+            await controller.run()
+        assert ui.ensure_bpjs.call_count >= 1
+        assert preview_calls == ["kesehatan", "kesehatan"]
+        assert ui.buy.call_count == 2
+        assert ui.buy.call_args_list[0].args[0].name == "Periksa tensi"
+        assert ui.buy.call_args_list[1].args[0].name == "Obat flu"
+    finally:
+        journal.close()
+
+
 async def test_worker_waits_without_game_calls_until_auto_is_reenabled(settings, state):
     for key in AUTO_LABELS:
         set_auto_flag(settings.runtime_dir, key, False)

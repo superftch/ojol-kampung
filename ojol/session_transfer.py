@@ -9,6 +9,7 @@ import time
 from .cli import exclusive_lock
 from .config import load_settings
 from .healing import write_private
+from .identity import save_profile, verified_profile
 from .telegram import flush_notices, queue_notice
 
 COOKIE_NAME = "__Secure-better-auth.session_token"
@@ -82,7 +83,7 @@ async def import_session(settings, payload):
     if set(data) != {"cookies"} or len(data["cookies"]) != 1:
         raise ValueError("Hanya satu cookie sesi game diizinkan")
     cookies = [session_cookie(item) for item in data["cookies"]]
-    from .http_api import HttpCoreError, OjolHttpApi
+    from .http_api import HttpCoreError, OjolHttpApi, coin, display
 
     if session_expired({"cookies": cookies}):
         raise HttpCoreError("Cookie sesi game sudah kedaluwarsa.", category="auth")
@@ -96,14 +97,25 @@ async def import_session(settings, payload):
                 account = await api.request("/api/game/me")
                 if not isinstance(account, dict) or type(account.get("balanceMilli")) is not int:
                     raise HttpCoreError("Profil game tidak dapat diverifikasi.", category="schema")
+                try:
+                    profile = verified_profile(account)
+                except (ValueError, AttributeError, TypeError) as exc:
+                    raise HttpCoreError(
+                        "Nickname profil game tidak dapat diverifikasi.", category="schema"
+                    ) from exc
             candidate.replace(settings.runtime_dir / "http-session.json")
+            save_profile(settings.runtime_dir, profile)
         finally:
             candidate.unlink(missing_ok=True)
+    settings = settings.model_copy(update={"account_name": profile["nickname"]})
     queue_notice(
         settings,
-        "✅ Akun game sudah terhubung\n\nKembali ke Telegram dan tekan Jalankan Ojol untuk mulai.",
+        "✅ Akun game sudah terhubung\n\n"
+        f"Nickname • {profile['nickname']}\nSaldo profil • {display(coin(profile['balanceMilli']))} koin\n\n"
+        "Kembali ke Telegram dan tekan Jalankan Ojol untuk mulai.",
     )
     await flush_notices(settings)
+    return profile
 
 
 def main():

@@ -1,6 +1,7 @@
 import json
 
 from .healing import write_private
+from .study import STUDY_LABELS
 
 AUTO_LABELS = {
     "ojol": "Auto Ojol",
@@ -10,6 +11,8 @@ AUTO_LABELS = {
     "rekreasi": "Rekreasi",
     "penampilan": "Penampilan",
     "rumah": "Kondisi rumah",
+    "kebun": "Kebun & kolam",
+    **STUDY_LABELS,
 }
 FILENAME = "auto-settings.json"
 
@@ -23,7 +26,7 @@ def auto_flags(directory):
         key not in AUTO_LABELS or type(enabled) is not bool for key, enabled in saved.items()
     ):
         raise ValueError("Pengaturan Auto akun tidak valid.")
-    return {key: saved.get(key, True) for key in AUTO_LABELS}
+    return {key: saved.get(key, key not in STUDY_LABELS) for key in AUTO_LABELS}
 
 
 def set_auto_flag(directory, key, enabled):

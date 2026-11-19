@@ -16,6 +16,7 @@ import httpx
 from .auto_settings import AUTO_LABELS
 from .finance import WIB
 from .healing import write_private
+from .identity import cached_profile
 from .models import now
 
 BUTTON_COMMANDS = {
@@ -29,20 +30,61 @@ BUTTON_COMMANDS = {
     "Notifikasi ON": "notifications_on",
     "Notifikasi OFF": "notifications_off",
 }
-KEYBOARD = {
-    "keyboard": [
-        [{"text": "Akun Saya"}, {"text": "Tambah Akun"}],
-        [{"text": "Bantuan"}, {"text": "Management"}],
-        [{"text": "Import Cookie"}, {"text": "Jalankan Ojol"}],
-        [{"text": "Hentikan Ojol"}, {"text": "Status"}],
-        [{"text": "Laba Bersih"}, {"text": "Batal"}],
-        [{"text": "Auto"}, {"text": "Cari Rumah Kotor"}],
-        [{"text": "Cari Rumah Mampir"}],
-        [{"text": "Notifikasi ON"}, {"text": "Notifikasi OFF"}],
-    ],
-    "resize_keyboard": True,
-    "is_persistent": True,
-}
+
+
+def _kb(rows):
+    return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
+
+
+def keyboard_main():
+    """Menu utama: navigasi dan aksi umum."""
+    return _kb(
+        [
+            [{"text": "Akun Saya"}, {"text": "Status"}],
+            [{"text": "Jalankan Ojol"}, {"text": "Hentikan Ojol"}],
+            [{"text": "Auto"}, {"text": "Import Cookie"}],
+            [{"text": "Cari Rumah Kotor"}, {"text": "Cari Rumah Mampir"}],
+            [{"text": "Pengaturan"}, {"text": "Bantuan"}],
+        ]
+    )
+
+
+def keyboard_accounts():
+    """Menu Akun Saya: kelola akun."""
+    return _kb(
+        [
+            [{"text": "Tambah Akun"}],
+            [{"text": "Menu Utama"}, {"text": "Bantuan"}],
+        ]
+    )
+
+
+def keyboard_status():
+    """Setelah lihat status: opsi lanjutan."""
+    return _kb(
+        [
+            [{"text": "Laba Bersih"}, {"text": "Jalankan Ojol"}],
+            [{"text": "Hentikan Ojol"}, {"text": "Auto"}],
+            [{"text": "Menu Utama"}],
+        ]
+    )
+
+
+def keyboard_settings():
+    """Menu pengaturan terpusat."""
+    return _kb(
+        [
+            [{"text": "Notifikasi ON"}, {"text": "Notifikasi OFF"}],
+            [{"text": "Management"}],
+            [{"text": "Menu Utama"}],
+        ]
+    )
+
+
+# Legacy alias – used as default reply_markup when no context-specific
+# keyboard is passed.  Points to the main keyboard so callers that relied
+# on the old constant keep working.
+KEYBOARD = keyboard_main()
 MANDATORY_EVENTS = {"maintenance", "maintenance_selesai", "tidur_mulai", "bangun"}
 
 
@@ -60,7 +102,9 @@ def set_notifications(settings, enabled):
 
 
 class TelegramError(RuntimeError):
-    pass
+    def __init__(self, message, *, retryable=False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 def redact(text, settings):
@@ -116,6 +160,7 @@ class TelegramClient:
         key = self.settings.telegram_bot_token.get_secret_value()
         if not key or not self.settings.telegram_chat_id:
             raise TelegramError("Token/Chat ID Telegram belum lengkap")
+        response = None
         try:
             response = await self.client.post(
                 f"https://api.telegram.org/bot{key}/{method}",
@@ -123,25 +168,37 @@ class TelegramClient:
                 timeout=25 if method == "getUpdates" else 5,
             )
             payload = response.json()
-        except (httpx.HTTPError, ValueError):
+            if not isinstance(payload, dict):
+                raise ValueError("Respons Telegram bukan objek JSON")
+        except (httpx.HTTPError, ValueError) as exc:
+            status = f", HTTP {response.status_code}" if response is not None else ""
             raise TelegramError(
-                "Telegram tidak dapat dihubungi; notifikasi disimpan lokal"
+                "Telegram tidak dapat dihubungi; notifikasi disimpan lokal "
+                f"({method}: {type(exc).__name__}{status})",
+                retryable=(
+                    response is None
+                    or response.status_code < 400
+                    or response.status_code == 429
+                    or response.status_code >= 500
+                ),
             ) from None
         if response.status_code != 200 or not payload.get("ok"):
             description = redact(
                 payload.get("description", "Telegram API menolak request"), self.settings
             )
-            raise TelegramError(f"Telegram API {response.status_code}: {description}")
+            raise TelegramError(
+                f"Telegram API {response.status_code} ({method}): {description}",
+                retryable=response.status_code == 429 or response.status_code >= 500,
+            )
         return payload["result"]
 
     async def send(self, message, reply_markup=None):
+        profile = cached_profile(self.settings.runtime_dir)
+        account_name = profile["nickname"] if profile else self.settings.account_name
         return await self.call(
             "sendMessage",
             chat_id=self.settings.telegram_chat_id,
-            text=(
-                (f"👤 {self.settings.account_name}\n\n" if self.settings.account_name else "")
-                + message
-            )[:4000],
+            text=((f"👤 {account_name}\n\n" if account_name else "") + message)[:4000],
             link_preview_options={"is_disabled": True},
             protect_content=True,
             reply_markup=reply_markup or KEYBOARD,
@@ -178,6 +235,19 @@ def koin(value):
 
 
 def event_text(event, data):
+    if event == "kebun_aksi_selesai":
+        action = data.get("action")
+        garden = data.get("garden", "Kebun/kolam")
+        if action == "panen":
+            return f"🧺 {garden}: Panen berhasil! Hasil panen masuk ke tas."
+        if action == "rawat":
+            return f"💧 {garden}: Berhasil dirawat agar hasil panen lebih banyak."
+        if action == "tanam":
+            return f"🌱 {garden}: Bibit berhasil ditanam (biaya {koin(data.get('cost', '0'))})."
+    if event == "belajar_dimulai":
+        return f"📚 {'Perpus' if data['mode'] == 'perpus' else 'Kuliah'} · {data['track']} dimulai. Biaya {data['cost']} koin. Kuis dikerjakan otomatis."
+    if event == "kuis_belajar_selesai":
+        return f"📖 Kuis {data['track']}: {data['benar']}/{data['total']} benar. Bonus belajar {data['bonus']}."
     if event == "mulai" and data.get("live"):
         return "▶️ Bot sedang menyiapkan aktivitas sesuai pengaturan Auto akun ini."
     if event == "berhenti":
@@ -198,13 +268,17 @@ def event_text(event, data):
             resource, AUTO_LABELS.get(resource, "Kebutuhan")
         )
         activity = (
-            f"💪 Latihan gratis di {data['shop']} selesai."
-            if resource == "fisik"
-            else f"🛒 {data['product']} berhasil dibeli di {data['shop']} seharga {koin(data['cost'])}."
+            f"Aksi • {data['product']}\nTempat • {data['shop']}\nBiaya • {koin(data['cost'])}"
+        )
+        auto_status = (
+            f"Auto {label} • {'ON' if data['auto_enabled'] else 'OFF'}\n"
+            if type(data.get("auto_enabled")) is bool
+            else ""
         )
         return (
-            f"{activity}\n{label} naik dari {data['before']}% ke {data['after']}%. "
-            f"Sisa saldo {koin(data['wallet'])}."
+            f"✅ {label} berhasil diperbarui\n\n"
+            f"{label} • {data['before']}% → {data['after']}%\n"
+            f"{auto_status}{activity}\nSaldo tersisa • {koin(data['wallet'])}"
         )
     if event == "pendapatan_ojol_tercatat":
         return f"🏁 Trip selesai. Ongkos {koin(data['amount'])} sudah masuk."
@@ -245,6 +319,12 @@ def _error_guidance(details):
             "Sesi game sudah tidak bisa digunakan. Buka KampungSebelah dan login ulang.\n\n"
             "Setelah masuk, tekan Import Cookie untuk menghubungkan cookie baru, "
             "lalu Jalankan Ojol."
+        )
+    elif details.get("http_category") == "reconciliation_failed":
+        return (
+            "❌ Auto rekonsiliasi gagal setelah 3 percobaan. Bot dihentikan.\n\n"
+            "Hasil transaksi terakhir masih belum pasti. Cek Status dan riwayat transaksi "
+            "di game sebelum menjalankan ulang."
         )
     elif (
         details.get("http_category") == "uncertain"
@@ -295,6 +375,11 @@ def _error_guidance(details):
         reason = "Koneksi untuk membuka halaman Import Cookie sedang bermasalah."
         action = "Hubungi admin untuk memeriksa koneksi server."
     elif stage.startswith("telegram."):
+        if details.get("fatal") is False:
+            return (
+                "⚠️ Koneksi Telegram sempat terganggu. Bot mencoba terhubung kembali otomatis; "
+                "worker akun tetap berjalan."
+            )
         return "⚠️ Bot sempat kehilangan koneksi ke Telegram. Cek Status akun sebelum melanjutkan."
     elif details.get("http_category") == "transport" or details.get("category") in {
         "TimeoutError",
@@ -329,6 +414,7 @@ def error_text(details):
             for prefix, label in (
                 ("shop.preview.", "memeriksa toko isi ulang"),
                 ("purchase.", "membeli atau memverifikasi isi ulang"),
+                ("study.", "belajar atau mengerjakan kuis"),
                 ("job.", "menjalankan atau memverifikasi order"),
                 ("session.import", "menghubungkan cookie game"),
                 ("worker.reconcile", "memeriksa hasil transaksi sebelumnya"),

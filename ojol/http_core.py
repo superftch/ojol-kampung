@@ -13,8 +13,21 @@ from mcp import StdioServerParameters
 from .http_api import HttpCoreError
 from .models import ShopPreview, Snapshot
 
-READ_TOOLS = {"ojol_snapshot", "ojol_preview_shop", "ojol_daily_wallet"}
-HTTP_TOOLS = READ_TOOLS | {"ojol_purchase", "ojol_job_action"}
+READ_TOOLS = {
+    "ojol_snapshot",
+    "ojol_preview_shop",
+    "ojol_daily_wallet",
+    "ojol_study_status",
+    "ojol_ensure_bpjs",
+    "ojol_garden_status",
+}
+HTTP_TOOLS = READ_TOOLS | {
+    "ojol_purchase",
+    "ojol_job_action",
+    "ojol_study_start",
+    "ojol_study_quiz",
+    "ojol_garden_action",
+}
 
 
 class HttpUI:
@@ -113,6 +126,32 @@ class HttpUI:
 
     async def daily_wallet(self, day):
         return await self.call_tool("ojol_daily_wallet", day=day.isoformat())
+
+    async def ensure_bpjs(self):
+        return await self.call_tool("ojol_ensure_bpjs")
+
+    async def garden_status(self):
+        return await self.call_tool("ojol_garden_status")
+
+    async def garden_action(self, garden_id: str, action: str):
+        return await self.call_tool("ojol_garden_action", garden_id=garden_id, action=action)
+
+    async def study_status(self, mode):
+        return await self.call_tool("ojol_study_status", mode=mode)
+
+    async def study_start(self, mode, track, expected_price, expected_wallet, min_balance):
+        return await self.call_tool(
+            "ojol_study_start",
+            mode=mode,
+            track=track,
+            expected_price=str(expected_price),
+            expected_wallet=str(expected_wallet),
+            min_balance=str(min_balance),
+            request_id=self.request_id,
+        )
+
+    async def study_quiz(self, mode, visit_id, track):
+        return await self.call_tool("ojol_study_quiz", mode=mode, visit_id=visit_id, track=track)
 
     async def preview_shops(self, resource):
         data = await self.call_tool("ojol_preview_shop", resource=resource)

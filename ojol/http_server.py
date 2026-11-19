@@ -55,14 +55,15 @@ async def invoke(method, **kwargs):
             "ok": False,
             "error": "Deadline core HTTP tercapai; transaksi tidak diulang",
             "category": "transport",
-            "recoverable": method in {"snapshot", "preview", "daily_wallet"},
+            "recoverable": method in {"snapshot", "preview", "daily_wallet", "study_status"},
         }
     except (KeyError, TypeError, ValueError, AttributeError):
         return {
             "ok": False,
             "error": "Skema API Ojol berubah",
             "category": "schema",
-            "recoverable": method in {"snapshot", "preview", "daily_wallet"},
+            "recoverable": method
+            in {"snapshot", "preview", "daily_wallet", "study_status", "garden_status"},
         }
 
 
@@ -100,9 +101,60 @@ async def ojol_purchase(
 
 
 @server.tool()
+async def ojol_ensure_bpjs() -> dict:
+    """Check BPJS card status and auto-buy if not owned and wallet has enough balance."""
+    return await invoke("ensure_bpjs")
+
+
+@server.tool()
+async def ojol_study_status(mode: str) -> dict:
+    """Read the configured library/university, subjects, cooldown and visit quiz."""
+    return await invoke("study_status", mode=mode)
+
+
+@server.tool()
+async def ojol_study_start(
+    mode: str,
+    track: str,
+    expected_price: str,
+    expected_wallet: str,
+    min_balance: str,
+    request_id: str,
+) -> dict:
+    """Start one explicitly enabled study visit after fresh price, skill and balance checks."""
+    return await invoke(
+        "study_start",
+        mode=mode,
+        track=track,
+        expected_price=expected_price,
+        expected_wallet=expected_wallet,
+        min_balance=min_balance,
+        request_id=request_id,
+    )
+
+
+@server.tool()
+async def ojol_study_quiz(mode: str, visit_id: str, track: str) -> dict:
+    """Answer one observed visit quiz using its client reading material; never replay a submit."""
+    return await invoke("study_quiz", mode=mode, visit_id=visit_id, track=track)
+
+
+@server.tool()
 async def ojol_job_action(kind: str) -> dict:
     """Search once or claim once after server arrival. No registration, quit or sleep actions."""
     return await invoke("job_action", kind=kind)
+
+
+@server.tool()
+async def ojol_garden_status() -> dict:
+    """Read garden status (kebun sayur & kolam ikan)."""
+    return await invoke("garden_status")
+
+
+@server.tool()
+async def ojol_garden_action(garden_id: str, action: str) -> dict:
+    """Perform garden action (panen, rawat, tanam)."""
+    return await invoke("garden_action", garden_id=garden_id, action=action)
 
 
 if __name__ == "__main__":

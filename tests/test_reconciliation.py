@@ -1,3 +1,4 @@
+import asyncio
 import json
 from contextlib import closing
 from datetime import timedelta
@@ -13,8 +14,9 @@ from ojol.controller import Controller, StopRequested, VerificationPending
 from ojol.finance import completion_evidence, received_income
 from ojol.http_api import HttpCoreError
 from ojol.journal import Journal
-from ojol.models import GameReceipt
+from ojol.models import GameReceipt, Product
 from ojol.reconciliation import reconcile, wait_until_resolved
+from ojol.telegram import queue_error, queued_text, set_notifications
 
 
 def claim_states(state):
@@ -69,6 +71,148 @@ async def test_timed_out_claim_reconciles_receipt_without_another_post(settings,
         assert journal.profit()["trip_tercatat"] == 1
         sync = json.loads((settings.runtime_dir / "game-sync.json").read_text())
         assert sync["snapshot"]["game_history"][0]["id"] == "fixture-trip"
+
+
+@pytest.mark.parametrize("resource", ["fuel", "condition", "data", "makan"])
+@pytest.mark.parametrize("failure", ["verify", "uncertain", "transport"])
+async def test_purchase_reconciles_delayed_result_without_another_post(
+    settings, state, shop_preview, monkeypatch, resource, failure
+):
+    set_notifications(settings, True)
+    before = state.model_copy(update={"fuel": 36, "condition": 46, "needs": {"makan": 45}})
+    product = Product(
+        name={
+            "fuel": "Isi Pertalite",
+            "condition": "Tambal ban",
+            "data": "Isi pulsa",
+            "makan": "Soto",
+        }[resource],
+        price="0.5",
+        effects={resource: 40},
+        row_text="fixture",
+        enabled=True,
+    )
+    shop = shop_preview([product]).model_copy(update={"name": "Akademis.ai Uji"})
+    after = before.model_copy(
+        update={
+            "observed_at": before.observed_at + timedelta(seconds=3),
+            "wallet": before.wallet - product.price,
+            **(
+                {"needs": {resource: 85}}
+                if resource == "makan"
+                else {resource: before.resource_value(resource) + 40}
+            ),
+        }
+    )
+    ui = SimpleNamespace(
+        preview_shops=AsyncMock(return_value=[shop]),
+        buy=AsyncMock(
+            side_effect=HttpCoreError("fixture", category=failure) if failure != "verify" else None
+        ),
+        snapshot=AsyncMock(side_effect=[before, after, after]),
+    )
+    monkeypatch.setattr("ojol.reconciliation.asyncio.sleep", AsyncMock())
+    with closing(Journal(settings.runtime_dir)) as journal:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.verify = AsyncMock(side_effect=VerificationPending("fixture"))
+        assert await controller.purchase(before, resource)
+        ui.buy.assert_awaited_once()
+        assert controller.state == after
+        assert controller.spent == product.price
+        assert controller.last_event == "pembelian_terverifikasi"
+        assert not journal.unresolved()
+        assert journal.history()["actions"][0]["status"] == "verified"
+        assert Decimal(journal.profit()["pengeluaran"]) == product.price
+        await reconcile(ui, journal)
+        assert Decimal(journal.profit()["pengeluaran"]) == product.price
+    assert not (settings.runtime_dir / "STOP").exists()
+    notices = [
+        json.loads(path.read_text())["text"]
+        for path in (settings.runtime_dir / "notifications").glob("*.json")
+    ]
+    assert sum("berhasil diperbarui" in text for text in notices) == 1
+
+
+async def test_purchase_handoff_preserves_session_budget_without_booking_unproven_cost(
+    settings, state, shop_preview, monkeypatch
+):
+    set_notifications(settings, True)
+    settings = settings.model_copy(update={"max_spend": Decimal("0.5")})
+    product = Product(
+        name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
+    )
+    observed = state.model_copy(update={"observed_at": state.observed_at + timedelta(seconds=301)})
+    after = observed.model_copy(update={"observed_at": observed.observed_at + timedelta(seconds=1)})
+    ui = SimpleNamespace(
+        preview_shops=AsyncMock(return_value=[shop_preview([product])]),
+        buy=AsyncMock(),
+        snapshot=AsyncMock(side_effect=[observed, after]),
+    )
+    monkeypatch.setattr("ojol.reconciliation.asyncio.sleep", AsyncMock())
+    with closing(Journal(settings.runtime_dir)) as journal:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.verify = AsyncMock(side_effect=VerificationPending("fixture"))
+        assert await controller.purchase(state, "data")
+        assert journal.history()["actions"][0]["status"] == "handed_off"
+        assert not journal.unresolved()
+        assert journal.profit()["pengeluaran"] == "0"
+        assert controller.spent == product.price
+        assert await controller.purchase(controller.state, "data") is False
+        ui.buy.assert_awaited_once()
+    notices = [
+        json.loads(path.read_text())["text"]
+        for path in (settings.runtime_dir / "notifications").glob("*.json")
+    ]
+    assert not any("berhasil diperbarui" in text for text in notices)
+
+
+async def test_stop_interrupts_purchase_recovery_without_replaying(
+    settings, state, shop_preview, monkeypatch
+):
+    cancel = asyncio.Event()
+    product = Product(
+        name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
+    )
+    ui = SimpleNamespace(
+        preview_shops=AsyncMock(return_value=[shop_preview([product])]),
+        buy=AsyncMock(),
+        snapshot=AsyncMock(return_value=state),
+    )
+
+    async def stop(seconds):
+        cancel.set()
+
+    monkeypatch.setattr("ojol.reconciliation.asyncio.sleep", stop)
+    with closing(Journal(settings.runtime_dir)) as journal:
+        controller = Controller(ui, settings, journal, journal.start(settings), cancel)
+        controller.verify = AsyncMock(side_effect=VerificationPending("fixture"))
+        with pytest.raises(StopRequested):
+            await controller.purchase(state, "data")
+        ui.buy.assert_awaited_once()
+        assert len(journal.unresolved()) == 1
+        assert journal.profit()["pengeluaran"] == "0"
+
+
+@pytest.mark.parametrize("category", ["auth", "schema"])
+async def test_purchase_recovery_does_not_swallow_permanent_errors(
+    settings, state, shop_preview, category
+):
+    product = Product(
+        name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
+    )
+    ui = SimpleNamespace(
+        preview_shops=AsyncMock(return_value=[shop_preview([product])]),
+        buy=AsyncMock(side_effect=HttpCoreError("fixture", category=category)),
+        snapshot=AsyncMock(),
+    )
+    with closing(Journal(settings.runtime_dir)) as journal:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        with pytest.raises(HttpCoreError) as error:
+            await controller.purchase(state, "data")
+        assert error.value.category == category
+        ui.buy.assert_awaited_once()
+        ui.snapshot.assert_not_awaited()
+        assert len(journal.unresolved()) == 1
 
 
 @pytest.mark.parametrize("legacy_snapshot", [False, True])
@@ -430,10 +574,133 @@ async def test_waiting_status_names_purchase_and_explains_unstable_game(
                     "pid": os.getpid(),
                     "event": "rekonsiliasi_otomatis",
                     "reconciliation_pending": 1,
+                    "reconciliation_attempt": 2,
                 }
             )
         )
         text = ControlService(settings).status()
         assert f"Aksi #{action}" in text and "Beli Pertalite di SPBU uji" in text
         assert "Field berubah: fuel" in text and "Waktu aksi" in text and "Saldo" in text
+        assert "Pemeriksaan otomatis 2/3" in text
         assert "sebelum mulai" not in text
+
+
+@pytest.mark.parametrize("failures", ["pending", "transport", "mixed"])
+async def test_auto_reconcile_fails_after_three_attempts_and_notifies_even_when_muted(
+    settings, state, monkeypatch, failures
+):
+    import ojol.reconciliation as recovery
+
+    set_notifications(settings, False)
+    ui = SimpleNamespace(check_cancel=lambda: None, buy=AsyncMock(), job_click=AsyncMock())
+    transport_error = HttpCoreError("fixture connection", category="transport")
+    results = {
+        "pending": [state, state, state],
+        "transport": [transport_error, transport_error, transport_error],
+        "mixed": [transport_error, state, transport_error],
+    }[failures]
+    reconcile_mock = AsyncMock(side_effect=results)
+    sleep = AsyncMock()
+    monkeypatch.setattr(recovery, "reconcile", reconcile_mock)
+    monkeypatch.setattr(recovery.asyncio, "sleep", sleep)
+    with closing(Journal(settings.runtime_dir)) as journal:
+        action = journal.begin(journal.start(settings), "complete", state, {})
+        journal.settle(action, False)
+        with pytest.raises(HttpCoreError) as error:
+            await wait_until_resolved(ui, journal, settings)
+        assert error.value.category == "reconciliation_failed"
+        assert reconcile_mock.await_count == 3
+        assert sleep.await_count == 80  # Two ten-second waits, no wait after the third attempt.
+        assert journal.unresolved()[0]["id"] == action
+        assert journal.profit()["pendapatan_ojol"] == "0"
+        assert journal.profit()["pengeluaran"] == "0"
+        with pytest.raises(RuntimeError, match="belum terverifikasi"):
+            journal.start(settings)
+        status = json.loads((settings.runtime_dir / "status.json").read_text())
+        assert status["event"] == "gagal"
+        assert status["reconciliation_attempt"] == status["reconciliation_limit"] == 3
+        # The CLI uses the same error handler for startup and in-session failures.
+        notice = queue_error(settings, error.value, "worker.reconcile")
+        data = json.loads(notice.read_text())
+        assert data["context"]["action_ids"] == [action]
+        assert data["context"]["fatal"] is True
+        assert "gagal setelah 3 percobaan" in queued_text(data)
+        assert "Bot dihentikan" in queued_text(data)
+        assert "belum pasti" in queued_text(data)
+        assert (settings.runtime_dir / "STOP").exists()
+    ui.buy.assert_not_awaited()
+    ui.job_click.assert_not_awaited()
+    text = ControlService(settings).status()
+    assert "gagal setelah 3 percobaan" in text
+    assert "menunggu rekonsiliasi" not in text
+
+
+async def test_auto_reconcile_can_succeed_on_third_attempt(settings, state, monkeypatch):
+    import ojol.reconciliation as recovery
+
+    before, after = claim_states(state)
+    transient = HttpCoreError("fixture", category="transport")
+    with closing(Journal(settings.runtime_dir)) as journal:
+        action = journal.begin(journal.start(settings), "complete", before, {})
+        attempts = 0
+
+        async def check(ui, current):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                return before
+            if attempts == 2:
+                raise transient
+            current.settle(action, True, after)
+            return after
+
+        check = AsyncMock(side_effect=check)
+        sleep = AsyncMock()
+        monkeypatch.setattr(recovery, "reconcile", check)
+        monkeypatch.setattr(recovery.asyncio, "sleep", sleep)
+        assert (
+            await wait_until_resolved(SimpleNamespace(check_cancel=lambda: None), journal, settings)
+            == after
+        )
+        assert check.await_count == 3
+        assert sleep.await_count == 80
+        assert not journal.unresolved()
+        assert journal.profit()["pendapatan_ojol"] == "0.72"
+    assert not (settings.runtime_dir / "STOP").exists()
+    notices = [
+        json.loads(path.read_text())
+        for path in (settings.runtime_dir / "notifications").glob("*.json")
+    ]
+    assert any("Bot melanjutkan" in data["text"] for data in notices)
+    assert all(data["context"].get("http_category") != "reconciliation_failed" for data in notices)
+
+
+async def test_purchase_stops_after_reconciliation_limit_without_replaying_or_booking_cost(
+    settings, state, shop_preview, monkeypatch
+):
+    product = Product(
+        name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
+    )
+    ui = SimpleNamespace(
+        preview_shops=AsyncMock(return_value=[shop_preview([product])]),
+        buy=AsyncMock(),
+        snapshot=AsyncMock(return_value=state),
+    )
+    monkeypatch.setattr("ojol.reconciliation.asyncio.sleep", AsyncMock())
+    with closing(Journal(settings.runtime_dir)) as journal:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.verify = AsyncMock(side_effect=VerificationPending("fixture"))
+        with pytest.raises(HttpCoreError) as error:
+            await controller.purchase(state, "data")
+        assert error.value.category == "reconciliation_failed"
+        ui.buy.assert_awaited_once()
+        assert len(journal.unresolved()) == 1
+        assert controller.spent == product.price
+        assert journal.profit()["pengeluaran"] == "0"
+        notices = [
+            json.loads(path.read_text())["text"]
+            for path in (settings.runtime_dir / "notifications").glob("*.json")
+        ]
+        assert not any(
+            "Bot melanjutkan" in text or "berhasil diperbarui" in text for text in notices
+        )
