@@ -471,6 +471,17 @@ async def test_active_motor_trip_can_finish_after_buying_car(api, world):
     ]
 
 
+async def test_trip_order_code_is_sent_when_claiming_fare(api, world):
+    world["ojol"]["trip"] = {**trip(), "cek": "93"}
+    world["time"]["now"] = "2030-01-02T10:01:00Z"
+
+    assert (await api.snapshot()).order_code == "93"
+    await api.job_action("complete")
+    assert [json.loads(request.content) for request in api.calls if request.method == "POST"] == [
+        {"action": "selesai", "kode": "93"}
+    ]
+
+
 @pytest.mark.parametrize(
     ("vehicle", "item", "name"),
     [

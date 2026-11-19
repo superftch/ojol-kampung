@@ -25,7 +25,7 @@ Tabel ini mencakup seluruh request yang dipanggil adapter Ojol ke `https://www.k
 | GET `/_next/static/{path}.js` | baca efek item dari bundle yang dirujuk halaman | kode `OjolHttpApi.effects` |
 | POST `/api/shops/{businessId}/buy` | `{item, requestId}` | live: Pertalite, Tambal ban, Isi pulsa; perubahan saldo/resource terverifikasi |
 | POST `/api/ojol` | `{action:"ambil", vehicle:"motor"\|"mobil"}` | Motor terverifikasi historis. Pilihan mobil dan payload berasal dari `aN` di bundle `3tkrjjmq3rsag.js`. |
-| POST `/api/ojol` | `{action:"selesai"}` | live: receipt payout baru terverifikasi setelah arrival server |
+| POST `/api/ojol` | `{action:"selesai", kode?}` | Bundle client live mengirim `kode` dari field `cek` trip. Receipt payout baru terverifikasi historis setelah arrival server; trip pemeriksaan pengguna memuat `cek: "93"`. |
 | GET `/api/facilities/{id}` | Status, layanan, tarif, cooldown, serta bidang belajar | Browser Harness dan GET terotorisasi 19 November 2026; lihat validasi kebutuhan/belajar di bawah |
 | POST `/api/facilities/{id}/use` | `{requestId}` untuk fisik; `{requestId, track}` untuk perpus/kuliah | POST live terotorisasi 19 November 2026: gym, perpus, universitas |
 | GET `/api/facilities/{id}/kuis` | `available`, `visitId`, `track`, `bacaan`, `soal[].{q,options}`, `need`; selesai: `reason: selesai`, `track`, `bonus` | Browser Harness dan GET live 19 November 2026 |

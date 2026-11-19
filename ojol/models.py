@@ -185,6 +185,7 @@ class Snapshot(Model):
     game_history: list[GameReceipt] = Field(default_factory=list)
     today_count: int | None = Field(default=None, ge=0)
     trip_id: str | None = None
+    order_code: str | None = None
     arrive_at: datetime | None = None
     home_plot: str | None = None
     village: str | None = None

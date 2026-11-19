@@ -82,7 +82,7 @@ Gunakan [panduan Docker lokal dan bot Telegram development](docs/local-developme
 
 ## Deploy dan upgrade
 
-Prasyarat: Linux amd64/arm64, Docker Engine + Compose, koneksi game/Telegram, domain Cloudflare. Container memakai batas 2 CPU / 2 GiB RAM; angka worker default adalah batas awal konservatif, **belum benchmark kapasitas**.
+Prasyarat: Linux amd64/arm64, Docker Engine + Compose, `/dev/net/tun`, Cloudflare Zero Trust, koneksi game/Telegram, dan domain Cloudflare. Production memakai Cloudflare Mesh pada Free plan untuk merutekan egress container melalui Cloudflare. Host dengan sedikitnya 4 vCPU dan 4 GiB RAM direkomendasikan Cloudflare untuk Mesh; container app tetap dibatasi 2 CPU / 2 GiB RAM.
 
 ```sh
 git clone git@github.com:superftch/ojol-kampung.git
@@ -92,6 +92,8 @@ chmod 600 .env
 mkdir -p .secrets
 chmod 700 .secrets
 ```
+
+Di Cloudflare Zero Trust → **Networking → Mesh → Add node**, buat node Docker Compose dan simpan token-nya sebagai `.secrets/cloudflare-mesh-token` dengan mode `0600`. Cloudflare Mesh tersedia di Free plan (beta). Container app berbagi network namespace dengan node WARP; semua egress dari app, termasuk API game, Telegram, dan cloudflared, lewat Cloudflare. Egress default berbagi pool IP Cloudflare; ini **tidak memberi IP publik unik per akun**. [Panduan Mesh Docker](https://developers.cloudflare.com/mesh/guides/run-mesh-in-containers/) · [Free plan](https://developers.cloudflare.com/mesh/platform/).
 
 Isi `.env` di server; jangan commit:
 
@@ -112,10 +114,10 @@ Isi `.env` di server; jangan commit:
 | `OJOL_SMART_THRESHOLDS` | `true` default: gunakan threshold optimal dinamis per kebutuhan |
 | `OJOL_MAX_JOBS`, `OJOL_MAX_MINUTES`, `OJOL_MAX_SPEND` | Kosong untuk tanpa batas |
 
-Simpan token connector pada `.secrets/cloudflared-token`, mode0600. Cloudflared terpasang dalam image dengan versi/digest tetap; tidak perlu container kedua. Di dashboard Cloudflare, Published application route untuk domain harus menuju **HTTP `http://localhost:6080`**. Token dibaca lewat file privat, bukan argv/env. Port aplikasi hanya diterbitkan ke loopback6080; metrics connector loopback2000.
+Simpan token connector pada `.secrets/cloudflared-token`, mode0600. Cloudflared terpasang dalam image dengan versi/digest tetap. Di dashboard Cloudflare, Published application route untuk domain harus menuju **HTTP `http://localhost:6080`**. Token dibaca lewat file privat, bukan argv/env. Port aplikasi diterbitkan lewat node Mesh hanya ke loopback6080; metrics connector loopback2000.
 
 ```sh
-docker compose build app
+docker compose build app warp
 docker compose up -d
 curl -fsS http://127.0.0.1:6080/health
 docker compose logs --tail 50 app

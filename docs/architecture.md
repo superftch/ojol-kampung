@@ -1,6 +1,6 @@
 # Arsitektur HTTP multi-account
 
-Keputusan 11 November 2026 WIB: **satu akun terdaftar memiliki maksimal satu subprocess worker aktif; satu container aplikasi menampung control service, worker akun, MCP dan satu cloudflared**. Chrome/Browser Harness dan seluruh fallback dihapus. Error HTTP terminal menghentikan akun; tidak pindah backend.
+Keputusan 11 November 2026 WIB: **satu akun terdaftar memiliki maksimal satu subprocess worker aktif; satu container aplikasi menampung control service, worker akun, MCP dan cloudflared, dengan network namespace dibagi ke Cloudflare Mesh/WARP sidecar**. Egress seluruh container aplikasi melewati WARP; semua akun memakai egress bersama, bukan IP publik unik per akun. Chrome/Browser Harness dan seluruh fallback dihapus. Error HTTP terminal menghentikan akun; tidak pindah backend.
 
 ## Alur
 

@@ -17,6 +17,10 @@ EXPOSE 6080
 ENTRYPOINT ["ojol-entrypoint"]
 CMD ["python", "-m", "ojol.control"]
 
+FROM cloudflare/mesh:latest@sha256:19d8a76ab667c14e399266fe301081f6913fefa0e40b35b2adc58452878ed365 AS mesh
+COPY docker/mesh-entrypoint.sh /mesh-entrypoint.sh
+ENTRYPOINT ["/usr/bin/sh", "/mesh-entrypoint.sh"]
+
 FROM runtime AS test
 ENV UV_PYTHON_DOWNLOADS=never
 COPY tests ./tests

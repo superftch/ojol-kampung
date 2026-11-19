@@ -199,6 +199,9 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
                 pass
 
     if trip:
+        order_code = trip.get("cek")
+        if order_code is not None and not isinstance(order_code, str):
+            raise HttpCoreError("Kode cek trip Ojol tidak valid", recoverable=True)
         icon, label = KINDS[trip["kind"]]
         if trip.get("arriveAt"):
             remaining = max(0, ceil((timestamp(trip["arriveAt"]) - server_now).total_seconds()))
@@ -280,6 +283,7 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
         game_history=list(game_history.values()),
         today_count=integer(ojol["todayCount"]) if "todayCount" in ojol else None,
         trip_id=trip["id"] if trip else None,
+        order_code=order_code if trip else None,
         arrive_at=timestamp(trip["arriveAt"]) if trip and trip.get("arriveAt") else None,
         home_plot=(me.get("home") or {}).get("plotId"),
         village=(me.get("home") or {}).get("desa"),
@@ -1694,7 +1698,10 @@ class OjolHttpApi:
                 "/api/ojol", {"action": "ambil", "vehicle": state.ojol_vehicle}
             )
         if kind == "complete" and state.phase == "complete":
-            return await self.request("/api/ojol", {"action": "selesai"})
+            payload = {"action": "selesai"}
+            if state.order_code is not None:
+                payload["kode"] = state.order_code
+            return await self.request("/api/ojol", payload)
         raise HttpCoreError("Aksi Ojol tidak sesuai state/waktu server", category="blocked")
 
     async def garden_status(self):
