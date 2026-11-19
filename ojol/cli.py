@@ -71,7 +71,7 @@ def parser():
     cleanup = commands.add_parser("cleanup-scan", help="Baca kandidat rumah kotor melalui API")
     cleanup.add_argument("--blocks", nargs="+", help="Kode blok, default blok rumah sendiri")
     cleanup.add_argument("--limit", type=int, choices=range(1, 11), default=1)
-    for name in ("doctor", "status", "stop", "history"):
+    for name in ("doctor", "status", "stop", "history", "dashboard"):
         commands.add_parser(name)
     reconcile = commands.add_parser("reconcile", help="Periksa hasil aksi dari bukti game")
     target = reconcile.add_mutually_exclusive_group()
@@ -166,6 +166,11 @@ def main(argv=None):
                     "Estimasi dari countdown DOM terakhir; snapshot tetap memuat waktu observasi aslinya."
                 )
             print(json.dumps(data, ensure_ascii=False, indent=2))
+        elif args.command == "dashboard":
+            from .control import ControlService
+
+            service = ControlService(settings)
+            print(asyncio.run(service.command("dashboard")))
         elif args.command == "stop":
             directory.mkdir(parents=True, exist_ok=True, mode=0o700)
             (directory / "STOP").touch(mode=0o600)

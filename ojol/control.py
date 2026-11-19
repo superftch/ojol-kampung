@@ -378,6 +378,100 @@ class ControlService:
             )
         return "\n".join(lines)
 
+    def summary(self):
+        directory = self.settings.runtime_dir
+        data, status_updated = status_record(directory / "status.json")
+        state = data.get("snapshot") or {}
+        sync, _ = status_record(directory / "game-sync.json")
+        synced_at = status_timestamp(sync.get("checked_at"))
+        observed = status_timestamp(data.get("snapshot_received_at") or state.get("observed_at"))
+        if (
+            synced_at
+            and (observed is None or synced_at > observed)
+            and isinstance(sync.get("snapshot"), dict)
+        ):
+            state = sync["snapshot"]
+
+        busy = running(directory)
+        managed = self.worker is not None and self.worker.returncode is None
+        pid = data.get("pid")
+        recorded_worker = (
+            type(pid) is int
+            and pid > 0
+            and data.get("event") not in {"berhenti", "gagal", "dry_run"}
+        )
+        if busy and recorded_worker:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                recorded_worker = False
+            except PermissionError:
+                pass
+        active = busy and recorded_worker and (not managed or self.worker.pid == pid)
+
+        from .session_transfer import parse_cookie_input, session_expired
+
+        has_cookie = False
+        cookie_valid = False
+        try:
+            cookie = parse_cookie_input((directory / "http-session.json").read_text())
+            has_cookie = True
+            cookie_valid = not session_expired(cookie)
+        except (OSError, ValueError, TypeError, KeyError, OverflowError):
+            pass
+
+        phase = state.get("phase")
+        if not has_cookie:
+            status_text = "Belum hubungkan cookie"
+            icon = "⚪"
+        elif not cookie_valid:
+            status_text = "Sesi kedaluwarsa"
+            icon = "⚠️"
+        elif active:
+            if phase == "delivering":
+                rem = state.get("remaining_seconds")
+                time_str = f" ({rem // 60}:{rem % 60:02d})" if rem is not None else ""
+                status_text = f"Mengantar order{time_str}"
+                icon = "🟢"
+            elif phase == "searching":
+                status_text = "Mencari order"
+                icon = "🟢"
+            elif phase == "sleeping":
+                status_text = "Tidur di game"
+                icon = "💤"
+            elif phase == "idle":
+                status_text = "Standby"
+                icon = "🟢"
+            else:
+                status_text = "Aktif"
+                icon = "🟢"
+        else:
+            status_text = "Berhenti"
+            icon = "⚪"
+
+        wallet = state.get("wallet")
+        trips = state.get("today_count")
+        if trips is None:
+            trips = data.get("completed", 0)
+
+        fuel = state.get("fuel")
+        condition = state.get("condition")
+        kuota = state.get("data")
+
+        return {
+            "active": active,
+            "has_cookie": has_cookie,
+            "cookie_valid": cookie_valid,
+            "phase": phase,
+            "icon": icon,
+            "status_text": status_text,
+            "wallet": str(wallet) if wallet is not None else None,
+            "trips": trips,
+            "fuel": fuel,
+            "condition": condition,
+            "data": kuota,
+        }
+
     async def account_profit(self, day):
         directory = self.settings.runtime_dir
         wallet = None
@@ -534,6 +628,22 @@ class ControlService:
             )
         if command == "status":
             return self.status()
+        if command == "dashboard":
+            s = self.summary()
+            wallet_str = f" · Saldo {koin(s['wallet'])}" if s["wallet"] is not None else ""
+            trips_str = f" · {s['trips']} trip" if s["trips"] is not None else ""
+            res_str = ""
+            if any(s[k] is not None for k in ("fuel", "condition", "data")):
+                f_val = f"{s['fuel']}%" if s['fuel'] is not None else "-%"
+                c_val = f"{s['condition']}%" if s['condition'] is not None else "-%"
+                d_val = f"{s['data']}%" if s['data'] is not None else "-%"
+                res_str = f"\nResource • ⛽ {f_val} · 🔧 {c_val} · 📶 {d_val}"
+            return (
+                f"📊 Dashboard Akun\n\n"
+                f"{s['icon']} Status • {s['status_text']}"
+                f"{wallet_str}{trips_str}"
+                f"{res_str}"
+            )
         if command == "visit_scan":
             if self.settings.env == "testing":
                 return "HTTP live diblokir dalam test environment."

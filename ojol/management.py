@@ -20,8 +20,10 @@ from .telegram import (
     TelegramError,
     acknowledge_callback,
     flush_notices,
+    keyboard_accounts,
     keyboard_main,
     keyboard_settings,
+    koin,
     queue_error,
     queue_notice,
     record_error,
@@ -138,6 +140,87 @@ class MultiAccountService:
         account = self.registry.selected(owner)
         selected = f"\n\nAkun terpilih • {account['name']}" if account else ""
         await self.reply(owner, HELP + selected, keyboard_main())
+
+    async def dashboard(self, owner):
+        self.pending.pop(owner, None)
+        accounts = self.registry.list(owner)
+        if not accounts:
+            await self.reply(
+                owner,
+                "📊 Dashboard Akun\n\nBelum ada akun terdaftar.\nTekan Tambah Akun di menu Akun Saya untuk memulai.",
+                keyboard_accounts(),
+            )
+            return
+
+        selected_account = self.registry.selected(owner)
+        selected_id = selected_account["id"] if selected_account else None
+
+        active_count = 0
+        sleeping_count = 0
+        stopped_count = 0
+
+        account_lines = []
+        for i, row in enumerate(accounts, 1):
+            service = self.service(row["id"])
+            summary = service.summary()
+
+            if summary["active"]:
+                if summary["phase"] == "sleeping":
+                    sleeping_count += 1
+                else:
+                    active_count += 1
+            else:
+                stopped_count += 1
+
+            is_selected = row["id"] == selected_id
+            tag = " [Dipilih]" if is_selected else ""
+            name = row["name"]
+            icon = summary["icon"]
+            status_desc = summary["status_text"]
+
+            lines = [f"{i}. {icon} {name}{tag}", f"   • Status: {status_desc}"]
+
+            wallet_part = f"Saldo {koin(summary['wallet'])}" if summary["wallet"] is not None else None
+            trips_part = f"{summary['trips']} trip" if summary["trips"] is not None else None
+            if wallet_part and trips_part:
+                lines.append(f"   • {wallet_part} · {trips_part}")
+            elif wallet_part:
+                lines.append(f"   • {wallet_part}")
+            elif trips_part:
+                lines.append(f"   • {trips_part}")
+
+            if any(summary[k] is not None for k in ("fuel", "condition", "data")):
+                f_str = f"⛽ {summary['fuel']}%" if summary["fuel"] is not None else "⛽ -%"
+                c_str = f"🔧 {summary['condition']}%" if summary["condition"] is not None else "🔧 -%"
+                d_str = f"📶 {summary['data']}%" if summary["data"] is not None else "📶 -%"
+                lines.append(f"   • Resource: {f_str} · {c_str} · {d_str}")
+
+            account_lines.append("\n".join(lines))
+
+        header = (
+            f"📊 Dashboard Akun ({len(accounts)} Akun)\n"
+            f"🟢 Berjalan: {active_count} · 💤 Tidur: {sleeping_count} · ⚪ Berhenti: {stopped_count}\n\n"
+        )
+        body = "\n\n".join(account_lines)
+
+        buttons = []
+        row_buttons = []
+        for i, acc in enumerate(accounts, 1):
+            btn_text = f"Pilih {i}. {acc['name'][:10]}"
+            row_buttons.append({"text": btn_text, "callback_data": f"select:{acc['id']}"})
+            if len(row_buttons) == 2:
+                buttons.append(row_buttons)
+                row_buttons = []
+        if row_buttons:
+            buttons.append(row_buttons)
+
+        buttons.append([{"text": "🔄 Refresh", "callback_data": "dashboard"}])
+
+        await self.reply(
+            owner,
+            header + body,
+            {"inline_keyboard": buttons},
+        )
 
     async def prompt(self, owner, state, text):
         self.pending[owner] = state
@@ -740,6 +823,10 @@ class MultiAccountService:
     async def _dispatch(self, owner, text, callback):
         if callback and text.startswith("access:"):
             await self.home(owner)
+            return
+        if (text in {"Dashboard", "/dashboard"} and not callback) or (callback and text == "dashboard"):
+            self.pending.pop(owner, None)
+            await self.dashboard(owner)
             return
         if text == "Auto" and not callback:
             self.pending.pop(owner, None)

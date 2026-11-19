@@ -1259,3 +1259,26 @@ def test_access_request_schema_upgrade_preserves_existing_accounts_and_limits(ma
     assert upgraded.quota(222) == 4
     assert upgraded.value("max_active_workers") == 2
     assert upgraded.access_requests() == []
+
+
+@pytest.mark.asyncio
+async def test_dashboard_displays_all_accounts_summary_and_switches_selection(managed):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    first = manager.registry.selected(111)
+    second = manager.registry.create(111, "Akun Kedua")
+
+    manager.registry.select(111, first["id"])
+    await manager.dispatch(111, "Dashboard")
+    manager.reply.assert_awaited()
+    text = manager.reply.call_args.args[1]
+    assert "📊 Dashboard Akun (2 Akun)" in text
+    assert "Utama [Dipilih]" in text
+    assert "Akun Kedua" in text
+
+    buttons = manager.reply.call_args.args[2]["inline_keyboard"]
+    assert any(b["callback_data"] == f"select:{second['id']}" for row in buttons for b in row)
+    assert any(b["callback_data"] == "dashboard" for row in buttons for b in row)
+
+    await manager.dispatch(111, "dashboard", callback=True)
+    assert "📊 Dashboard Akun (2 Akun)" in manager.reply.call_args.args[1]

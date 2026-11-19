@@ -72,6 +72,7 @@ async def test_telegram_private_message_and_sanitized_network_error(settings):
         }
     ]
     assert set(BUTTON_COMMANDS.values()) == {
+        "dashboard",
         "import_cookie",
         "run",
         "stop",
@@ -919,3 +920,15 @@ def test_profit_omits_estimate_when_coverage_or_expense_details_are_partial(sett
         )
         assert "Estimasi laba Ojol" not in report
         assert "Belanja produk Ojol ditemukan (parsial) 0,5 koin" in report
+
+
+def test_control_summary_and_dashboard_command(settings):
+    service = ControlService(settings)
+    summary = service.summary()
+    assert summary["active"] is False
+    assert summary["has_cookie"] is False
+    assert summary["icon"] == "⚪"
+
+    dash = asyncio.run(service.command("dashboard"))
+    assert "📊 Dashboard Akun" in dash
+    assert "Belum hubungkan cookie" in dash

@@ -20,6 +20,7 @@ from .identity import cached_profile
 from .models import now
 
 BUTTON_COMMANDS = {
+    "Dashboard": "dashboard",
     "Import Cookie": "import_cookie",
     "Jalankan Ojol": "run",
     "Hentikan Ojol": "stop",
@@ -40,9 +41,10 @@ def keyboard_main():
     """Menu utama: navigasi dan aksi umum."""
     return _kb(
         [
-            [{"text": "Akun Saya"}, {"text": "Status"}],
+            [{"text": "Dashboard"}, {"text": "Status"}],
+            [{"text": "Akun Saya"}, {"text": "Auto"}],
             [{"text": "Jalankan Ojol"}, {"text": "Hentikan Ojol"}],
-            [{"text": "Auto"}, {"text": "Import Cookie"}],
+            [{"text": "Import Cookie"}],
             [{"text": "Cari Rumah Kotor"}, {"text": "Cari Rumah Mampir"}],
             [{"text": "Pengaturan"}, {"text": "Bantuan"}],
         ]
@@ -53,7 +55,7 @@ def keyboard_accounts():
     """Menu Akun Saya: kelola akun."""
     return _kb(
         [
-            [{"text": "Tambah Akun"}],
+            [{"text": "Dashboard"}, {"text": "Tambah Akun"}],
             [{"text": "Menu Utama"}, {"text": "Bantuan"}],
         ]
     )
@@ -63,9 +65,9 @@ def keyboard_status():
     """Setelah lihat status: opsi lanjutan."""
     return _kb(
         [
-            [{"text": "Laba Bersih"}, {"text": "Jalankan Ojol"}],
-            [{"text": "Hentikan Ojol"}, {"text": "Auto"}],
-            [{"text": "Menu Utama"}],
+            [{"text": "Dashboard"}, {"text": "Laba Bersih"}],
+            [{"text": "Jalankan Ojol"}, {"text": "Hentikan Ojol"}],
+            [{"text": "Auto"}, {"text": "Menu Utama"}],
         ]
     )
 
