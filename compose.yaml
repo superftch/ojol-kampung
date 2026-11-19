@@ -17,7 +17,6 @@ services:
       - warp-state:/var/lib/cloudflare-warp
     devices:
       - /dev/net/tun:/dev/net/tun
-    cap_drop: [ALL]
     cap_add: [NET_ADMIN, NET_RAW]
     sysctls:
       net.ipv4.ip_forward: "1"
