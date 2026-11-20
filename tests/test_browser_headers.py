@@ -68,11 +68,15 @@ def test_browser_headers_static_and_dynamic_variation(tmp_path):
         assert headers["User-Agent"] == static_ua
         assert headers["sec-ch-ua"] == static_ch_ua
         assert headers["sec-ch-ua-platform"] == static_platform
-        assert headers["Origin"] == ORIGIN
+        assert "Origin" not in headers
+        assert "Cache-Control" not in headers
         assert headers["Referer"] == f"{ORIGIN}/kampung"
 
         accept_headers.add(headers["Accept"])
         lang_headers.add(headers["Accept-Language"])
+
+    post_headers = api.browser_headers("/api/ojol", method="POST")
+    assert post_headers["Origin"] == ORIGIN
 
     # Headers must stay consistent across requests within the same session
     assert len(accept_headers) == 1
@@ -86,6 +90,9 @@ def test_browser_headers_endpoint_specific(tmp_path):
     assert "text/html" in html_headers["Accept"]
     assert html_headers["Sec-Fetch-Dest"] == "document"
     assert html_headers["Sec-Fetch-Mode"] == "navigate"
+    assert html_headers["Sec-Fetch-User"] == "?1"
+    assert html_headers["Upgrade-Insecure-Requests"] == "1"
+    assert "Origin" not in html_headers
     assert "Priority" not in html_headers
 
     script_headers = api.browser_headers("/_next/static/chunks/app.js")
@@ -125,7 +132,7 @@ async def test_request_sends_browser_headers_and_keeps_static_ua(tmp_path):
         assert req.headers["User-Agent"] == static_ua
         assert req.headers["sec-ch-ua"] == static_ch
         assert req.headers["Sec-Fetch-Site"] == "same-origin"
-        assert req.headers["Origin"] == ORIGIN
+        assert "Origin" not in req.headers
         assert req.headers["Referer"] == f"{ORIGIN}/kampung"
         assert "Accept" in req.headers
         assert "Accept-Language" in req.headers

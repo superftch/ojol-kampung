@@ -508,6 +508,7 @@ class OjolHttpApi:
         self.usage = None
         self.retries = 0
         self.expires_at = None
+        self._warmed_up = not self.owns_client
         self.browser_identity = ensure_browser_identity(self.directory)
 
     def browser_headers(self, path: str, method: str = "GET") -> dict:
@@ -526,10 +527,13 @@ class OjolHttpApi:
             "Sec-Fetch-Site": "same-origin",
             "Sec-Fetch-Mode": "navigate" if is_html else ("no-cors" if is_script else "cors"),
             "Sec-Fetch-Dest": "document" if is_html else ("script" if is_script else "empty"),
-            "Origin": ORIGIN,
             "Referer": f"{ORIGIN}/kampung",
-            "Cache-Control": "no-cache",
         }
+        if method.upper() != "GET":
+            headers["Origin"] = ORIGIN
+        if is_html:
+            headers["Sec-Fetch-User"] = "?1"
+            headers["Upgrade-Insecure-Requests"] = "1"
         if "sec_ch_ua" in self.browser_identity:
             headers["sec-ch-ua"] = self.browser_identity["sec_ch_ua"]
         if "sec_ch_ua_mobile" in self.browser_identity:
@@ -791,10 +795,26 @@ class OjolHttpApi:
         return result
 
     async def snapshot(self):
+        if not self._warmed_up:
+            self._warmed_up = True
+            try:
+                await self.request("/kampung", text=True)
+            except HttpCoreError as exc:
+                if exc.category == "auth":
+                    raise
+            await asyncio.sleep(random.uniform(0.4, 1.2))
+
+        async def staggered_get(index, path):
+            if self.owns_client and index > 0:
+                await asyncio.sleep(index * random.uniform(0.03, 0.11))
+            return await self.request(path)
+
         ojol, me, needs, clock = await asyncio.gather(
             *(
-                self.request(path)
-                for path in ("/api/ojol", "/api/game/me", "/api/kebutuhan", "/api/time")
+                staggered_get(index, path)
+                for index, path in enumerate(
+                    ("/api/ojol", "/api/game/me", "/api/kebutuhan", "/api/time")
+                )
             )
         )
         self.config_version = me["configVersion"]

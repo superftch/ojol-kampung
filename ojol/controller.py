@@ -53,6 +53,7 @@ class Controller:
         self.study_retry_at = {}
         self.garden_retry_at = 0
         self.gym_retry_at = 0
+        self.next_break_at = random.randint(5, 8)
         self.maintenance_file = Path(
             os.environ.get("OJOL_MAINTENANCE_FILE", str(settings.runtime_dir / SCHEDULE_FILE))
         )
@@ -191,6 +192,7 @@ class Controller:
 
     async def verify(self, predicate, timeout=12):
         deadline = time.monotonic() + timeout
+        poll = 0.75 if self.settings.env == "testing" else random.uniform(0.95, 1.55)
         while time.monotonic() < deadline:
             self.check_cancel()
             state = await self.read_snapshot()
@@ -199,8 +201,9 @@ class Controller:
                 state = self.state
             if predicate(state):
                 return state
-            poll = 0.75 if self.settings.env == "testing" else random.uniform(0.95, 1.65)
             await asyncio.sleep(poll)
+            if self.settings.env != "testing":
+                poll = min(2.5, poll * random.uniform(1.1, 1.3))
         raise VerificationPending("Perubahan status belum terbukti; memeriksa ulang hasil aksi")
 
     async def wait_for_maintenance(self):
@@ -525,6 +528,8 @@ class Controller:
             await self.wait(self.settings.idle_poll_seconds)
 
     async def run(self, dry_run=False, *, auto_start=False):
+        if auto_start and self.settings.env != "testing":
+            await self.human_delay(3.0, 15.0)
         while True:
             self.check_cancel()
             await self.wait_for_maintenance()
@@ -688,4 +693,12 @@ class Controller:
                 )
             else:
                 self.active_trip = None
+                if (
+                    step.action == "search"
+                    and self.settings.env != "testing"
+                    and self.completed >= self.next_break_at
+                ):
+                    self.next_break_at = self.completed + random.randint(5, 8)
+                    await self.wait(random.uniform(15, 45))
+                    continue
                 await self.job_action(self.state, step.action)

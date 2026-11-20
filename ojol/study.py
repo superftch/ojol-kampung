@@ -2,6 +2,7 @@
 
 import ast
 import json
+import random
 import re
 import time
 from datetime import timedelta
@@ -238,10 +239,14 @@ async def run_learning(controller):
         c.spent += price
         try:
             if kind == "study":
+                if hasattr(c, "human_delay"):
+                    await c.human_delay(1.2, 2.8)
                 result = await c.ui.study_start(
                     mode, track, price, c.state.wallet, c.settings.min_balance
                 )
             else:
+                if hasattr(c, "human_delay"):
+                    await c.human_delay(3.5, 8.0)
                 result = await c.ui.study_quiz(mode, payload["visit_id"], track)
             payload["receipt"] = result
             with c.journal.db:
@@ -257,7 +262,8 @@ async def run_learning(controller):
             }:
                 c.journal.reject(action)
                 c.spent -= price
-                c.study_retry_at[mode] = time.monotonic() + 300
+                retry_offset = 300 if c.settings.env == "testing" else 300 + random.uniform(-25, 60)
+                c.study_retry_at[mode] = time.monotonic() + retry_offset
                 return False
             c.journal.settle(action, False)
             if isinstance(exc, HttpCoreError) and exc.category in {"uncertain", "transport"}:
