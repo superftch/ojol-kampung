@@ -311,4 +311,3 @@ def test_parse_snapshot_detects_shift_done_from_text():
     }
     snapshot = parse_snapshot(raw)
     assert snapshot.ojol_shift_done is True
-

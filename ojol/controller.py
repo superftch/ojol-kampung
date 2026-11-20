@@ -144,9 +144,7 @@ class Controller:
         self.report("tidur" if sleeping else "menunggu", seconds=round(seconds, 3))
         deadline = time.monotonic() + seconds
         last_presence = time.monotonic()
-        presence_interval = (
-            random.uniform(28, 48) if self.settings.env != "testing" else 35
-        )
+        presence_interval = random.uniform(28, 48) if self.settings.env != "testing" else 35
         while time.monotonic() < deadline:
             self.check_cancel()
             await asyncio.sleep(min(0.25, max(0, deadline - time.monotonic())))
@@ -157,9 +155,7 @@ class Controller:
                     except Exception:
                         pass
                 last_presence = time.monotonic()
-                presence_interval = (
-                    random.uniform(28, 48) if self.settings.env != "testing" else 35
-                )
+                presence_interval = random.uniform(28, 48) if self.settings.env != "testing" else 35
         self.wait_until = None
 
     async def read_snapshot(self):
@@ -656,7 +652,9 @@ class Controller:
                         not await self.purchase(self.state, need)
                         and auto_flags(self.settings.runtime_dir)[need]
                     ):
-                        retry_offset = 300 if self.settings.env == "testing" else 300 + random.uniform(-25, 60)
+                        retry_offset = (
+                            300 if self.settings.env == "testing" else 300 + random.uniform(-25, 60)
+                        )
                         self.need_retry_at[need] = time.monotonic() + retry_offset
                     continue
             if self.state.phase == "idle" and await run_gym(self):

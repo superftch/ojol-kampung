@@ -2235,8 +2235,7 @@ def test_proxy_resolution_and_settings_validation(tmp_path, settings):
     assert resolve_proxy_url(tmp_path, "http://127.0.0.1:8080") == "http://127.0.0.1:8080"
     (tmp_path / "proxy.txt").write_text("socks5://user:pass@10.0.0.2:1080\n")
     assert (
-        resolve_proxy_url(tmp_path, "http://127.0.0.1:8080")
-        == "socks5://user:pass@10.0.0.2:1080"
+        resolve_proxy_url(tmp_path, "http://127.0.0.1:8080") == "socks5://user:pass@10.0.0.2:1080"
     )
     updated = settings.model_copy(update={"proxy_url": "http://127.0.0.1:8888"})
     assert updated.proxy_url == "http://127.0.0.1:8888"
@@ -2285,5 +2284,3 @@ async def test_controller_human_delay_respects_env_and_sleeps_in_local(settings,
         assert sleep_mock.await_count >= 1
     finally:
         journal.close()
-
-
