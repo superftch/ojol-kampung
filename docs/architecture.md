@@ -1,17 +1,17 @@
 # Arsitektur HTTP multi-account
 
-Keputusan 11 November 2026 WIB: **satu akun terdaftar memiliki maksimal satu subprocess worker aktif; satu container aplikasi menampung control service, worker akun, MCP dan cloudflared, dengan network namespace dibagi ke Cloudflare Mesh/WARP sidecar**. Egress seluruh container aplikasi melewati WARP; semua akun memakai egress bersama, bukan IP publik unik per akun. Chrome/Browser Harness dan seluruh fallback dihapus. Error HTTP terminal menghentikan akun; tidak pindah backend.
+Keputusan 11 November 2026 WIB: **satu akun terdaftar memiliki maksimal satu subprocess worker aktif; satu container aplikasi menampung control service, worker akun dan cloudflared, dengan network namespace dibagi ke Cloudflare Mesh/WARP sidecar**. Egress seluruh container aplikasi melewati WARP; semua akun memakai egress bersama, bukan IP publik unik per akun. Chrome/Browser Harness dan seluruh fallback dihapus. Error HTTP terminal menghentikan akun; tidak pindah backend.
 
 ## Alur
 
 ```text
 Telegram private chat
   -> satu getUpdates poller + whitelist/admin + akun terpilih
-    -> akun A: ControlService -> subprocess ADK -> stdio HTTP MCP -> game
-    -> akun B: ControlService -> subprocess ADK -> stdio HTTP MCP -> game
+    -> akun A: ControlService -> subprocess worker -> adapter HTTP -> game
+    -> akun B: ControlService -> subprocess worker -> adapter HTTP -> game
 HTTPS import /a/<ID>/...
   -> whitelist pemilik + tiket sekali pakai + sesi/CSRF akun
-    -> verifikasi HTTP MCP -> cookie file akun diganti atomik
+    -> verifikasi HTTP -> cookie file akun diganti atomik
 ```
 
 `accounts.sqlite3` memuat user yang diizinkan, pemilik akun, akun terpilih, kuota dan override admin. Admin adalah `OJOL_TELEGRAM_CHAT_ID` dari env induk; settings akun memakai Telegram ID pemilik untuk notifikasi. Penggantian env worker hanya mengubah runtime, penerima dan label akun, bukan otoritas admin registry.
@@ -38,13 +38,13 @@ Sesi form dibatasi path akun, HttpOnly, SameSite dan Secure pada HTTPS. CSRF ber
 | Subprocess per akun | Reuse worker/lock saat ini; sesi/journal/error per akun | UID, filesystem, batas CPU/RAM container masih bersama | Dipakai |
 | Container per akun | Isolasi OS dan batas resource per akun | Perlu orchestrator, provisioning secret/volume dan pemantauan container | Tunda sampai diperlukan |
 
-Default3worker adalah pembatas operasional awal, bukan hasil pengukuran. Container Compose dibatasi2CPU/2GiB; total RAM juga mencakup interpreter ADK dan MCP per akun. [Batas resource Docker harus dikonfigurasi eksplisit](https://docs.docker.com/engine/containers/resource_constraints/). Ukur RSS/CPU/latensi dan kegagalan429 pada server sebelum menaikkan kuota. Jika jumlah akun besar, kebutuhan isolasi OS muncul, atau resource per user harus dijamin, pindahkan worker ke service/container terkelola dengan volume akun terpisah.
+Default3worker adalah pembatas operasional awal, bukan hasil pengukuran. Container Compose dibatasi2CPU/2GiB; total RAM juga mencakup interpreter Python dan klien HTTP per akun. [Batas resource Docker harus dikonfigurasi eksplisit](https://docs.docker.com/engine/containers/resource_constraints/). Ukur RSS/CPU/latensi dan kegagalan429 pada server sebelum menaikkan kuota. Jika jumlah akun besar, kebutuhan isolasi OS muncul, atau resource per user harus dijamin, pindahkan worker ke service/container terkelola dengan volume akun terpisah.
 
 ## HTTP dan transaksi
 
-Empat tool MCP: snapshot, katalog toko tetap, beli satu item, aksi Ojol. Adapter hanya mengizinkan origin/path/metode game yang diperiksa. Snapshot membaca wallet/Ojol/kebutuhan/waktu server; milli-koin memakai Decimal, arrival memakai waktu server. Daftar toko berasal dari `ojol/shop_locations.py` berdasarkan desa dan resource. Planner menyaring rencana isi ulang yang layak berdasarkan katalog terkini. Rotasi menurut jurnal akun berlaku antar toko Akademis.ai satu tipe. Toko cadangan dipilih berdasarkan biaya jika tak ada rencana Akademis.ai yang layak. Pembelian memeriksa ulang desa, fase, saldo, resource, dan katalog sebelum POST. Efek item berasal dari data bundle client tanpa mengeksekusi JavaScript, cache mengikuti `configVersion`.
+Lima aksi adapter: snapshot, katalog toko tetap, beli satu item, aksi Ojol dan aktivitas pendukung. Adapter hanya mengizinkan origin/path/metode game yang diperiksa. Snapshot membaca wallet/Ojol/kebutuhan/waktu server; milli-koin memakai Decimal, arrival memakai waktu server. Daftar toko berasal dari `ojol/shop_locations.py` berdasarkan desa dan resource. Planner menyaring rencana isi ulang yang layak berdasarkan katalog terkini. Rotasi menurut jurnal akun berlaku antar toko Akademis.ai satu tipe. Toko cadangan dipilih berdasarkan biaya jika tak ada rencana Akademis.ai yang layak. Pembelian memeriksa ulang desa, fase, saldo, resource, dan katalog sebelum POST. Efek item berasal dari data bundle client tanpa mengeksekusi JavaScript, cache mengikuti `configVersion`.
 
-GET sementara gagal dicoba3kali dengan backoff1/2detik. Auth/redirect ditolak. POST satu percobaan; timeout write tidak menyebabkan retry. Batas request server MCP30detik, transport MCP35detik dan tunggu worker40detik. Stop diperiksa selama menunggu tool dan countdown.
+GET sementara gagal dicoba3kali dengan backoff1/2detik. Auth/redirect ditolak. POST satu percobaan; timeout write tidak menyebabkan retry. Batas request API30detik dan tunggu worker40detik. Stop diperiksa selama menunggu aksi dan countdown.
 
 Journal menulis aksi pending sebelum write, memverifikasi saldo/resource/receipt sesudahnya, lalu membukukan keuangan. Rekonsiliasi bersama dijalankan sebelum sesi live baru dan setelah timeout/hasil ambigu aksi Ojol. Ledger pending/uncertain menahan transaksi baru sambil worker memeriksa ulang setiap 10 detik, tanpa admin atau replay POST. Receipt ID trip membuktikan klaim; snapshot jurnal lama tanpa ID memakai rute/waktu/payout. Dua observasi stabil dapat menyerahkan klaim lama ke trip/status sekarang sebagai handed_off tanpa atribusi ongkos. Trip lama yang masih sama tetap menunggu. Gangguan transport saat rekonsiliasi boleh dicoba ulang; auth, Stop, dan maintenance tetap dihormati. Saldo minimum production20 dan batas sesi tetap berlaku.
 
@@ -59,4 +59,4 @@ Startup memeriksa izin operator, cookie, whitelist dan kapasitas. Akun lain teta
 
 Satu replica control service per volume/bot. Filesystem akun adalah pemisahan aplikasi, bukan sandbox OS: proses aplikasi tepercaya memakai UID sama. Resource container adalah batas bersama. File cookie/registry privat, tidak masuk image/Git/log. Domain production mengalahkan override public-url lokal lama. TLS publik ditangani Cloudflare; port6080 hanya loopback host, metrics2000 hanya loopback container.
 
-Test menggunakan runner `.env.testing` khusus dengan env shell dibuang dan network diblokir. Cakupan: whitelist/admin, ownership/callback/link, kuota paralel, batas worker, revoke/arsip/restore, sesi/CSRF, env child, HTTP MCP stdio, ledger dan rekonsiliasi tanpa replay. Pengujian offline tidak membuktikan kapasitas server atau kondisi endpoint game/Telegram live.
+Test menggunakan runner `.env.testing` khusus dengan env shell dibuang dan network diblokir. Cakupan: whitelist/admin, ownership/callback/link, kuota paralel, batas worker, revoke/arsip/restore, sesi/CSRF, env child, adapter HTTP, ledger dan rekonsiliasi tanpa replay. Pengujian offline tidak membuktikan kapasitas server atau kondisi endpoint game/Telegram live.

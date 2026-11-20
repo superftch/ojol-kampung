@@ -505,7 +505,7 @@ class ControlService:
         if self.settings.env == "testing" or not (directory / "http-session.json").is_file():
             issue = "Sesi game belum tersedia"
         else:
-            from .http_core import HttpUI
+            from .ui import HttpUI
 
             try:
                 async with asyncio.timeout(18):
@@ -603,6 +603,17 @@ class ControlService:
             )
         return "\n".join(lines)
 
+    def mode_buttons(self):
+        prefix = f"acct:{self.account_id}:" if self.account_id else ""
+        return {
+            "inline_keyboard": [
+                [
+                    {"text": "🚗 Berkendara", "callback_data": prefix + "mode:kendara"},
+                    {"text": "🤖 Otomatis", "callback_data": prefix + "mode:otomatis"},
+                ]
+            ]
+        }
+
     def profit_buttons(self, day=None):
         day = report_date(day)
         prefix = f"acct:{self.account_id}:" if self.account_id else ""
@@ -633,11 +644,35 @@ class ControlService:
             ticket = self.access.issue("ticket")
             return f"{self.public_url()}{self.url_prefix}/access/{ticket}"
 
-    async def command(self, command, *, auto_start=False):
+    async def command(self, command, *, auto_start=False, mode=None):
         if command in GAME_COMMANDS and (maintenance := held_window(self.maintenance_file)):
             if auto_start:
                 self.auto_start_pending = True
             return maintenance.message()
+        if command == "resume":
+            from contextlib import closing
+
+            from .journal import Journal
+
+            skipped = []
+            with closing(Journal(self.settings.runtime_dir)) as journal:
+                for row in journal.unresolved():
+                    journal.skip(row["id"])
+                    skipped.append(row["id"])
+            text = (
+                "⏩ Aksi belum pasti dilewati: " + ", ".join(f"#{row}" for row in skipped) + ".\n\n"
+                if skipped
+                else "✅ Tidak ada aksi tertahan.\n\n"
+            )
+            return text + await self.command("run")
+        if command == "choose_mode":
+            return (
+                "🏍️ Pilih mode Ojol\n\n"
+                "🚗 Berkendara — kamu kendarai sendiri di peta: tanpa batas 12 jam, "
+                "bebas istirahat wajib, bot memilih order dengan tarif tertinggi.\n"
+                "🤖 Otomatis — game yang menyetir: mengikuti kuota 12 jam dan "
+                "jeda istirahat wajib 30 menit.\n\nPilih di tombol di bawah."
+            )
         if command == "import_cookie":
             url = await self.cookie_link()
             browser_hint = (
@@ -766,18 +801,28 @@ class ControlService:
                         "OJOL_ACCOUNT_ID": self.account_id or "",
                         "OJOL_WORKER_AUTO_START": "1" if auto_start else "0",
                         "OJOL_MAINTENANCE_FILE": str(self.maintenance_file),
+                        **({"OJOL_OJOL_MODE": mode} if mode in {"kendara", "otomatis"} else {}),
                     },
                 )
-                return "▶️ Bot sedang memulai\n\nAktivitas mengikuti pilihan di menu Auto. Tekan Status untuk melihat perkembangannya."
+                label = (
+                    "Berkendara" if mode == "kendara" else "Otomatis" if mode == "otomatis" else ""
+                )
+                return (
+                    "▶️ Bot sedang memulai"
+                    + (f" (mode {label})\n\n" if label else "\n\n")
+                    + "Aktivitas mengikuti pilihan di menu Auto. Tekan Status untuk melihat perkembangannya."
+                )
         return "Pilih aktivitas lewat tombol di bawah. Buka Akun Saya untuk mengganti akun."
 
-    async def execute(self, command):
+    async def execute(self, command, *, mode=None):
         try:
-            response = await self.command(command)
+            response = await self.command(command, mode=mode)
             if command == "status":
                 markup = keyboard_status()
             elif command == "profit" or command.startswith("profit:"):
                 markup = self.profit_buttons(command.split(":", 1)[1] if ":" in command else None)
+            elif command == "choose_mode":
+                markup = self.mode_buttons()
             else:
                 markup = None
             queue_notice(self.settings, response, reply_markup=markup)
@@ -823,10 +868,17 @@ class ControlService:
                                 if not await acknowledge_callback(api, callback["id"]):
                                     continue
                                 command = callback.get("data", "")
-                                if command == "choose_date" or re.fullmatch(
-                                    r"profit:\d{4}-\d{2}-\d{2}", command
+                                mode = None
+                                if re.fullmatch(r"mode:(kendara|otomatis)", command):
+                                    mode = command.split(":", 1)[1]
+                                    command = "run"
+                                if (
+                                    command == "run"
+                                    or command == "resume"
+                                    or command == "choose_date"
+                                    or re.fullmatch(r"profit:\d{4}-\d{2}-\d{2}", command)
                                 ):
-                                    await self.execute(command)
+                                    await self.execute(command, mode=mode)
                             else:
                                 text = update["message"].get("text", "").strip()
                                 if text in BUTTON_COMMANDS:
@@ -1033,7 +1085,6 @@ def create_app(settings, service=None):
     async def health():
         return {
             "service": "ok",
-            "core": "http",
             "tunnel_enabled": settings.tunnel_enabled,
             "tunnel_process_alive": manager.hub.tunnel_alive()
             if manager
@@ -1137,7 +1188,6 @@ def create_app(settings, service=None):
                     STAGE,
                     {
                         "cause": type(exc).__name__,
-                        "mcp_tool": getattr(exc, "operation", None),
                         "http_category": getattr(exc, "category", None),
                         "account_id": service.account_id,
                     },

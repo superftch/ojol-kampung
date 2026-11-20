@@ -22,8 +22,9 @@ from .models import now
 BUTTON_COMMANDS = {
     "Dashboard": "dashboard",
     "Import Cookie": "import_cookie",
-    "Jalankan Ojol": "run",
+    "Jalankan Ojol": "choose_mode",
     "Hentikan Ojol": "stop",
+    "Lanjutkan": "resume",
     "Status": "status",
     "Laba Bersih": "profit",
     "Cari Rumah Kotor": "cleanup_scan",
@@ -289,7 +290,14 @@ def event_text(event, data):
             return "🏁 Trip selesai."
         return f"🏁 Trip selesai otomatis. Ongkos {koin(data['income'])} sudah masuk."
     if event == "maintenance":
+        target = data.get("target")
+        if data.get("sampai") == "manual":
+            if target == "ojol":
+                return "🛠 Aktivitas Auto Ojol dijeda secara manual untuk maintenance. Fitur auto kebutuhan lain tetap berjalan normal."
+            return "🛠 Aktivitas game dijeda secara manual untuk maintenance (ON)."
         end = datetime.fromisoformat(data["sampai"]).astimezone(WIB)
+        if target == "ojol":
+            return f"🛠 Aktivitas Auto Ojol dijeda untuk maintenance sampai {end:%d-%m-%Y pukul %H:%M} WIB. Fitur auto kebutuhan lain tetap berjalan normal."
         return f"🛠 Aktivitas game dijeda untuk maintenance sampai {end:%d-%m-%Y pukul %H:%M} WIB."
     if event == "maintenance_selesai":
         return "✅ Maintenance selesai. Bot memeriksa status game sebelum melanjutkan aktivitas."
@@ -324,9 +332,9 @@ def _error_guidance(details):
         )
     elif details.get("http_category") == "reconciliation_failed":
         return (
-            "❌ Auto rekonsiliasi gagal setelah 3 percobaan. Bot dihentikan.\n\n"
-            "Hasil transaksi terakhir masih belum pasti. Cek Status dan riwayat transaksi "
-            "di game sebelum menjalankan ulang."
+            "❌ Auto rekonsiliasi gagal setelah 6 percobaan. Bot dihentikan.\n\n"
+            "Game mungkin sedang terbuka di perangkat lain. Keluar dari game, lalu tekan "
+            "tombol Lanjutkan (atau Jalankan Ojol) untuk melanjutkan."
         )
     elif (
         details.get("http_category") == "uncertain"

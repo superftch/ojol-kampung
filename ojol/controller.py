@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import random
 import re
 import time
 from datetime import timedelta
@@ -70,11 +71,19 @@ class Controller:
         ):
             raise StopRequested("Batas durasi sesi tercapai")
 
+    async def human_pause(self, low=0.4, high=1.6):
+        """Jeda acak sebelum klik agar ritme mirip manusia.
+        ponytail: konstanta tetap; jadikan setting bila pola bot terdeteksi."""
+        self.check_cancel()
+        try:
+            await asyncio.wait_for(self.cancel.wait(), timeout=random.uniform(low, high))
+        except asyncio.TimeoutError:
+            pass
+        self.check_cancel()
+
     def report(self, event, **data):
         self.last_event = event
         self.journal.event(self.run_id, event, data)
-        message = {"time": now().isoformat(), "event": event, **data}
-        print(json.dumps(message, ensure_ascii=False, default=str), flush=True)
         status = {
             "pid": os.getpid(),
             "run_id": self.run_id,
@@ -83,7 +92,6 @@ class Controller:
             "stage": self.stage,
             "spent": str(self.spent),
             "last_action": self.last_action,
-            "core": getattr(self.ui, "core_name", "http_mcp"),
             "completed": self.completed,
             "wait_until": self.wait_until,
             "profit": self.journal.profit(self.run_id),
@@ -190,15 +198,30 @@ class Controller:
     async def wait_for_maintenance(self):
         window = held_window(self.maintenance_file)
         if window is None:
+            if getattr(self, "in_maintenance", False):
+                self.in_maintenance = False
+                self.report("maintenance_selesai")
             return
-        self.stage = "maintenance"
-        self.report("maintenance", sampai=window.end.isoformat() if window.end else "manual")
-        self.active_trip = None
-        self.busy_since = None
-        while held_window(self.maintenance_file):
-            self.check_cancel()
-            await asyncio.sleep(1)
-        self.report("maintenance_selesai")
+        if getattr(window, "target", "all") == "all":
+            self.stage = "maintenance"
+            self.report("maintenance", sampai=window.end.isoformat() if window.end else "manual")
+            self.active_trip = None
+            self.busy_since = None
+            while held_window(self.maintenance_file):
+                self.check_cancel()
+                await asyncio.sleep(1)
+            self.report("maintenance_selesai")
+            return
+        if not getattr(self, "in_maintenance", False):
+            self.in_maintenance = True
+            self.stage = "maintenance"
+            self.report(
+                "maintenance",
+                sampai=window.end.isoformat() if window.end else "manual",
+                target="ojol",
+            )
+            self.active_trip = None
+            self.busy_since = None
 
     async def purchase(self, before, resource):
         self.check_cancel()
@@ -206,21 +229,44 @@ class Controller:
             return False
         is_need = resource in NEEDS
         feature = resource if is_need else "ojol"
-        if held_window(self.maintenance_file) or not auto_flags(self.settings.runtime_dir)[feature]:
-            return False
+        window = held_window(self.maintenance_file)
+        is_global_maint = window is not None and getattr(window, "target", "all") == "all"
+        is_ojol_maint = (
+            getattr(before, "ojol_maintenance", False)
+            or auto_flags(self.settings.runtime_dir).get("ojol") == "maintenance"
+            or bool(window)
+        )
+        if is_need:
+            if is_global_maint or not auto_flags(self.settings.runtime_dir)[feature]:
+                return False
+        else:
+            if (
+                is_global_maint
+                or is_ojol_maint
+                or not auto_flags(self.settings.runtime_dir)["ojol"]
+            ):
+                return False
         current = before.resource_value(resource)
         self.stage = f"shop.preview.{resource}"
         try:
             shops = await self.ui.preview_shops(resource)
         except HttpCoreError as exc:
-            if held_window(self.maintenance_file):
+            window = held_window(self.maintenance_file)
+            if window and (getattr(window, "target", "all") == "all" or not is_need):
                 return False
             if is_need and exc.category != "auth":
                 queue_error(self.settings, exc, self.stage, stop_worker=False)
                 return False
             raise
-        if held_window(self.maintenance_file) or not auto_flags(self.settings.runtime_dir)[feature]:
-            return False
+        window = held_window(self.maintenance_file)
+        if is_need:
+            if (window and getattr(window, "target", "all") == "all") or not auto_flags(
+                self.settings.runtime_dir
+            )[feature]:
+                return False
+        else:
+            if bool(window) or is_ojol_maint or not auto_flags(self.settings.runtime_dir)["ojol"]:
+                return False
         last_purchases = (
             self.journal.last_purchases_by_shop(resource)
             if sum(shop.preferred for shop in shops) > 1
@@ -331,6 +377,7 @@ class Controller:
         try:
             self.check_cancel()
             self.stage = f"purchase.click.{resource}"
+            await self.human_pause()
             await self.ui.buy(plan.product, before.wallet, current, self.settings.min_balance)
             self.stage = f"purchase.verify.{resource}"
             tolerance = Decimal(0) if is_need else Decimal("0.015")
@@ -404,8 +451,15 @@ class Controller:
         self.check_cancel()
         if is_sleeping(before):
             return
-        if held_window(self.maintenance_file) or (
-            kind != "complete" and not auto_flags(self.settings.runtime_dir)["ojol"]
+        window = held_window(self.maintenance_file)
+        is_ojol_maint = (
+            getattr(before, "ojol_maintenance", False)
+            or auto_flags(self.settings.runtime_dir).get("ojol") == "maintenance"
+            or bool(window)
+        )
+        if (window and getattr(window, "target", "all") == "all") or (
+            kind != "complete"
+            and (not auto_flags(self.settings.runtime_dir)["ojol"] or is_ojol_maint)
         ):
             return
         patterns = {
@@ -431,6 +485,9 @@ class Controller:
         try:
             self.check_cancel()
             self.stage = f"job.{kind}.click"
+            # Klaim ongkos harus langsung setelah arrived; jeda manusia masuk jendela turun (409).
+            if kind != "complete":
+                await self.human_pause()
             await self.ui.job_click(labels[0])
             self.stage = f"job.{kind}.verify"
             if kind == "complete":
@@ -528,13 +585,15 @@ class Controller:
                 await self.wait(self.settings.idle_poll_seconds)
                 continue
             self.stage = "observe.ojol"
+            window = held_window(self.maintenance_file)
+            is_global_maint = window is not None and getattr(window, "target", "all") == "all"
             try:
                 await self.read_snapshot()
             except HttpCoreError:
-                if held_window(self.maintenance_file):
+                if is_global_maint:
                     continue
                 raise
-            if held_window(self.maintenance_file):
+            if is_global_maint:
                 self.state = previous
                 self.snapshot_received_at = previous_received_at
                 continue
@@ -553,10 +612,19 @@ class Controller:
                     wallet=str(self.state.wallet),
                 )
                 continue
-            if not flags["ojol"] and self.state.phase in {"idle", "sleeping"}:
+            is_ojol_maint = (
+                getattr(self.state, "ojol_maintenance", False)
+                or flags.get("ojol") == "maintenance"
+                or bool(window)
+            )
+            if (
+                not flags["ojol"] or flags.get("ojol") == "maintenance" or is_ojol_maint
+            ) and self.state.phase in {"idle", "sleeping"}:
                 step = Step(
                     action="wait",
-                    reason="Auto Ojol nonaktif.",
+                    reason="Fitur Auto Ojol sedang maintenance."
+                    if (flags.get("ojol") == "maintenance" or is_ojol_maint)
+                    else "Auto Ojol nonaktif.",
                     wait_seconds=self.settings.idle_poll_seconds,
                 )
             else:
@@ -587,25 +655,37 @@ class Controller:
                 auto_start = False
             if (
                 flags["ojol"]
+                and not is_ojol_maint
                 and self.settings.max_jobs is not None
                 and self.completed >= self.settings.max_jobs
             ):
                 raise StopRequested("Batas jumlah trip tercapai")
             if step.action == "maintain":
-                deferred = set()
-                while step.action == "maintain":
-                    if await self.purchase(self.state, step.resource):
-                        break
-                    deferred.add(step.resource)
-                    step = next_step(self.state, self.settings, deferred=deferred)
-                if step.action == "maintain":
-                    continue
+                if is_ojol_maint:
+                    step = Step(
+                        action="wait",
+                        reason="Fitur Auto Ojol sedang maintenance.",
+                        wait_seconds=self.settings.idle_poll_seconds,
+                    )
+                else:
+                    deferred = set()
+                    while step.action == "maintain":
+                        if await self.purchase(self.state, step.resource):
+                            break
+                        deferred.add(step.resource)
+                        step = next_step(self.state, self.settings, deferred=deferred)
+                    if step.action == "maintain":
+                        continue
             if step.action == "stop":
                 raise RuntimeError(step.reason)
             if self.state.phase == "idle" and (
                 step.action in {"search", "take"}
                 or not flags["ojol"]
+                or flags.get("ojol") == "maintenance"
+                or is_ojol_maint
                 or getattr(self.state, "ojol_resting", False)
+                or getattr(self.state, "ojol_shift_done", False)
+                or getattr(self.state, "ojol_maintenance", False)
             ):
                 if flags.get("kesehatan") and hasattr(self.ui, "ensure_bpjs"):
                     try:

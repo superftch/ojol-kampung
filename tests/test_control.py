@@ -74,7 +74,8 @@ async def test_telegram_private_message_and_sanitized_network_error(settings):
     assert set(BUTTON_COMMANDS.values()) == {
         "dashboard",
         "import_cookie",
-        "run",
+        "choose_mode",
+        "resume",
         "stop",
         "status",
         "profit",
@@ -833,7 +834,7 @@ def test_status_snapshot_freshness_and_worker_stop_reason(settings, monkeypatch)
 async def test_account_profit_unavailable_does_not_stop_worker(settings, monkeypatch):
     service = ControlService(settings.model_copy(update={"env": "local"}))
     (settings.runtime_dir / "http-session.json").touch()
-    monkeypatch.setattr("ojol.http_core.HttpUI", Mock(side_effect=RuntimeError("unavailable")))
+    monkeypatch.setattr("ojol.ui.HttpUI", Mock(side_effect=RuntimeError("unavailable")))
     await service.execute("profit")
     files = list((settings.runtime_dir / "notifications").glob("*.json"))
     assert len(files) == 1
@@ -893,7 +894,7 @@ async def test_daily_report_uses_only_selected_account_session(settings, monkeyp
             },
         )()
 
-    monkeypatch.setattr("ojol.http_core.HttpUI", core)
+    monkeypatch.setattr("ojol.ui.HttpUI", core)
     service = ControlService(settings.model_copy(update={"env": "local", "runtime_dir": selected}))
     result = await service.account_profit(report_date("2026-11-11"))
     assert fetched == [selected]

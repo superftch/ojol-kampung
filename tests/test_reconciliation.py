@@ -391,20 +391,17 @@ async def test_live_worker_reconciles_before_creating_next_run(settings, state, 
         old_run = journal.start(settings)
         action = journal.begin(old_run, "complete", before, {})
         journal.settle(action, False)
-    ui = SimpleNamespace(snapshot=AsyncMock(return_value=after), core_name="fixture")
+    ui = SimpleNamespace(snapshot=AsyncMock(return_value=after))
     context = AsyncMock()
     context.__aenter__.return_value = ui
     monkeypatch.setattr(app, "HttpUI", lambda *args: context)
-    monkeypatch.setattr(app, "ToolContext", lambda *args: None)
 
     async def run(controller, **kwargs):
         assert not controller.journal.unresolved()
         assert controller.run_id > old_run
 
     monkeypatch.setattr(app.Controller, "run", run)
-    agent = app.OjolAutomationAgent(name="fixture", settings=settings, command="run", live=True)
-    async for _ in agent._run_async_impl(None):
-        pass
+    await app.run_app(settings, "run", live=True)
     ui.snapshot.assert_awaited_once()
     with closing(Journal(settings.runtime_dir)) as journal:
         assert journal.history()["actions"][0]["status"] == "verified"
@@ -595,9 +592,16 @@ async def test_auto_reconcile_fails_after_three_attempts_and_notifies_even_when_
     ui = SimpleNamespace(check_cancel=lambda: None, buy=AsyncMock(), job_click=AsyncMock())
     transport_error = HttpCoreError("fixture connection", category="transport")
     results = {
-        "pending": [state, state, state],
-        "transport": [transport_error, transport_error, transport_error],
-        "mixed": [transport_error, state, transport_error],
+        "pending": [state] * 6,
+        "transport": [transport_error] * 6,
+        "mixed": [
+            transport_error,
+            state,
+            transport_error,
+            transport_error,
+            transport_error,
+            transport_error,
+        ],
     }[failures]
     reconcile_mock = AsyncMock(side_effect=results)
     sleep = AsyncMock()
@@ -609,8 +613,10 @@ async def test_auto_reconcile_fails_after_three_attempts_and_notifies_even_when_
         with pytest.raises(HttpCoreError) as error:
             await wait_until_resolved(ui, journal, settings)
         assert error.value.category == "reconciliation_failed"
-        assert reconcile_mock.await_count == 3
-        assert sleep.await_count == 80  # Two ten-second waits, no wait after the third attempt.
+        assert reconcile_mock.await_count == 6
+        assert (
+            sleep.await_count == 300
+        )  # Five 60-iteration waits of 0.25s; no wait after the sixth attempt.
         assert journal.unresolved()[0]["id"] == action
         assert journal.profit()["pendapatan_ojol"] == "0"
         assert journal.profit()["pengeluaran"] == "0"
@@ -618,20 +624,20 @@ async def test_auto_reconcile_fails_after_three_attempts_and_notifies_even_when_
             journal.start(settings)
         status = json.loads((settings.runtime_dir / "status.json").read_text())
         assert status["event"] == "gagal"
-        assert status["reconciliation_attempt"] == status["reconciliation_limit"] == 3
+        assert status["reconciliation_attempt"] == status["reconciliation_limit"] == 6
         # The CLI uses the same error handler for startup and in-session failures.
         notice = queue_error(settings, error.value, "worker.reconcile")
         data = json.loads(notice.read_text())
         assert data["context"]["action_ids"] == [action]
         assert data["context"]["fatal"] is True
-        assert "gagal setelah 3 percobaan" in queued_text(data)
+        assert "gagal setelah 6 percobaan" in queued_text(data)
         assert "Bot dihentikan" in queued_text(data)
         assert "belum pasti" in queued_text(data)
         assert (settings.runtime_dir / "STOP").exists()
     ui.buy.assert_not_awaited()
     ui.job_click.assert_not_awaited()
     text = ControlService(settings).status()
-    assert "gagal setelah 3 percobaan" in text
+    assert "gagal setelah 6 percobaan" in text
     assert "menunggu rekonsiliasi" not in text
 
 
@@ -663,7 +669,7 @@ async def test_auto_reconcile_can_succeed_on_third_attempt(settings, state, monk
             == after
         )
         assert check.await_count == 3
-        assert sleep.await_count == 80
+        assert sleep.await_count == 120  # Two waits of 60 x 0.25s; no wait after the third attempt.
         assert not journal.unresolved()
         assert journal.profit()["pendapatan_ojol"] == "0.72"
     assert not (settings.runtime_dir / "STOP").exists()

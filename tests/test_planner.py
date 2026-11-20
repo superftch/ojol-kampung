@@ -312,3 +312,34 @@ def test_parse_snapshot_detects_shift_done_from_text():
     snapshot = parse_snapshot(raw)
     assert snapshot.ojol_shift_done is True
 
+
+def test_planner_ojol_maintenance_waits_and_skips_vehicle_maintain(state, settings):
+    from ojol.planner import next_step
+
+    # Low fuel would normally trigger maintain, but ojol_maintenance suppresses it
+    maint_state = state.model_copy(
+        update={
+            "phase": "idle",
+            "fuel": 10,
+            "condition": 20,
+            "ojol_maintenance": True,
+            "buttons": ["Berhenti jadi mitra ojol"],
+        }
+    )
+    step = next_step(maint_state, settings)
+    assert step.action == "wait"
+    assert "Fitur Auto Ojol sedang maintenance" in step.reason
+    assert step.wait_seconds == settings.idle_poll_seconds
+
+
+def test_parse_snapshot_detects_ojol_maintenance_from_text():
+    from ojol.planner import parse_snapshot
+
+    raw = {
+        "text": "Layanan Ojol sedang dalam perbaikan dan pemeliharaan sistem (maintenance).",
+        "wallet": "35 koin",
+        "tiles": {"Bensin": "72%", "Kondisi": "97%", "Kuota HP": "46%"},
+        "buttons": [{"text": "Berhenti jadi mitra ojol", "disabled": False}],
+    }
+    snapshot = parse_snapshot(raw)
+    assert snapshot.ojol_maintenance is True

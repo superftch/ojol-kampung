@@ -27,7 +27,7 @@ Setiap request ke `https://www.kampungsebelah.com` kini menyertakan header brows
 
 | Endpoint | Pemakaian | Bukti |
 |---|---|---|
-| GET `/api/ojol` | `vehicle` default, `vehicles` tersedia, `bars` dan `pakai` bersama, mitra, trip, tarif, payout/history, sisa jam narik harian (maksimal 8 jam per hari) | HTTP200 13 November 2026 dengan `vehicle: "mobil"`, `vehicles: ["motor", "mobil"]`, dan konsumsi `bensin: 5`, `kendaraan: 2`, `kuota: 4`. Update #15 tanggal 19 November 2026: batas narik maksimal 8 jam/hari (reset 00.00 WIB) terbaca pada panel Ojol; saat kuota habis, worker menjeda aktivitas order ojol hingga reset jam 00.00 WIB tanpa blocking error. |
+| GET `/api/ojol` | `vehicle` default, `vehicles` tersedia, `bars` dan `pakai` bersama, mitra, trip, tarif, payout/history, sisa jam narik harian (maksimal 12 jam per hari pada mode otomatis) | HTTP200 13 November 2026 dengan `vehicle: "mobil"`, `vehicles: ["motor", "mobil"]`, dan konsumsi `bensin: 5`, `kendaraan: 2`, `kuota: 4`. Update #15 tanggal 19 November 2026: batas narik maksimal 8 jam/hari. Update #16 tanggal 20 November 2026: batas narik maksimal naik menjadi 12 jam/hari (`narikMaksMenit: 720`, reset 00.00 WIB) dan ongkos dasar naik 0.4 koin (`kabarTarif`). Mode berkendara (`kendara`) memiliki `tanpa_batas: true` (tidak dibatasi kuota 12 jam harian maupun istirahat wajib). |
 | GET `/api/kendaraan` | `items[]`, termasuk `family`, `listrik`, dan `name` | Bundle `3tkrjjmq3rsag.js` dan HTTP200 13 November 2026 dengan Motor bebek dan Mobil listrik |
 | GET `/api/game/me` | `balanceMilli`, `configVersion`, rumah/desa, `profile.nickname`, `profile.resting`, `profile.sleep` | HTTP200 historis; nickname dan saldo teramati lagi saat validasi Browser Harness 19 November 2026; field tidur dicocokkan dengan bundle client tersimpan pada 12 November 2026 |
 | GET `/api/kebutuhan` | `asleep`, status kebutuhan aktif, nilai per kebutuhan, dan kandidat tempat fisik | HTTP 200 untuk status kebutuhan. Bentuk kandidat fasilitas berasal dari bundle client. |
@@ -39,8 +39,12 @@ Setiap request ke `https://www.kampungsebelah.com` kini menyertakan header brows
 | GET `/kampung` | baca HTML halaman untuk menemukan bundle yang dirujuk | kode `OjolHttpApi.effects` |
 | GET `/_next/static/{path}.js` | baca efek item dari bundle yang dirujuk halaman | kode `OjolHttpApi.effects` |
 | POST `/api/shops/{businessId}/buy` | `{item, requestId}` | live: Pertalite, Tambal ban, Isi pulsa; perubahan saldo/resource terverifikasi |
-| POST `/api/ojol` | `{action:"ambil", vehicle:"motor"\|"mobil"}` | Motor terverifikasi historis. Pilihan mobil dan payload berasal dari `aN` di bundle `3tkrjjmq3rsag.js`. |
-| POST `/api/ojol` | `{action:"selesai", kode?}` | Bundle client live mengirim `kode` dari field `cek` trip. Receipt payout baru terverifikasi historis setelah arrival server; trip pemeriksaan pengguna memuat `cek: "93"`. |
+| POST `/api/ojol` | `{action:"tawar", vehicle:"motor"|"mobil", mode:"kendara"}` | Mode kendara: meminta 3 tawaran order (`pilihan[]`) dengan `id`, `fareMilli`, `from`, `to`, `distance`. Live terverifikasi 20 November 2026. |
+| POST `/api/ojol` | `{action:"ambil", vehicle:"motor"|"mobil", mode?:"kendara", pilih?:string}` | Mode otomatis: ambil order acak (`{action:"ambil", vehicle}`). Mode kendara: ambil order pilihan (`{action:"ambil", mode:"kendara", pilih: chosen_id, vehicle}`). Bot memprioritaskan tarif (`fareMilli`) paling tinggi. Live terverifikasi 20 November 2026. |
+| POST `/api/ojol` | `{action:"lacak", x: float, y: float}` | Mode kendara: memperbarui posisi koordinat GPS mitra menuju titik jemput atau titik tujuan (maks laju 1.8 petak/detik). Live terverifikasi 20 November 2026. |
+| POST `/api/ojol` | `{action:"jemput"}` | Mode kendara: menjemput penumpang setelah tiba dalam radius `dekat_petak` (3.5 petak) dari titik jemput (`jemput: true`). Live terverifikasi 20 November 2026. |
+| POST `/api/ojol` | `{action:"selesai", kode?}` | Menyelesaikan order dan mencairkan ongkos setelah sampai di tujuan. Mode kendara mengirim `lacak` koordinat tujuan akhir sebelum `selesai`. Field `cek` trip adalah boolean (live 20 November 2026: `false` pada order biasa; `true` berarti verifikasi aktif); bila string, nilainya dipakai langsung sebagai `kode`. Bila `cek` aktif, client menampilkan gambar dari endpoint GET di bawah dan mengirim 2 angka sebagai `kode`. `selesai` tanpa verifikasi live terverifikasi 20 November 2026. |
+| GET `/api/ojol/cek?t={trip.id}&a={trip.arriveAt}&m={n}` | Gambar cek pengemudi (SVG) saat `cek` trip aktif; `m` adalah nomor muat ulang gambar dari bundle client live. Dipecahkan otomatis oleh `ojol/svg_captcha_solver.py` (port MIT dari [AmireNoori/SVG-Captcha-Solver](https://github.com/AmireNoori/SVG-Captcha-Solver)); hasil bukan 2 angka atau pola tidak dikenal gagal aman tanpa mengirim `kode` salah. Bentuk respons gambar belum diamati live karena order sampel tidak memicu `cek`. |
 | GET `/api/facilities/{id}` | Status, layanan, tarif, cooldown, serta bidang belajar | Browser Harness dan GET terotorisasi 19 November 2026; lihat validasi kebutuhan/belajar di bawah |
 | POST `/api/facilities/{id}/use` | `{requestId}` untuk fisik; `{requestId, track}` untuk perpus/kuliah | POST live terotorisasi 19 November 2026: gym, perpus, universitas |
 | GET `/api/facilities/{id}/kuis` | `available`, `visitId`, `track`, `bacaan`, `soal[].{q,options}`, `need`; selesai: `reason: selesai`, `track`, `bonus` | Browser Harness dan GET live 19 November 2026 |
@@ -61,6 +65,29 @@ Panel Ojol memilih dari `vehicles`, memakai `vehicle` sebagai default UI, dan me
 
 Pada tanggal yang sama, katalog Bengkel motor Gotei menawarkan **Servis motor** 1.500 mili-koin dan **Servis mobil** 2.500 mili-koin. Efek client keduanya `kendaraan: 60`, sesuai bar Kondisi mesin bersama pada respons Ojol. **Konfirmasi pengguna pada 19 November 2026: Servis motor dapat dipakai untuk mobil.** Adapter tetap memasukkan item perawatan motor saat mobil aktif; planner membandingkan biaya per poin dan total biaya, lalu memverifikasi kenaikan bar setelah pembelian. Dengan efek sama +60 dan harga 1,5 vs 2,5 koin, Servis motor dipilih. Tes HTTP terisolasi `test_car_condition_prefers_lower_cost_for_same_recovery` mencakup pemilihan dan satu POST `servis-motor` saat kendaraan mobil. Konfirmasi pengguna dan tes simulasi ini dibedakan dari observasi POST live oleh agen, yang belum dilakukan untuk kasus tersebut. Batas anggaran, saldo minimum, kapasitas resource, dan pemeriksaan perubahan kendaraan tetap berlaku.
 
+## Bukti dan Alur Mode Berkendara / Kendarai Sendiri (20 November 2026)
+
+Inspeksi client bundle `3txiswhto39cq.js` dan verifikasi sesi live 20 November 2026 membuktikan fitur baru **Kendarai Sendiri** (`mode: "kendara"`):
+1. **Konfigurasi Server/Client (`config.kendara`)**:
+   - `enabled: true`
+   - `laju_maks: 1.8` (kecepatan perpindahan koordinat maksimal 1.8 petak per detik)
+   - `dekat_petak: 3.5` (radius maksimal penjemputan dan penurunan dari target)
+   - `naik_detik: 8`, `turun_detik: 8`
+   - `lacak_detik: 5`, `lacak_basi_detik: 45`
+   - `tanpa_batas: true`: **Penting** — order mode kendara tidak dibatasi kuota 12 jam per hari (`narikMaksMenit: 720`) dan tidak terkena aturan istirahat wajib 30 menit.
+2. **Siklus Pemanggilan API**:
+   - `POST /api/ojol {"action": "tawar", "vehicle": "mobil", "mode": "kendara"}`: Server merespons `pilihan[]` berisi 3 order dengan rincian `id`, `fareMilli`, `warga`, `from`, `to`, dan `distance`. Bot memprioritaskan order dengan `fareMilli` tertinggi.
+   - `POST /api/ojol {"action": "ambil", "mode": "kendara", "pilih": "<chosen_order_id>", "vehicle": "mobil"}`: Server merespons status `trip` dengan `mode: "kendara"` dan `jemput: false`.
+   - `POST /api/ojol {"action": "lacak", "x": from.x, "y": from.y}`: Memperbarui posisi koordinat mitra ke titik penjemputan.
+   - `POST /api/ojol {"action": "jemput"}`: Menjemput penumpang; server merespons `jemput: true` dan menghitung waktu kedatangan `arriveAt`.
+   - `POST /api/ojol {"action": "lacak", "x": to.x, "y": to.y}`: Memperbarui posisi koordinat mitra ke titik tujuan.
+   - `POST /api/ojol {"action": "selesai"}`: Dipanggil setelah server `arriveAt` tercapai untuk mencairkan ongkos (`netMilli`) ke dompet koin dan menambah `todayCount`. Bila `cek` trip aktif, `selesai` mengirim `kode` 2 angka hasil pemecahan otomatis gambar SVG cek.
+   - Verifikasi cek muncul sesekali (`cek_tiap_order: 10`, bunyi changelog 19 November 2026: "sesekali cek ketik 2 angka sebelum terima ongkos"); dua order live 20 November 2026 mengirim `cek: false` dan selesai tanpa `kode`.
+3. **Konfigurasi Akun & Default**:
+   - `Settings.ojol_mode`: pilihan `"kendara"` (default) atau `"otomatis"`.
+   - Jika `ojol_mode == "kendara"`, otomatisasi melakukan siklus penawaran (memilih tarif tertinggi) dan penjemputan/pengantaran.
+   - Jika mode kendara menghasilkan daftar penawaran kosong atau fallback diperlukan, sistem beralih ke mode otomatis reguler.
+
 ## Bukti jadwal tidur
 
 Pemeriksaan statis 12 November 2026 pada bundle tersimpan `1xhiowffvsf0w.js` (SHA256 `68d239f92244dcce98cafdb2adc431866082dbab780005a55f0d7370cd266f3e`) menemukan form `ks-sleep-from` / `ks-sleep-to` dan label **Jam tidur (WIB)** / **Jam bangun (WIB)**. Client membaca `me.profile.sleep.{auto,from,to,inSchedule}`; `from` dan `to` adalah menit sejak tengah malam. Nilai awal form 1320 / 300 setara 22.00 / 05.00 dan bukan bukti jadwal aktif setiap akun. Client memakai `me.profile.resting` untuk status tidur aktual dan menawarkan tombol Bangun/Tidur kapan saja. `inSchedule` dapat tetap true saat karakter sudah dibangunkan manual.
@@ -79,7 +106,7 @@ Efek resource Ojol dibaca dari konfigurasi JSON dalam bundle, misalnya `pulsa` u
 
 Client helper memakai JSON body, sesi cookie same-origin dan tidak menambahkan token CSRF khusus pada request game yang teramati. Form import aplikasi tetap memakai CSRF sendiri. HTTP adapter mengirim Origin/Referer game, memvalidasi sesi lewat GET, menolak redirect serta error auth; tidak mencoba melewati login atau challenge.
 
-Keterbatasan: endpoint internal bisa berubah, tidak membuktikan kontrak API publik. Tidak menyimpulkan idempotensi endpoint Ojol dari adanya requestId pada pembelian; semua POST tetap satu kali. Perubahan harga/efek/resource dan error auth tetap menahan transaksi; hasil belum pasti direkonsiliasi tanpa mengulang POST. Runtime kini hanya HTTP MCP; kegagalan terminal menghentikan akun tanpa fallback browser.
+Keterbatasan: endpoint internal bisa berubah, tidak membuktikan kontrak API publik. Tidak menyimpulkan idempotensi endpoint Ojol dari adanya requestId pada pembelian; semua POST tetap satu kali. Perubahan harga/efek/resource dan error auth tetap menahan transaksi; hasil belum pasti direkonsiliasi tanpa mengulang POST. Runtime kini hanya adapter HTTP; kegagalan terminal menghentikan akun tanpa fallback browser.
 
 ## Validasi kebutuhan dan belajar 19 November 2026
 
@@ -99,7 +126,7 @@ Pembelian **Pipa paralon** di Akademis.ai Bangunan (`K40-U01`) seharga 800 mili-
 
 Bundle aktif `087o49eachamv.js` memuat bank bacaan/soal/opsi benar di konfigurasi JSON `facilities` dan `tracks`. Komponen lazy `26kxp4sri85ut.js` (SHA256 `9cbdb73b09dffbd1fbbcfcb0277059d71ecfdce408ab1c611fae52f213537155`) membaca endpoint kuis, menampilkan bacaan selama enam detik, lalu mengirim satu array indeks jawaban bersama `visitId`. GET kuis tersedia mengikat soal ke kunjungan tersebut; setelah submit, GET memberi `available: false`, `reason: selesai`, bidang dan bonus. Kuis diperlakukan sebagai satu kesempatan per kunjungan; POST tidak diputar ulang setelah timeout. Harga, sesi, dan kuis yang diamati adalah bukti akun/waktu tersebut, bukan kontrak tetap untuk seluruh fasilitas.
 
-Probe transaksi lokal dilakukan setelah pengguna menghentikan worker production, melalui ADK → stdio MCP → HTTP tanpa Chromium. Lima aksi (klaim, tiga pembelian, ambil) tercatat verified pada ledger lokal, tanpa pending/uncertain. Sesuai instruksi pengguna, probe sementara melewati planner threshold dan mengizinkan efek pembelian terpotong di100%, dengan anggaran maksimal2koin dan saldo minimum20. Pengecualian hanya pada proses probe sementara; guard source production tidak diubah. Script bypass dan salinan cookie dihapus setelah proses berhenti. Bukti finansial/account tetap privat di `.local/live-verification/report.json` dan ledger lokal, tidak dikomit.
+Probe transaksi lokal dilakukan setelah pengguna menghentikan worker production, melalui worker → adapter HTTP tanpa Chromium. Lima aksi (klaim, tiga pembelian, ambil) tercatat verified pada ledger lokal, tanpa pending/uncertain. Sesuai instruksi pengguna, probe sementara melewati planner threshold dan mengizinkan efek pembelian terpotong di100%, dengan anggaran maksimal2koin dan saldo minimum20. Pengecualian hanya pada proses probe sementara; guard source production tidak diubah. Script bypass dan salinan cookie dihapus setelah proses berhenti. Bukti finansial/account tetap privat di `.local/live-verification/report.json` dan ledger lokal, tidak dikomit.
 
 ## Bukti BPJS dan pemeriksaan kesehatan gratis (Puskesmas / Rumah Sakit)
 
@@ -245,9 +272,9 @@ Dengan filter hanya jenis yang **ditawarkan pada `catalog.business` akun pemerik
 
 SPBU Pertamina dikeluarkan dari daftar pembelian di atas karena tidak muncul pada `catalog.business` akun pemeriksaan. Jenis ini tetap ada pada bundle client dan 14 entri direktori, seluruhnya tanpa kecocokan nama/pemilik Akademis.ai pada pemeriksaan ini; syarat untuk membukanya belum diverifikasi. Semua jenis pada tabel di atas ada di `catalog.business` saat pemeriksaan. Jumlah direktori mencatat usaha yang terlihat, bukan bukti stok, profitabilitas, atau izin mendirikan usaha baru.
 
-## Tool MCP Ojol
+## Aksi adapter Ojol
 
-Adapter tersedia melalui stdio MCP dengan tool yang dideklarasikan di [`ojol/http_server.py`](../ojol/http_server.py).
+Worker memanggil [`ojol/http_api.py`](../ojol/http_api.py) langsung melalui adapter [`ojol/ui.py`](../ojol/ui.py); tidak ada lagi stdio MCP di antara worker dan API. Nama aksi pada tabel berikut dipertahankan sebagai label seam pengujian `HttpUI.call_tool`.
 
 | Tool | Parameter | Hasil atau aksi |
 |---|---|---|

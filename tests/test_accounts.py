@@ -3,11 +3,10 @@ import json
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from unittest.mock import call as mock_call
 
 import pytest
-from pydantic import ValidationError
 from starlette.testclient import TestClient
 
 from ojol.accounts import DRAFT_NAME, Accounts
@@ -16,14 +15,14 @@ from ojol.cli import main
 from ojol.control import create_app
 from ojol.healing import write_private
 from ojol.http_api import HttpCoreError
-from ojol.http_core import HttpUI
 from ojol.identity import save_profile, verified_profile
 from ojol.maintenance import read_window
 from ojol.management import MultiAccountService
-from ojol.models import ROOT, Settings, now
+from ojol.models import ROOT, now
 from ojol.session_transfer import parse_cookie_input
 from ojol.study import subjects
 from ojol.telegram import TelegramClient, queue_error
+from ojol.ui import HttpUI
 
 
 async def click(manager, owner, label, profile=None):
@@ -375,7 +374,7 @@ async def test_global_worker_cap_serializes_simultaneous_starts_and_deduplicates
     manager.registry.set_limit("max_active_workers", 1)
     starts = []
 
-    async def start_a(command):
+    async def start_a(command, mode=None):
         if command == "run":
             starts.append("a")
             await asyncio.sleep(0)
@@ -384,14 +383,15 @@ async def test_global_worker_cap_serializes_simultaneous_starts_and_deduplicates
     a.execute = AsyncMock(side_effect=start_a)
     b.execute = AsyncMock()
     await asyncio.gather(
-        manager.dispatch(111, "Jalankan Ojol"), manager.dispatch(222, "Jalankan Ojol")
+        manager.dispatch(111, f"acct:{first['id']}:mode:kendara", callback=True),
+        manager.dispatch(222, f"acct:{second['id']}:mode:kendara", callback=True),
     )
     assert starts == ["a"]
     b.execute.assert_not_awaited()
     assert "Slot akun berjalan sedang penuh" in manager.reply.call_args.args[1]
     a.execute = AsyncMock()
-    await manager.dispatch(111, "Jalankan Ojol")
-    a.execute.assert_awaited_once_with("run")
+    await manager.dispatch(111, f"acct:{first['id']}:mode:kendara", callback=True)
+    a.execute.assert_awaited_once_with("run", mode="kendara")
 
 
 async def test_worker_child_receives_only_its_runtime_owner_and_label(managed, monkeypatch):
@@ -417,6 +417,51 @@ async def test_worker_child_receives_only_its_runtime_owner_and_label(managed, m
     assert env["OJOL_ACCOUNT_NAME"] == "Second"
     assert "fixture-cookie" not in str(spawn.call_args)
     assert not (managed.runtime_dir / "http-session.json").exists()
+
+
+async def test_run_mode_choice_prompt_buttons_and_worker_env(managed, monkeypatch):
+    manager = MultiAccountService(managed)
+    manager.registry.whitelist(222)
+    account = manager.registry.create(222, "Second")
+    service = manager.service(account["id"])
+    service.settings = service.settings.model_copy(
+        update={"operator_authorized": True, "env": "local"}
+    )
+    write_private(
+        service.settings.runtime_dir / "http-session.json", parse_cookie_input("fixture-cookie")
+    )
+    prompt = await service.command("choose_mode")
+    assert "Berkendara" in prompt and "Otomatis" in prompt
+    buttons = service.mode_buttons()["inline_keyboard"]
+    assert buttons == [
+        [
+            {"text": "🚗 Berkendara", "callback_data": f"acct:{account['id']}:mode:kendara"},
+            {"text": "🤖 Otomatis", "callback_data": f"acct:{account['id']}:mode:otomatis"},
+        ]
+    ]
+    child = SimpleNamespace(returncode=None)
+    child.terminate = Mock(side_effect=lambda: setattr(child, "returncode", -15))
+    spawn = AsyncMock(return_value=child)
+    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    await service.command("run", mode="otomatis")
+    assert spawn.call_args.kwargs["env"]["OJOL_OJOL_MODE"] == "otomatis"
+    await service.stop_worker()
+    service.worker = None
+    spawn.reset_mock()
+    await service.command("run")
+    assert "OJOL_OJOL_MODE" not in spawn.call_args.kwargs["env"]
+
+
+async def test_mode_callback_dispatches_run_with_mode(managed, monkeypatch):
+    manager = MultiAccountService(managed)
+    manager.registry.whitelist(222)
+    account = manager.registry.create(222, "Second")
+    service = manager.service(account["id"])
+    service.execute = AsyncMock()
+    manager.ensure_started = AsyncMock()
+    manager.start_tunnel = AsyncMock()
+    await manager.dispatch(222, f"acct:{account['id']}:mode:kendara", callback=True)
+    service.execute.assert_awaited_once_with("run", mode="kendara")
 
 
 async def test_whitelist_revoke_stops_all_user_workers_revokes_links_preserves_admin(managed):
@@ -532,7 +577,7 @@ def test_import_routes_account_cookie_path_csrf_isolation_and_revocation(managed
         assert client.get(prefix_a + "/import-cookie").status_code == 403
         manager.registry.whitelist(222, False)
         assert client.get(prefix_b + "/access/" + ticket_b).status_code == 403
-        assert client.get("/health").json()["core"] == "http"
+        assert client.get("/health").json()["service"] == "ok"
 
 
 async def test_existing_account_names_refresh_from_game_without_stopping_worker(
@@ -591,15 +636,13 @@ def test_import_rejects_duplicate_cookie_before_verification(managed, monkeypatc
 
 
 async def test_http_read_failure_propagates_without_starting_browser(settings):
-    ui = HttpUI(settings)
     error = HttpCoreError("fixture read failure", recoverable=True)
-    ui.call_tool = AsyncMock(side_effect=error)
+    api = SimpleNamespace(snapshot=AsyncMock(side_effect=error))
+    ui = HttpUI(settings, api=api)
     with pytest.raises(HttpCoreError) as result:
         await ui.snapshot()
     assert result.value is error
     assert not hasattr(ui, "activate_fallback")
-    with pytest.raises(ValidationError):
-        Settings(core="browser")
 
 
 async def test_account_notifications_target_owner_and_include_account_name(managed):

@@ -27,7 +27,7 @@ docker compose --env-file .env.local -f compose.local.yaml down
 
 1. Buat bot khusus development melalui [BotFather](https://t.me/BotFather). Isi `OJOL_TELEGRAM_BOT_TOKEN` dan `OJOL_TELEGRAM_CHAT_ID` di `.env.local`. Chat ID admin adalah ID numerik akun Telegram pribadi Anda. Pakai token yang berbeda dari bot production. Simpan nilainya di file lokal.
 2. Terapkan konfigurasi dengan `docker compose --env-file .env.local -f compose.local.yaml up -d --force-recreate --wait`. Buka chat pribadi dengan bot development dan tekan **Start**. Periksa menu, **Status**, dan **Laba Bersih** sebelum mengimpor sesi game.
-3. Tekan **Import Cookie**. Buka link sekali pakai di browser Mac dan pastikan nama akun pada form benar. Untuk menguji integrasi API baca, impor sesi akun uji melalui form tersebut. Impor memverifikasi snapshot lewat HTTP MCP. Pengaturan bawaan `OJOL_OPERATOR_AUTHORIZED=false` memblokir **Jalankan Ojol**.
+3. Tekan **Import Cookie**. Buka link sekali pakai di browser Mac dan pastikan nama akun pada form benar. Untuk menguji integrasi API baca, impor sesi akun uji melalui form tersebut. Impor memverifikasi snapshot lewat adapter HTTP. Pengaturan bawaan `OJOL_OPERATOR_AUTHORIZED=false` memblokir **Jalankan Ojol**.
 4. Setelah sesi berhasil diimpor, cek pembacaan snapshot dan kandidat toko. Perintah berikut memakai akun **Utama**. Untuk akun lain, tambahkan `--account ID_AKUN` sebelum `inspect`.
 
    ```sh

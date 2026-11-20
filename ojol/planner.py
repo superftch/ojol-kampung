@@ -57,6 +57,13 @@ def parse_snapshot(data: dict) -> Snapshot:
             re.IGNORECASE,
         )
     )
+    ojol_maintenance = bool(
+        re.search(
+            r"ojol.*(?:maintenance|pemeliharaan|perbaikan)|(?:maintenance|pemeliharaan|perbaikan).*ojol",
+            text,
+            re.IGNORECASE,
+        )
+    )
     return Snapshot(
         wallet=decimal_id(wallet[1]),
         fuel=percent("Bensin"),
@@ -71,6 +78,7 @@ def parse_snapshot(data: dict) -> Snapshot:
         raw_text=text,
         ojol_resting=ojol_resting,
         ojol_shift_done=shift_done,
+        ojol_maintenance=ojol_maintenance,
     )
 
 
@@ -123,6 +131,12 @@ def next_step(
             action="wait",
             reason="Batas narik 8 jam hari ini tercapai. Lanjut besok mulai jam 00.00 WIB.",
             wait_seconds=wait_seconds,
+        )
+    if getattr(state, "ojol_maintenance", False):
+        return Step(
+            action="wait",
+            reason="Fitur Auto Ojol sedang maintenance.",
+            wait_seconds=settings.idle_poll_seconds,
         )
     resources = sorted((getattr(state, key), key) for key in ("fuel", "condition", "data"))
     for value, resource in resources:

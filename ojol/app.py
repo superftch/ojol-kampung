@@ -1,66 +1,54 @@
+"""CLI entry for one worker run: inspect, reconcile, or run the controller."""
+
 import asyncio
 import json
 import os
-from typing import Any
-
-from google.adk.agents import BaseAgent
-from google.adk.events import Event
-from google.adk.runners import Runner
-from google.adk.sessions import InMemorySessionService
-from google.adk.tools.tool_context import ToolContext
-from google.genai import types
+import signal
 
 from .controller import Controller, StopRequested
 from .healing import write_private
-from .http_core import HttpUI
 from .journal import Journal
-from .models import Settings, now
+from .models import now
 from .planner import next_step
 from .reconciliation import reconcile, wait_until_resolved
+from .ui import HttpUI
 
 
-class OjolAutomationAgent(BaseAgent):
-    settings: Settings
-    command: str
-    live: bool = False
-    shop: str | None = None
-    error_id: str | None = None
-    action_id: int | None = None
-    cancel: Any = None
+async def run_app(settings, command, live=False, shop=None, error_id=None, action_id=None):
+    if settings.env == "testing":
+        raise ValueError("Agen live tidak boleh dijalankan dalam testing; gunakan mocked UI")
+    cancel = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, cancel.set)
+    try:
 
-    async def _run_async_impl(self, ctx):
-        if self.settings.env == "testing":
-            raise ValueError("Agen live tidak boleh dijalankan dalam testing; gunakan mocked UI")
-        async with HttpUI(self.settings, ToolContext(ctx)) as ui:
+        def check_startup_cancel():
+            if cancel.is_set() or (command == "run" and (settings.runtime_dir / "STOP").exists()):
+                raise StopRequested("Dihentikan pengguna")
 
-            def check_startup_cancel():
-                if (self.cancel and self.cancel.is_set()) or (
-                    self.command == "run" and (self.settings.runtime_dir / "STOP").exists()
-                ):
-                    raise StopRequested("Dihentikan pengguna")
-
+        async with HttpUI(settings) as ui:
             ui.check_cancel = check_startup_cancel
             ui.check_cancel()
-            if self.command in {"inspect", "doctor"}:
+            if command in {"inspect", "doctor"}:
                 state = await ui.snapshot()
                 output = {
-                    "mcp": "Ojol HTTP stdio via ADK McpToolset",
-                    "core": ui.core_name,
+                    "core": "http",
                     "snapshot": state.model_dump(mode="json"),
-                    "next": next_step(state, self.settings).model_dump(mode="json"),
+                    "next": next_step(state, settings).model_dump(mode="json"),
                 }
-                if self.shop:
-                    shops = await ui.preview_shops(self.shop)
+                if shop:
+                    shops = await ui.preview_shops(shop)
                     output["shops"] = [
-                        {**shop.model_dump(mode="json"), "preferred": shop.preferred}
-                        for shop in shops
+                        {**item.model_dump(mode="json"), "preferred": item.preferred}
+                        for item in shops
                     ]
-                print(json.dumps(output, ensure_ascii=False, indent=2))
-            elif self.command == "reconcile":
-                journal = Journal(self.settings.runtime_dir)
+                print(json.dumps(output, ensure_ascii=False, indent=2), flush=True)
+            elif command == "reconcile":
+                journal = Journal(settings.runtime_dir)
                 try:
-                    await reconcile(ui, journal, self.error_id, self.action_id)
-                    if self.error_id or self.action_id is not None:
+                    await reconcile(ui, journal, error_id, action_id)
+                    if error_id or action_id is not None:
                         print(
                             f"Total aksi belum pasti di seluruh akun ini: {len(journal.unresolved())}."
                         )
@@ -75,105 +63,66 @@ class OjolAutomationAgent(BaseAgent):
                 finally:
                     journal.close()
             else:
-                journal = Journal(self.settings.runtime_dir)
-                try:
-                    if self.live:
-                        write_private(
-                            self.settings.runtime_dir / "status.json",
-                            {
-                                "pid": os.getpid(),
-                                "event": "rekonsiliasi",
-                                "stage": "worker.reconcile",
-                                "time": now().isoformat(),
-                            },
-                        )
-                        reconciled = await wait_until_resolved(ui, journal, self.settings)
-                    else:
-                        reconciled = await ui.snapshot()
-                    run_id = journal.start(self.settings)
-                except BaseException:
-                    journal.close()
-                    raise
-                controller = Controller(ui, self.settings, journal, run_id, self.cancel)
-                controller.state = reconciled
-                controller.snapshot_received_at = now().isoformat()
-                ui.check_cancel = controller.check_cancel
-                try:
-                    controller.report(
-                        "mulai",
-                        live=self.live,
-                        core=ui.core_name,
-                        max_spend=str(self.settings.max_spend)
-                        if self.settings.max_spend is not None
-                        else None,
-                        min_balance=str(self.settings.min_balance),
-                        max_jobs=self.settings.max_jobs,
-                        max_minutes=self.settings.max_minutes,
-                    )
-                    await controller.run(
-                        dry_run=not self.live,
-                        auto_start=self.live and os.environ.get("OJOL_WORKER_AUTO_START") == "1",
-                    )
-                    journal.finish(run_id, "dry_run")
-                except StopRequested as exc:
-                    controller.report("berhenti", reason=str(exc))
-                    journal.finish(run_id, "stopped")
-                except BaseException as exc:
-                    from .telegram import redact
-
-                    controller.report(
-                        "gagal",
-                        category=type(exc).__name__,
-                        reason=redact(exc, self.settings),
-                        stage=controller.stage,
-                        last_action=controller.last_action,
-                        core=ui.core_name,
-                    )
-                    journal.finish(run_id, "error")
-                    raise
-                finally:
-                    journal.close()
-        yield Event(author=self.name)
-
-
-async def run_app(settings, command, live=False, shop=None, error_id=None, action_id=None):
-    cancel = asyncio.Event()
-    import signal
-
-    loop = asyncio.get_running_loop()
-    for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, cancel.set)
-    sessions = InMemorySessionService()
-    session = await sessions.create_session(app_name="ojol_automation", user_id="local")
-    runner = Runner(
-        app_name="ojol_automation",
-        agent=OjolAutomationAgent(
-            name="OjolAutomationAgent",
-            settings=settings,
-            command=command,
-            live=live,
-            shop=shop,
-            error_id=error_id,
-            action_id=action_id,
-            cancel=cancel,
-        ),
-        session_service=sessions,
-    )
-    try:
-        async for _ in runner.run_async(
-            user_id="local",
-            session_id=session.id,
-            new_message=types.Content(
-                role="user",
-                parts=[
-                    types.Part(text="Jalankan hanya alur Ojol yang dikonfigurasi melalui HTTP MCP.")
-                ],
-            ),
-        ):
-            pass
+                await run_worker(ui, settings, live, cancel)
     except StopRequested:
         print("Worker dihentikan sebelum startup selesai.", flush=True)
     finally:
-        await runner.close()
         for sig in (signal.SIGINT, signal.SIGTERM):
             loop.remove_signal_handler(sig)
+
+
+async def run_worker(ui, settings, live, cancel):
+    journal = Journal(settings.runtime_dir)
+    try:
+        if live:
+            write_private(
+                settings.runtime_dir / "status.json",
+                {
+                    "pid": os.getpid(),
+                    "event": "rekonsiliasi",
+                    "stage": "worker.reconcile",
+                    "time": now().isoformat(),
+                },
+            )
+            reconciled = await wait_until_resolved(ui, journal, settings)
+        else:
+            reconciled = await ui.snapshot()
+        run_id = journal.start(settings)
+    except BaseException:
+        journal.close()
+        raise
+    controller = Controller(ui, settings, journal, run_id, cancel)
+    controller.state = reconciled
+    controller.snapshot_received_at = now().isoformat()
+    ui.check_cancel = controller.check_cancel
+    try:
+        controller.report(
+            "mulai",
+            live=live,
+            max_spend=str(settings.max_spend) if settings.max_spend is not None else None,
+            min_balance=str(settings.min_balance),
+            max_jobs=settings.max_jobs,
+            max_minutes=settings.max_minutes,
+        )
+        await controller.run(
+            dry_run=not live,
+            auto_start=live and os.environ.get("OJOL_WORKER_AUTO_START") == "1",
+        )
+        journal.finish(run_id, "dry_run")
+    except StopRequested as exc:
+        controller.report("berhenti", reason=str(exc))
+        journal.finish(run_id, "stopped")
+    except BaseException as exc:
+        from .telegram import redact
+
+        controller.report(
+            "gagal",
+            category=type(exc).__name__,
+            reason=redact(exc, settings),
+            stage=controller.stage,
+            last_action=controller.last_action,
+        )
+        journal.finish(run_id, "error")
+        raise
+    finally:
+        journal.close()

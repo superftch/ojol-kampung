@@ -63,7 +63,6 @@ async def test_reconcile_idle_search_records_unknown_resource_deltas_without_rep
         action = journal.begin(run, "search", before, {"label": "📲 Cari order"})
         journal.settle(action, False)
         context = AsyncMock()
-        monkeypatch.setattr(module, "ToolContext", lambda ctx: None)
         monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
         ui = SimpleNamespace(
             snapshot=AsyncMock(side_effect=[after, confirmed, after, confirmed]),
@@ -71,14 +70,8 @@ async def test_reconcile_idle_search_records_unknown_resource_deltas_without_rep
         )
         context.__aenter__.return_value = ui
         monkeypatch.setattr(module, "HttpUI", lambda *args, **kwargs: context)
-        agent = module.OjolAutomationAgent(
-            name="IsolatedSearchReconcile",
-            settings=settings.model_copy(update={"env": "local"}),
-            command="reconcile",
-        )
         for _ in range(2):
-            async for _ in agent._run_async_impl(None):
-                pass
+            await module.run_app(settings.model_copy(update={"env": "local"}), "reconcile")
         row = journal.history()["actions"][0]
         assert row["status"] == ("uncertain" if unstable else "closed_idle")
         assert row["before_state"] == before.model_dump_json()
@@ -284,18 +277,11 @@ async def test_reconcile_claim_requires_exact_receipt_and_never_replays_or_doubl
         action = journal.begin(run, "complete", before, {"label": "Sampai"})
         journal.settle(action, False)
         context = AsyncMock()
-        monkeypatch.setattr(module, "ToolContext", lambda ctx: None)
         ui = SimpleNamespace(snapshot=AsyncMock(return_value=after), job_click=AsyncMock())
         context.__aenter__.return_value = ui
         monkeypatch.setattr(module, "HttpUI", lambda *args, **kwargs: context)
-        agent = module.OjolAutomationAgent(
-            name="IsolatedReconcile",
-            settings=settings.model_copy(update={"env": "local"}),
-            command="reconcile",
-        )
         for _ in range(2):
-            async for _ in agent._run_async_impl(None):
-                pass
+            await module.run_app(settings.model_copy(update={"env": "local"}), "reconcile")
         row = journal.history()["actions"][0]
         assert row["status"] == ("verified" if matching_route else "uncertain")
         assert journal.profit()["trip_tercatat"] == int(matching_route)
@@ -349,21 +335,14 @@ async def test_reconciled_search_hands_off_current_trip_without_claiming_early_o
         search = journal.begin(run, "search", search_before, {"label": "📲 Cari order"})
         journal.settle(search, False)
         context = AsyncMock()
-        monkeypatch.setattr(module, "ToolContext", lambda ctx: None)
         monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
         ui = SimpleNamespace(
             snapshot=AsyncMock(side_effect=[ready, confirmed, confirmed]), job_click=AsyncMock()
         )
         context.__aenter__.return_value = ui
         monkeypatch.setattr(module, "HttpUI", lambda *args, **kwargs: context)
-        agent = module.OjolAutomationAgent(
-            name="IsolatedSearchHandoff",
-            settings=settings.model_copy(update={"env": "local"}),
-            command="reconcile",
-        )
         for _ in range(2):
-            async for _ in agent._run_async_impl(None):
-                pass
+            await module.run_app(settings.model_copy(update={"env": "local"}), "reconcile")
         assert journal.history()["actions"][0]["status"] == "handed_off"
         assert journal.profit()["pendapatan_ojol"] == "0"
         ui.job_click.assert_not_awaited()
@@ -391,8 +370,7 @@ async def test_reconciled_search_hands_off_current_trip_without_claiming_early_o
             ui.job_click.assert_awaited_once_with("✅ Sampai! Terima ongkos")
             assert journal.profit()["pendapatan_ojol"] == "0.72"
             assert journal.profit()["trip_tercatat"] == 1
-            async for _ in agent._run_async_impl(None):
-                pass
+            await module.run_app(settings.model_copy(update={"env": "local"}), "reconcile")
             ui.job_click.assert_awaited_once()
             assert journal.profit()["trip_tercatat"] == 1
     finally:

@@ -15,13 +15,13 @@ from ojol.control import ControlService
 from ojol.controller import Controller, StopRequested
 from ojol.healing import write_private
 from ojol.http_api import CATEGORIES, ITEMS, ORIGIN, HttpCoreError, OjolHttpApi, extract_effects
-from ojol.http_core import HTTP_TOOLS, HttpUI
 from ojol.identity import cached_profile, save_profile, verified_profile
 from ojol.journal import Journal
 from ojol.models import ShopPreview
 from ojol.planner import select_need, select_shop
 from ojol.shop_locations import NeedShop, ShopLocation
 from ojol.study import set_subject
+from ojol.ui import HTTP_TOOLS, HttpUI
 
 SHOP = "00000000-0000-4000-8000-000000000001"
 
@@ -206,7 +206,7 @@ async def test_house_material_is_bought_and_applied_even_when_not_service(api, w
     )
     world["need_effects"].update({"nasi-goreng": {"makan": 35}, "pipa": {"rumah": 20}})
     world["needs"].update(enabled=True, needs=[{"id": "rumah", "value": 40}])
-    ui = HttpUI(settings)
+    ui = HttpUI(settings, api=api)
 
     async def call(name, **args):
         if name == "ojol_preview_shop":
@@ -220,6 +220,18 @@ async def test_house_material_is_bought_and_applied_even_when_not_service(api, w
         return {"accepted": True}
 
     ui.call_tool = call
+
+    async def _buy(product, wallet, current, min_balance=5):
+        return await call(
+            "ojol_purchase",
+            product=product.model_dump(mode="json"),
+            request_id=ui.request_id,
+            expected_wallet=str(wallet),
+            expected_resource=current,
+            min_balance=str(min_balance),
+        )
+
+    ui.buy = _buy
     with closing(Journal(settings.runtime_dir)) as journal:
         c = Controller(ui, settings, journal, journal.start(settings))
         assert await c.purchase(await ui.snapshot(), "rumah")
@@ -377,6 +389,7 @@ async def api(settings, world, monkeypatch):
         calls.append(request)
         assert request.url.host == "www.kampungsebelah.com"
         path = request.url.path
+        query_path = f"{path}?{request.url.query.decode()}" if request.url.query else path
         if path in world["failed_paths"]:
             return httpx.Response(404)
         if request.method == "POST":
@@ -384,6 +397,10 @@ async def api(settings, world, monkeypatch):
                 raise httpx.ReadTimeout("fixture response lost", request=request)
             response = world.get("post_responses", {}).get(path, {"ok": True})
             return httpx.Response(200, json=response(request) if callable(response) else response)
+        if query_path in world.get("text_responses", {}):
+            return httpx.Response(200, text=world["text_responses"][query_path])
+        if path in world.get("text_responses", {}):
+            return httpx.Response(200, text=world["text_responses"][path])
         if path in world["conflicting_catalogs"]:
             return httpx.Response(409, json=world["conflicting_catalogs"][path])
         data = {
@@ -427,6 +444,19 @@ async def api(settings, world, monkeypatch):
     async with httpx.AsyncClient(base_url=ORIGIN, transport=httpx.MockTransport(handle)) as client:
         instance = OjolHttpApi(settings.runtime_dir, client=client)
         instance.calls = calls
+        # Instans lain (HttpUI/controller) ikut memakai transport fixture.
+        from ojol.session_transfer import parse_cookie_input
+
+        write_private(
+            settings.runtime_dir / "http-session.json", parse_cookie_input("fixture-cookie")
+        )
+        real_async_client = httpx.AsyncClient
+
+        def mock_client(**kwargs):
+            kwargs.setdefault("transport", httpx.MockTransport(handle))
+            return real_async_client(**kwargs)
+
+        monkeypatch.setattr("ojol.http_api.httpx.AsyncClient", mock_client)
         async with instance:
             yield instance
 
@@ -480,6 +510,116 @@ async def test_trip_order_code_is_sent_when_claiming_fare(api, world):
     assert [json.loads(request.content) for request in api.calls if request.method == "POST"] == [
         {"action": "selesai", "kode": "93"}
     ]
+
+
+def _cek_svg(digits):
+    import base64
+    import json
+
+    from ojol.svg_captcha_solver import SvgCaptchaSolver
+
+    model = json.loads(base64.b64decode(SvgCaptchaSolver.model))
+    paths = []
+    for index, digit in enumerate(digits):
+        pattern = next(key for key, value in model.items() if value == digit)
+        paths.append(f'<path d="{index}.0 {pattern}"/>')
+    return "<svg>" + "".join(paths) + "</svg>"
+
+
+async def test_trip_cek_boolean_is_not_order_code(api, world):
+    world["ojol"]["trip"] = {**trip(), "cek": False}
+    world["time"]["now"] = "2030-01-02T10:01:00Z"
+
+    snapshot = await api.snapshot()
+    assert snapshot.order_code is None
+    assert snapshot.order_verify is False
+    await api.job_action("complete")
+    assert [json.loads(request.content) for request in api.calls if request.method == "POST"] == [
+        {"action": "selesai"}
+    ]
+
+
+async def test_trip_cek_true_solves_svg_captcha(api, world):
+    world["ojol"]["trip"] = {**trip(), "cek": True}
+    world["time"]["now"] = "2030-01-02T10:01:00Z"
+    world["text_responses"] = {
+        "/api/ojol/cek?t=trip-fixture&a=2030-01-02T10:00:00.001Z&m=1": _cek_svg("42")
+    }
+
+    snapshot = await api.snapshot()
+    assert snapshot.order_code is None
+    assert snapshot.order_verify is True
+    await api.job_action("complete")
+    assert [json.loads(request.content) for request in api.calls if request.method == "POST"] == [
+        {"action": "selesai", "kode": "42"}
+    ]
+
+
+def _kendara_posts(world, pilihan):
+    def respond(request):
+        action = json.loads(request.content).get("action")
+        if action == "tawar":
+            return {"pilihan": pilihan}
+        if action == "ambil":
+            return {
+                "trip": {
+                    **trip(),
+                    "from": {"x": 3, "y": 3},
+                    "to": {"x": 4, "y": 4},
+                    "arrived": False,
+                }
+            }
+        if action == "jemput":
+            return {"trip": {**trip(), "arrived": False, "jemput": True}}
+        return {"trip": {**trip(), "arrived": False}}
+
+    world["post_responses"] = {"/api/ojol": respond}
+
+
+async def test_job_action_kendara_mode_tawar_picks_highest_fare(api, world):
+    world["ojol"]["pakai"] = {"bensin": 5, "kendaraan": 2, "kuota": 4}
+    _kendara_posts(
+        world,
+        [
+            {"id": "rendah", "fareMilli": 500, "from": {"x": 1, "y": 1}, "to": {"x": 2, "y": 2}},
+            {"id": "tinggi", "fareMilli": 900, "from": {"x": 3, "y": 3}, "to": {"x": 4, "y": 4}},
+        ],
+    )
+    await api.job_action("search", mode="kendara")
+    posts = [json.loads(r.content) for r in api.calls if r.method == "POST"]
+    assert posts[0] == {"action": "tawar", "vehicle": "motor", "mode": "kendara"}
+    assert posts[1] == {
+        "action": "ambil",
+        "mode": "kendara",
+        "pilih": "tinggi",
+        "vehicle": "motor",
+    }
+    assert posts[-1] == {"action": "lacak", "x": 4, "y": 4}
+
+
+async def test_job_action_kendara_mode_complete_sends_destination_lacak_and_selesai(api, world):
+    world["ojol"]["trip"] = {
+        **trip(),
+        "mode": "kendara",
+        "to": {"label": "Toko B", "x": -35.0, "y": -118.4},
+    }
+    world["time"]["now"] = "2030-01-02T10:01:00Z"
+    await api.job_action("complete")
+    posts = [json.loads(r.content) for r in api.calls if r.method == "POST"]
+    assert posts == [
+        {"action": "lacak", "x": -35.0, "y": -118.4},
+        {"action": "selesai"},
+    ]
+
+
+async def test_snapshot_tracks_12_hour_limit_from_narik_menit(api, world):
+    world["ojol"].update(
+        narikMenit=360,
+        narikMaksMenit=720,
+    )
+    state = await api.snapshot()
+    assert state.ojol_hours_left == 6.0
+    assert state.ojol_shift_done is False
 
 
 @pytest.mark.parametrize(
@@ -633,7 +773,7 @@ async def test_invalid_sleep_schedule_cannot_allow_job_post(api, world, field, v
 async def test_sleep_during_purchase_preflight_waits_without_post_or_uncertain_ledger(
     api, world, settings
 ):
-    ui = HttpUI(settings)
+    ui = HttpUI(settings, api=api)
 
     async def call(name, **args):
         if name == "ojol_snapshot":
@@ -646,6 +786,18 @@ async def test_sleep_during_purchase_preflight_waits_without_post_or_uncertain_l
         pytest.fail(name)
 
     ui.call_tool = call
+
+    async def _buy(product, wallet, current, min_balance=5):
+        return await call(
+            "ojol_purchase",
+            product=product.model_dump(mode="json"),
+            request_id=ui.request_id,
+            expected_wallet=str(wallet),
+            expected_resource=current,
+            min_balance=str(min_balance),
+        )
+
+    ui.buy = _buy
     with closing(Journal(settings.runtime_dir)) as journal:
         controller = Controller(ui, settings, journal, journal.start(settings))
 
@@ -700,7 +852,7 @@ def setup_food_catalog(world):
 async def test_worker_buys_best_value_for_food_then_returns_to_ojol(api, world, settings):
     setup_food_catalog(world)
     world["ojol"]["bars"].update(bensin=80, kuota=85)
-    ui = HttpUI(settings)
+    ui = HttpUI(settings, api=api)
 
     async def call(name, **args):
         if name == "ojol_snapshot":
@@ -720,6 +872,18 @@ async def test_worker_buys_best_value_for_food_then_returns_to_ojol(api, world, 
         return {"accepted": True}
 
     ui.call_tool = call
+
+    async def _buy(product, wallet, current, min_balance=5):
+        return await call(
+            "ojol_purchase",
+            product=product.model_dump(mode="json"),
+            request_id=ui.request_id,
+            expected_wallet=str(wallet),
+            expected_resource=current,
+            min_balance=str(min_balance),
+        )
+
+    ui.buy = _buy
     with closing(Journal(settings.runtime_dir)) as journal:
         controller = Controller(ui, settings, journal, journal.start(settings))
         controller.wait = AsyncMock(side_effect=StopRequested("selesai fixture"))
@@ -1051,8 +1215,20 @@ async def test_state_change_during_catalog_read_rejects_without_locking_journal(
             return await api.purchase(**args)
         pytest.fail(name)
 
-    ui = HttpUI(settings)
+    ui = HttpUI(settings, api=api)
     ui.call_tool = call
+
+    async def _buy(product, wallet, current, min_balance=5):
+        return await call(
+            "ojol_purchase",
+            product=product.model_dump(mode="json"),
+            request_id=ui.request_id,
+            expected_wallet=str(wallet),
+            expected_resource=current,
+            min_balance=str(min_balance),
+        )
+
+    ui.buy = _buy
     journal = Journal(settings.runtime_dir)
     try:
         run = journal.start(settings)
@@ -1270,7 +1446,7 @@ async def test_http_controller_keeps_pending_request_id_and_books_once(
         shop_id = add_shop(world, 8, "Akademis.ai", "konter-pulsa", "pulsa", "Isi pulsa", 500)
     journal = Journal(settings.runtime_dir)
     run = journal.start(settings)
-    ui = HttpUI(settings.model_copy(update={"core": "http"}))
+    ui = HttpUI(settings.model_copy(update={"core": "http"}), api=api)
 
     async def call(name, **args):
         if name == "ojol_snapshot":
@@ -1297,6 +1473,18 @@ async def test_http_controller_keeps_pending_request_id_and_books_once(
         pytest.fail(name)
 
     ui.call_tool = call
+
+    async def _buy(product, wallet, current, min_balance=5):
+        return await call(
+            "ojol_purchase",
+            product=product.model_dump(mode="json"),
+            request_id=ui.request_id,
+            expected_wallet=str(wallet),
+            expected_resource=current,
+            min_balance=str(min_balance),
+        )
+
+    ui.buy = _buy
     controller = Controller(ui, settings, journal, run)
     try:
         await controller.purchase(await ui.snapshot(), "data")
@@ -1321,7 +1509,7 @@ async def test_http_controller_keeps_pending_request_id_and_books_once(
 async def test_controller_rotates_only_eligible_akademis_shops(api, world, settings):
     first = add_shop(world, 8, "Akademis.ai", "konter-pulsa", "pulsa", "Isi pulsa", 700)
     second = add_shop(world, 9, "Akademis.ai Cabang", "konter-pulsa", "pulsa", "Isi pulsa", 800)
-    ui = HttpUI(settings)
+    ui = HttpUI(settings, api=api)
 
     async def call(name, **args):
         if name == "ojol_preview_shop":
@@ -1335,6 +1523,18 @@ async def test_controller_rotates_only_eligible_akademis_shops(api, world, setti
         return {"accepted": True}
 
     ui.call_tool = call
+
+    async def _buy(product, wallet, current, min_balance=5):
+        return await call(
+            "ojol_purchase",
+            product=product.model_dump(mode="json"),
+            request_id=ui.request_id,
+            expected_wallet=str(wallet),
+            expected_resource=current,
+            min_balance=str(min_balance),
+        )
+
+    ui.buy = _buy
     first_item = world["shops"][first]["menu"][0]
     second_item = world["shops"][second]["menu"][0]
     second_item["habis"] = True
@@ -1369,12 +1569,12 @@ async def test_http_mode_with_session_never_starts_chromium(settings):
     await service.ensure_backend(require_session=True)
 
 
-async def test_stop_cancels_waiting_http_tool_without_repeating(settings):
+async def test_stop_cancels_waiting_http_tool_without_repeating(api, settings):
     import asyncio
 
     from ojol.controller import StopRequested
 
-    ui = HttpUI(settings)
+    ui = HttpUI(settings, api=api)
 
     async def waiting(**kwargs):
         await asyncio.Event().wait()
@@ -2198,4 +2398,3 @@ async def test_snapshot_tracks_ojol_remaining_hours(api, world):
     state = await api.snapshot()
     assert state.ojol_shift_done is False
     assert state.ojol_hours_left == 4.5
-

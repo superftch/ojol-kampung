@@ -212,15 +212,9 @@ async def test_agent_reconcile_uses_error_id(settings, purchase_error, monkeypat
     context = AsyncMock()
     context.__aenter__.return_value = ui
     monkeypatch.setattr(app, "HttpUI", lambda *args: context)
-    monkeypatch.setattr(app, "ToolContext", lambda ctx: None)
-    agent = app.OjolAutomationAgent(
-        name="ErrorReconcileFixture",
-        settings=settings.model_copy(update={"env": "local"}),
-        command="reconcile",
-        error_id=details["error_id"],
+    await app.run_app(
+        settings.model_copy(update={"env": "local"}), "reconcile", error_id=details["error_id"]
     )
-    async for _ in agent._run_async_impl(None):
-        pass
     assert [row["id"] for row in journal.unresolved()] == [other]
     assert "Total aksi belum pasti di seluruh akun ini: 1." in capsys.readouterr().out
     ui.job_click.assert_not_awaited()

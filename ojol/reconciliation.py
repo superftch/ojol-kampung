@@ -11,6 +11,8 @@ from .finance import completion_evidence
 from .healing import write_private
 from .http_api import HttpCoreError
 from .journal import load_journal_snapshot
+
+RESUME_BUTTON = {"inline_keyboard": [[{"text": "▶️ Lanjutkan", "callback_data": "resume"}]]}
 from .maintenance import SCHEDULE_FILE, held_window
 from .models import NEEDS, now
 from .telegram import queue_error, queue_notice
@@ -430,7 +432,8 @@ async def reconcile(ui, journal, error_id=None, action_id=None):
 async def wait_until_resolved(ui, journal, settings):
     waiting = False
     transport_outage = False
-    for attempt in range(1, 4):
+    limit = 6
+    for attempt in range(1, limit + 1):
         ui.check_cancel()
         try:
             state = await reconcile(ui, journal)
@@ -459,6 +462,13 @@ async def wait_until_resolved(ui, journal, settings):
                     "✅ Riwayat sudah diperiksa. Bot melanjutkan aktivitas dari status game terbaru.",
                 )
             return state
+        if attempt >= 2 and pending and state is not None and not waiting:
+            queue_notice(
+                settings,
+                "🔒 Game sedang terbuka di tempat lain, jadi bot tidak bisa mencocokkan hasil.\n\n"
+                "Keluar dari game, lalu tekan tombol Lanjutkan untuk melanjutkan bot.",
+                reply_markup=RESUME_BUTTON,
+            )
         path = settings.runtime_dir / "status.json"
         try:
             status = json.loads(path.read_text())
@@ -470,15 +480,15 @@ async def wait_until_resolved(ui, journal, settings):
             stage="worker.reconcile",
             reconciliation_pending=len(pending),
             reconciliation_attempt=attempt,
-            reconciliation_limit=3,
+            reconciliation_limit=limit,
         )
         if state is not None:
             status.update(
                 snapshot=state.model_dump(mode="json"), snapshot_received_at=now().isoformat()
             )
-        if attempt == 3:
+        if attempt == limit:
             error = HttpCoreError(
-                "Auto rekonsiliasi gagal setelah 3 percobaan. Bot dihentikan; "
+                f"Auto rekonsiliasi gagal setelah {limit} percobaan. Bot dihentikan; "
                 "hasil transaksi terakhir masih belum pasti.",
                 category="reconciliation_failed",
             )
@@ -490,9 +500,9 @@ async def wait_until_resolved(ui, journal, settings):
             queue_notice(
                 settings,
                 "⏳ Bot sedang memastikan hasil aksi terakhir. Pemeriksaan berjalan otomatis. "
-                + "Status akan diperiksa lagi dalam 10 detik, maksimal 3 pemeriksaan.",
+                + "Status akan diperiksa lagi dalam 15 detik, maksimal 6 pemeriksaan.",
             )
         waiting = True
-        for _ in range(40):
+        for _ in range(60):
             ui.check_cancel()
             await asyncio.sleep(0.25)

@@ -45,7 +45,7 @@ def running(directory):
 
 def parser():
     result = argparse.ArgumentParser(
-        description="Ojol background melalui HTTP MCP. Default dry-run."
+        description="Ojol background melalui adapter HTTP. Default dry-run."
     )
     result.add_argument("--env-file", type=Path)
     result.add_argument("--account", help="ID dari list-accounts; default akun lama")
@@ -303,7 +303,6 @@ def main(argv=None):
             )
             context["pid"] = os.getpid()
             context["account_id"] = account["id"] if account else os.environ.get("OJOL_ACCOUNT_ID")
-            context["mcp_tool"] = getattr(exc, "operation", None)
             if args.command == "run" and os.environ.get("OJOL_WORKER_AUTO_START") == "1":
                 context["tindakan"] = (
                     "Tekan Import Cookie, lalu Jalankan Ojol."

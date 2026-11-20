@@ -58,6 +58,7 @@ class Settings(Model):
     max_active_workers: int = Field(default=3, ge=1, le=100)
     tunnel_enabled: bool = False
     auto_start: bool = True
+    ojol_mode: Literal["kendara", "otomatis"] = "kendara"
 
     @field_validator("telegram_chat_id", mode="before")
     @classmethod
@@ -186,6 +187,7 @@ class Snapshot(Model):
     today_count: int | None = Field(default=None, ge=0)
     trip_id: str | None = None
     order_code: str | None = None
+    order_verify: bool = False
     arrive_at: datetime | None = None
     home_plot: str | None = None
     village: str | None = None
@@ -195,6 +197,9 @@ class Snapshot(Model):
     ojol_rest_until: datetime | None = None
     ojol_shift_done: bool = False
     ojol_hours_left: float | None = None
+    ojol_maintenance: bool = False
+    ojol_mode: str | None = None
+    trip_jemput: bool | None = None
 
     def resource_value(self, resource: Resource | Need):
         return self.needs.get(resource) if resource in NEEDS else getattr(self, resource)

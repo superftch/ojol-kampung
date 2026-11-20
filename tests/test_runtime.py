@@ -220,6 +220,50 @@ async def test_needs_only_worker_skips_disabled_need_and_all_ojol_actions(
         journal.close()
 
 
+async def test_worker_auto_ojol_maintenance_allows_needs_purchases_and_skips_ojol_actions(
+    settings, state, shop_preview
+):
+    set_auto_flag(settings.runtime_dir, "ojol", True)
+    set_auto_flag(settings.runtime_dir, "makan", True)
+    before = state.model_copy(update={"fuel": 5, "needs": {"makan": 30}})
+    after = before.model_copy(
+        update={"wallet": before.wallet - Decimal("0.8"), "needs": {"makan": 70}}
+    )
+    product = Product(
+        name="Nasi bungkus",
+        price="0.8",
+        effects={"makan": 40},
+        row_text="makan fixture",
+        enabled=True,
+    )
+    shop = shop_preview([product]).model_copy(update={"name": "Akademis.ai Warung"})
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[before, after, after]),
+        preview_shops=AsyncMock(return_value=[shop]),
+        buy=AsyncMock(),
+        job_click=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        # Set manual maintenance for Auto Ojol
+        write_private(
+            controller.maintenance_file,
+            MaintenanceWindow.create_manual(target="ojol").payload(),
+        )
+        controller.wait = AsyncMock(side_effect=StopRequested("selesai maintenance test"))
+        with pytest.raises(StopRequested):
+            await controller.run()
+        # Makan is purchased even though Auto Ojol is under maintenance
+        ui.preview_shops.assert_awaited_once_with("makan")
+        ui.buy.assert_awaited_once()
+        # Ojol actions (trips / jobs) are not called
+        ui.job_click.assert_not_awaited()
+        assert journal.history()["actions"][0]["status"] == "verified"
+    finally:
+        journal.close()
+
+
 async def test_worker_auto_kesehatan_bpjs_priority_then_medicine_fallback(
     settings, state, shop_preview
 ):

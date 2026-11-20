@@ -1029,6 +1029,7 @@ class MultiAccountService:
             return
         account = None
         command = None
+        mode_arg = None
         if callback:
             if not text.startswith("acct:"):
                 return
@@ -1042,7 +1043,12 @@ class MultiAccountService:
                 self.pending.pop(owner, None)
                 await self.auto_menu(owner, account, action)
                 return
-            if action == "choose_date":
+            if action.startswith("mode:"):
+                mode = action.split(":", 1)[1]
+                if mode not in {"kendara", "otomatis"}:
+                    return
+                command, mode_arg = "run", mode
+            elif action == "choose_date":
                 await self.prompt(
                     owner,
                     {"kind": "date", "account": identifier},
@@ -1050,9 +1056,14 @@ class MultiAccountService:
                     "Kirim tanggal dengan format YYYY-MM-DD atau DD-MM-YYYY.",
                 )
                 return
-            if action != "import_cookie" and not re.fullmatch(r"profit:\d{4}-\d{2}-\d{2}", action):
+            if (
+                action != "import_cookie"
+                and not re.fullmatch(r"profit:\d{4}-\d{2}-\d{2}", action)
+                and command is None
+            ):
                 return
-            command = action
+            if command is None:
+                command = action
         else:
             if text.lower() in {"online", "/online"}:
                 command = "online"
@@ -1089,7 +1100,9 @@ class MultiAccountService:
                         "atau minta admin menambah batasnya."
                     )
             await self.start_tunnel()
-        await service.execute(command)
+        await service.execute(
+            command, **({"mode": mode_arg} if command == "run" and mode_arg else {})
+        )
 
     async def poll_telegram(self):
         cursor = self.settings.runtime_dir / "telegram-offset"
@@ -1239,8 +1252,8 @@ class MultiAccountService:
             data, status_updated = status_record(directory / "status.json")
             online_data, online_updated = status_record(directory / "online-status.json")
             latest_touch = max(
-                status_updated.timestamp() if status_updated else 0,
-                online_updated.timestamp() if online_updated else 0,
+                status_updated / 1e9 if status_updated else 0,
+                online_updated / 1e9 if online_updated else 0,
             )
             is_worker_active = (service.worker and service.worker.returncode is None) or running(
                 directory

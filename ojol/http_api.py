@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import random
 import re
 import secrets
 import time
@@ -73,7 +74,7 @@ class HttpCoreError(RuntimeError):
     def __init__(self, message, category="schema", recoverable=False):
         super().__init__(message)
         self.category, self.recoverable = category, recoverable
-        self.stage, self.operation = "http." + category, "ojol_http"
+        self.stage = "http." + category
 
 
 class ShopClosed(HttpCoreError):
@@ -151,7 +152,21 @@ def ojol_vehicle(payload, trip):
 
 
 def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
-    if require_ojol and (ojol["enabled"] is not True or ojol["mitra"] is not True):
+    problem_text = str(ojol.get("problem") or "")
+    is_ojol_maintenance = bool(
+        ojol.get("maintenance") is True
+        or re.search(
+            r"maintenance|pemeliharaan|perbaikan",
+            problem_text or str(ojol.get("text") or ""),
+            re.IGNORECASE,
+        )
+        or (ojol.get("enabled") is False and ojol.get("mitra") is True)
+    )
+    if (
+        require_ojol
+        and not is_ojol_maintenance
+        and (ojol["enabled"] is not True or ojol["mitra"] is not True)
+    ):
         raise HttpCoreError("Akun belum menjadi mitra Ojol", category="blocked")
     if type(needs["asleep"]) is not bool:
         raise HttpCoreError("Status tidur API berubah", recoverable=True)
@@ -202,18 +217,28 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
 
     is_shift_done = False
     hours_left = None
-    for key in (
-        "sisaJam",
-        "sisaJamNarik",
-        "sisaNarik",
-        "jamNarikSisa",
-        "hoursLeft",
-        "sisaWaktu",
-        "dailyHoursLeft",
-    ):
-        if key in ojol and isinstance(ojol[key], (int, float)):
-            hours_left = float(ojol[key])
-            break
+    if "narikMenit" in ojol and "narikMaksMenit" in ojol:
+        try:
+            narik_menit = float(ojol["narikMenit"])
+            narik_maks_menit = float(ojol["narikMaksMenit"])
+            hours_left = max(0.0, (narik_maks_menit - narik_menit) / 60.0)
+            if narik_menit >= narik_maks_menit:
+                is_shift_done = True
+        except Exception:
+            pass
+    if hours_left is None:
+        for key in (
+            "sisaJam",
+            "sisaJamNarik",
+            "sisaNarik",
+            "jamNarikSisa",
+            "hoursLeft",
+            "sisaWaktu",
+            "dailyHoursLeft",
+        ):
+            if key in ojol and isinstance(ojol[key], (int, float)):
+                hours_left = float(ojol[key])
+                break
     if hours_left is None:
         match = re.search(
             r"(?:sisa\s*(?:jam\s*narik|waktu)?|tersisa)\s*[:]?\s*(\d+(?:[.,]\d+)?)\s*jam",
@@ -226,7 +251,7 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
     if (
         bool(
             re.search(
-                r"8\s*jam|maksimal.*(?:hari|00[.:]00)|batas.*(?:harian|narik)|lanjut\s*besok|paling\s*lama\s*8\s*jam",
+                r"(?:8|12)\s*jam|maksimal.*(?:hari|00[.:]00)|batas.*(?:harian|narik)|lanjut\s*besok|paling\s*lama\s*(?:8|12)\s*jam",
                 problem_text,
                 re.IGNORECASE,
             )
@@ -237,16 +262,26 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
     ):
         is_shift_done = True
 
+    order_code = None
     if trip:
-        order_code = trip.get("cek")
-        if order_code is not None and not isinstance(order_code, str):
+        # cek false/true = flag verifikasi aktif; string = kode langsung dari bundle lama.
+        raw_cek = trip.get("cek")
+        if isinstance(raw_cek, str):
+            order_code = raw_cek
+        elif raw_cek is not None and not isinstance(raw_cek, (bool, int)):
             raise HttpCoreError("Kode cek trip Ojol tidak valid", recoverable=True)
         icon, label = KINDS[trip["kind"]]
+        is_kendara = trip.get("mode") == "kendara"
+        is_arrived = trip.get("arrived") is True
+        jemput_done = trip.get("jemput") is True if is_kendara else True
         if trip.get("arriveAt"):
             remaining = max(0, ceil((timestamp(trip["arriveAt"]) - server_now).total_seconds()))
         else:
             remaining = 0
-        phase = "complete" if remaining == 0 else "delivering"
+        if is_kendara:
+            phase = "complete" if (is_arrived or (jemput_done and remaining == 0)) else "delivering"
+        else:
+            phase = "complete" if remaining == 0 else "delivering"
         from_label = (
             trip["from"]["label"]
             if isinstance(trip.get("from"), dict) and "label" in trip["from"]
@@ -278,13 +313,16 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
             problem_text
             or "Mitra ojol bisa narik paling lama 8 jam per hari, lanjut besok mulai jam 00.00."
         )
+    elif is_ojol_maintenance:
+        buttons = ["Berhenti jadi mitra ojol"]
+        text = problem_text or "Fitur Auto Ojol sedang dalam pemeliharaan (maintenance)."
     elif require_ojol and ojol.get("problem") and not trip:
         if ojol.get("fix") not in RESOURCES:
             raise HttpCoreError(
                 "Game menolak Ojol: periksa kondisi akun di game", category="blocked"
             )
         buttons = ["Berhenti jadi mitra ojol"]
-    if require_ojol and phase == "idle" and vehicle is None:
+    if require_ojol and not is_ojol_maintenance and phase == "idle" and vehicle is None:
         raise HttpCoreError(
             "Tidak ada motor atau mobil yang tersedia untuk Ojol", category="blocked"
         )
@@ -329,6 +367,7 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
         today_count=integer(ojol["todayCount"]) if "todayCount" in ojol else None,
         trip_id=trip["id"] if trip else None,
         order_code=order_code if trip else None,
+        order_verify=bool(order_code) or bool(trip and trip.get("cek") is True),
         arrive_at=timestamp(trip["arriveAt"]) if trip and trip.get("arriveAt") else None,
         home_plot=(me.get("home") or {}).get("plotId"),
         village=(me.get("home") or {}).get("desa"),
@@ -338,6 +377,9 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
         ojol_rest_until=ojol_rest_until,
         ojol_shift_done=is_shift_done,
         ojol_hours_left=hours_left,
+        ojol_maintenance=is_ojol_maintenance,
+        ojol_mode=trip.get("mode") if trip else None,
+        trip_jemput=trip.get("jemput") if trip else None,
     )
 
 
@@ -547,7 +589,7 @@ class OjolHttpApi:
             await self.client.aclose()
 
     async def request(self, path, payload=None, text=False, *, after=None):
-        # No caller-provided URLs, redirects, or generic HTTP MCP tool.
+        # No caller-provided URLs, redirects, or generic HTTP tool.
         house_view = re.fullmatch(
             r"/api/rumah/interior/lihat\?plotId=[A-Z][0-9]{2}-[A-Z][0-9]{2}", path
         )
@@ -555,8 +597,12 @@ class OjolHttpApi:
             re.fullmatch(r"/api/minigame\?projectId=[a-f0-9-]{36}&game=[a-zA-Z0-9_-]+", path)
         )
         garden_action = bool(re.fullmatch(r"/api/daily/garden/[a-zA-Z0-9_-]+", path))
+        ojol_cek_image = bool(
+            re.fullmatch(r"/api/ojol/cek\?t=[A-Za-z0-9-]{1,64}&a=[0-9TZ:.+-]+&m=[0-9]{1,3}", path)
+        )
         allowed = (
-            path
+            ojol_cek_image
+            or path
             in {
                 "/api/ojol",
                 "/api/kendaraan",
@@ -770,6 +816,7 @@ class OjolHttpApi:
         )
         self.config_version = me["configVersion"]
         self.home = me["home"]
+        self.me = me
         if (me.get("profile") or {}).get("nickname") is not None:
             save_profile(self.directory, verified_profile(me))
         if isinstance(me.get("skill"), dict) and isinstance(me["skill"].get("tracks"), list):
@@ -787,6 +834,7 @@ class OjolHttpApi:
         )
         self.vehicle = state.ojol_vehicle
         self.usage = ojol.get("pakai")
+        self.last_ojol_data = ojol
         status_file = self.directory / "online-status.json"
         write_private(
             status_file,
@@ -1884,7 +1932,69 @@ class OjolHttpApi:
         ) or (not is_need and current + product.effects[resource] > 100):
             raise HttpCoreError("Pembelian melanggar saldo minimum/overflow", category="rejected")
 
-    async def job_action(self, kind):
+    async def drive_to_destination(self, to_pos, *, max_seconds=180):
+        """Mode kendara: lacak berkelanjutan ke tujuan sampai arrived (server bergerak
+        laju_kali x laju_maks; lacak basi 45 detik menghentikan perjalanan)."""
+        if "x" not in to_pos or "y" not in to_pos:
+            return
+        try:
+            await self.request("/api/ojol", {"action": "lacak", "x": to_pos["x"], "y": to_pos["y"]})
+        except Exception:
+            pass
+        for _ in range(max_seconds // 2):
+            trip = (await self.raw_trip()) or {}
+            if not trip or trip.get("arrived"):
+                # Klaim harus segera setelah arrived; jeda memasuki jendela turun (409).
+                return
+            try:
+                await self.request(
+                    "/api/ojol", {"action": "lacak", "x": to_pos["x"], "y": to_pos["y"]}
+                )
+            except Exception:
+                pass
+            # ponytail: jitter kecil (client kirim tiap 5 dtk; lacak basi 45 dtk).
+            await asyncio.sleep(random.uniform(1.6, 2.6))
+
+    async def raw_trip(self):
+        raw = await self.request("/api/ojol")
+        return (raw.get("ojol") or {}).get("trip") or raw.get("trip")
+
+    async def solve_cek_captcha(self, attempts=3):
+        """Ambil gambar cek SVG dan pecahkan; kembalikan 2 digit untuk payload selesai."""
+        from .svg_captcha_solver import (
+            SvgCaptchaSolverError,
+            solve_polyline_captcha,
+            solve_svg_captcha,
+        )
+
+        trip = await self.raw_trip()
+        trip_id, arrive_at = (trip or {}).get("id"), (trip or {}).get("arriveAt")
+        if not trip_id or not arrive_at:
+            raise HttpCoreError("Trip cek pengemudi tidak dapat dibaca", recoverable=True)
+        for attempt in range(1, attempts + 1):
+            path = f"/api/ojol/cek?t={trip_id}&a={arrive_at}&m={attempt}"
+            image = await self.request(path, text=True)
+            text = image.strip() if isinstance(image, str) else ""
+            if not text.startswith("<"):
+                continue
+            try:
+                (self.directory / "cek-samples").mkdir(parents=True, exist_ok=True)
+                (self.directory / "cek-samples" / f"{trip_id}.svg").write_text(text)
+            except OSError:
+                pass
+            try:
+                if "<polyline" in text:
+                    kode = solve_polyline_captcha(text, self.directory)
+                else:
+                    kode = solve_svg_captcha(text)
+            except Exception as exc:
+                raise SvgCaptchaSolverError(f"Gagal memecahkan gambar cek: {exc}") from exc
+            if len(kode) == 2 and kode.isdigit():
+                return kode
+            raise SvgCaptchaSolverError(f"Hasil cek tidak berupa 2 angka: {kode!r}")
+        raise HttpCoreError("Gambar cek pengemudi bukan SVG", recoverable=True)
+
+    async def job_action(self, kind, *, mode="otomatis"):
         state = await self.snapshot()
         if state.phase == "sleeping":
             raise HttpCoreError("Karakter sedang tidur; aksi Ojol ditunda", category="sleeping")
@@ -1902,21 +2012,91 @@ class OjolHttpApi:
             )
             if not isinstance(usage, dict) or not all(key in usage for key in RESOURCES):
                 raise HttpCoreError("Konsumsi order belum dapat dibaca", category="rejected")
-            if any(
+            min_fuel = integer(usage.get("bensinMin", usage.get("bensin", 5)))
+            if state.fuel < min_fuel or any(
                 state.resource_value(resource) < integer(usage[key])
-                for key, resource in RESOURCES.items()
+                for key, resource in (("kendaraan", "condition"), ("kuota", "data"))
             ):
                 raise HttpCoreError(
                     "Resource kendaraan tidak cukup untuk order", category="rejected"
                 )
+            effective_mode = mode or getattr(self, "ojol_mode", "otomatis")
+            if effective_mode == "kendara":
+                tawar_res = await self.request(
+                    "/api/ojol",
+                    {"action": "tawar", "vehicle": state.ojol_vehicle, "mode": "kendara"},
+                )
+                pilihan = tawar_res.get("pilihan") if isinstance(tawar_res, dict) else []
+                if pilihan:
+                    chosen = max(pilihan, key=lambda o: integer(o.get("fareMilli", 0)))
+                    take_res = await self.request(
+                        "/api/ojol",
+                        {
+                            "action": "ambil",
+                            "mode": "kendara",
+                            "pilih": chosen["id"],
+                            "vehicle": state.ojol_vehicle,
+                        },
+                    )
+                    trip = (take_res.get("trip") if isinstance(take_res, dict) else None) or chosen
+                    from_pos = trip.get("from") or {}
+                    to_pos = trip.get("to") or {}
+                    if "x" in from_pos and "y" in from_pos:
+                        try:
+                            await self.request(
+                                "/api/ojol",
+                                {"action": "lacak", "x": from_pos["x"], "y": from_pos["y"]},
+                            )
+                        except Exception:
+                            pass
+                    try:
+                        await self.request("/api/ojol", {"action": "jemput"})
+                    except Exception:
+                        pass
+                    if "x" in to_pos and "y" in to_pos:
+                        try:
+                            await self.request(
+                                "/api/ojol",
+                                {"action": "lacak", "x": to_pos["x"], "y": to_pos["y"]},
+                            )
+                        except Exception:
+                            pass
+                    return take_res
             return await self.request(
                 "/api/ojol", {"action": "ambil", "vehicle": state.ojol_vehicle}
             )
         if kind == "complete" and state.phase == "complete":
+            trip_data = (getattr(self, "last_ojol_data", None) or {}).get("trip")
+            if isinstance(trip_data, dict) and trip_data.get("mode") == "kendara":
+                to_pos = trip_data.get("to") or {}
+                await self.drive_to_destination(to_pos)
             payload = {"action": "selesai"}
             if state.order_code is not None:
                 payload["kode"] = state.order_code
-            return await self.request("/api/ojol", payload)
+            elif state.order_verify:
+                payload["kode"] = await self.solve_cek_captcha()
+            for attempt in range(5):
+                try:
+                    result = await self.request("/api/ojol", payload)
+                    if isinstance(result, dict) and result.get("ok") and payload.get("kode"):
+                        from .svg_captcha_solver import learn_polyline
+
+                        sample = self.directory / "cek-samples" / f"{state.trip_id}.svg"
+                        try:
+                            learn_polyline(self.directory, sample.read_text(), payload["kode"])
+                        except (OSError, ValueError):
+                            pass
+                    return result
+                except HttpCoreError as exc:
+                    # 409 "Penumpang sedang turun" (turun_detik 8): ulang dengan jeda penuh;
+                    # tiap 409 bisa mereset jendela turun, dan bila kedatangan ikut ter-reset,
+                    # kendarai ulang sampai arrived sebelum mencoba lagi.
+                    if attempt == 4 or "409" not in str(exc):
+                        raise
+                    await asyncio.sleep(10)
+                    trip = (await self.raw_trip()) or {}
+                    if trip and not trip.get("arrived") and isinstance(trip.get("to"), dict):
+                        await self.drive_to_destination(trip["to"], max_seconds=120)
         raise HttpCoreError("Aksi Ojol tidak sesuai state/waktu server", category="blocked")
 
     async def garden_status(self):

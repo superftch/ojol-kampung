@@ -1,9 +1,9 @@
 # Ojol KampungSebelah
 
-Automation Ojol multi-account dengan **HTTP MCP + Google ADK**. Satu bot Telegram melayani beberapa user dalam whitelist; setiap user bisa memiliki beberapa akun game. `OJOL_TELEGRAM_CHAT_ID` menjadi admin. Chrome, Browser Harness, fallback browser, dan migrasi profil browser dihapus.
+Automation Ojol multi-account dengan **adapter HTTP langsung (tanpa ADK/MCP)**. Satu bot Telegram melayani beberapa user dalam whitelist; setiap user bisa memiliki beberapa akun game. `OJOL_TELEGRAM_CHAT_ID` menjadi admin. Chrome, Browser Harness, fallback browser, dan migrasi profil browser dihapus.
 
 - Default **3 akun per user**, **3 worker aktif global**; admin dapat mengubahnya tanpa restart.
-- **1 akun = 1 subprocess worker**, dengan MCP, cookie, SQLite ledger, status dan pengaturan notifikasi sendiri. Semua berjalan dalam satu container aplikasi.
+- **1 akun = 1 subprocess worker**, dengan klien HTTP, cookie, SQLite ledger, status dan pengaturan notifikasi sendiri. Semua berjalan dalam satu container aplikasi.
 - Tanpa batas trip/durasi default; saldo utama production minimal **20 koin**.
 - Default `OJOL_AUTO_START=true`: semua akun aktif dengan cookie tersimpan dicoba start pada setiap boot/deploy, mengikuti whitelist dan batas worker global.
 - Pembacaan HTTP sementara gagal dicoba maksimal 3 kali (backoff 1/2 detik). Transaksi dikirim sekali; hasil ambigu menghentikan akun dan memblokir replay.
@@ -72,7 +72,7 @@ Kunjungan belajar mempunyai cooldown lokal minimal satu hari, ditambah `nextAt` 
 
 **Cari Rumah Mampir** membaca rumah warga di blok rumah akun dan delapan blok tetangga yang tersedia. Rumah sendiri, plot kosong dan rumah yang tidak aktif dikecualikan. Kandidat diacak, lalu harus lolos dua pemeriksaan API: `visitedToday: false` dan akses lihat rumah diterima server saat ini. Rumah tutup atau yang menolak akses tamu dilewati. Jam menerima tamu mengikuti keputusan server untuk rumah tersebut, tanpa mengasumsikan semua rumah buka 06.00–21.00 WIB. Hasil menampilkan nama warga, ID rumah, koordinat, dan status menerima tamu saat diperiksa. Kriteria belum dikunjungi mengikuti hari game, bukan seluruh riwayat akun. Pencarian tidak mengirim kunjungan, tidak memulai worker atau tunnel, dan diblokir saat maintenance. Jika belum selesai dalam 12 detik, bot meminta pencarian diulang tanpa menganggap semua rumah sudah dikunjungi atau tutup.
 
-Import hanya menerima cookie sesi `__Secure-better-auth.session_token` milik `www.kampungsebelah.com`, sebagai nilai atau JSON cookie. Cookie tidak dikirim melalui Telegram/argv/log. Link HTTPS sekali pakai berlaku 15 menit, memakai cookie HttpOnly dengan path akun dan CSRF terikat sesi. Kandidat sesi diverifikasi lewat HTTP MCP lalu dipasang atomik; kegagalan tidak mengganti sesi lama. Nama akun ditampilkan pada form supaya tujuan import jelas.
+Import hanya menerima cookie sesi `__Secure-better-auth.session_token` milik `www.kampungsebelah.com`, sebagai nilai atau JSON cookie. Cookie tidak dikirim melalui Telegram/argv/log. Link HTTPS sekali pakai berlaku 15 menit, memakai cookie HttpOnly dengan path akun dan CSRF terikat sesi. Kandidat sesi diverifikasi lewat adapter HTTP lalu dipasang atomik; kegagalan tidak mengganti sesi lama. Nama akun ditampilkan pada form supaya tujuan import jelas.
 
 Jika JSON cookie menyertakan waktu kedaluwarsa, bot memeriksanya sebelum mulai dan sebelum request berikutnya. Nilai cookie tanpa metadata diperiksa lewat respons server. Jika sesi ditolak atau kedaluwarsa, akun berhenti dan Telegram meminta login ulang, dengan tombol **Login ulang ke game** dan **Import Cookie** untuk akun yang bermasalah. Login di game, impor cookie baru lewat formulir, lalu tekan **Jalankan Ojol**.
 
