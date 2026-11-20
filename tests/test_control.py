@@ -76,7 +76,9 @@ async def test_telegram_private_message_and_sanitized_network_error(settings):
         "import_cookie",
         "choose_mode",
         "resume",
-        "stop",
+        "stop_ojol",
+        "run_kebutuhan",
+        "stop_kebutuhan",
         "status",
         "profit",
         "cleanup_scan",
@@ -933,3 +935,57 @@ def test_control_summary_and_dashboard_command(settings):
     dash = asyncio.run(service.command("dashboard"))
     assert "📊 Dashboard Akun" in dash
     assert "Belum hubungkan cookie" in dash
+
+
+async def test_kebutuhan_and_ojol_separate_buttons(settings, monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+    from ojol.auto_settings import auto_flags, set_auto_flag
+    from ojol.session_transfer import parse_cookie_input
+
+    import json
+
+    settings = settings.model_copy(update={"env": "local", "operator_authorized": True})
+    service = ControlService(settings)
+    (service.settings.runtime_dir / "http-session.json").write_text(
+        json.dumps(parse_cookie_input("fixture-session"))
+    )
+
+    child = SimpleNamespace(returncode=None)
+    child.terminate = Mock(side_effect=lambda: setattr(child, "returncode", -15))
+    spawn = AsyncMock(return_value=child)
+    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+
+    # 1. Jalankan Kebutuhan starts worker with ojol OFF and needs ON
+    res = await service.command("run_kebutuhan")
+    assert "Auto Kebutuhan" in res
+    spawn.assert_awaited_once()
+    flags = auto_flags(settings.runtime_dir)
+    assert flags["ojol"] is False
+    assert flags["makan"] is True
+    assert flags["fisik"] is True
+
+    # 2. While running, calling run_kebutuhan again returns active notice
+    res2 = await service.command("run_kebutuhan")
+    assert "Auto kebutuhan aktif" in res2
+
+    # 3. Jalankan Ojol enables Ojol in existing worker without second process
+    spawn.reset_mock()
+    res_ojol = await service.command("run", mode="kendara")
+    assert "Auto Ojol diaktifkan" in res_ojol
+    spawn.assert_not_awaited()
+    flags = auto_flags(settings.runtime_dir)
+    assert flags["ojol"] is True
+
+    # 4. Hentikan Ojol disables Ojol, keeps worker and auto kebutuhan running
+    res_stop_ojol = await service.command("stop_ojol")
+    assert "Fitur auto kebutuhan tetap berjalan normal" in res_stop_ojol
+    assert child.terminate.call_count == 0
+    flags = auto_flags(settings.runtime_dir)
+    assert flags["ojol"] is False
+    assert flags["makan"] is True
+
+    # 5. Hentikan Kebutuhan when Ojol is OFF stops worker
+    res_stop_keb = await service.command("stop_kebutuhan")
+    assert "Aktivitas akun sudah dihentikan" in res_stop_keb
+    child.terminate.assert_called_once()

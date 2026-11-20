@@ -1080,8 +1080,12 @@ class MultiAccountService:
                 return
         self.pending.pop(owner, None)
         if command in GAME_COMMANDS and (maintenance := held_window(self.maintenance_file)):
-            await self.reply(owner, maintenance.message())
-            return
+            if not (
+                command in {"run_kebutuhan", "stop_kebutuhan"}
+                and getattr(maintenance, "target", "all") == "ojol"
+            ):
+                await self.reply(owner, maintenance.message())
+                return
         account = account or self.registry.selected(owner)
         if account is None:
             await self.reply(owner, "Belum ada akun terpilih. Tekan Tambah Akun atau Akun Saya.")
@@ -1089,8 +1093,8 @@ class MultiAccountService:
         service = self.service(account["id"])
         if command not in {"cleanup_scan", "visit_scan"}:
             await self.ensure_started(service)
-        if command in {"run", "import_cookie"}:
-            if command == "run" and not (
+        if command in {"run", "run_kebutuhan", "import_cookie"}:
+            if command in {"run", "run_kebutuhan"} and not (
                 (service.worker and service.worker.returncode is None)
                 or running(service.settings.runtime_dir)
             ):

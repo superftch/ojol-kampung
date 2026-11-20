@@ -1932,7 +1932,7 @@ class OjolHttpApi:
         ) or (not is_need and current + product.effects[resource] > 100):
             raise HttpCoreError("Pembelian melanggar saldo minimum/overflow", category="rejected")
 
-    async def drive_to_destination(self, to_pos, *, max_seconds=180):
+    async def drive_to_destination(self, to_pos, *, max_seconds=420):
         """Mode kendara: lacak berkelanjutan ke tujuan sampai arrived (server bergerak
         laju_kali x laju_maks; lacak basi 45 detik menghentikan perjalanan)."""
         if "x" not in to_pos or "y" not in to_pos:
@@ -2096,7 +2096,24 @@ class OjolHttpApi:
                     await asyncio.sleep(10)
                     trip = (await self.raw_trip()) or {}
                     if trip and not trip.get("arrived") and isinstance(trip.get("to"), dict):
-                        await self.drive_to_destination(trip["to"], max_seconds=120)
+                        await self.drive_to_destination(trip["to"], max_seconds=240)
+                        continue
+                    # 409 terakhir dengan jejak invalid: server minta batal; ikuti dan lanjut
+                    # ke order baru agar worker tidak mati.
+                    raw = await self.client.request(
+                        "POST",
+                        "/api/ojol",
+                        json={"action": "selesai"},
+                        headers=self.browser_headers("/api/ojol", "POST"),
+                    )
+                    if "REQUIREMENT_NOT_MET" in raw.text:
+                        await self.request("/api/ojol", {"action": "batal"})
+                        raise HttpCoreError(
+                            "Order dibatalkan otomatis: jejak perjalanan tidak lewat jalan. "
+                            "Mencari order baru.",
+                            category="rejected",
+                        )
+                    raise
         raise HttpCoreError("Aksi Ojol tidak sesuai state/waktu server", category="blocked")
 
     async def garden_status(self):

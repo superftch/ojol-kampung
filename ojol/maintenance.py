@@ -8,7 +8,14 @@ from .finance import WIB
 from .models import now
 
 SCHEDULE_FILE = "maintenance.json"
-GAME_COMMANDS = {"run", "choose_mode", "import_cookie", "cleanup_scan", "visit_scan"}
+GAME_COMMANDS = {
+    "run",
+    "choose_mode",
+    "import_cookie",
+    "cleanup_scan",
+    "visit_scan",
+    "run_kebutuhan",
+}
 DRAIN = timedelta(minutes=2)
 
 

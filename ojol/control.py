@@ -21,7 +21,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from .auto_settings import AUTO_LABELS, auto_flags
+from .auto_settings import AUTO_LABELS, auto_flags, set_auto_flag
 from .cleanup import find_unvisited, scan
 from .cli import exclusive_lock, running
 from .config import load_settings
@@ -646,9 +646,13 @@ class ControlService:
 
     async def command(self, command, *, auto_start=False, mode=None):
         if command in GAME_COMMANDS and (maintenance := held_window(self.maintenance_file)):
-            if auto_start:
-                self.auto_start_pending = True
-            return maintenance.message()
+            if not (
+                command in {"run_kebutuhan", "stop_kebutuhan"}
+                and getattr(maintenance, "target", "all") == "ojol"
+            ):
+                if auto_start:
+                    self.auto_start_pending = True
+                return maintenance.message()
         if command == "resume":
             from contextlib import closing
 
@@ -762,17 +766,104 @@ class ControlService:
                 else "🔕 Notifikasi rutin OFF\n\nDetail error dan ID error, maintenance, "
                 "startup/restart Docker, serta kabar tidur dan bangun tetap dikirim."
             )
+        if command == "stop_ojol":
+            set_auto_flag(self.settings.runtime_dir, "ojol", False)
+            flags = auto_flags(self.settings.runtime_dir)
+            active = (self.worker and self.worker.returncode is None) or running(
+                self.settings.runtime_dir
+            )
+            has_kebutuhan = any(flags[k] for k in flags if k != "ojol")
+            if active and has_kebutuhan:
+                return (
+                    "⏹ Auto Ojol dihentikan.\n\n"
+                    "Fitur auto kebutuhan tetap berjalan normal. Tekan Jalankan Ojol jika ingin melanjutkan Ojol."
+                )
+            await self.stop_worker()
+            return (
+                "⏹ Aktivitas akun sudah dihentikan.\n\nTekan Jalankan Ojol atau Jalankan Kebutuhan jika ingin melanjutkan."
+            )
+        if command == "stop_kebutuhan":
+            for key in NEEDS:
+                set_auto_flag(self.settings.runtime_dir, key, False)
+            flags = auto_flags(self.settings.runtime_dir)
+            active = (self.worker and self.worker.returncode is None) or running(
+                self.settings.runtime_dir
+            )
+            if active and flags["ojol"]:
+                return (
+                    "⏹ Auto kebutuhan dihentikan.\n\n"
+                    "Auto Ojol tetap berjalan normal. Tekan Jalankan Kebutuhan jika ingin mengaktifkan kembali."
+                )
+            await self.stop_worker()
+            return (
+                "⏹ Aktivitas akun sudah dihentikan.\n\nTekan Jalankan Ojol atau Jalankan Kebutuhan jika ingin melanjutkan."
+            )
         if command == "stop":
             await self.stop_worker()
             return (
-                "⏹ Aktivitas akun sudah dihentikan.\n\nTekan Jalankan Ojol jika ingin melanjutkan."
+                "⏹ Aktivitas akun sudah dihentikan.\n\nTekan Jalankan Ojol atau Jalankan Kebutuhan jika ingin melanjutkan."
             )
-        if command == "run":
+        if command == "run_kebutuhan":
             async with self.lock:
+                for key in NEEDS:
+                    set_auto_flag(self.settings.runtime_dir, key, True)
                 if (self.worker and self.worker.returncode is None) or running(
                     self.settings.runtime_dir
                 ):
-                    return "🟢 Bot sudah aktif untuk akun ini. Tekan Status untuk melihat perkembangannya."
+                    return (
+                        "🟢 Auto kebutuhan aktif. Bot sedang memantau dan mengisi kebutuhan karakter.\n\n"
+                        "Tekan Status untuk melihat perkembangannya."
+                    )
+                if not self.settings.operator_authorized:
+                    raise RuntimeError("Akun ini belum diizinkan menjalankan bot oleh admin.")
+                self.access.revoke()
+                await self.ensure_backend(require_session=True)
+                await self.start_tunnel()
+                if maintenance := held_window(self.maintenance_file):
+                    if getattr(maintenance, "target", "all") == "all":
+                        if auto_start:
+                            self.auto_start_pending = True
+                        return maintenance.message()
+                set_auto_flag(self.settings.runtime_dir, "ojol", False)
+                config_file = os.environ.get("OJOL_CONFIG_FILE")
+                args = [sys.executable, str(ROOT / "main.py")]
+                if config_file:
+                    args += ["--env-file", config_file]
+                args += ["run", "--live"]
+                self.expected_stop = False
+                self.worker = await asyncio.create_subprocess_exec(
+                    *args,
+                    stderr=asyncio.subprocess.STDOUT,
+                    start_new_session=True,
+                    env={
+                        **os.environ,
+                        "OJOL_RUNTIME_DIR": str(self.settings.runtime_dir),
+                        "OJOL_TELEGRAM_CHAT_ID": str(self.settings.telegram_chat_id or ""),
+                        "OJOL_ACCOUNT_NAME": self.settings.account_name,
+                        "OJOL_ACCOUNT_ID": self.account_id or "",
+                        "OJOL_WORKER_AUTO_START": "1" if auto_start else "0",
+                        "OJOL_MAINTENANCE_FILE": str(self.maintenance_file),
+                    },
+                )
+                return (
+                    "▶️ Bot sedang memulai (Auto Kebutuhan)\n\n"
+                    "Bot akan memantau dan mengisi kebutuhan karakter secara otomatis. "
+                    "Tekan Status untuk melihat perkembangannya."
+                )
+        if command == "run":
+            async with self.lock:
+                set_auto_flag(self.settings.runtime_dir, "ojol", True)
+                label = (
+                    "Berkendara" if mode == "kendara" else "Otomatis" if mode == "otomatis" else ""
+                )
+                if (self.worker and self.worker.returncode is None) or running(
+                    self.settings.runtime_dir
+                ):
+                    return (
+                        "🟢 Bot sudah aktif untuk akun ini. Auto Ojol diaktifkan"
+                        + (f" (mode {label}).\n\n" if label else ".\n\n")
+                        + "Aktivitas mengikuti pilihan di menu Auto. Tekan Status untuk melihat perkembangannya."
+                    )
                 if not self.settings.operator_authorized:
                     raise RuntimeError("Akun ini belum diizinkan menjalankan Ojol oleh admin.")
                 self.access.revoke()
@@ -833,7 +924,12 @@ class ControlService:
                 f"control.command.{command}",
                 {"account_id": self.account_id},
                 stop_worker=not command.startswith("profit")
-                and command not in {"cleanup_scan", "visit_scan"},
+                and command not in {
+                    "cleanup_scan",
+                    "visit_scan",
+                    "stop_ojol",
+                    "stop_kebutuhan",
+                },
             )
         except Exception as exc:
             queue_error(
@@ -841,7 +937,12 @@ class ControlService:
                 exc,
                 f"control.command.{command}",
                 {"account_id": self.account_id},
-                stop_worker=command not in {"cleanup_scan", "visit_scan"},
+                stop_worker=command not in {
+                    "cleanup_scan",
+                    "visit_scan",
+                    "stop_ojol",
+                    "stop_kebutuhan",
+                },
             )
         await flush_notices(self.settings)
 
@@ -874,6 +975,9 @@ class ControlService:
                                     command = "run"
                                 if (
                                     command == "run"
+                                    or command == "run_kebutuhan"
+                                    or command == "stop_ojol"
+                                    or command == "stop_kebutuhan"
                                     or command == "resume"
                                     or command == "choose_date"
                                     or re.fullmatch(r"profit:\d{4}-\d{2}-\d{2}", command)

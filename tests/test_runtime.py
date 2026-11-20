@@ -975,3 +975,139 @@ async def test_observation_failure_after_verified_claim_does_not_reopen_or_repea
         assert journal.start(settings) > controller.run_id
     finally:
         journal.close()
+
+
+async def test_ojol_failure_keeps_auto_kebutuhan_running(settings, state, shop_preview):
+    from ojol.auto_settings import auto_flags, set_auto_flag
+
+    set_auto_flag(settings.runtime_dir, "ojol", True)
+    set_auto_flag(settings.runtime_dir, "makan", True)
+
+    before_search = state.model_copy(
+        update={
+            "phase": "idle",
+            "buttons": ["📲 Cari order"],
+            "needs": {"makan": 30},
+            "fuel": 80,
+            "condition": 80,
+            "data": 80,
+        }
+    )
+    after_makan = before_search.model_copy(
+        update={
+            "wallet": before_search.wallet - Decimal("0.8"),
+            "needs": {"makan": 80},
+        }
+    )
+
+    product = Product(
+        name="Nasi bungkus",
+        price="0.8",
+        effects={"makan": 50},
+        row_text="makan row",
+        enabled=True,
+    )
+    shop = shop_preview([product]).model_copy(update={"name": "Akademis.ai Warung"})
+
+    snap_calls = 0
+
+    async def dynamic_snapshot():
+        nonlocal snap_calls
+        snap_calls += 1
+        if snap_calls <= 2:
+            return before_search
+        return after_makan
+
+    ui = SimpleNamespace(
+        snapshot=dynamic_snapshot,
+        preview_shops=AsyncMock(return_value=[shop]),
+        buy=AsyncMock(),
+        job_click=AsyncMock(side_effect=RuntimeError("Gagal klik job Ojol")),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.wait = AsyncMock(side_effect=StopRequested("selesai test kebutuhan"))
+
+        # Controller.run should not crash; it should catch Ojol failure, disable Auto Ojol,
+        # and continue running Auto Kebutuhan (makan).
+        with pytest.raises(StopRequested):
+            await controller.run()
+
+        # Ojol failed on job_click
+        ui.job_click.assert_awaited_once()
+        # But makan purchase still proceeded!
+        ui.preview_shops.assert_awaited_once_with("makan")
+        ui.buy.assert_awaited_once()
+        # And Auto Ojol flag was turned OFF while Auto Makan remained ON
+        flags = auto_flags(settings.runtime_dir)
+        assert flags["ojol"] is False
+        assert flags["makan"] is True
+    finally:
+        journal.close()
+
+
+async def test_ojol_stop_step_keeps_auto_kebutuhan_running(settings, state, shop_preview):
+    from ojol.auto_settings import auto_flags, set_auto_flag
+
+    set_auto_flag(settings.runtime_dir, "ojol", True)
+    set_auto_flag(settings.runtime_dir, "makan", True)
+
+    # State with unknown buttons so next_step returns step.action == "stop"
+    state_unknown = state.model_copy(
+        update={
+            "phase": "idle",
+            "buttons": ["Tombol aneh yang tidak dikenal"],
+            "needs": {"makan": 30},
+            "fuel": 80,
+            "condition": 80,
+            "data": 80,
+        }
+    )
+    after_makan = state_unknown.model_copy(
+        update={
+            "wallet": state_unknown.wallet - Decimal("0.8"),
+            "needs": {"makan": 80},
+        }
+    )
+
+    product = Product(
+        name="Nasi padang",
+        price="0.8",
+        effects={"makan": 50},
+        row_text="makan row",
+        enabled=True,
+    )
+    shop = shop_preview([product]).model_copy(update={"name": "Akademis.ai Resto"})
+
+    snap_calls = 0
+
+    async def dynamic_snapshot():
+        nonlocal snap_calls
+        snap_calls += 1
+        if snap_calls <= 2:
+            return state_unknown
+        return after_makan
+
+    ui = SimpleNamespace(
+        snapshot=dynamic_snapshot,
+        preview_shops=AsyncMock(return_value=[shop]),
+        buy=AsyncMock(),
+        job_click=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.wait = AsyncMock(side_effect=StopRequested("selesai stop step test"))
+
+        with pytest.raises(StopRequested):
+            await controller.run()
+
+        # Makan purchase succeeded
+        ui.preview_shops.assert_awaited_once_with("makan")
+        ui.buy.assert_awaited_once()
+        flags = auto_flags(settings.runtime_dir)
+        assert flags["ojol"] is False
+        assert flags["makan"] is True
+    finally:
+        journal.close()

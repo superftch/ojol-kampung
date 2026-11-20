@@ -8,7 +8,7 @@ from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 
-from .auto_settings import auto_flags
+from .auto_settings import auto_flags, set_auto_flag
 from .finance import completion_evidence
 from .garden import run_garden
 from .gym import run_gym
@@ -80,6 +80,28 @@ class Controller:
         except asyncio.TimeoutError:
             pass
         self.check_cancel()
+
+    def handle_ojol_failure(self, exc_or_reason):
+        flags = auto_flags(self.settings.runtime_dir)
+        has_kebutuhan = any(flags[k] for k in flags if k != "ojol")
+        reason = str(exc_or_reason)
+        if has_kebutuhan:
+            set_auto_flag(self.settings.runtime_dir, "ojol", False)
+            self.active_trip = None
+            self.busy_since = None
+            self.report("ojol_gagal", reason=reason)
+            exc = exc_or_reason if isinstance(exc_or_reason, Exception) else RuntimeError(reason)
+            queue_error(
+                self.settings,
+                exc,
+                self.stage,
+                {
+                    "tindakan": "Auto Ojol dinonaktifkan karena gagal. Fitur auto kebutuhan tetap berjalan normal. Tekan Jalankan Ojol jika ingin mencoba lagi."
+                },
+                stop_worker=False,
+            )
+            return True
+        return False
 
     def report(self, event, **data):
         self.last_event = event
@@ -485,9 +507,9 @@ class Controller:
         try:
             self.check_cancel()
             self.stage = f"job.{kind}.click"
-            # Klaim ongkos harus langsung setelah arrived; jeda manusia masuk jendela turun (409).
-            if kind != "complete":
-                await self.human_pause()
+            # Update #53 (20 Nov 2026): tunggu sebentar di tujuan; klaim < 2 detik
+            # dianggap bot oleh server. Retry 409 turun di adapter sudah menangani jendela 8 dtk.
+            await self.human_pause(3.0, 6.0)
             await self.ui.job_click(labels[0])
             self.stage = f"job.{kind}.verify"
             if kind == "complete":
@@ -589,8 +611,14 @@ class Controller:
             is_global_maint = window is not None and getattr(window, "target", "all") == "all"
             try:
                 await self.read_snapshot()
-            except HttpCoreError:
+            except HttpCoreError as exc:
                 if is_global_maint:
+                    continue
+                if (
+                    flags.get("ojol")
+                    and ("mitra Ojol" in str(exc) or "ojol" in getattr(exc, "path", "").lower())
+                    and self.handle_ojol_failure(exc)
+                ):
                     continue
                 raise
             if is_global_maint:
@@ -677,6 +705,8 @@ class Controller:
                     if step.action == "maintain":
                         continue
             if step.action == "stop":
+                if flags.get("ojol") and self.handle_ojol_failure(step.reason):
+                    continue
                 raise RuntimeError(step.reason)
             if self.state.phase == "idle" and (
                 step.action in {"search", "take"}
@@ -730,21 +760,34 @@ class Controller:
                     if self.busy_since is None:
                         self.busy_since = time.monotonic()
                     if time.monotonic() - self.busy_since > 30:
-                        raise RuntimeError(
+                        exc = RuntimeError(
                             "Pencarian belum selesai setelah 30 detik; berhenti tanpa klik duplikat"
                         )
+                        if flags.get("ojol") and self.handle_ojol_failure(exc):
+                            continue
+                        raise exc
                     await self.wait(step.wait_seconds)
                     continue
                 if self.active_trip != self.state.trip:
                     self.active_trip = self.state.trip
                     self.trip_due = time.monotonic() + step.wait_seconds
                 if time.monotonic() > self.trip_due + 90:
-                    raise RuntimeError(
+                    exc = RuntimeError(
                         "Countdown UI tidak maju di background; berhenti tanpa memalsukan waktu game"
                     )
+                    if flags.get("ojol") and self.handle_ojol_failure(exc):
+                        continue
+                    raise exc
                 await self.wait(
                     max(1, min(step.wait_seconds, max(1, self.trip_due - time.monotonic())))
                 )
             else:
                 self.active_trip = None
-                await self.job_action(self.state, step.action)
+                try:
+                    await self.job_action(self.state, step.action)
+                except Exception as exc:
+                    if isinstance(exc, StopRequested):
+                        raise
+                    if flags.get("ojol") and self.handle_ojol_failure(exc):
+                        continue
+                    raise

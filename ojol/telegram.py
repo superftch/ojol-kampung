@@ -23,7 +23,9 @@ BUTTON_COMMANDS = {
     "Dashboard": "dashboard",
     "Import Cookie": "import_cookie",
     "Jalankan Ojol": "choose_mode",
-    "Hentikan Ojol": "stop",
+    "Hentikan Ojol": "stop_ojol",
+    "Jalankan Kebutuhan": "run_kebutuhan",
+    "Hentikan Kebutuhan": "stop_kebutuhan",
     "Lanjutkan": "resume",
     "Status": "status",
     "Laba Bersih": "profit",
@@ -45,6 +47,7 @@ def keyboard_main():
             [{"text": "Dashboard"}, {"text": "Status"}],
             [{"text": "Akun Saya"}, {"text": "Auto"}],
             [{"text": "Jalankan Ojol"}, {"text": "Hentikan Ojol"}],
+            [{"text": "Jalankan Kebutuhan"}, {"text": "Hentikan Kebutuhan"}],
             [{"text": "Import Cookie"}],
             [{"text": "Cari Rumah Kotor"}, {"text": "Cari Rumah Mampir"}],
             [{"text": "Pengaturan"}, {"text": "Bantuan"}],
@@ -68,6 +71,7 @@ def keyboard_status():
         [
             [{"text": "Dashboard"}, {"text": "Laba Bersih"}],
             [{"text": "Jalankan Ojol"}, {"text": "Hentikan Ojol"}],
+            [{"text": "Jalankan Kebutuhan"}, {"text": "Hentikan Kebutuhan"}],
             [{"text": "Auto"}, {"text": "Menu Utama"}],
         ]
     )
@@ -88,7 +92,13 @@ def keyboard_settings():
 # keyboard is passed.  Points to the main keyboard so callers that relied
 # on the old constant keep working.
 KEYBOARD = keyboard_main()
-MANDATORY_EVENTS = {"maintenance", "maintenance_selesai", "tidur_mulai", "bangun"}
+MANDATORY_EVENTS = {
+    "maintenance",
+    "maintenance_selesai",
+    "tidur_mulai",
+    "bangun",
+    "ojol_gagal",
+}
 
 
 def notifications_enabled(settings):
@@ -238,6 +248,9 @@ def koin(value):
 
 
 def event_text(event, data):
+    if event == "ojol_gagal":
+        reason = data.get("reason", "Terjadi kendala pada Ojol")
+        return f"⚠️ Auto Ojol dinonaktifkan: {reason}.\n\nFitur auto kebutuhan tetap berjalan normal. Tekan Jalankan Ojol jika ingin mencoba lagi."
     if event == "kebun_aksi_selesai":
         action = data.get("action")
         garden = data.get("garden", "Kebun/kolam")
