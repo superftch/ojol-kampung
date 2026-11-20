@@ -4,8 +4,8 @@ import asyncio
 import hashlib
 import json
 import logging
+import random
 import re
-import secrets
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -14,6 +14,8 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 import httpx
+from curl_cffi.requests import AsyncSession as CurlAsyncSession
+from curl_cffi.requests import RequestsError as CurlRequestsError
 
 from .auto_settings import auto_flags
 from .finance import WIB, day_bounds, report_date
@@ -22,7 +24,7 @@ from .identity import save_profile, verified_profile
 from .models import NEEDS, GameReceipt, Product, ShopPreview, SleepSchedule, Snapshot, now
 from .planner import ALLOWED_ITEMS
 from .recreation import solve_foto_shots
-from .session_transfer import DOMAIN, parse_cookie_input, session_expired
+from .session_transfer import parse_cookie_input, session_expired
 from .shop_locations import (
     BPJS_KANTOR_BY_VILLAGE,
     GYM_FACILITIES_BY_VILLAGE,
@@ -387,48 +389,47 @@ def extract_need_effects(source, group="barang"):
 
 BROWSER_PROFILES = [
     {
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "sec_ch_ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        "impersonate": "chrome152",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Google Chrome";v="152", "Chromium";v="152", "Not:A-Brand";v="24"',
         "sec_ch_ua_mobile": "?0",
         "sec_ch_ua_platform": '"Windows"',
     },
     {
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
-        "sec_ch_ua_mobile": "?0",
-        "sec_ch_ua_platform": '"Windows"',
-    },
-    {
-        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        "sec_ch_ua": '"Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        "impersonate": "chrome152_macos",
+        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Google Chrome";v="152", "Chromium";v="152", "Not:A-Brand";v="24"',
         "sec_ch_ua_mobile": "?0",
         "sec_ch_ua_platform": '"macOS"',
     },
     {
-        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
-        "sec_ch_ua": '"Chromium";v="130", "Google Chrome";v="130", "Not?A_Brand";v="99"',
+        "impersonate": "chrome151",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Google Chrome";v="151", "Chromium";v="151", "Not:A-Brand";v="24"',
+        "sec_ch_ua_mobile": "?0",
+        "sec_ch_ua_platform": '"Windows"',
+    },
+    {
+        "impersonate": "chrome151_macos",
+        "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Google Chrome";v="151", "Chromium";v="151", "Not:A-Brand";v="24"',
         "sec_ch_ua_mobile": "?0",
         "sec_ch_ua_platform": '"macOS"',
     },
     {
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
-        "sec_ch_ua": '"Microsoft Edge";v="131", "Chromium";v="131", "Not_A Brand";v="24"',
+        "impersonate": "chrome150",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Chromium";v="150", "Google Chrome";v="150", "Not?A_Brand";v="99"',
         "sec_ch_ua_mobile": "?0",
         "sec_ch_ua_platform": '"Windows"',
     },
     {
-        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
-        "sec_ch_ua": '"Google Chrome";v="129", "Not=A?Brand";v="8", "Chromium";v="129"',
+        "impersonate": "chrome146",
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36",
+        "sec_ch_ua": '"Chromium";v="146", "Google Chrome";v="146", "Not?A_Brand";v="99"',
         "sec_ch_ua_mobile": "?0",
         "sec_ch_ua_platform": '"Windows"',
     },
-]
-
-ACCEPT_VARIANTS = [
-    "application/json, text/plain, */*",
-    "*/*",
-    "application/json",
-    "application/json, text/javascript, */*; q=0.01",
 ]
 
 ACCEPT_LANGUAGE_VARIANTS = [
@@ -439,30 +440,33 @@ ACCEPT_LANGUAGE_VARIANTS = [
     "en-US,en;q=0.9,id;q=0.8",
 ]
 
-PRIORITY_VARIANTS = [
-    "u=1, i",
-    "u=1",
-]
-
-CACHE_CONTROL_VARIANTS = [
-    "no-cache",
-    "max-age=0",
-    "no-cache, no-store, max-age=0",
-]
-
 
 def ensure_browser_identity(directory: Path) -> dict:
+    digest = int(hashlib.sha256(str(directory).encode()).hexdigest(), 16)
+    default_profile = BROWSER_PROFILES[digest % len(BROWSER_PROFILES)]
+    default_lang = ACCEPT_LANGUAGE_VARIANTS[(digest >> 8) % len(ACCEPT_LANGUAGE_VARIANTS)]
     identity_file = directory / "browser-identity.json"
     if identity_file.is_file():
         try:
             data = json.loads(identity_file.read_text())
             if isinstance(data, dict) and data.get("user_agent"):
+                updated = False
+                if not data.get("impersonate"):
+                    data["impersonate"] = default_profile["impersonate"]
+                    updated = True
+                if not data.get("accept_language"):
+                    data["accept_language"] = default_lang
+                    updated = True
+                if updated:
+                    try:
+                        write_private(identity_file, data)
+                    except OSError:
+                        pass
                 return data
         except (OSError, ValueError):
             pass
 
-    index = int(hashlib.sha256(str(directory).encode()).hexdigest(), 16) % len(BROWSER_PROFILES)
-    identity = dict(BROWSER_PROFILES[index])
+    identity = {**default_profile, "accept_language": default_lang}
     try:
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         write_private(identity_file, identity)
@@ -471,12 +475,28 @@ def ensure_browser_identity(directory: Path) -> dict:
     return identity
 
 
+def resolve_proxy_url(directory: Path, explicit_proxy: str | None = None) -> str | None:
+    """Resolve optional per-account proxy from proxy.txt, falling back to explicit setting."""
+    proxy_file = directory / "proxy.txt"
+    if proxy_file.is_file():
+        try:
+            line = proxy_file.read_text().strip().splitlines()[0].strip()
+            if line:
+                return line
+        except (OSError, IndexError):
+            pass
+    if explicit_proxy and str(explicit_proxy).strip():
+        return str(explicit_proxy).strip()
+    return None
+
+
 class OjolHttpApi:
-    def __init__(self, directory: Path, session_file=None, client=None):
+    def __init__(self, directory: Path, session_file=None, client=None, proxy_url=None):
         self.directory = Path(directory)
         self.session_file = session_file or self.directory / "http-session.json"
         self.client = client
         self.owns_client = client is None
+        self.proxy_url = resolve_proxy_url(self.directory, proxy_url)
         self.catalog = {}
         self.vehicle = None
         self.usage = None
@@ -490,17 +510,19 @@ class OjolHttpApi:
         headers = {
             "User-Agent": self.browser_identity["user_agent"],
             "Accept": (
-                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8"
                 if is_html
-                else ("*/*" if is_script else secrets.choice(ACCEPT_VARIANTS))
+                else "*/*"
             ),
-            "Accept-Language": secrets.choice(ACCEPT_LANGUAGE_VARIANTS),
+            "Accept-Language": self.browser_identity.get(
+                "accept_language", ACCEPT_LANGUAGE_VARIANTS[0]
+            ),
             "Sec-Fetch-Site": "same-origin",
             "Sec-Fetch-Mode": "navigate" if is_html else ("no-cors" if is_script else "cors"),
             "Sec-Fetch-Dest": "document" if is_html else ("script" if is_script else "empty"),
             "Origin": ORIGIN,
             "Referer": f"{ORIGIN}/kampung",
-            "Cache-Control": secrets.choice(CACHE_CONTROL_VARIANTS),
+            "Cache-Control": "no-cache",
         }
         if "sec_ch_ua" in self.browser_identity:
             headers["sec-ch-ua"] = self.browser_identity["sec_ch_ua"]
@@ -509,7 +531,7 @@ class OjolHttpApi:
         if "sec_ch_ua_platform" in self.browser_identity:
             headers["sec-ch-ua-platform"] = self.browser_identity["sec_ch_ua_platform"]
         if not is_html and not is_script:
-            headers["Priority"] = secrets.choice(PRIORITY_VARIANTS)
+            headers["Priority"] = "u=1, i"
         return headers
 
     async def __aenter__(self):
@@ -521,30 +543,28 @@ class OjolHttpApi:
                 raise HttpCoreError(
                     "Sesi game belum ada. Tekan Import Cookie dulu.", category="auth"
                 ) from None
-            cookies = httpx.Cookies()
             if session_expired(payload):
                 raise HttpCoreError("Cookie sesi game sudah kedaluwarsa.", category="auth")
             self.expires_at = payload["cookies"][0].get("expires")
-            for cookie in payload["cookies"]:
-                cookies.set(cookie["name"], cookie["value"], domain=DOMAIN, path="/")
-            self.client = httpx.AsyncClient(
-                base_url=ORIGIN,
-                cookies=cookies,
-                trust_env=False,
-                follow_redirects=False,
-                timeout=5,
-                headers={
-                    "User-Agent": self.browser_identity["user_agent"],
-                    "Origin": ORIGIN,
-                    "Referer": ORIGIN + "/kampung",
-                    "Cache-Control": "no-cache",
-                },
-            )
+            cookies = {cookie["name"]: cookie["value"] for cookie in payload["cookies"]}
+            session_kwargs = {
+                "impersonate": self.browser_identity.get("impersonate", "chrome152"),
+                "base_url": ORIGIN,
+                "cookies": cookies,
+                "allow_redirects": False,
+                "timeout": 5,
+            }
+            if self.proxy_url:
+                session_kwargs["proxy"] = self.proxy_url
+            self.client = CurlAsyncSession(**session_kwargs)
         return self
 
     async def __aexit__(self, *args):
         if self.owns_client and self.client:
-            await self.client.aclose()
+            if hasattr(self.client, "aclose"):
+                await self.client.aclose()
+            elif hasattr(self.client, "close"):
+                await self.client.close()
 
     async def request(self, path, payload=None, text=False, *, after=None):
         # No caller-provided URLs, redirects, or generic HTTP MCP tool.
@@ -602,14 +622,17 @@ class OjolHttpApi:
         for attempt in range(3 if payload is None else 1):
             headers = self.browser_headers(path, "GET" if payload is None else "POST")
             try:
+                req_kwargs = {"headers": headers}
+                if payload is not None:
+                    req_kwargs["json"] = payload
+                if after is not None:
+                    req_kwargs["params"] = {"after": after}
                 response = await self.client.request(
                     "GET" if payload is None else "POST",
                     path,
-                    json=payload,
-                    headers=headers,
-                    **({"params": {"after": after}} if after is not None else {}),
+                    **req_kwargs,
                 )
-            except httpx.TransportError:
+            except (httpx.TransportError, CurlRequestsError):
                 if payload is not None:
                     raise HttpCoreError(
                         "Request transaksi terputus; hasil belum pasti, tidak diulang",
@@ -625,7 +648,7 @@ class OjolHttpApi:
                     raise HttpCoreError(
                         "Sesi ditolak/kedaluwarsa. Gunakan Import Cookie.", category="auth"
                     )
-                if response.is_success:
+                if 200 <= response.status_code < 300:
                     try:
                         return response.text if text else response.json()
                     except ValueError:
@@ -649,7 +672,7 @@ class OjolHttpApi:
                     )
             if attempt < 2:
                 self.retries += 1
-                await asyncio.sleep(attempt + 1)
+                await asyncio.sleep((2**attempt) * random.uniform(0.65, 1.35))
         raise HttpCoreError(
             "Pembacaan HTTP gagal setelah 3 percobaan", category="transport", recoverable=True
         )

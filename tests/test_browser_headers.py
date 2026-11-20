@@ -74,9 +74,9 @@ def test_browser_headers_static_and_dynamic_variation(tmp_path):
         accept_headers.add(headers["Accept"])
         lang_headers.add(headers["Accept-Language"])
 
-    # Dynamic headers must vary across requests
-    assert len(accept_headers) > 1
-    assert len(lang_headers) > 1
+    # Headers must stay consistent across requests within the same session
+    assert len(accept_headers) == 1
+    assert len(lang_headers) == 1
 
 
 def test_browser_headers_endpoint_specific(tmp_path):

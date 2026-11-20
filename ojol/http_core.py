@@ -52,6 +52,8 @@ class HttpUI:
             OJOL_HTTP_RUNTIME_DIR=str(self.settings.runtime_dir),
             OJOL_HTTP_SESSION_FILE=str(self.session_file),
         )
+        if self.settings.proxy_url:
+            env["OJOL_HTTP_PROXY_URL"] = self.settings.proxy_url
         self.toolset = McpToolset(
             connection_params=StdioConnectionParams(
                 server_params=StdioServerParameters(

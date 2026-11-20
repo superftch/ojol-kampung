@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import random
 import re
 import time
 from datetime import timedelta
@@ -118,7 +119,19 @@ class Controller:
                     },
                 )
 
+    async def human_delay(self, min_seconds: float, max_seconds: float):
+        """Sleep a short human-like reaction delay before mutating actions."""
+        if self.settings.env == "testing":
+            return
+        delay = random.triangular(min_seconds, max_seconds, (min_seconds + max_seconds) * 0.45)
+        deadline = time.monotonic() + delay
+        while time.monotonic() < deadline:
+            self.check_cancel()
+            await asyncio.sleep(min(0.25, max(0, deadline - time.monotonic())))
+
     async def wait(self, seconds):
+        if self.settings.env != "testing" and seconds >= 3:
+            seconds = seconds * random.uniform(0.85, 1.25)
         if self.state and self.state.sleep_schedule and self.snapshot_read_at is not None:
             boundary = self.state.sleep_schedule.next_transition(self.state.observed_at)
             if boundary is not None:
@@ -131,16 +144,22 @@ class Controller:
         self.report("tidur" if sleeping else "menunggu", seconds=round(seconds, 3))
         deadline = time.monotonic() + seconds
         last_presence = time.monotonic()
+        presence_interval = (
+            random.uniform(28, 48) if self.settings.env != "testing" else 35
+        )
         while time.monotonic() < deadline:
             self.check_cancel()
             await asyncio.sleep(min(0.25, max(0, deadline - time.monotonic())))
-            if time.monotonic() - last_presence >= 35:
+            if time.monotonic() - last_presence >= presence_interval:
                 if hasattr(self.ui, "fetch_online_status"):
                     try:
                         await self.ui.fetch_online_status()
                     except Exception:
                         pass
                 last_presence = time.monotonic()
+                presence_interval = (
+                    random.uniform(28, 48) if self.settings.env != "testing" else 35
+                )
         self.wait_until = None
 
     async def read_snapshot(self):
@@ -184,7 +203,8 @@ class Controller:
                 state = self.state
             if predicate(state):
                 return state
-            await asyncio.sleep(0.75)
+            poll = 0.75 if self.settings.env == "testing" else random.uniform(0.95, 1.65)
+            await asyncio.sleep(poll)
         raise VerificationPending("Perubahan status belum terbukti; memeriksa ulang hasil aksi")
 
     async def wait_for_maintenance(self):
@@ -330,6 +350,7 @@ class Controller:
         }
         try:
             self.check_cancel()
+            await self.human_delay(0.8, 2.4)
             self.stage = f"purchase.click.{resource}"
             await self.ui.buy(plan.product, before.wallet, current, self.settings.min_balance)
             self.stage = f"purchase.verify.{resource}"
@@ -430,6 +451,7 @@ class Controller:
         self.last_action = {"action_id": action, "kind": kind, "label": labels[0]}
         try:
             self.check_cancel()
+            await self.human_delay(1.0, 2.8)
             self.stage = f"job.{kind}.click"
             await self.ui.job_click(labels[0])
             self.stage = f"job.{kind}.verify"
@@ -634,7 +656,8 @@ class Controller:
                         not await self.purchase(self.state, need)
                         and auto_flags(self.settings.runtime_dir)[need]
                     ):
-                        self.need_retry_at[need] = time.monotonic() + 300
+                        retry_offset = 300 if self.settings.env == "testing" else 300 + random.uniform(-25, 60)
+                        self.need_retry_at[need] = time.monotonic() + retry_offset
                     continue
             if self.state.phase == "idle" and await run_gym(self):
                 continue
