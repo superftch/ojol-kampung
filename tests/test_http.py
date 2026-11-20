@@ -482,6 +482,17 @@ async def test_trip_order_code_is_sent_when_claiming_fare(api, world):
     ]
 
 
+async def test_trip_cek_false_treated_as_no_order_code(api, world):
+    world["ojol"]["trip"] = {**trip(), "cek": False}
+    world["time"]["now"] = "2030-01-02T10:01:00Z"
+
+    assert (await api.snapshot()).order_code is None
+    await api.job_action("complete")
+    assert [json.loads(request.content) for request in api.calls if request.method == "POST"] == [
+        {"action": "selesai"}
+    ]
+
+
 @pytest.mark.parametrize(
     ("vehicle", "item", "name"),
     [
@@ -2199,3 +2210,77 @@ async def test_snapshot_tracks_ojol_remaining_hours(api, world):
     assert state.ojol_shift_done is False
     assert state.ojol_hours_left == 4.5
 
+
+def test_browser_headers_consistent_and_identity_upgraded(tmp_path):
+    from ojol.http_api import ensure_browser_identity
+
+    identity_file = tmp_path / "browser-identity.json"
+    write_private(identity_file, {"user_agent": "OldUA/1.0"})
+    upgraded = ensure_browser_identity(tmp_path)
+    assert upgraded["impersonate"].startswith("chrome")
+    assert upgraded["accept_language"]
+
+    api = OjolHttpApi(tmp_path)
+    first = api.browser_headers("/api/ojol")
+    second = api.browser_headers("/api/kebutuhan")
+    assert first["Accept-Language"] == second["Accept-Language"]
+    assert first["Accept"] == second["Accept"] == "*/*"
+    assert first["Priority"] == second["Priority"] == "u=1, i"
+    assert first["User-Agent"] == second["User-Agent"]
+
+
+def test_proxy_resolution_and_settings_validation(tmp_path, settings):
+    from ojol.http_api import resolve_proxy_url
+
+    assert resolve_proxy_url(tmp_path, "http://127.0.0.1:8080") == "http://127.0.0.1:8080"
+    (tmp_path / "proxy.txt").write_text("socks5://user:pass@10.0.0.2:1080\n")
+    assert (
+        resolve_proxy_url(tmp_path, "http://127.0.0.1:8080") == "socks5://user:pass@10.0.0.2:1080"
+    )
+    updated = settings.model_copy(update={"proxy_url": "http://127.0.0.1:8888"})
+    assert updated.proxy_url == "http://127.0.0.1:8888"
+    with pytest.raises(ValidationError):
+        type(settings).model_validate({**settings.model_dump(), "proxy_url": "ftp://bad-proxy"})
+
+
+async def test_http_api_uses_curl_impersonation_and_proxy(tmp_path, monkeypatch):
+    from ojol.session_transfer import parse_cookie_input
+
+    payload = parse_cookie_input("valid-cookie-value")
+    payload["cookies"][0]["expires"] = 9999999999
+    write_private(tmp_path / "http-session.json", payload)
+    (tmp_path / "proxy.txt").write_text("http://proxy.local:3128\n")
+
+    captured = {}
+
+    class FakeSession:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+        async def close(self):
+            captured["closed"] = True
+
+    monkeypatch.setattr("ojol.http_api.CurlAsyncSession", FakeSession)
+    async with OjolHttpApi(tmp_path) as api:
+        assert captured["impersonate"] == api.browser_identity["impersonate"]
+        assert captured["proxy"] == "http://proxy.local:3128"
+        assert captured["base_url"] == ORIGIN
+        assert captured["allow_redirects"] is False
+    assert captured["closed"] is True
+
+
+async def test_controller_human_delay_respects_env_and_sleeps_in_local(settings, monkeypatch):
+    sleep_mock = AsyncMock()
+    monkeypatch.setattr("ojol.controller.asyncio.sleep", sleep_mock)
+    journal = Journal(settings.runtime_dir)
+    try:
+        testing_ctrl = Controller(SimpleNamespace(), settings, journal, journal.start(settings))
+        await testing_ctrl.human_delay(0.8, 1.5)
+        sleep_mock.assert_not_awaited()
+
+        local_settings = settings.model_copy(update={"env": "local", "operator_authorized": True})
+        local_ctrl = Controller(SimpleNamespace(), local_settings, journal, journal.start(settings))
+        await local_ctrl.human_delay(0.1, 0.2)
+        assert sleep_mock.await_count >= 1
+    finally:
+        journal.close()

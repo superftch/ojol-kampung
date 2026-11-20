@@ -58,6 +58,20 @@ class Settings(Model):
     max_active_workers: int = Field(default=3, ge=1, le=100)
     tunnel_enabled: bool = False
     auto_start: bool = True
+    proxy_url: str | None = None
+
+    @field_validator("proxy_url", mode="before")
+    @classmethod
+    def valid_proxy_url(cls, value):
+        if value is None or str(value).strip() == "":
+            return None
+        from urllib.parse import urlsplit
+
+        text = str(value).strip()
+        parsed = urlsplit(text)
+        if parsed.scheme not in {"http", "https", "socks5", "socks5h"} or not parsed.hostname:
+            raise ValueError("URL proxy harus memakai skema http/https/socks5 dan hostname valid")
+        return text
 
     @field_validator("telegram_chat_id", mode="before")
     @classmethod

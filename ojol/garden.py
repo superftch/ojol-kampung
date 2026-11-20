@@ -1,5 +1,6 @@
 """Automated garden and pond maintenance (panen, rawat, tanam) and cooldown tracking."""
 
+import random
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -144,6 +145,8 @@ async def run_garden(c):
         c.spent += target_cost
 
     try:
+        if hasattr(c, "human_delay"):
+            await c.human_delay(1.0, 2.5)
         await c.ui.garden_action(garden_id, target_action)
         after = await c.read_snapshot()
     except (HttpCoreError, Exception) as exc:
@@ -155,7 +158,8 @@ async def run_garden(c):
             c.journal.reject(action_id)
             if target_cost > Decimal(0):
                 c.spent -= target_cost
-            c.garden_retry_at = time.monotonic() + 300
+            retry_offset = 300 if c.settings.env == "testing" else 300 + random.uniform(-25, 60)
+            c.garden_retry_at = time.monotonic() + retry_offset
             return False
         c.journal.settle(action_id, False)
         if isinstance(exc, HttpCoreError) and exc.category in {"uncertain", "transport"}:

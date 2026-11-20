@@ -191,9 +191,7 @@ def test_cli_online_command(capsys):
 
 def test_cli_online_all_command(settings, monkeypatch, capsys):
     manager_mock = AsyncMock()
-    manager_mock.fetch_all_online_status.return_value = {
-        "acc1": {"name": "Akun 1", "online": True}
-    }
+    manager_mock.fetch_all_online_status.return_value = {"acc1": {"name": "Akun 1", "online": True}}
     with patch("ojol.management.MultiAccountService", return_value=manager_mock):
         monkeypatch.setenv("OJOL_RUNTIME_DIR", str(settings.runtime_dir))
         assert main(["--env-file", str(ROOT / ".env.testing"), "online", "--all"]) == 0

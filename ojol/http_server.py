@@ -14,7 +14,11 @@ from .http_api import HttpCoreError, OjolHttpApi
 async def lifespan(server):
     global api
     directory = Path(os.environ["OJOL_HTTP_RUNTIME_DIR"])
-    api = OjolHttpApi(directory, Path(os.environ["OJOL_HTTP_SESSION_FILE"]))
+    api = OjolHttpApi(
+        directory,
+        Path(os.environ["OJOL_HTTP_SESSION_FILE"]),
+        proxy_url=os.environ.get("OJOL_HTTP_PROXY_URL"),
+    )
     try:
         yield {}
     finally:
