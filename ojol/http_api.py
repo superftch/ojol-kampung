@@ -240,8 +240,14 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
         is_shift_done = True
 
     if trip:
-        order_code = trip.get("cek")
-        if order_code is not None and not isinstance(order_code, str):
+        raw_cek = trip.get("cek")
+        if raw_cek is None or raw_cek is False or raw_cek == "":
+            order_code = None
+        elif isinstance(raw_cek, str):
+            order_code = raw_cek
+        elif type(raw_cek) is int:
+            order_code = str(raw_cek)
+        else:
             raise HttpCoreError("Kode cek trip Ojol tidak valid", recoverable=True)
         icon, label = KINDS[trip["kind"]]
         if trip.get("arriveAt"):

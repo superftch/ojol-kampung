@@ -482,6 +482,17 @@ async def test_trip_order_code_is_sent_when_claiming_fare(api, world):
     ]
 
 
+async def test_trip_cek_false_treated_as_no_order_code(api, world):
+    world["ojol"]["trip"] = {**trip(), "cek": False}
+    world["time"]["now"] = "2030-01-02T10:01:00Z"
+
+    assert (await api.snapshot()).order_code is None
+    await api.job_action("complete")
+    assert [json.loads(request.content) for request in api.calls if request.method == "POST"] == [
+        {"action": "selesai"}
+    ]
+
+
 @pytest.mark.parametrize(
     ("vehicle", "item", "name"),
     [
