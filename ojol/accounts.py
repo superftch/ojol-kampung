@@ -120,14 +120,38 @@ class Accounts:
                 try:
                     if name == "telegram_bot_token":
                         from pydantic import SecretStr
+
                         setattr(self.settings, name, SecretStr(str(val or "")))
-                    elif name in {"threshold", "resource_reserve_percent", "idle_poll_seconds", "max_accounts_per_user", "max_active_workers"}:
-                        setattr(self.settings, name, int(val) if val is not None else getattr(self.settings, name))
+                    elif name in {
+                        "threshold",
+                        "resource_reserve_percent",
+                        "idle_poll_seconds",
+                        "max_accounts_per_user",
+                        "max_active_workers",
+                    }:
+                        setattr(
+                            self.settings,
+                            name,
+                            int(val) if val is not None else getattr(self.settings, name),
+                        )
                     elif name in {"min_balance", "max_spend"}:
-                        setattr(self.settings, name, float(val) if val is not None and str(val).strip() != "" else None)
+                        setattr(
+                            self.settings,
+                            name,
+                            float(val) if val is not None and str(val).strip() != "" else None,
+                        )
                     elif name in {"max_jobs", "max_minutes", "telegram_chat_id"}:
-                        setattr(self.settings, name, int(val) if val is not None and str(val).strip() != "" else None)
-                    elif name in {"smart_thresholds", "auto_start", "tunnel_enabled", "telegram_enabled"}:
+                        setattr(
+                            self.settings,
+                            name,
+                            int(val) if val is not None and str(val).strip() != "" else None,
+                        )
+                    elif name in {
+                        "smart_thresholds",
+                        "auto_start",
+                        "tunnel_enabled",
+                        "telegram_enabled",
+                    }:
                         setattr(self.settings, name, bool(val))
                     elif name in {"ojol_mode", "login_public_url"}:
                         setattr(self.settings, name, str(val))
@@ -141,13 +165,19 @@ class Accounts:
         raw_token = ""
         token_obj = getattr(self.settings, "telegram_bot_token", None)
         if token_obj:
-            raw_token = token_obj.get_secret_value() if hasattr(token_obj, "get_secret_value") else str(token_obj)
+            raw_token = (
+                token_obj.get_secret_value()
+                if hasattr(token_obj, "get_secret_value")
+                else str(token_obj)
+            )
         return {
             "threshold": getattr(self.settings, "threshold", 60),
             "smart_thresholds": getattr(self.settings, "smart_thresholds", True),
             "resource_reserve_percent": getattr(self.settings, "resource_reserve_percent", 20),
             "min_balance": float(getattr(self.settings, "min_balance", 5.0)),
-            "max_spend": float(self.settings.max_spend) if getattr(self.settings, "max_spend", None) is not None else None,
+            "max_spend": float(self.settings.max_spend)
+            if getattr(self.settings, "max_spend", None) is not None
+            else None,
             "max_jobs": getattr(self.settings, "max_jobs", None),
             "max_minutes": getattr(self.settings, "max_minutes", None),
             "idle_poll_seconds": getattr(self.settings, "idle_poll_seconds", 10),
@@ -164,12 +194,23 @@ class Accounts:
 
     def update_settings(self, updates: dict) -> dict:
         allowed = {
-            "threshold", "smart_thresholds", "resource_reserve_percent",
-            "min_balance", "max_spend", "max_jobs", "max_minutes",
-            "idle_poll_seconds", "ojol_mode", "max_accounts_per_user",
-            "max_active_workers", "auto_start", "login_public_url",
-            "tunnel_enabled", "telegram_enabled", "telegram_bot_token",
-            "telegram_chat_id"
+            "threshold",
+            "smart_thresholds",
+            "resource_reserve_percent",
+            "min_balance",
+            "max_spend",
+            "max_jobs",
+            "max_minutes",
+            "idle_poll_seconds",
+            "ojol_mode",
+            "max_accounts_per_user",
+            "max_active_workers",
+            "auto_start",
+            "login_public_url",
+            "tunnel_enabled",
+            "telegram_enabled",
+            "telegram_bot_token",
+            "telegram_chat_id",
         }
         with self.db() as db:
             for k, v in updates.items():
@@ -182,7 +223,13 @@ class Accounts:
                         val = ""
                     else:
                         val = v
-                elif k in {"threshold", "resource_reserve_percent", "idle_poll_seconds", "max_accounts_per_user", "max_active_workers"}:
+                elif k in {
+                    "threshold",
+                    "resource_reserve_percent",
+                    "idle_poll_seconds",
+                    "max_accounts_per_user",
+                    "max_active_workers",
+                }:
                     val = int(v)
                 elif k in {"min_balance", "max_spend"}:
                     val = float(v)
@@ -196,8 +243,7 @@ class Accounts:
                     val = v
 
                 db.execute(
-                    "INSERT OR REPLACE INTO settings(name, value) VALUES(?,?)",
-                    (k, json.dumps(val))
+                    "INSERT OR REPLACE INTO settings(name, value) VALUES(?,?)", (k, json.dumps(val))
                 )
         self.apply_db_settings()
         return self.get_all_settings()
@@ -378,7 +424,11 @@ class Accounts:
     def select(self, owner, identifier):
         self.get(identifier, owner)
         with self.db() as db:
-            db.execute("UPDATE users SET selected=? WHERE telegram_id=?", (identifier, owner))
+            db.execute(
+                "INSERT INTO users(telegram_id, selected) VALUES(?, ?) "
+                "ON CONFLICT(telegram_id) DO UPDATE SET selected=excluded.selected",
+                (owner, identifier),
+            )
 
     @staticmethod
     def name(value):
@@ -403,7 +453,11 @@ class Accounts:
             db.execute(
                 "INSERT INTO accounts(id,owner,name) VALUES(?,?,?)", (identifier, owner, name)
             )
-            db.execute("UPDATE users SET selected=? WHERE telegram_id=?", (identifier, owner))
+            db.execute(
+                "INSERT INTO users(telegram_id, selected) VALUES(?, ?) "
+                "ON CONFLICT(telegram_id) DO UPDATE SET selected=excluded.selected",
+                (owner, identifier),
+            )
         return self.get(identifier, owner)
 
     def rename(self, owner, identifier, name):

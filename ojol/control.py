@@ -136,6 +136,17 @@ class ControlService:
         self.auto_start_pending = False
         self.expected_stop = True
         (self.settings.runtime_dir / "STOP").touch(mode=0o600)
+        from .worker_service import send_worker_command
+
+        try:
+            await send_worker_command(
+                self.settings.runtime_dir,
+                {"action": "stop", "account_id": self.account_id},
+                timeout=1.0,
+            )
+        except Exception:
+            pass
+
         if self.worker and self.worker.returncode is None:
             try:
                 self.worker.terminate()
@@ -179,7 +190,8 @@ class ControlService:
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
-                recorded_worker = False
+                if not busy:
+                    recorded_worker = False
             except PermissionError:
                 pass
         active = busy and recorded_worker and (not managed or self.worker.pid == pid)
@@ -418,7 +430,8 @@ class ControlService:
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
-                recorded_worker = False
+                if not busy:
+                    recorded_worker = False
             except PermissionError:
                 pass
         active = busy and recorded_worker and (not managed or self.worker.pid == pid)
@@ -584,7 +597,8 @@ class ControlService:
             try:
                 os.kill(pid, 0)
             except ProcessLookupError:
-                recorded_worker = False
+                if not busy:
+                    recorded_worker = False
             except PermissionError:
                 pass
         active = busy and recorded_worker and (not managed or self.worker.pid == pid)
@@ -1012,6 +1026,25 @@ class ControlService:
                             self.auto_start_pending = True
                         return maintenance.message()
                 set_auto_flag(self.settings.runtime_dir, "ojol", False)
+                from .worker_service import send_worker_command
+
+                worker_resp = await send_worker_command(
+                    self.settings.runtime_dir,
+                    {
+                        "action": "start",
+                        "account_id": self.account_id,
+                        "mode": None,
+                        "auto_start": auto_start,
+                    },
+                )
+                if worker_resp and worker_resp.get("ok"):
+                    self.expected_stop = False
+                    return (
+                        "▶️ Bot sedang memulai (Auto Kebutuhan)\n\n"
+                        "Bot akan memantau dan mengisi kebutuhan karakter secara otomatis. "
+                        "Tekan Status untuk melihat perkembangannya."
+                    )
+
                 config_file = os.environ.get("OJOL_CONFIG_FILE")
                 args = [sys.executable, str(ROOT / "main.py")]
                 if config_file:
@@ -1060,6 +1093,33 @@ class ControlService:
                     if auto_start:
                         self.auto_start_pending = True
                     return maintenance.message()
+
+                from .worker_service import send_worker_command
+
+                worker_resp = await send_worker_command(
+                    self.settings.runtime_dir,
+                    {
+                        "action": "start",
+                        "account_id": self.account_id,
+                        "mode": mode,
+                        "auto_start": auto_start,
+                    },
+                )
+                if worker_resp and worker_resp.get("ok"):
+                    self.expected_stop = False
+                    label = (
+                        "Berkendara"
+                        if mode == "kendara"
+                        else "Otomatis"
+                        if mode == "otomatis"
+                        else ""
+                    )
+                    return (
+                        "▶️ Bot sedang memulai"
+                        + (f" (mode {label})\n\n" if label else "\n\n")
+                        + "Aktivitas mengikuti pilihan di menu Auto. Tekan Status untuk melihat perkembangannya."
+                    )
+
                 config_file = os.environ.get("OJOL_CONFIG_FILE")
                 args = [sys.executable, str(ROOT / "main.py")]
                 if config_file:
@@ -1295,33 +1355,34 @@ class ControlService:
             )
         self.tasks.append(asyncio.create_task(self.guard_task(self.supervise, "control.supervise")))
 
-    async def close(self, *, notify_restart=False):
+    async def close(self, *, notify_restart=False, stop_workers=True):
         self.closing = True
         for task in self.tasks:
             task.cancel()
         await asyncio.gather(*self.tasks, return_exceptions=True)
         try:
-            was_active = (
-                notify_restart
-                and self.settings.env != "testing"
-                and not self.expected_stop
-                and (
-                    (self.worker and self.worker.returncode is None)
-                    or running(self.settings.runtime_dir)
+            if stop_workers:
+                was_active = (
+                    notify_restart
+                    and self.settings.env != "testing"
+                    and not self.expected_stop
+                    and (
+                        (self.worker and self.worker.returncode is None)
+                        or running(self.settings.runtime_dir)
+                    )
                 )
-            )
-            await self.stop_worker()
-            if was_active:
-                marker = self.settings.runtime_dir / WORKER_SHUTDOWN
-                marker.touch(mode=0o600)
-                queue_notice(
-                    self.settings,
-                    "♻️ Aplikasi sedang ditutup\n\nAktivitas akun dijeda. Kabar berikutnya dikirim saat bot kembali siap.",
-                )
-                try:
-                    await asyncio.wait_for(flush_notices(self.settings), timeout=3)
-                except TimeoutError:
-                    pass
+                await self.stop_worker()
+                if was_active:
+                    marker = self.settings.runtime_dir / WORKER_SHUTDOWN
+                    marker.touch(mode=0o600)
+                    queue_notice(
+                        self.settings,
+                        "♻️ Aplikasi sedang ditutup\n\nAktivitas akun dijeda. Kabar berikutnya dikirim saat bot kembali siap.",
+                    )
+                    try:
+                        await asyncio.wait_for(flush_notices(self.settings), timeout=3)
+                    except TimeoutError:
+                        pass
         finally:
             if self.tunnel_process:
                 process = self.tunnel_process
@@ -1338,7 +1399,11 @@ class ControlService:
 def create_app(settings, service=None):
     from .management import MultiAccountService
 
-    manager = MultiAccountService(settings) if service is None else None
+    if isinstance(service, MultiAccountService):
+        manager = service
+        service = None
+    else:
+        manager = MultiAccountService(settings) if service is None else None
     lifecycle = manager or service
 
     def resolve(request):

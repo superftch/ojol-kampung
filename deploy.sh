@@ -48,9 +48,25 @@ echo "📡 Binding Port : ${OJOL_BIND_IP}:${OJOL_PORT}"
 
 # 5. Jalankan Service Web via Docker Compose
 if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-    echo "🐳 Membangun dan memperbarui container Docker (hanya app & warp)..."
-    docker compose build app warp
-    docker compose up -d --remove-orphans app warp
+    TARGET="${1:-app}"
+    if [ "$TARGET" = "app" ]; then
+        echo "🐳 Membangun app; worker dan WARP tetap berjalan..."
+        docker compose build app
+        docker compose up -d --no-recreate warp worker
+        docker compose up -d --no-deps app
+    elif [ "$TARGET" = "worker" ]; then
+        echo "🐳 Memperbarui worker tanpa me-restart app..."
+        docker compose build worker
+        docker compose up -d --no-recreate warp
+        docker compose up -d --no-deps worker
+    elif [ "$TARGET" = "all" ]; then
+        echo "🐳 Membangun dan memperbarui semua container Docker..."
+        docker compose build app warp worker
+        docker compose up -d --remove-orphans app warp worker
+    else
+        echo "Target tidak dikenal: $TARGET (gunakan app, worker, atau all)" >&2
+        exit 2
+    fi
 
     echo "⏳ Menunggu container siap dan memeriksa status..."
     sleep 5

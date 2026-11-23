@@ -27,6 +27,27 @@ services:
       start_period: 10s
       retries: 3
     stop_grace_period: 60s
+  worker:
+    build:
+      context: .
+      target: runtime
+    image: kampung-ojol:dev
+    init: true
+    restart: unless-stopped
+    command: ["python", "-m", "ojol.worker_service"]
+    environment:
+      OJOL_ENV: local
+      OJOL_TUNNEL_ENABLED: "false"
+      OJOL_LOGIN_PUBLIC_URL: http://127.0.0.1:6081
+    volumes:
+      - dev-state:/data
+    secrets:
+      - ojol_env
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, SETUID, SETGID, DAC_OVERRIDE]
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 60s
   telegram-bot:
     profiles: ["disabled"]
     build:

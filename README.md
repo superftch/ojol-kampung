@@ -3,9 +3,9 @@
 Automation Ojol multi-account dengan **adapter HTTP langsung (tanpa ADK/MCP)** dan **Fully Web Dashboard**. Antarmuka dikendalikan penuh melalui browser di port `6080` (`/` dan `/login`), dengan sistem autentikasi mandiri, feed notifikasi in-app, kontrol worker, serta manajemen user multi-akun. Bot Telegram dinonaktifkan.
 
 - Default **3 akun per user**, **3 worker aktif global**; admin dapat mengubahnya melalui panel web tanpa restart.
-- **1 akun = 1 subprocess worker**, dengan klien HTTP, cookie, SQLite ledger, status dan log tersendiri. Semua berjalan dalam satu container aplikasi.
+- **1 akun = 1 subprocess worker** di container `worker` terpisah dari web app. Keduanya berbagi volume state; update app tidak me-restart container worker.
 - Tanpa batas trip/durasi default; saldo utama minimal **5 koin**.
-- Default `OJOL_AUTO_START=true`: semua akun aktif dengan cookie tersimpan dicoba start pada setiap boot/deploy, mengikuti whitelist dan batas worker global.
+- Default `OJOL_AUTO_START=true`: semua akun aktif dengan cookie tersimpan dicoba start pada setiap boot container worker, mengikuti whitelist dan batas worker global.
 - Pembacaan HTTP sementara gagal dicoba maksimal 3 kali (backoff 1/2 detik). Transaksi dikirim sekali; hasil ambigu menghentikan akun dan memblokir replay.
 - Feed notifikasi dan laporan laba harian WIB terikat ke akun asal langsung di dashboard web.
 
@@ -115,23 +115,26 @@ Isi `.env` di server; jangan commit:
 Simpan token connector pada `.secrets/cloudflared-token`, mode0600. Cloudflared terpasang dalam image dengan versi/digest tetap. Di dashboard Cloudflare, Published application route untuk domain harus menuju **HTTP `http://localhost:6080`**. Token dibaca lewat file privat, bukan argv/env. Port aplikasi diterbitkan lewat node Mesh hanya ke loopback6080; metrics connector loopback2000.
 
 ```sh
-docker compose build app warp
-docker compose up -d
+./deploy.sh app
 curl -fsS http://127.0.0.1:6080/health
 docker compose logs --tail 50 app
 ```
+
+`./deploy.sh app` hanya membangun dan mengganti app; container worker dan WARP tidak di-recreate. Untuk menerapkan kode worker, jalankan `./deploy.sh worker`. `./deploy.sh all` memperbarui semua service dan dapat menghentikan worker.
+
+Reset database lokal: `scripts/reset-db.sh --local`. Reset server dari checkout ini: siapkan Docker context yang menunjuk server, lalu jalankan `scripts/reset-db.sh --context <nama-context>`. Skrip meminta konfirmasi, menghapus volume database/state akun, mempertahankan volume identitas WARP, lalu membuat ulang app dan worker.
 
 Production menolak origin tanpa HTTPS dan saldo minimum di bawah 5. Proses berjalan sebagai UID1000. Docker mengelola rotasi log3file×10MiB. Tidak memasang Docker socket atau memberi bot kewenangan membuat container.
 
 Saat upgrade dari versi satu akun, **Utama** milik admin otomatis menunjuk direktori runtime lama. Ledger, cookie HTTP, dan pengaturan tidak dipindah/dihapus. Profil Chrome lama dibiarkan sebagai arsip tetapi tidak dibaca; jika hanya profil Chrome yang tersedia, lakukan **Import Cookie** baru. Hapus variabel lama `OJOL_MANAGED_BROWSER`, `OJOL_CDP_URL`, dan `OJOL_BROWSER_FALLBACK` dari konfigurasi; pastikan `OJOL_CORE=http`.
 
-Setelah mengganti konfigurasi/secret atau image, recreate aplikasi. **`OJOL_AUTO_START=true` menjadi default**, termasuk ketika variabel belum ditulis di `.env`. Setiap boot/deploy menyiapkan semua akun nonarsip milik user whitelist yang memiliki cookie tersimpan, termasuk akun yang sebelumnya dihentikan. Tidak perlu menekan Jalankan dulu pada update pertama. Akun menunggu slot jika batas worker global penuh. Status akun menampilkan **Auto-start saat boot: ON/OFF**, ditambah keterangan menunggu slot bila perlu.
+Setelah mengganti konfigurasi/secret, recreate service yang memakai perubahan tersebut. **`OJOL_AUTO_START=true` menjadi default**, termasuk ketika variabel belum ditulis di `.env`. Setiap boot container worker menyiapkan semua akun nonarsip milik user whitelist yang memiliki cookie tersimpan, termasuk akun yang sebelumnya dihentikan. Update app tidak me-restart worker. Akun menunggu slot jika batas worker global penuh. Status akun menampilkan **Auto-start saat boot: ON/OFF**, ditambah keterangan menunggu slot bila perlu.
 
 Set `OJOL_AUTO_START=false` di `.env` lalu recreate untuk mematikan seluruh auto-start. Hentikan Ojol, Import Cookie, arsip, cabut akses, atau error menghentikan akun dan membatalkan antrean startup **selama aplikasi berjalan**; boot berikutnya dengan env `true` kembali mencoba semua akun yang memenuhi syarat. Akun baru/cookie baru setelah boot tetap dijalankan melalui tombol Jalankan Ojol. Error tidak memicu restart loop dalam sesi aplikasi yang sama.
 
 Startup tetap memeriksa izin operator, whitelist, cookie dan kapasitas. Worker mencocokkan riwayat game dan menyelesaikan ledger pending/uncertain otomatis sebelum membuka sesi baru. Hasil yang belum pasti diperiksa otomatis maksimal 3 kali per proses rekonsiliasi, dengan jeda 10 detik dan tanpa mengirim ulang transaksi. Jika percobaan ketiga belum berhasil, worker dihentikan sebagai gagal dan pemilik akun menerima notifikasi, termasuk saat notifikasi rutin OFF. Hasil transaksi tetap tersimpan sebagai belum pasti, tanpa pembukuan biaya/pendapatan yang belum terbukti. **Setiap boot membuka sesi baru setelah rekonsiliasi:** batas belanja/trip/durasi dari env dihitung ulang per sesi, sedangkan saldo minimum production20 tetap berlaku. Marker `worker-restart.json` dari versi lama tidak lagi dipakai.
 
-Telegram memberi tahu pemilik akun saat worker aktif dihentikan oleh shutdown normal, termasuk saat rebuild. Jika pengiriman tertunda, antrean lokal dilanjutkan setelah boot. Notifikasi auto-start berhasil dikirim setelah worker membaca status game dan bisa lanjut. Bot memberi kabar saat perlu menunggu rekonsiliasi dan saat sudah bisa melanjutkan. Jika perlu tindakan karena sesi habis atau bot dihentikan, pesan menyebut **Import Cookie** atau **Jalankan Ojol**. Notifikasi ini tetap aktif saat notifikasi rutin OFF.
+Telegram memberi tahu pemilik akun saat worker aktif dihentikan oleh shutdown normal, termasuk saat container worker di-rebuild. Update app tidak menghentikan worker. Jika pengiriman tertunda, antrean lokal dilanjutkan setelah boot worker. Notifikasi auto-start berhasil dikirim setelah worker membaca status game dan bisa lanjut. Bot memberi kabar saat perlu menunggu rekonsiliasi dan saat sudah bisa melanjutkan. Jika perlu tindakan karena sesi habis atau bot dihentikan, pesan menyebut **Import Cookie** atau **Jalankan Ojol**. Notifikasi ini tetap aktif saat notifikasi rutin OFF.
 
 Jika connector keluar, seluruh worker dihentikan dan admin diberi laporan `tunnel.process_exit`; tombol Import Cookie/Jalankan Ojol mencoba memulai connector lagi. `/health` membuktikan control service hidup, bukan keberhasilan game atau koneksi edge. Readiness connector:
 

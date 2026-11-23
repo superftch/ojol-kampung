@@ -143,7 +143,11 @@ def test_telegram_code_login_and_connect_flow(settings):
 
 def test_web_routes_and_dashboard_api(settings, monkeypatch):
     admin_settings = settings.model_copy(
-        update={"telegram_chat_id": 111, "telegram_bot_token": "mock-token", "telegram_enabled": True}
+        update={
+            "telegram_chat_id": 111,
+            "telegram_bot_token": "mock-token",
+            "telegram_enabled": True,
+        }
     )
     manager = MultiAccountService(admin_settings)
     manager.start = AsyncMock()
@@ -215,6 +219,7 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
         # 9b. Download extension zip endpoint
         import io
         import zipfile
+
         dl_res = client.get("/api/extension/download")
         assert dl_res.status_code == 200
         assert dl_res.headers["content-type"] == "application/zip"
@@ -233,6 +238,13 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
         create_acc = client.post("/api/accounts/create", json={"name": "Akun Agus 1"})
         assert create_acc.status_code == 200
         assert create_acc.json()["account"]["name"] == "Akun Agus 1"
+        second_acc = client.post("/api/accounts/create", json={"name": "Akun Agus 2"})
+        third_acc = client.post("/api/accounts/create", json={"name": "Akun Agus 3"})
+        assert second_acc.status_code == third_acc.status_code == 200
+        assert client.get("/api/accounts").json()["quota"] == 3
+        over_quota = client.post("/api/accounts/create", json={"name": "Akun Agus 4"})
+        assert over_quota.status_code == 400
+        assert "Batas akun" in over_quota.json()["detail"]
 
         # 11. Rename account
         acc_id = create_acc.json()["account"]["id"]
@@ -252,7 +264,10 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
         run_res2 = client.post("/api/control/run")
         assert run_res2.status_code == 400
         assert "detail" in run_res2.json()
-        assert "Sesi game belum tersedia" in run_res2.json()["detail"] or "Import Cookie" in run_res2.json()["detail"]
+        assert (
+            "Sesi game belum tersedia" in run_res2.json()["detail"]
+            or "Import Cookie" in run_res2.json()["detail"]
+        )
 
         # 12. Toggle auto flag
         toggle_res = client.post(
@@ -527,3 +542,144 @@ def test_telegram_login_prompts_setup_password_flow(settings):
         )
         assert pw_login.status_code == 200
         assert pw_login.json()["user"]["username"] == "driver_hebat"
+
+
+def test_admin_notifications_panel_and_api(settings):
+    from unittest.mock import AsyncMock
+
+    from ojol.control import create_app
+    from ojol.management import MultiAccountService
+    from ojol.notifications import list_all_admin_notifications
+    from ojol.telegram import queue_notice
+
+    admin_settings = settings.model_copy(update={"telegram_chat_id": 999})
+    manager = MultiAccountService(admin_settings)
+    manager.start = AsyncMock()
+    manager.close = AsyncMock()
+
+    app = create_app(admin_settings, service=manager)
+    with TestClient(app, base_url="http://localhost:6080") as client:
+        # 1. Register first user (Super Admin)
+        reg_admin = client.post(
+            "/api/auth/register",
+            json={"username": "bossadmin", "password": "adminpassword123", "name": "Boss Admin"},
+        )
+        assert reg_admin.status_code == 200
+        admin_data = reg_admin.json()["user"]
+        assert admin_data["role"] == "admin"
+
+        # 2. Register second user (Regular User)
+        reg_user = client.post(
+            "/api/auth/register",
+            json={"username": "driveragus", "password": "aguspassword123", "name": "Agus Driver"},
+        )
+        assert reg_user.status_code == 200
+        user_data = reg_user.json()["user"]
+        assert user_data["role"] == "user"
+
+        # Admin approves user
+        manager.registry.web.review_user(user_data["id"], admin_data["id"], True)
+
+        # 3. Create game accounts for both users
+        admin_owner = manager.registry.owner_for_user(admin_data)
+        user_owner = manager.registry.owner_for_user(user_data)
+
+        acc_admin = manager.registry.create(admin_owner, "Akun Admin Alpha")
+        acc_user = manager.registry.create(user_owner, "Akun Agus Motor")
+
+        scoped_admin = manager.registry.scoped_settings(acc_admin)
+        scoped_user = manager.registry.scoped_settings(acc_user)
+
+        # 4. Queue notices in different scopes
+        notice_user = queue_notice(
+            scoped_user,
+            "Pesanan baru masuk untuk Agus Motor",
+            context={"event": "order_masuk"},
+        )
+        notice_admin = queue_notice(
+            scoped_admin,
+            "Sistem warning kapasitas baterai",
+            context={"event": "low_battery", "stage": "battery"},
+        )
+        notice_system = queue_notice(
+            admin_settings,
+            "Pemberitahuan pemeliharaan server pusat",
+        )
+
+        # Test direct notifications helper functions
+        all_notices = list_all_admin_notifications(admin_settings, registry=manager.registry)
+        assert len(all_notices) >= 3
+        notice_ids = {n["id"] for n in all_notices}
+        assert notice_user.stem in notice_ids
+        assert notice_admin.stem in notice_ids
+        assert notice_system.stem in notice_ids
+
+        # Check account and user mapping
+        user_item = next(n for n in all_notices if n["id"] == notice_user.stem)
+        assert user_item["account_name"] == "Akun Agus Motor"
+        assert user_item["user"]["username"] == "driveragus"
+
+        admin_item = next(n for n in all_notices if n["id"] == notice_admin.stem)
+        assert admin_item["account_name"] == "Akun Admin Alpha"
+        assert admin_item["is_error"] is True
+
+        # 5. Non-admin user interaction
+        client.post(
+            "/api/auth/login", json={"username": "driveragus", "password": "aguspassword123"}
+        )
+        dash_user_res = client.get("/")
+        assert dash_user_res.status_code == 200
+        # Admin subnav and panel should NOT be visible to regular user in the DOM
+        assert 'id="btnSubNotifAdmin"' not in dash_user_res.text
+        assert 'id="panelNotifAdmin"' not in dash_user_res.text
+
+        # Non-admin forbidden from admin notifications API
+        admin_notif_forbidden = client.get("/api/admin/notifications")
+        assert admin_notif_forbidden.status_code == 403
+        admin_read_forbidden = client.post("/api/admin/notifications/read")
+        assert admin_read_forbidden.status_code == 403
+
+        # Regular notification endpoint works for user's own active account
+        user_notif_res = client.get("/api/notifications")
+        assert user_notif_res.status_code == 200
+        user_notif_ids = {n["id"] for n in user_notif_res.json()["notifications"]}
+        assert notice_user.stem in user_notif_ids
+        assert notice_admin.stem not in user_notif_ids
+
+        client.post("/api/auth/logout")
+
+        # 6. Admin user interaction
+        client.post(
+            "/api/auth/login", json={"username": "bossadmin", "password": "adminpassword123"}
+        )
+        dash_admin_res = client.get("/")
+        assert dash_admin_res.status_code == 200
+        # Admin subnav and admin panel elements MUST exist
+        assert 'id="btnSubNotifAdmin"' in dash_admin_res.text
+        assert 'id="panelNotifAdmin"' in dash_admin_res.text
+        assert 'id="adminNotificationsList"' in dash_admin_res.text
+        assert 'id="filterAdminNotifUser"' in dash_admin_res.text
+        assert 'id="filterAdminNotifAccount"' in dash_admin_res.text
+        assert "loadAdminNotifications" in dash_admin_res.text
+
+        # Admin notifications API works
+        admin_api_res = client.get("/api/admin/notifications")
+        assert admin_api_res.status_code == 200
+        admin_notif_data = admin_api_res.json()["notifications"]
+        admin_notif_ids = {n["id"] for n in admin_notif_data}
+        assert notice_user.stem in admin_notif_ids
+        assert notice_admin.stem in admin_notif_ids
+        assert notice_system.stem in admin_notif_ids
+
+        # Admin mark all read
+        mark_res = client.post("/api/admin/notifications/read")
+        assert mark_res.status_code == 200
+        assert mark_res.json()["success"] is True
+        assert mark_res.json()["marked_count"] >= 3
+
+        # Verify all are marked read
+        recheck = client.get("/api/admin/notifications")
+        recheck_data = recheck.json()["notifications"]
+        for n in recheck_data:
+            if n["id"] in {notice_user.stem, notice_admin.stem, notice_system.stem}:
+                assert n["read"] is True

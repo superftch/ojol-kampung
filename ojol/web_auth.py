@@ -118,7 +118,9 @@ class WebAuth:
 
             # If no approved admin exists in web_users yet and Telegram is disabled, first user becomes admin
             total_users = db.execute("SELECT COUNT(*) FROM web_users").fetchone()[0]
-            if total_users == 0 and not (self.accounts.admin and self.accounts.settings.telegram_enabled):
+            if total_users == 0 and not (
+                self.accounts.admin and self.accounts.settings.telegram_enabled
+            ):
                 status = "approved"
                 role = "admin"
             else:
@@ -467,7 +469,11 @@ class WebAuth:
             )
             # If user is admin and legacy admin account exists without a linked web user,
             # migrate accounts to synthetic owner
-            if user.get("role") == "admin" and self.accounts.admin and self.accounts.admin != synthetic:
+            if (
+                user.get("role") == "admin"
+                and self.accounts.admin
+                and self.accounts.admin != synthetic
+            ):
                 linked = db.execute(
                     "SELECT id FROM web_users WHERE telegram_id=?", (self.accounts.admin,)
                 ).fetchone()

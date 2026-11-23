@@ -471,13 +471,14 @@ def register_web_routes(app, settings, manager=None, service=None):
         cur_subj = subj_dict.get("perpus") or subj_dict.get("kuliah") or "dagang"
 
         from .control import NEEDS
+
         enabled_needs_count = sum(1 for k in NEEDS if flags.get(k))
 
         flags_payload = dict(flags)
         flags_payload["study"] = bool(flags.get("perpus") or flags.get("kuliah"))
         flags_payload["garden"] = bool(flags.get("kebun"))
-        flags_payload["auto_subject"] = (cur_subj == "auto")
-        flags_payload["needs_active"] = (enabled_needs_count > 0)
+        flags_payload["auto_subject"] = cur_subj == "auto"
+        flags_payload["needs_active"] = enabled_needs_count > 0
         flags_payload["needs_count"] = enabled_needs_count
         flags_payload["total_needs"] = len(NEEDS)
 
@@ -529,6 +530,7 @@ def register_web_routes(app, settings, manager=None, service=None):
         import io
         import zipfile
         from pathlib import Path
+
         from fastapi.responses import Response
 
         extension_dir = Path(__file__).resolve().parent.parent / "tools" / "chrome-diving-radar"
@@ -734,9 +736,12 @@ def register_web_routes(app, settings, manager=None, service=None):
                 set_auto_flag(cur_service.settings.runtime_dir, "kebun", enabled)
             elif flag == "auto_subject":
                 from .study import STUDY_LABELS, set_subject
+
                 for m in STUDY_LABELS:
                     try:
-                        set_subject(cur_service.settings.runtime_dir, m, "auto" if enabled else "dagang")
+                        set_subject(
+                            cur_service.settings.runtime_dir, m, "auto" if enabled else "dagang"
+                        )
                     except Exception:
                         pass
             else:
@@ -767,7 +772,7 @@ def register_web_routes(app, settings, manager=None, service=None):
         cur_service = resolve_account_service(request)
         if not cur_service:
             raise HTTPException(400, "Belum ada akun game yang terhubung atau dipilih.")
-        from .study import STUDY_LABELS, set_subject
+        from .study import STUDY_LABELS
 
         try:
             if mode and mode in STUDY_LABELS:
@@ -886,6 +891,27 @@ def register_web_routes(app, settings, manager=None, service=None):
         return {"success": True, "marked_count": count}
 
     # ==================== ADMIN APIS ====================
+
+    @app.get("/api/admin/notifications")
+    async def admin_notifications(
+        request: Request,
+        limit: int = 200,
+        user: dict = Depends(require_admin),
+    ):
+        from .notifications import list_all_admin_notifications
+
+        notices = list_all_admin_notifications(settings, registry=registry, limit=limit)
+        return {"notifications": notices}
+
+    @app.post("/api/admin/notifications/read")
+    async def admin_notifications_mark_read(
+        request: Request,
+        user: dict = Depends(require_admin),
+    ):
+        from .notifications import mark_all_admin_notifications_read
+
+        count = mark_all_admin_notifications_read(settings, registry=registry)
+        return {"success": True, "marked_count": count}
 
     @app.get("/api/admin/pending")
     async def admin_pending(user: dict = Depends(require_admin)):

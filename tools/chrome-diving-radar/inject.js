@@ -425,7 +425,7 @@
       } catch (e) {}
     }
 
-    if (!window.__KS_SCENE_INSTANCE || !window.__KS_MANCING_INSTANCE || !window.__KS_VILLAGE_INSTANCE) {
+    if (!window.__KS_SCENE_INSTANCE || !window.__KS_MANCING_INSTANCE || !window.__KS_TPU_INSTANCE || !window.__KS_VILLAGE_INSTANCE) {
       scanReactFiber();
     }
 
@@ -462,7 +462,7 @@
     }
   });
 
-  // 3d. Direct Stick & Geledah Handler untuk TPU & Rumah Mbah Rukmi
+  // 3d. Direct Stick, Teleport & Geledah Handler untuk TPU & Rumah Mbah Rukmi
   window.addEventListener("ks_tpu_set_stick", (e) => {
     const { turn, forward } = e.detail || {};
     const tInst = window.__KS_TPU_INSTANCE;
@@ -471,6 +471,16 @@
         if (typeof tInst.setStick === "function") {
           tInst.setStick(turn || 0, forward || 0);
         }
+      } catch (err) {}
+    }
+  });
+
+  window.addEventListener("ks_tpu_teleport", (e) => {
+    const { x, y, h } = e.detail || {};
+    const tInst = window.__KS_TPU_INSTANCE;
+    if (tInst && typeof tInst.teleport === "function" && typeof x === "number" && typeof y === "number") {
+      try {
+        tInst.teleport(x, y, typeof h === "number" ? h : null);
       } catch (err) {}
     }
   });

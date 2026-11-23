@@ -1608,6 +1608,10 @@ class MultiAccountService:
                 directory = service.settings.runtime_dir
                 marker = directory / WORKER_SHUTDOWN
                 has_session = (directory / "http-session.json").is_file()
+                if (service.worker and service.worker.returncode is None) or running(directory):
+                    # Worker is already active (e.g. in separate worker container) - do not disturb it.
+                    marker.unlink(missing_ok=True)
+                    continue
                 if self.settings.auto_start and has_session:
                     # A new boot deliberately starts all eligible accounts, including previously stopped ones.
                     service.auto_start_pending = True
@@ -1662,10 +1666,13 @@ class MultiAccountService:
         await asyncio.gather(*self.tasks, return_exceptions=True)
         results = await asyncio.gather(
             *(
-                s.close(notify_restart=self.registry.allowed(s.settings.telegram_chat_id))
+                s.close(
+                    notify_restart=self.registry.allowed(s.settings.telegram_chat_id),
+                    stop_workers=False,
+                )
                 for s in self.services.values()
             ),
-            self.hub.close(),
+            self.hub.close(stop_workers=False),
             return_exceptions=True,
         )
         for result in results:

@@ -263,13 +263,20 @@ class DivingController:
         if not status.get("aktif"):
             return {"status": "inactive", "message": "Fitur diving sedang tidak aktif."}
         if not status.get("diPulau"):
-            return {"status": "not_in_island", "message": "Akun tidak sedang berada di Pulau Seberang."}
+            return {
+                "status": "not_in_island",
+                "message": "Akun tidak sedang berada di Pulau Seberang.",
+            }
 
         # Masuk atau lanjutkan sesi
         session_data = await self.enter_or_resume_session()
         session_id = session_data.get("id")
         if not session_id:
-            return {"status": "failed", "message": "Gagal memulai sesi diving.", "raw": session_data}
+            return {
+                "status": "failed",
+                "message": "Gagal memulai sesi diving.",
+                "raw": session_data,
+            }
 
         opened: set[int] = set(session_data.get("buka") or [])
         hari = status.get("hari", "2026-11-23")
@@ -286,14 +293,16 @@ class DivingController:
 
             total_wait = max(0.5, travel_time + safety_buffer)
             if on_progress:
-                on_progress({
-                    "event": "swimming",
-                    "kerang": kerang.i,
-                    "x": kerang.x,
-                    "z": kerang.z,
-                    "depth": kerang.d,
-                    "wait_seconds": total_wait,
-                })
+                on_progress(
+                    {
+                        "event": "swimming",
+                        "kerang": kerang.i,
+                        "x": kerang.x,
+                        "z": kerang.z,
+                        "depth": kerang.d,
+                        "wait_seconds": total_wait,
+                    }
+                )
 
             await asyncio.sleep(total_wait)
 
@@ -308,14 +317,16 @@ class DivingController:
                 pearls_value_milli += val
 
             if on_progress:
-                on_progress({
-                    "event": "opened",
-                    "kerang": kerang.i,
-                    "result": res.get("isi", "kosong"),
-                    "value_milli": val,
-                    "pearls_found": pearls_found,
-                    "shells_opened_count": shells_opened_count,
-                })
+                on_progress(
+                    {
+                        "event": "opened",
+                        "kerang": kerang.i,
+                        "result": res.get("isi", "kosong"),
+                        "value_milli": val,
+                        "pearls_found": pearls_found,
+                        "shells_opened_count": shells_opened_count,
+                    }
+                )
 
         # Jika ada mutiara, jual ke kas desa
         sell_result = None
@@ -338,4 +349,3 @@ class DivingController:
             "sell_result": sell_result,
             "finish_result": finish_result,
         }
-

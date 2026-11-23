@@ -1260,7 +1260,9 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         <button class="nav-btn" onclick="showTab('tab-auto')">⚙️ Auto & Kebutuhan</button>
         <button class="nav-btn" onclick="showTab('tab-accounts')">👥 Akun Saya</button>
         <button class="nav-btn" onclick="showTab('tab-notifications')">🔔 Notifikasi <span id="notifBadge" style="display:none; background:var(--danger); color:white; font-size:10px; padding:2px 6px; border-radius:10px; margin-left:4px;">0</span></button>
-        <button id="adminTabBtn" class="nav-btn" style="display: {"block" if user.get("role") == "admin" else "none"};" onclick="showTab('tab-admin')">🛡️ Admin Panel</button>
+        <button id="adminTabBtn" class="nav-btn" style="display: {
+        "block" if user.get("role") == "admin" else "none"
+    };" onclick="showTab('tab-admin')">🛡️ Admin Panel</button>
     </nav>
 
     <div class="container">
@@ -1767,17 +1769,80 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
         <!-- TAB 4: NOTIFIKASI -->
         <div id="tab-notifications" class="tab-panel">
-            <div class="card" style="max-width: 800px; margin: 0 auto;">
-                <div class="card-header">
-                    <div class="card-title">🔔 Feed Notifikasi Akun</div>
-                    <div style="display: flex; gap: 8px;">
-                        <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="loadNotifications()">Segarkan</button>
-                        <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="markAllNotificationsRead()">Tandai Semua Dibaca</button>
+            <div style="max-width: 900px; margin: 0 auto;">
+                {
+        '''
+                <div class="notif-subnav" style="display: flex; gap: 10px; margin-bottom: 18px; border-bottom: 1px solid var(--border); padding-bottom: 12px;">
+                    <button id="btnSubNotifUser" class="btn btn-primary" style="font-size: 13px; padding: 6px 14px;" onclick="switchNotifTab('user')">🔔 Akun Aktif Saya</button>
+                    <button id="btnSubNotifAdmin" class="btn btn-secondary" style="font-size: 13px; padding: 6px 14px;" onclick="switchNotifTab('admin')">🛡️ Semua Notifikasi (Semua Akun & User)</button>
+                </div>
+                '''
+        if user.get("role") == "admin"
+        else ""
+    }
+
+                <!-- Panel Notifikasi Akun Pribadi -->
+                <div id="panelNotifUser" class="card">
+                    <div class="card-header">
+                        <div class="card-title">🔔 Feed Notifikasi Akun</div>
+                        <div style="display: flex; gap: 8px;">
+                            <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="loadNotifications()">Segarkan</button>
+                            <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="markAllNotificationsRead()">Tandai Semua Dibaca</button>
+                        </div>
+                    </div>
+                    <p style="color: var(--text-muted); font-size: 13px; margin-top: -6px; margin-bottom: 12px;">Riwayat notifikasi dan peringatan untuk akun ojol yang sedang aktif dipilih.</p>
+                    <div id="notificationsList" style="display: flex; flex-direction: column; gap: 10px; margin-top: 14px;">
+                        <div style="text-align: center; color: var(--text-muted); padding: 24px;">Memuat notifikasi...</div>
                     </div>
                 </div>
-                <div id="notificationsList" style="display: flex; flex-direction: column; gap: 10px; margin-top: 14px;">
-                    <div style="text-align: center; color: var(--text-muted); padding: 24px;">Memuat notifikasi...</div>
+
+                {
+        '''
+                <!-- Panel Notifikasi Khusus Admin (Semua User & Akun) -->
+                <div id="panelNotifAdmin" class="card" style="display: none;">
+                    <div class="card-header" style="flex-wrap: wrap; gap: 10px;">
+                        <div style="display: flex; align-items: center; gap: 10px;">
+                            <div class="card-title" style="margin: 0;">🛡️ Feed Notifikasi Global (Semua Akun & User)</div>
+                            <span id="adminNotifTotalBadge" style="background: rgba(59, 130, 246, 0.15); color: var(--primary); border: 1px solid rgba(59, 130, 246, 0.3); font-size: 11px; padding: 2px 8px; border-radius: 12px; font-weight: 600;">0 Notifikasi</span>
+                        </div>
+                        <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                            <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="loadAdminNotifications()">🔄 Refresh</button>
+                            <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="markAllAdminNotificationsRead()">Tandai Semua Dibaca</button>
+                        </div>
+                    </div>
+                    <p style="color: var(--text-muted); font-size: 13px; margin-top: -6px; margin-bottom: 12px;">Pantau seluruh notifikasi, event otomatis, dan error runtime dari seluruh user dan akun game.</p>
+
+                    <!-- Filter Toolbar -->
+                    <div style="display: flex; gap: 10px; flex-wrap: wrap; align-items: center; background: rgba(0,0,0,0.2); padding: 12px; border-radius: 8px; border: 1px solid var(--border); margin-bottom: 14px;">
+                        <div style="flex: 1; min-width: 180px;">
+                            <input type="text" id="searchAdminNotif" class="form-control" placeholder="🔍 Cari teks, event, ID error..." oninput="filterAdminNotifs()" style="font-size: 12px; padding: 6px 10px; width: 100%;">
+                        </div>
+                        <div style="min-width: 140px;">
+                            <select id="filterAdminNotifUser" class="form-control" onchange="filterAdminNotifs()" style="font-size: 12px; padding: 6px 10px; width: 100%;">
+                                <option value="">Semua User</option>
+                            </select>
+                        </div>
+                        <div style="min-width: 140px;">
+                            <select id="filterAdminNotifAccount" class="form-control" onchange="filterAdminNotifs()" style="font-size: 12px; padding: 6px 10px; width: 100%;">
+                                <option value="">Semua Akun</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label style="display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); cursor: pointer; user-select: none;">
+                                <input type="checkbox" id="filterAdminNotifErrorOnly" onchange="filterAdminNotifs()">
+                                🚨 Hanya Error
+                            </label>
+                        </div>
+                    </div>
+
+                    <div id="adminNotificationsList" style="display: flex; flex-direction: column; gap: 10px;">
+                        <div style="text-align: center; color: var(--text-muted); padding: 24px;">Memuat notifikasi semua akun dan user...</div>
+                    </div>
                 </div>
+                '''
+        if user.get("role") == "admin"
+        else ""
+    }
             </div>
         </div>
 
@@ -1786,7 +1851,10 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             <div class="card" style="margin-bottom: 24px;">
                 <div class="card-header">
                     <div class="card-title">⏳ Pengajuan Pendaftaran Tertunda (Pending Approval)</div>
-                    <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="loadAdminData()">Refresh</button>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-utility" style="padding: 4px 10px; font-size: 11px;" onclick="showTab('tab-notifications'); switchNotifTab('admin');" title="Lihat notifikasi global semua akun dan user">🔔 Log Notifikasi Global</button>
+                        <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="loadAdminData()">Refresh</button>
+                    </div>
                 </div>
                 <div style="overflow-x: auto;">
                     <table class="data-table">
@@ -2087,7 +2155,13 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             if (panel) panel.classList.add('active');
 
             if (tabId === 'tab-accounts') loadAccounts();
-            if (tabId === 'tab-notifications') loadNotifications();
+            if (tabId === 'tab-notifications') {{
+                if (currentNotifTab === 'admin' && typeof loadAdminNotifications === 'function') {{
+                    loadAdminNotifications();
+                }} else {{
+                    loadNotifications();
+                }}
+            }}
             if (tabId === 'tab-admin') loadAdminData();
         }}
 
@@ -2187,6 +2261,157 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 }} else {{
                     badge.style.display = 'none';
                 }}
+            }}
+        }}
+
+        let currentNotifTab = 'user';
+        let allAdminNotifications = [];
+
+        function switchNotifTab(tab) {{
+            currentNotifTab = tab;
+            const pUser = document.getElementById('panelNotifUser');
+            const pAdmin = document.getElementById('panelNotifAdmin');
+            const bUser = document.getElementById('btnSubNotifUser');
+            const bAdmin = document.getElementById('btnSubNotifAdmin');
+            if (tab === 'admin') {{
+                if (pUser) pUser.style.display = 'none';
+                if (pAdmin) pAdmin.style.display = 'block';
+                if (bUser) {{ bUser.classList.remove('btn-primary'); bUser.classList.add('btn-secondary'); }}
+                if (bAdmin) {{ bAdmin.classList.remove('btn-secondary'); bAdmin.classList.add('btn-primary'); }}
+                loadAdminNotifications();
+            }} else {{
+                if (pUser) pUser.style.display = 'block';
+                if (pAdmin) pAdmin.style.display = 'none';
+                if (bUser) {{ bUser.classList.remove('btn-secondary'); bUser.classList.add('btn-primary'); }}
+                if (bAdmin) {{ bAdmin.classList.remove('btn-primary'); bAdmin.classList.add('btn-secondary'); }}
+                loadNotifications();
+            }}
+        }}
+
+        async function loadAdminNotifications() {{
+            const list = document.getElementById('adminNotificationsList');
+            const badge = document.getElementById('adminNotifTotalBadge');
+            if (!list) return;
+            try {{
+                list.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 24px;">Memuat notifikasi semua akun dan user...</div>';
+                const data = await apiFetch('/api/admin/notifications');
+                allAdminNotifications = data.notifications || [];
+                if (badge) badge.innerText = `${{allAdminNotifications.length}} Notifikasi`;
+                populateAdminNotifFilters(allAdminNotifications);
+                filterAdminNotifs();
+            }} catch (e) {{
+                list.innerHTML = `<div style="text-align: center; color: var(--danger); padding: 24px;">⚠️ Gagal memuat notifikasi: ${{e.message}}</div>`;
+            }}
+        }}
+
+        function populateAdminNotifFilters(notifs) {{
+            const userSelect = document.getElementById('filterAdminNotifUser');
+            const accountSelect = document.getElementById('filterAdminNotifAccount');
+            if (!userSelect || !accountSelect) return;
+
+            const currentUserVal = userSelect.value;
+            const currentAccountVal = accountSelect.value;
+
+            const users = new Map();
+            const accounts = new Map();
+
+            notifs.forEach(n => {{
+                if (n.user) {{
+                    const uKey = n.user.user_id !== undefined && n.user.user_id !== null ? String(n.user.user_id) : (n.user.username || '');
+                    const uLabel = n.user.username ? `@${{n.user.username}} (${{n.user.name || 'User'}})` : (n.user.name || `User #${{uKey}}`);
+                    if (uKey && !users.has(uKey)) users.set(uKey, uLabel);
+                }}
+                if (n.account_id) {{
+                    const aKey = String(n.account_id);
+                    const aLabel = n.account_name ? `${{n.account_name}} (${{aKey.slice(0, 8)}})` : `Akun ${{aKey.slice(0, 8)}}`;
+                    if (!accounts.has(aKey)) accounts.set(aKey, aLabel);
+                }}
+            }});
+
+            userSelect.innerHTML = '<option value="">Semua User (' + users.size + ')</option>' +
+                Array.from(users.entries()).map(([k, v]) => `<option value="${{k}}">${{v}}</option>`).join('');
+            accountSelect.innerHTML = '<option value="">Semua Akun (' + accounts.size + ')</option>' +
+                Array.from(accounts.entries()).map(([k, v]) => `<option value="${{k}}">${{v}}</option>`).join('');
+
+            if (currentUserVal && users.has(currentUserVal)) userSelect.value = currentUserVal;
+            if (currentAccountVal && accounts.has(currentAccountVal)) accountSelect.value = currentAccountVal;
+        }}
+
+        function filterAdminNotifs() {{
+            const query = (document.getElementById('searchAdminNotif')?.value || '').toLowerCase().trim();
+            const selectedUser = document.getElementById('filterAdminNotifUser')?.value || '';
+            const selectedAccount = document.getElementById('filterAdminNotifAccount')?.value || '';
+            const errorOnly = document.getElementById('filterAdminNotifErrorOnly')?.checked || false;
+
+            const filtered = allAdminNotifications.filter(n => {{
+                if (errorOnly && !n.is_error) return false;
+                if (selectedUser) {{
+                    const uKey = n.user && n.user.user_id !== undefined && n.user.user_id !== null ? String(n.user.user_id) : (n.user?.username || '');
+                    if (uKey !== selectedUser) return false;
+                }}
+                if (selectedAccount && String(n.account_id) !== selectedAccount) {{
+                    return false;
+                }}
+                if (query) {{
+                    const text = (n.text || '').toLowerCase();
+                    const event = (n.event || '').toLowerCase();
+                    const errId = (n.error_id || '').toLowerCase();
+                    const accName = (n.account_name || '').toLowerCase();
+                    const uName = (((n.user?.name || '') + ' ' + (n.user?.username || ''))).toLowerCase();
+                    if (!text.includes(query) && !event.includes(query) && !errId.includes(query) && !accName.includes(query) && !uName.includes(query)) {{
+                        return false;
+                    }}
+                }}
+                return true;
+            }});
+
+            renderAdminNotifications(filtered);
+        }}
+
+        function renderAdminNotifications(notifs) {{
+            const list = document.getElementById('adminNotificationsList');
+            if (!list) return;
+            if (!notifs || notifs.length === 0) {{
+                list.innerHTML = '<div style="text-align: center; color: var(--text-muted); padding: 32px; border: 1px dashed var(--border); border-radius: 8px;">Tidak ada notifikasi yang sesuai kriteria filter.</div>';
+                return;
+            }}
+
+            list.innerHTML = notifs.map(n => {{
+                const isErr = !!n.is_error;
+                const bg = isErr ? 'rgba(239, 68, 68, 0.08)' : (n.read ? 'rgba(255, 255, 255, 0.02)' : 'rgba(59, 130, 246, 0.06)');
+                const border = isErr ? 'rgba(239, 68, 68, 0.35)' : (n.read ? 'var(--border)' : 'rgba(59, 130, 246, 0.35)');
+                const text = (n.text || '').replace(/\\n/g, '<br>');
+                const uLabel = n.user?.username ? `@${{n.user.username}}` : (n.user?.name || `User #${{n.owner || '?'}}`);
+                const accLabel = n.account_name || (n.account_id ? `Akun ${{String(n.account_id).slice(0, 8)}}` : 'Sistem');
+
+                return `
+                <div style="background: ${{bg}}; border: 1px solid ${{border}}; border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 8px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 11px;">
+                        <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                            <span style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); border-radius: 4px; padding: 2px 7px; font-weight: 600;">👤 ${{uLabel}}</span>
+                            <span style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 4px; padding: 2px 7px; font-weight: 600;">🏷️ ${{accLabel}}</span>
+                            ${{n.event ? `<span style="background: rgba(255, 255, 255, 0.06); color: var(--text-muted); border-radius: 4px; padding: 2px 6px;">⚡ ${{n.event}}</span>` : ''}}
+                            ${{n.error_id ? `<span style="background: rgba(239, 68, 68, 0.2); color: var(--danger); border-radius: 4px; padding: 2px 6px; font-weight: 700;">🚨 ${{n.error_id}}</span>` : ''}}
+                        </div>
+                        <div style="color: var(--text-muted); display: flex; align-items: center; gap: 8px;">
+                            <span>🕒 ${{n.time || ''}}</span>
+                            ${{!n.read ? '<span style="background: var(--primary); color: white; border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 600;">BARU</span>' : '<span style="color: var(--text-muted); font-size: 10px;">DIBACA</span>'}}
+                        </div>
+                    </div>
+                    <div style="font-size: 13px; line-height: 1.5; color: var(--text);">${{text}}</div>
+                </div>
+                `;
+            }}).join('');
+        }}
+
+        async function markAllAdminNotificationsRead() {{
+            try {{
+                const data = await apiFetch('/api/admin/notifications/read', {{ method: 'POST', headers: {{ 'Content-Type': 'application/json' }}, body: '{{}}' }});
+                showToast(`✅ ${{data.marked_count || 0}} notifikasi berhasil ditandai dibaca`, 'success');
+                await loadAdminNotifications();
+                await loadNotifications();
+            }} catch (e) {{
+                showToast('⚠️ Gagal menandai notifikasi: ' + e.message, 'error');
             }}
         }}
 

@@ -119,13 +119,13 @@ async def test_boot_starts_all_saved_accounts_including_previously_stopped_and_n
     )
     await manager.close()
     for service in manager.services.values():
-        assert (service.settings.runtime_dir / "STOP").exists()
-        assert (service.settings.runtime_dir / WORKER_SHUTDOWN).exists()
-        assert len(notices(service.settings)) == 2
-        assert any("Aplikasi sedang ditutup" in text for text in notices(service.settings))
+        assert not (service.settings.runtime_dir / "STOP").exists()
+        assert not (service.settings.runtime_dir / WORKER_SHUTDOWN).exists()
+        assert len(notices(service.settings)) == 1
+    monkeypatch.setattr("ojol.management.running", lambda directory: True)
     restored = MultiAccountService(manager.settings)
     await restored.start()
-    assert spawn.await_count == 4 and restored.active_workers() == 2
+    assert spawn.await_count == 2 and restored.active_workers() == 2
     assert all(
         not (s.settings.runtime_dir / WORKER_SHUTDOWN).exists() for s in restored.services.values()
     )
@@ -317,7 +317,7 @@ async def test_testing_environment_never_auto_starts(settings, monkeypatch):
     await manager.close()
 
 
-async def test_real_sigterm_stops_isolated_dummy_worker(settings):
+async def test_app_shutdown_leaves_isolated_dummy_worker_running(settings):
     manager = manager_with_accounts(settings)
     service = next(iter(manager.services.values()))
     child = await asyncio.create_subprocess_exec(
@@ -330,9 +330,9 @@ async def test_real_sigterm_stops_isolated_dummy_worker(settings):
     try:
         assert await asyncio.wait_for(child.stdout.readline(), 3) == b"ready\n"
         await manager.close()
-        assert child.returncode == 0
+        assert child.returncode is None
         assert not service.auto_start_pending
     finally:
         if child.returncode is None:
-            child.kill()
+            child.terminate()
             await child.wait()
