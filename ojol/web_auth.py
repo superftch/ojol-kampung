@@ -465,6 +465,29 @@ class WebAuth:
                 "INSERT OR IGNORE INTO users(telegram_id, enabled, name, username) VALUES(?,1,?,?)",
                 (synthetic, user.get("name"), user.get("username")),
             )
+            # If user is admin and legacy admin account exists without a linked web user,
+            # migrate accounts to synthetic owner
+            if user.get("role") == "admin" and self.accounts.admin and self.accounts.admin != synthetic:
+                linked = db.execute(
+                    "SELECT id FROM web_users WHERE telegram_id=?", (self.accounts.admin,)
+                ).fetchone()
+                if not linked:
+                    db.execute(
+                        "UPDATE accounts SET owner=? WHERE owner=?",
+                        (synthetic, self.accounts.admin),
+                    )
+                    sel = db.execute(
+                        "SELECT selected FROM users WHERE telegram_id=?", (self.accounts.admin,)
+                    ).fetchone()
+                    if sel and sel[0]:
+                        cur_sel = db.execute(
+                            "SELECT selected FROM users WHERE telegram_id=?", (synthetic,)
+                        ).fetchone()
+                        if not (cur_sel and cur_sel[0]):
+                            db.execute(
+                                "UPDATE users SET selected=? WHERE telegram_id=?",
+                                (sel[0], synthetic),
+                            )
         return synthetic
 
     def list_users(self) -> list[dict]:

@@ -76,10 +76,7 @@ def register_web_routes(app, settings, manager=None, service=None):
                 selected = active[0]
         if selected:
             return manager.service(selected["id"])
-        try:
-            return manager.legacy()
-        except ValueError:
-            return None
+        return None
 
     async def parse_body(request: Request) -> tuple[dict, bool]:
         is_json = request.headers.get("content-type", "").startswith("application/json")
@@ -592,6 +589,8 @@ def register_web_routes(app, settings, manager=None, service=None):
     @app.post("/api/control/run")
     async def run_ojol(request: Request, user: dict = Depends(require_user)):
         cur_service = resolve_account_service(request)
+        if not cur_service:
+            raise HTTPException(400, "Belum ada akun game yang terhubung atau dipilih.")
         mode = getattr(cur_service.settings, "ojol_mode", "otomatis")
         res = await cur_service.command("run", mode=mode)
         return {"success": True, "message": res}
@@ -599,18 +598,24 @@ def register_web_routes(app, settings, manager=None, service=None):
     @app.post("/api/control/stop")
     async def stop_ojol(request: Request, user: dict = Depends(require_user)):
         cur_service = resolve_account_service(request)
+        if not cur_service:
+            raise HTTPException(400, "Belum ada akun game yang terhubung atau dipilih.")
         res = await cur_service.command("stop")
         return {"success": True, "message": res}
 
     @app.post("/api/control/run-needs")
     async def run_needs(request: Request, user: dict = Depends(require_user)):
         cur_service = resolve_account_service(request)
+        if not cur_service:
+            raise HTTPException(400, "Belum ada akun game yang terhubung atau dipilih.")
         res = await cur_service.command("run_kebutuhan")
         return {"success": True, "message": res}
 
     @app.post("/api/control/stop-needs")
     async def stop_needs(request: Request, user: dict = Depends(require_user)):
         cur_service = resolve_account_service(request)
+        if not cur_service:
+            raise HTTPException(400, "Belum ada akun game yang terhubung atau dipilih.")
         res = await cur_service.command("stop_kebutuhan")
         return {"success": True, "message": res}
 
@@ -622,6 +627,8 @@ def register_web_routes(app, settings, manager=None, service=None):
         if not flag:
             raise HTTPException(400, "Nama flag diperlukan")
         cur_service = resolve_account_service(request)
+        if not cur_service:
+            raise HTTPException(400, "Belum ada akun game yang terhubung atau dipilih.")
         set_auto_flag(cur_service.settings.runtime_dir, flag, enabled)
         return {"success": True, "flag": flag, "enabled": enabled}
 
@@ -632,6 +639,8 @@ def register_web_routes(app, settings, manager=None, service=None):
         if mode not in {"kendara", "otomatis"}:
             raise HTTPException(400, "Mode harus 'kendara' atau 'otomatis'")
         cur_service = resolve_account_service(request)
+        if not cur_service:
+            raise HTTPException(400, "Belum ada akun game yang terhubung atau dipilih.")
         cur_service.settings.ojol_mode = mode
         return {"success": True, "mode": mode}
 
@@ -643,6 +652,8 @@ def register_web_routes(app, settings, manager=None, service=None):
         if not subject:
             raise HTTPException(400, "Bidang belajar diperlukan")
         cur_service = resolve_account_service(request)
+        if not cur_service:
+            raise HTTPException(400, "Belum ada akun game yang terhubung atau dipilih.")
         from .study import STUDY_LABELS
 
         try:
@@ -673,19 +684,30 @@ def register_web_routes(app, settings, manager=None, service=None):
         custom_name = (body.get("name") or "").strip()
         account_name = custom_name or "Akun Utama"
 
-        cur_service = resolve_account_service(request)
-        account_id = (cur_service.account_id if cur_service else None) or (
-            registry.selected(owner) or {}
-        ).get("id")
+        # Check if an account was explicitly targeted or already exists for this owner
+        account_id = (body.get("account_id") or "").strip()
+        if account_id and registry:
+            try:
+                registry.get(account_id, owner=owner)
+            except ValueError:
+                account_id = None
 
+        if not account_id and registry:
+            selected = registry.selected(owner)
+            if selected:
+                account_id = selected["id"]
+            else:
+                active_list = registry.list(owner)
+                if active_list:
+                    account_id = active_list[0]["id"]
+                    registry.select(owner, account_id)
+
+        # If user has no account yet, create a new one specifically for this owner
         if not account_id and registry:
             account_id = registry.create(owner, account_name)
             registry.select(owner, account_id)
-            if manager:
-                cur_service = manager.service(account_id)
-        elif not cur_service and manager and account_id:
-            cur_service = manager.service(account_id)
 
+        cur_service = manager.service(account_id) if (manager and account_id) else service
         if not cur_service:
             raise HTTPException(500, "Layanan akun tidak dapat diinisialisasi")
 
