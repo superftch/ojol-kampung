@@ -397,6 +397,11 @@ def register_web_routes(app, settings, manager=None, service=None):
         subj_dict = subjects(directory)
         cur_subj = subj_dict.get("perpus") or subj_dict.get("kuliah") or "dagang"
 
+        flags_payload = dict(flags)
+        flags_payload["study"] = bool(flags.get("perpus") or flags.get("kuliah"))
+        flags_payload["garden"] = bool(flags.get("kebun"))
+        flags_payload["auto_subject"] = (cur_subj == "auto")
+
         # Read last logs from history or journal or status
         logs = []
         if data.get("event"):
@@ -429,7 +434,7 @@ def register_web_routes(app, settings, manager=None, service=None):
             "accounts": accounts_payload,
             "summary": summary,
             "snapshot": state,
-            "auto_flags": flags,
+            "auto_flags": flags_payload,
             "study_subject": cur_subj,
             "ojol_mode": getattr(cur_service.settings, "ojol_mode", "otomatis"),
             "limit_reached": limit_reached,
@@ -629,8 +634,24 @@ def register_web_routes(app, settings, manager=None, service=None):
         cur_service = resolve_account_service(request)
         if not cur_service:
             raise HTTPException(400, "Belum ada akun game yang terhubung atau dipilih.")
-        set_auto_flag(cur_service.settings.runtime_dir, flag, enabled)
-        return {"success": True, "flag": flag, "enabled": enabled}
+        try:
+            if flag == "study":
+                set_auto_flag(cur_service.settings.runtime_dir, "perpus", enabled)
+                set_auto_flag(cur_service.settings.runtime_dir, "kuliah", enabled)
+            elif flag == "garden":
+                set_auto_flag(cur_service.settings.runtime_dir, "kebun", enabled)
+            elif flag == "auto_subject":
+                from .study import STUDY_LABELS, set_subject
+                for m in STUDY_LABELS:
+                    try:
+                        set_subject(cur_service.settings.runtime_dir, m, "auto" if enabled else "dagang")
+                    except Exception:
+                        pass
+            else:
+                set_auto_flag(cur_service.settings.runtime_dir, flag, enabled)
+            return {"success": True, "flag": flag, "enabled": enabled}
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
 
     @app.post("/api/control/mode-ojol")
     async def set_mode_ojol(request: Request, user: dict = Depends(require_user)):
@@ -654,14 +675,20 @@ def register_web_routes(app, settings, manager=None, service=None):
         cur_service = resolve_account_service(request)
         if not cur_service:
             raise HTTPException(400, "Belum ada akun game yang terhubung atau dipilih.")
-        from .study import STUDY_LABELS
+        from .study import STUDY_LABELS, set_subject
 
         try:
             if mode and mode in STUDY_LABELS:
                 set_subject(cur_service.settings.runtime_dir, mode, subject)
             else:
+                errors = []
                 for m in STUDY_LABELS:
-                    set_subject(cur_service.settings.runtime_dir, m, subject)
+                    try:
+                        set_subject(cur_service.settings.runtime_dir, m, subject)
+                    except ValueError as ve:
+                        errors.append(f"{m}: {ve}")
+                if len(errors) == len(STUDY_LABELS):
+                    raise ValueError(errors[0])
             return {"success": True, "subject": subject}
         except ValueError as exc:
             raise HTTPException(400, str(exc))

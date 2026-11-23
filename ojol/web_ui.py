@@ -1171,17 +1171,27 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     <div class="card-header"><div class="card-title">📚 Auto Belajar (Study)</div></div>
                     <div class="toggle-item">
                         <div class="toggle-info">
-                            <span class="toggle-title">Auto Belajar Aktif</span>
-                            <span class="toggle-desc">Menjalankan kuis belajar otomatis untuk meningkatkan skill</span>
+                            <span class="toggle-title">📖 Auto Perpustakaan (Gratis)</span>
+                            <span class="toggle-desc">Menjalankan kuis belajar gratis di perpustakaan secara otomatis</span>
                         </div>
                         <label class="switch">
-                            <input type="checkbox" id="autoStudyToggle" onchange="toggleAuto('study', this.checked)">
+                            <input type="checkbox" id="autoPerpusToggle" onchange="toggleAuto('perpus', this.checked)">
                             <span class="slider"></span>
                         </label>
                     </div>
                     <div class="toggle-item">
                         <div class="toggle-info">
-                            <span class="toggle-title">Rotasi Otomatis Saat Max</span>
+                            <span class="toggle-title">🎓 Auto Kuliah (Berbayar)</span>
+                            <span class="toggle-desc">Mengikuti kuliah otomatis di kampus (biaya koin) hingga level maksimal</span>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="autoKuliahToggle" onchange="toggleAuto('kuliah', this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="toggle-item">
+                        <div class="toggle-info">
+                            <span class="toggle-title">🔄 Rotasi Otomatis Saat Max</span>
                             <span class="toggle-desc">Beralih ke bidang lain jika bidang saat ini sudah mencapai level maksimum</span>
                         </div>
                         <label class="switch">
@@ -1192,6 +1202,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     <div style="margin-top: 14px;">
                         <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 6px;">Pilih Bidang Belajar:</label>
                         <select id="studySubjectSelect" class="account-select" style="width: 100%;" onchange="setStudySubject(this.value)">
+                            <option value="auto">🔄 Auto (Pilih Otomatis yang Belum Maks)</option>
                             <option value="dagang">🛒 Dagang</option>
                             <option value="teknik">🔧 Teknik</option>
                             <option value="administrasi">📋 Administrasi</option>
@@ -1270,7 +1281,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                         <span class="toggle-title">Auto Kebun (Garden)</span>
                         <span class="toggle-desc">Siram, pupuk, dan panen tanaman kebun secara otomatis</span>
                     </div>
-                    <label class="switch"><input type="checkbox" id="autoGarden" onchange="toggleAuto('garden', this.checked)"><span class="slider"></span></label>
+                    <label class="switch"><input type="checkbox" id="autoGarden" onchange="toggleAuto('kebun', this.checked)"><span class="slider"></span></label>
                 </div>
             </div>
         </div>
@@ -1686,20 +1697,22 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
             // Auto toggles
             const flags = data.auto_flags || {{}};
-            document.getElementById('modeOjolToggle').checked = (data.ojol_mode === 'kendara');
-            document.getElementById('autoStudyToggle').checked = !!flags.study;
-            document.getElementById('studyRotateToggle').checked = !!flags.auto_subject;
-            document.getElementById('autoMakan').checked = !!flags.makan;
-            document.getElementById('autoKesehatan').checked = !!flags.kesehatan;
-            document.getElementById('autoFisik').checked = !!flags.fisik;
-            document.getElementById('autoRekreasi').checked = !!flags.rekreasi;
-            document.getElementById('autoKebersihan').checked = !!flags.kebersihan;
-            document.getElementById('autoWc').checked = !!flags.wc;
-            document.getElementById('autoPenampilan').checked = !!flags.penampilan;
-            document.getElementById('autoRumah').checked = !!flags.rumah;
-            document.getElementById('autoGarden').checked = !!flags.garden;
+            if (document.getElementById('modeOjolToggle')) document.getElementById('modeOjolToggle').checked = (data.ojol_mode === 'kendara');
+            if (document.getElementById('autoPerpusToggle')) document.getElementById('autoPerpusToggle').checked = !!flags.perpus;
+            if (document.getElementById('autoKuliahToggle')) document.getElementById('autoKuliahToggle').checked = !!flags.kuliah;
+            if (document.getElementById('autoStudyToggle')) document.getElementById('autoStudyToggle').checked = !!(flags.perpus || flags.kuliah);
+            if (document.getElementById('studyRotateToggle')) document.getElementById('studyRotateToggle').checked = (data.study_subject === 'auto');
+            if (document.getElementById('autoMakan')) document.getElementById('autoMakan').checked = !!flags.makan;
+            if (document.getElementById('autoKesehatan')) document.getElementById('autoKesehatan').checked = !!flags.kesehatan;
+            if (document.getElementById('autoFisik')) document.getElementById('autoFisik').checked = !!flags.fisik;
+            if (document.getElementById('autoRekreasi')) document.getElementById('autoRekreasi').checked = !!flags.rekreasi;
+            if (document.getElementById('autoKebersihan')) document.getElementById('autoKebersihan').checked = !!flags.kebersihan;
+            if (document.getElementById('autoWc')) document.getElementById('autoWc').checked = !!flags.wc;
+            if (document.getElementById('autoPenampilan')) document.getElementById('autoPenampilan').checked = !!flags.penampilan;
+            if (document.getElementById('autoRumah')) document.getElementById('autoRumah').checked = !!flags.rumah;
+            if (document.getElementById('autoGarden')) document.getElementById('autoGarden').checked = !!(flags.kebun || flags.garden);
 
-            if (data.study_subject) {{
+            if (data.study_subject && document.getElementById('studySubjectSelect')) {{
                 document.getElementById('studySubjectSelect').value = data.study_subject;
             }}
 
@@ -1751,7 +1764,9 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ flag, enabled }})
                 }});
-                if (!res.ok) throw new Error('Gagal update pengaturan');
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || data.message || 'Gagal mengubah pengaturan Auto');
+                refreshDashboard();
             }} catch (e) {{
                 alert(e.message);
                 refreshDashboard();
@@ -1773,13 +1788,17 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
         async function setStudySubject(subject) {{
             try {{
-                await fetch('/api/control/study-subject', {{
+                const res = await fetch('/api/control/study-subject', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ subject }})
                 }});
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || data.message || 'Gagal mengubah bidang belajar');
+                refreshDashboard();
             }} catch (e) {{
-                alert(e.message);
+                alert('Gagal mengubah bidang belajar: ' + e.message);
+                refreshDashboard();
             }}
         }}
 
