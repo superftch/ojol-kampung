@@ -208,7 +208,10 @@ def register_web_routes(app, settings, manager=None, service=None):
                 except Exception:
                     pass
 
-            msg = "Pendaftaran berhasil! Akun Anda sedang menunggu persetujuan admin."
+            if user.get("status") == "approved":
+                msg = "Pendaftaran berhasil! Akun Anda aktif sebagai admin. Silakan masuk."
+            else:
+                msg = "Pendaftaran berhasil! Akun Anda sedang menunggu persetujuan admin."
             if is_json:
                 return {"success": True, "message": msg, "user": user}
             return RedirectResponse("/login?success=" + quote_plus(msg), status_code=303)
