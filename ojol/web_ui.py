@@ -1472,7 +1472,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
                 <!-- Right Utility Actions -->
                 <div class="toolbar-utilities">
-                    <button class="btn btn-utility" onclick="openModal('cookieModal')" title="Perbarui cookie game">🍪 Ganti Cookie</button>
+                    <button id="btnCookieToolbar" class="btn btn-utility" onclick="openCookieModalFor()" title="Hubungkan atau perbarui cookie game">🍪 Ganti Cookie</button>
                     <button id="btnRefreshDash" class="btn btn-utility" onclick="manualRefreshDashboard()" title="Segarkan status dashboard">🔄 Refresh</button>
                 </div>
             </div>
@@ -1980,16 +1980,19 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
     <div id="cookieModal" class="modal">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>🍪 Import Cookie Sesi Game</h3>
+                <h3 id="cookieModalTitle">🍪 Hubungkan Cookie Sesi Game</h3>
                 <button class="close-btn" onclick="closeModal('cookieModal')">&times;</button>
             </div>
+            <div id="cookieTargetAccountLabel" style="display: none; padding: 7px 12px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 6px; font-size: 12px; font-weight: 600; color: #38bdf8; margin-bottom: 12px;"></div>
+            <input type="hidden" id="cookieTargetAccountId" value="">
             <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.5;">
                 Tempel cookie sesi KampungSebelah (format string cookie atau JSON sesi) di bawah ini:
             </p>
             <textarea id="cookieInput" class="cookie-box" placeholder="vtW1tcmp4qCDI9cxOfOjr... atau JSON cookie"></textarea>
-            <div style="display: flex; justify-content: flex-end; gap: 10px;">
+            <div style="display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 14px;">
+                <span id="cookieLoadingText" style="display: none; font-size: 13px; color: #fbbf24; margin-right: auto;">⏳ Memverifikasi cookie...</span>
                 <button class="btn btn-secondary" onclick="closeModal('cookieModal')">Batal</button>
-                <button class="btn btn-primary" onclick="submitCookie()">Impor Sekarang</button>
+                <button id="btnSubmitCookie" class="btn btn-primary" onclick="submitCookie()">Impor Sekarang</button>
             </div>
         </div>
     </div>
@@ -2094,6 +2097,44 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
         function closeModal(id) {{
             document.getElementById(id).classList.remove('open');
+        }}
+
+        async function apiFetch(url, options = {{}}) {{
+            const res = await fetch(url, options);
+            let data = {{}};
+            try {{
+                data = await res.json();
+            }} catch (_) {{
+                // Fallback for non-JSON response bodies (e.g. 500 Internal Server Error)
+            }}
+            if (!res.ok) {{
+                const msg = data.detail || data.message || `HTTP ${{res.status}}: ${{res.statusText || 'Gagal memproses permintaan'}}`;
+                throw new Error(msg);
+            }}
+            return data;
+        }}
+
+        function openCookieModalFor(accId = '', accName = '') {{
+            const hiddenId = document.getElementById('cookieTargetAccountId');
+            const label = document.getElementById('cookieTargetAccountLabel');
+            const title = document.getElementById('cookieModalTitle');
+            if (hiddenId) hiddenId.value = accId || '';
+            if (label) {{
+                if (accName) {{
+                    label.style.display = 'block';
+                    label.innerText = '👤 Target Akun: ' + accName;
+                }} else if (dashboardData && dashboardData.account) {{
+                    label.style.display = 'block';
+                    label.innerText = '👤 Target Akun Aktif: ' + dashboardData.account.name;
+                }} else {{
+                    label.style.display = 'none';
+                    label.innerText = '';
+                }}
+            }}
+            if (title) {{
+                title.innerText = accId ? '🍪 Hubungkan / Ganti Cookie' : '🍪 Hubungkan Cookie Sesi Game';
+            }}
+            openModal('cookieModal');
         }}
 
         async function loadNotifications() {{
@@ -2475,6 +2516,27 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 }}
             }}
 
+            // Dynamic Cookie Toolbar Button Update
+            const btnCookieToolbar = document.getElementById('btnCookieToolbar');
+            if (btnCookieToolbar) {{
+                const hasCookie = Boolean(data.account && data.account.has_cookie);
+                if (!hasCookie) {{
+                    btnCookieToolbar.innerHTML = '🍪 Hubungkan Cookie';
+                    btnCookieToolbar.style.background = '#0284c7';
+                    btnCookieToolbar.style.borderColor = '#38bdf8';
+                    btnCookieToolbar.style.color = '#ffffff';
+                    btnCookieToolbar.style.fontWeight = '600';
+                    btnCookieToolbar.title = 'Akun belum memiliki cookie game. Klik untuk menghubungkan!';
+                }} else {{
+                    btnCookieToolbar.innerHTML = '🍪 Ganti Cookie';
+                    btnCookieToolbar.style.background = '#1e293b';
+                    btnCookieToolbar.style.borderColor = 'var(--border)';
+                    btnCookieToolbar.style.color = 'var(--text)';
+                    btnCookieToolbar.style.fontWeight = '500';
+                    btnCookieToolbar.title = 'Perbarui cookie game untuk akun ini';
+                }}
+            }}
+
             // Logs
             const logBox = document.getElementById('logConsole');
             if (data.logs && data.logs.length) {{
@@ -2534,6 +2596,14 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
         async function controlAction(cmd) {{
             if (isActionPending) return;
+
+            // Proactively check if active account has cookie connected
+            if ((cmd === 'run' || cmd === 'run-needs') && dashboardData && dashboardData.account && !dashboardData.account.has_cookie) {{
+                showToast('⚠️ Akun ini belum terhubung dengan cookie game. Silakan hubungkan cookie terlebih dahulu.', 'error');
+                openCookieModalFor(dashboardData.account.id, dashboardData.account.name);
+                return;
+            }}
+
             isActionPending = true;
 
             const btnMap = {{
@@ -2558,9 +2628,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             }});
 
             try {{
-                const res = await fetch('/api/control/' + cmd, {{ method: 'POST' }});
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.detail || data.message || 'Gagal menjalankan aksi');
+                const data = await apiFetch('/api/control/' + cmd, {{ method: 'POST' }});
                 const cmdTitles = {{
                     'run': 'Order Ojol berhasil dijalankan',
                     'stop': 'Order Ojol berhasil dihentikan',
@@ -2604,13 +2672,11 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
         async function toggleAuto(flag, enabled) {{
             try {{
-                const res = await fetch('/api/control/toggle-auto', {{
+                const data = await apiFetch('/api/control/toggle-auto', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ flag, enabled }})
                 }});
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.detail || data.message || 'Gagal mengubah pengaturan Auto');
                 showToast('Pengaturan auto ' + flag + ': ' + (enabled ? 'Aktif' : 'Nonaktif'), 'info');
                 await refreshDashboard();
             }} catch (e) {{
@@ -2622,12 +2688,11 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         async function toggleModeOjol(isKendara) {{
             try {{
                 const mode = isKendara ? 'kendara' : 'otomatis';
-                const res = await fetch('/api/control/mode-ojol', {{
+                await apiFetch('/api/control/mode-ojol', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ mode }})
                 }});
-                if (!res.ok) throw new Error('Gagal mengubah mode ojol');
                 showToast('Mode ojol: ' + (isKendara ? 'Kendara (Manual)' : 'Otomatis'), 'info');
                 await refreshDashboard();
             }} catch (e) {{
@@ -2637,13 +2702,11 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
         async function setStudySubject(subject) {{
             try {{
-                const res = await fetch('/api/control/study-subject', {{
+                const data = await apiFetch('/api/control/study-subject', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ subject }})
                 }});
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.detail || data.message || 'Gagal mengubah bidang belajar');
                 showToast('Bidang belajar: ' + subject.toUpperCase(), 'info');
                 await refreshDashboard();
             }} catch (e) {{
@@ -2655,12 +2718,11 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         async function switchAccount(accountId) {{
             if (!accountId) return;
             try {{
-                const res = await fetch('/api/accounts/select', {{
+                await apiFetch('/api/accounts/select', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ account_id: accountId }})
                 }});
-                if (!res.ok) throw new Error('Gagal mengganti akun');
                 showToast('✅ Akun aktif dialihkan', 'success');
                 await refreshDashboard();
             }} catch (e) {{
@@ -2671,18 +2733,19 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         async function submitCreateAccount() {{
             const name = document.getElementById('newAccountName').value.trim();
             try {{
-                const res = await fetch('/api/accounts/create', {{
+                const data = await apiFetch('/api/accounts/create', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ name: name || undefined }})
                 }});
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.detail || 'Gagal membuat akun');
                 closeModal('addAccountModal');
                 document.getElementById('newAccountName').value = '';
-                refreshDashboard();
-                loadAccounts();
-                alert('Akun baru berhasil dibuat! Buka Import Cookie untuk menghubungkan sesi game.');
+                await refreshDashboard();
+                await loadAccounts();
+                const createdAcc = data.account;
+                if (createdAcc) {{
+                    openCookieModalFor(createdAcc.id, createdAcc.name);
+                }}
             }} catch (e) {{
                 alert('Error: ' + e.message);
             }}
@@ -2699,20 +2762,18 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             if (loading) loading.style.display = 'inline';
 
             try {{
-                const res = await fetch('/api/control/import-cookie', {{
+                const data = await apiFetch('/api/control/import-cookie', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ name, cookie }})
                 }});
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.detail || 'Gagal mengimpor cookie');
-                alert(data.message || '✅ Akun berhasil dihubungkan dan cookie terverifikasi!');
+                showToast(data.message || '✅ Akun berhasil dihubungkan dan cookie terverifikasi!', 'success');
                 const inp = document.getElementById('onboardingCookieInput');
                 if (inp) inp.value = '';
                 await refreshDashboard();
                 await loadAccounts();
             }} catch (e) {{
-                alert('Gagal menghubungkan akun: ' + e.message);
+                showToast('⚠️ Gagal menghubungkan akun: ' + e.message, 'error');
             }} finally {{
                 if (btn) btn.disabled = false;
                 if (loading) loading.style.display = 'none';
@@ -2722,27 +2783,39 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         async function submitCookie() {{
             const cookie = document.getElementById('cookieInput').value.trim();
             if (!cookie) return alert('Silakan tempel cookie terlebih dahulu.');
+            const targetAccountId = (document.getElementById('cookieTargetAccountId')?.value || '').trim();
+            const btn = document.getElementById('btnSubmitCookie');
+            const loading = document.getElementById('cookieLoadingText');
+            if (btn) btn.disabled = true;
+            if (loading) loading.style.display = 'inline';
+
             try {{
-                const res = await fetch('/api/control/import-cookie', {{
+                const payload = {{ cookie }};
+                if (targetAccountId) payload.account_id = targetAccountId;
+                const data = await apiFetch('/api/control/import-cookie', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ cookie }})
+                    body: JSON.stringify(payload)
                 }});
-                const data = await res.json();
-                if (!res.ok) throw new Error(data.detail || 'Gagal mengimpor cookie');
                 closeModal('cookieModal');
                 document.getElementById('cookieInput').value = '';
-                alert('✅ Cookie berhasil diimpor dan terverifikasi!');
-                refreshDashboard();
+                if (document.getElementById('cookieTargetAccountId')) {{
+                    document.getElementById('cookieTargetAccountId').value = '';
+                }}
+                showToast(data.message || '✅ Cookie berhasil diimpor dan terverifikasi!', 'success');
+                await refreshDashboard();
+                await loadAccounts();
             }} catch (e) {{
-                alert('Import gagal: ' + e.message);
+                showToast('⚠️ Import gagal: ' + e.message, 'error');
+            }} finally {{
+                if (btn) btn.disabled = false;
+                if (loading) loading.style.display = 'none';
             }}
         }}
 
         async function loadAccounts() {{
             try {{
-                const res = await fetch('/api/accounts');
-                const data = await res.json();
+                const data = await apiFetch('/api/accounts');
                 const tbody = document.getElementById('accountsTableBody');
                 tbody.innerHTML = '';
                 if (!data.accounts || !data.accounts.length) {{
@@ -2756,8 +2829,9 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                         <td>${{acc.has_cookie ? '<span style="color: var(--success);">✅ Terhubung</span>' : '<span style="color: var(--danger);">❌ Belum ada</span>'}}</td>
                         <td>${{acc.is_running ? '<span style="color: var(--success);">🟢 Berjalan</span>' : '<span style="color: var(--text-muted);">⚪ Berhenti</span>'}}</td>
                         <td>${{acc.archived ? '<span style="color: var(--warning);">Diarsipkan</span>' : 'Aktif'}}</td>
-                        <td>
+                        <td style="display: flex; gap: 4px; flex-wrap: wrap;">
                             ${{!acc.is_selected ? `<button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="switchAccount('${{acc.id}}')">Pilih</button>` : ''}}
+                            <button class="btn ${{acc.has_cookie ? 'btn-secondary' : 'btn-primary'}}" style="padding: 4px 8px; font-size: 11px;" onclick="openCookieModalFor('${{acc.id}}', '${{acc.name}}')">${{acc.has_cookie ? '🍪 Ganti Cookie' : '🍪 Hubungkan Cookie'}}</button>
                             <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="promptRename('${{acc.id}}', '${{acc.name}}')">Ubah Nama</button>
                             <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="toggleArchive('${{acc.id}}', ${{!acc.archived}})">${{acc.archived ? 'Pulihkan' : 'Arsipkan'}}</button>
                         </td>

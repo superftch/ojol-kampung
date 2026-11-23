@@ -1360,6 +1360,8 @@ def create_app(settings, service=None):
                 await lifecycle.close()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.state.manager = manager
+    app.state.service = service
 
     def require_access(request):
         scoped = resolve(request)

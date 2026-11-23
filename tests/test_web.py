@@ -200,6 +200,9 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
         assert "Dashboard" in dash_page.text
         assert "limitNoticeCard" in dash_page.text
         assert "extensionModal" in dash_page.text
+        assert "btnCookieToolbar" in dash_page.text
+        assert "openCookieModalFor" in dash_page.text
+        assert "cookieTargetAccountId" in dash_page.text
 
         # 9. GET /api/dashboard
         dash_api = client.get("/api/dashboard")
@@ -237,6 +240,19 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
             "/api/accounts/rename", json={"account_id": acc_id, "name": "Akun Agus Utama"}
         )
         assert rename_res.status_code == 200
+
+        # 11b. Attempt to run ojol without permission -> returns 400 JSON detail, not unhandled 500
+        run_res = client.post("/api/control/run")
+        assert run_res.status_code == 400
+        assert "detail" in run_res.json()
+        assert "belum diizinkan" in run_res.json()["detail"]
+
+        # 11c. With operator authorization but no cookie -> returns 400 JSON with session missing message
+        app.state.manager.settings.operator_authorized = True
+        run_res2 = client.post("/api/control/run")
+        assert run_res2.status_code == 400
+        assert "detail" in run_res2.json()
+        assert "Sesi game belum tersedia" in run_res2.json()["detail"] or "Import Cookie" in run_res2.json()["detail"]
 
         # 12. Toggle auto flag
         toggle_res = client.post(
