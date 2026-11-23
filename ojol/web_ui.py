@@ -668,15 +668,46 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         .btn {{
             display: inline-flex;
             align-items: center;
+            justify-content: center;
             gap: 8px;
             padding: 10px 18px;
             border-radius: 8px;
             font-size: 14px;
             font-weight: 600;
-            border: none;
+            border: 1px solid transparent;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.15s ease-in-out;
             text-decoration: none;
+            user-select: none;
+            position: relative;
+        }}
+        .btn:active:not(:disabled) {{
+            transform: scale(0.98);
+        }}
+        .btn:disabled, .btn[disabled] {{
+            opacity: 0.55 !important;
+            cursor: not-allowed !important;
+            pointer-events: none !important;
+            filter: grayscale(25%);
+        }}
+        .btn-loading {{
+            opacity: 0.85 !important;
+            cursor: wait !important;
+            pointer-events: none !important;
+        }}
+        .btn-spinner {{
+            width: 15px;
+            height: 15px;
+            border: 2px solid rgba(255, 255, 255, 0.35);
+            border-top-color: #ffffff;
+            border-radius: 50%;
+            animation: btn-spin 0.65s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            flex-shrink: 0;
+        }}
+        @keyframes btn-spin {{
+            to {{ transform: rotate(360deg); }}
         }}
         .btn-primary {{ background: var(--primary); color: white; }}
         .btn-primary:hover {{ background: var(--primary-hover); }}
@@ -684,10 +715,266 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         .btn-success:hover {{ background: #059669; }}
         .btn-danger {{ background: var(--danger); color: white; }}
         .btn-danger:hover {{ background: #dc2626; }}
-        .btn-secondary {{ background: #334155; color: var(--text); }}
+        .btn-secondary {{ background: #334155; color: var(--text); border-color: rgba(255, 255, 255, 0.08); }}
         .btn-secondary:hover {{ background: #475569; }}
         .btn-purple {{ background: var(--purple); color: white; }}
         .btn-purple:hover {{ background: #7c3aed; }}
+
+        /* Non-blocking Toast Notification */
+        .toast-container {{
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-width: 380px;
+            pointer-events: none;
+        }}
+        .toast {{
+            background: #1e293b;
+            color: #f8fafc;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px 18px;
+            font-size: 13px;
+            font-weight: 500;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            pointer-events: auto;
+            transform: translateY(20px);
+            opacity: 0;
+            transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+        }}
+        .toast.toast-show {{
+            transform: translateY(0);
+            opacity: 1;
+        }}
+        .toast-success {{
+            border-left: 4px solid var(--success);
+        }}
+        .toast-error {{
+            border-left: 4px solid var(--danger);
+        }}
+        .toast-info {{
+            border-left: 4px solid var(--primary);
+        }}
+
+        /* Fleet Summary Section */
+        .fleet-box {{
+            background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+        }}
+        .fleet-header {{
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+            padding-bottom: 14px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+        }}
+        .fleet-title-wrap {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }}
+        .fleet-icon {{
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            background: rgba(59, 130, 246, 0.15);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+        }}
+        .fleet-title {{
+            font-size: 17px;
+            font-weight: 700;
+            color: var(--text);
+        }}
+        .fleet-subtitle {{
+            font-size: 13px;
+            color: var(--text-muted);
+        }}
+        .fleet-badges {{
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }}
+        .fleet-badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+        }}
+        .fleet-badge.badge-running {{
+            background: rgba(16, 185, 129, 0.15);
+            border-color: rgba(16, 185, 129, 0.3);
+            color: #34d399;
+        }}
+
+        .fleet-stats-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 18px;
+        }}
+        .fleet-stat-card {{
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 10px;
+            padding: 14px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            transition: border-color 0.2s;
+        }}
+        .fleet-stat-card:hover {{
+            border-color: rgba(255, 255, 255, 0.15);
+        }}
+        .fleet-stat-label {{
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+        }}
+        .fleet-stat-val {{
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--text);
+        }}
+        .fleet-stat-val.text-amber {{ color: #fbbf24; }}
+        .fleet-stat-val.text-green {{ color: #34d399; }}
+        .fleet-stat-val.text-blue {{ color: #38bdf8; }}
+
+        .fleet-accounts-title {{
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        .fleet-cards-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 12px;
+        }}
+        .account-fleet-card {{
+            background: rgba(15, 23, 42, 0.7);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 14px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 10px;
+        }}
+        .account-fleet-card:hover {{
+            border-color: #64748b;
+            transform: translateY(-2px);
+        }}
+        .account-fleet-card.is-active-account {{
+            border-color: var(--primary);
+            background: rgba(59, 130, 246, 0.08);
+            box-shadow: 0 0 0 1px var(--primary);
+        }}
+        .afc-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        .afc-name-wrap {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 700;
+            font-size: 15px;
+            color: var(--text);
+        }}
+        .afc-tag {{
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            padding: 2px 7px;
+            border-radius: 10px;
+            background: rgba(59, 130, 246, 0.2);
+            color: #60a5fa;
+            border: 1px solid rgba(59, 130, 246, 0.4);
+        }}
+        .afc-status {{
+            font-size: 12px;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }}
+        .afc-metrics {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(0, 0, 0, 0.25);
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 12px;
+        }}
+        .afc-metric-item {{
+            display: flex;
+            flex-direction: column;
+        }}
+        .afc-metric-item .m-lbl {{ font-size: 10px; color: var(--text-muted); }}
+        .afc-metric-item .m-val {{ font-weight: 700; color: var(--text); }}
+
+        .active-account-divider {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin: 28px 0 16px 0;
+        }}
+        .active-account-divider .line {{
+            flex: 1;
+            height: 1px;
+            background: var(--border);
+        }}
+        .active-account-divider .banner-tag {{
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            color: #38bdf8;
+            background: rgba(56, 189, 248, 0.1);
+            border: 1px solid rgba(56, 189, 248, 0.25);
+            padding: 6px 16px;
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
 
         /* Grid */
         .grid-2 {{
@@ -984,6 +1271,66 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
             <!-- Active Dashboard Section (Tampil saat akun sudah terhubung) -->
             <div id="activeDashboardSection">
+                <!-- TOP SECTION: Summary All Accounts (Armada) -->
+                <div class="fleet-box">
+                    <div class="fleet-header">
+                        <div class="fleet-title-wrap">
+                            <div class="fleet-icon">🌐</div>
+                            <div>
+                                <div class="fleet-title">Ringkasan Semua Akun (Armada)</div>
+                                <div class="fleet-subtitle">Total koin, trip, dan status operasional seluruh akun game Anda</div>
+                            </div>
+                        </div>
+                        <div class="fleet-badges">
+                            <span id="fleetRunningBadge" class="fleet-badge badge-running">⚡ 0 Worker Aktif</span>
+                            <span id="fleetTotalAccountsBadge" class="fleet-badge">👥 0 Akun</span>
+                        </div>
+                    </div>
+
+                    <!-- Fleet KPI Cards -->
+                    <div class="fleet-stats-grid">
+                        <div class="fleet-stat-card">
+                            <div class="fleet-stat-label">💰 Saldo Gabungan</div>
+                            <div id="fleetTotalWallet" class="fleet-stat-val text-amber">- koin</div>
+                        </div>
+                        <div class="fleet-stat-card">
+                            <div class="fleet-stat-label">📈 Penghasilan Hari Ini</div>
+                            <div id="fleetTotalIncome" class="fleet-stat-val text-green">+0 koin</div>
+                        </div>
+                        <div class="fleet-stat-card">
+                            <div class="fleet-stat-label">🛵 Trip Gabungan Hari Ini</div>
+                            <div id="fleetTotalTrips" class="fleet-stat-val text-blue">0 Trip</div>
+                        </div>
+                        <div class="fleet-stat-card">
+                            <div class="fleet-stat-label">👥 Total Armada Akun</div>
+                            <div id="fleetCountAccounts" class="fleet-stat-val">-</div>
+                        </div>
+                        <div class="fleet-stat-card">
+                            <div class="fleet-stat-label">⚡ Worker Berjalan</div>
+                            <div id="fleetCountWorkers" class="fleet-stat-val text-green">-</div>
+                        </div>
+                    </div>
+
+                    <!-- Accounts Cards Grid / Switcher -->
+                    <div class="fleet-accounts-title">
+                        <span>Pilih & Pantau Akun:</span>
+                        <span style="font-weight: normal; text-transform: none; color: #94a3b8; font-size: 11px;">Klik kartu untuk beralih kontrol akun</span>
+                    </div>
+                    <div id="fleetAccountsGrid" class="fleet-cards-grid">
+                        <!-- Populated dynamically via JS -->
+                    </div>
+                </div>
+
+                <!-- Visual Divider to Active Account Detail & Control -->
+                <div class="active-account-divider">
+                    <div class="line"></div>
+                    <div class="banner-tag">
+                        <span>🛵 DETAIL & KONTROL AKUN AKTIF:</span>
+                        <strong id="activeAccountBannerName" style="color: #fff;">-</strong>
+                    </div>
+                    <div class="line"></div>
+                </div>
+
             <!-- Hero Status Card -->
             <div class="hero-card">
                 <div class="hero-info">
@@ -1022,7 +1369,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 <button class="btn btn-secondary" onclick="openModal('cookieModal')">🍪 Import Cookie</button>
                 <a href="/api/extension/download" class="btn btn-warning" style="background:#f59e0b; color:#0f172a; font-weight:600;">📦 Download Extension</a>
                 <button class="btn btn-secondary" onclick="openModal('extensionModal')">🧩 Panduan Extension</button>
-                <button class="btn btn-secondary" onclick="refreshDashboard()">🔄 Refresh</button>
+                <button id="btnRefreshDash" class="btn btn-secondary" onclick="manualRefreshDashboard()">🔄 Refresh</button>
             </div>
 
             <!-- Grid: Kendaraan & Kebutuhan -->
@@ -1779,6 +2126,79 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 sel.innerHTML = '<option value="">Belum ada akun</option>';
             }}
 
+            // Render All Accounts Summary (Armada)
+            const sumAll = data.all_accounts_summary || {{}};
+            const totalW = document.getElementById('fleetTotalWallet');
+            if (totalW) totalW.innerText = (sumAll.total_wallet || '0') + ' koin';
+            const totalInc = document.getElementById('fleetTotalIncome');
+            if (totalInc) totalInc.innerText = '+' + (sumAll.total_income || '0') + ' koin';
+            const totalTr = document.getElementById('fleetTotalTrips');
+            if (totalTr) totalTr.innerText = (sumAll.total_trips || 0) + ' Trip';
+            const cntAcc = document.getElementById('fleetCountAccounts');
+            if (cntAcc) cntAcc.innerText = (sumAll.total_accounts || 0) + ' Akun';
+            const cntWrk = document.getElementById('fleetCountWorkers');
+            if (cntWrk) cntWrk.innerText = (sumAll.active_workers || 0) + ' / ' + (sumAll.total_accounts || 0) + ' Berjalan';
+            const runBdg = document.getElementById('fleetRunningBadge');
+            if (runBdg) runBdg.innerText = '⚡ ' + (sumAll.active_workers || 0) + ' Worker Aktif';
+            const totBdg = document.getElementById('fleetTotalAccountsBadge');
+            if (totBdg) totBdg.innerText = '👥 ' + (sumAll.total_accounts || 0) + ' Akun';
+
+            // Active Account Banner Name
+            const bannerName = document.getElementById('activeAccountBannerName');
+            if (bannerName) bannerName.innerText = data.account ? data.account.name : '-';
+
+            // Render Fleet Account Cards Grid
+            const gridElem = document.getElementById('fleetAccountsGrid');
+            if (gridElem) {{
+                gridElem.innerHTML = '';
+                if (data.accounts && data.accounts.length) {{
+                    data.accounts.forEach(acc => {{
+                        const isSel = !!acc.is_selected;
+                        const card = document.createElement('div');
+                        card.className = 'account-fleet-card' + (isSel ? ' is-active-account' : '');
+                        card.onclick = () => switchAccount(acc.id);
+
+                        const statusText = acc.status_text || (acc.is_running ? 'Aktif' : 'Standby');
+                        const statusIcon = acc.icon || (acc.is_running ? '🟢' : '⚪');
+                        const walletStr = acc.wallet ? (acc.wallet + ' koin') : '-';
+                        const tripsStr = (acc.trips !== undefined && acc.trips !== null) ? acc.trips : '0';
+                        const incomeStr = acc.today_income ? ('+' + acc.today_income + ' koin') : '-';
+
+                        card.innerHTML = `
+                            <div>
+                                <div class="afc-header">
+                                    <div class="afc-name-wrap">
+                                        <span>${{statusIcon}}</span>
+                                        <span>${{acc.name}}</span>
+                                    </div>
+                                    ${{isSel ? '<span class="afc-tag">● Aktif</span>' : '<span style="font-size:11px; color:#38bdf8; text-decoration:underline;">Pilih Akun Ini</span>'}}
+                                </div>
+                                <div class="afc-status" style="margin-top:6px;">
+                                    ${{statusText}}
+                                </div>
+                            </div>
+                            <div class="afc-metrics">
+                                <div class="afc-metric-item">
+                                    <span class="m-lbl">SALDO</span>
+                                    <span class="m-val" style="color:#fbbf24;">${{walletStr}}</span>
+                                </div>
+                                <div class="afc-metric-item">
+                                    <span class="m-lbl">TRIP</span>
+                                    <span class="m-val">${{tripsStr}}</span>
+                                </div>
+                                <div class="afc-metric-item">
+                                    <span class="m-lbl">HARI INI</span>
+                                    <span class="m-val" style="color:#34d399;">${{incomeStr}}</span>
+                                </div>
+                            </div>
+                        `;
+                        gridElem.appendChild(card);
+                    }});
+                }} else {{
+                    gridElem.innerHTML = '<div style="color:var(--text-muted); font-size:13px; grid-column:1/-1;">Belum ada akun yang terdaftar.</div>';
+                }}
+            }}
+
             const sum = data.summary || {{}};
             const snap = data.snapshot || {{}};
             document.getElementById('statusIcon').innerText = sum.icon || '⚪';
@@ -1789,9 +2209,16 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             document.getElementById('presenceVal').innerText = sum.online ? '🟢 Online' : '⚪ Offline';
 
             // Realtime Countdown State
+            const oldPhase = currentPhase;
             currentPhase = sum.phase || snap.phase || null;
             const rawRem = sum.remaining_seconds != null ? sum.remaining_seconds : (snap.remaining_seconds != null ? snap.remaining_seconds : null);
-            currentRemainingSeconds = (rawRem !== null && !isNaN(rawRem)) ? Math.max(0, parseInt(rawRem)) : null;
+            const serverSec = (rawRem !== null && !isNaN(rawRem)) ? Math.max(0, parseInt(rawRem)) : null;
+
+            if (serverSec === null) {{
+                currentRemainingSeconds = null;
+            }} else if (currentRemainingSeconds === null || oldPhase !== currentPhase || Math.abs(currentRemainingSeconds - serverSec) > 3) {{
+                currentRemainingSeconds = serverSec;
+            }}
 
             const cdElem = document.getElementById('countdownVal');
             if (cdElem) {{
@@ -1808,6 +2235,12 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 }} else {{
                     cdElem.innerText = '-';
                 }}
+            }}
+
+            if (currentPhase === 'delivering' && currentRemainingSeconds !== null && currentRemainingSeconds > 0) {{
+                const m = Math.floor(currentRemainingSeconds / 60);
+                const s = currentRemainingSeconds % 60;
+                document.getElementById('statusTitle').innerText = `Mengantar order (${{m}}:${{s < 10 ? '0' : ''}}${{s}})`;
             }}
 
             // Notice Card if Limit is Reached
@@ -1889,14 +2322,100 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             }}
         }}
 
+        function showToast(msg, type = 'info') {{
+            let container = document.getElementById('toastContainer');
+            if (!container) {{
+                container = document.createElement('div');
+                container.id = 'toastContainer';
+                container.className = 'toast-container';
+                document.body.appendChild(container);
+            }}
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${{type}}`;
+            toast.innerText = msg;
+            container.appendChild(toast);
+
+            requestAnimationFrame(() => {{
+                toast.classList.add('toast-show');
+            }});
+
+            setTimeout(() => {{
+                toast.classList.remove('toast-show');
+                setTimeout(() => {{
+                    if (toast.parentNode) toast.remove();
+                }}, 300);
+            }}, 3500);
+        }}
+
+        let isActionPending = false;
+
         async function controlAction(cmd) {{
+            if (isActionPending) return;
+            isActionPending = true;
+
+            const btnMap = {{
+                'run': document.getElementById('btnRunOjol'),
+                'stop': document.getElementById('btnStopOjol'),
+                'run-needs': document.getElementById('btnRunNeeds'),
+                'stop-needs': document.getElementById('btnStopNeeds')
+            }};
+
+            const targetBtn = btnMap[cmd];
+            let origHtml = '';
+            if (targetBtn) {{
+                origHtml = targetBtn.innerHTML;
+                targetBtn.classList.add('btn-loading');
+                targetBtn.innerHTML = '<span class="btn-spinner"></span> Sedang memproses...';
+            }}
+
+            // Disable all buttons in action-bar to prevent spam
+            const allActionBtns = document.querySelectorAll('.action-bar .btn');
+            allActionBtns.forEach(b => {{
+                b.disabled = true;
+            }});
+
             try {{
                 const res = await fetch('/api/control/' + cmd, {{ method: 'POST' }});
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || data.message || 'Gagal menjalankan aksi');
-                refreshDashboard();
+                const cmdTitles = {{
+                    'run': 'Ojol berhasil dijalankan',
+                    'stop': 'Ojol berhasil dihentikan',
+                    'run-needs': 'Kebutuhan berhasil dijalankan',
+                    'stop-needs': 'Kebutuhan berhasil dihentikan'
+                }};
+                showToast('✅ ' + (cmdTitles[cmd] || 'Aksi berhasil diproses'), 'success');
+                await refreshDashboard();
             }} catch (e) {{
-                alert('Aksi gagal: ' + e.message);
+                showToast('⚠️ Aksi gagal: ' + e.message, 'error');
+            }} finally {{
+                if (targetBtn && origHtml) {{
+                    targetBtn.classList.remove('btn-loading');
+                    targetBtn.innerHTML = origHtml;
+                }}
+                allActionBtns.forEach(b => {{
+                    b.disabled = false;
+                }});
+                isActionPending = false;
+            }}
+        }}
+
+        async function manualRefreshDashboard() {{
+            const btn = document.getElementById('btnRefreshDash');
+            if (btn) {{
+                btn.disabled = true;
+                btn.innerHTML = '<span class="btn-spinner"></span> Memuat...';
+            }}
+            try {{
+                await refreshDashboard();
+                showToast('🔄 Status dashboard diperbarui', 'info');
+            }} catch (e) {{
+                showToast('⚠️ Gagal refresh: ' + e.message, 'error');
+            }} finally {{
+                if (btn) {{
+                    btn.disabled = false;
+                    btn.innerHTML = '🔄 Refresh';
+                }}
             }}
         }}
 
@@ -1909,23 +2428,27 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 }});
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || data.message || 'Gagal mengubah pengaturan Auto');
-                refreshDashboard();
+                showToast('Pengaturan auto ' + flag + ': ' + (enabled ? 'Aktif' : 'Nonaktif'), 'info');
+                await refreshDashboard();
             }} catch (e) {{
-                alert(e.message);
-                refreshDashboard();
+                showToast('⚠️ Gagal: ' + e.message, 'error');
+                await refreshDashboard();
             }}
         }}
 
         async function toggleModeOjol(isKendara) {{
             try {{
                 const mode = isKendara ? 'kendara' : 'otomatis';
-                await fetch('/api/control/mode-ojol', {{
+                const res = await fetch('/api/control/mode-ojol', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ mode }})
                 }});
+                if (!res.ok) throw new Error('Gagal mengubah mode ojol');
+                showToast('Mode ojol: ' + (isKendara ? 'Kendara (Manual)' : 'Otomatis'), 'info');
+                await refreshDashboard();
             }} catch (e) {{
-                alert(e.message);
+                showToast('⚠️ Gagal: ' + e.message, 'error');
             }}
         }}
 
@@ -1938,10 +2461,11 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 }});
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || data.message || 'Gagal mengubah bidang belajar');
-                refreshDashboard();
+                showToast('Bidang belajar: ' + subject.toUpperCase(), 'info');
+                await refreshDashboard();
             }} catch (e) {{
-                alert('Gagal mengubah bidang belajar: ' + e.message);
-                refreshDashboard();
+                showToast('⚠️ Gagal: ' + e.message, 'error');
+                await refreshDashboard();
             }}
         }}
 
@@ -1954,9 +2478,10 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     body: JSON.stringify({{ account_id: accountId }})
                 }});
                 if (!res.ok) throw new Error('Gagal mengganti akun');
-                refreshDashboard();
+                showToast('✅ Akun aktif dialihkan', 'success');
+                await refreshDashboard();
             }} catch (e) {{
-                alert(e.message);
+                showToast('⚠️ Gagal mengganti akun: ' + e.message, 'error');
             }}
         }}
 

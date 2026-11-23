@@ -340,6 +340,18 @@ def register_web_routes(app, settings, manager=None, service=None):
 
     # ==================== DASHBOARD & ACCOUNTS ====================
 
+    def parse_coins(val) -> int:
+        if not val:
+            return 0
+        s = str(val).strip().replace(".", "").replace(",", "")
+        try:
+            return int(s)
+        except ValueError:
+            return 0
+
+    def format_coins(num: int) -> str:
+        return f"{num:,}".replace(",", ".")
+
     async def build_dashboard_payload(request: Request, user: dict) -> dict:
         owner = registry.owner_for_user(user)
         accounts_list = registry.list(owner) + registry.list(owner, archived=True)
@@ -351,9 +363,46 @@ def register_web_routes(app, settings, manager=None, service=None):
                 selected = active_only[0]
 
         accounts_payload = []
+        total_wallet = 0
+        total_income = 0
+        total_trips = 0
+        active_workers = 0
+        online_accounts = 0
+
         for acc in accounts_list:
             acc_service = resolve_account_service(request, acc["id"]) if manager else service
             sum_info = acc_service.summary() if acc_service else {}
+
+            r_dir = acc_service.settings.runtime_dir if acc_service else None
+            acc_snap = {}
+            if r_dir:
+                st_data, _ = status_record(r_dir / "status.json")
+                acc_snap = st_data.get("snapshot") or {}
+                sync_data, _ = status_record(r_dir / "game-sync.json")
+                if isinstance(sync_data.get("snapshot"), dict):
+                    acc_snap = {**acc_snap, **sync_data["snapshot"]}
+
+            acc_wallet_str = sum_info.get("wallet") or acc_snap.get("wallet") or "0"
+            acc_wallet_num = parse_coins(acc_wallet_str)
+            acc_income_str = acc_snap.get("today_income") or "0"
+            acc_income_num = parse_coins(acc_income_str)
+            acc_trips = sum_info.get("trips") or acc_snap.get("today_count") or 0
+            try:
+                acc_trips = int(acc_trips)
+            except (ValueError, TypeError):
+                acc_trips = 0
+
+            is_active = bool(sum_info.get("active", False))
+            is_online = bool(sum_info.get("online", False))
+            if not acc.get("archived"):
+                total_wallet += acc_wallet_num
+                total_income += acc_income_num
+                total_trips += acc_trips
+                if is_active:
+                    active_workers += 1
+                if is_online or is_active:
+                    online_accounts += 1
+
             accounts_payload.append(
                 {
                     "id": acc["id"],
@@ -362,15 +411,39 @@ def register_web_routes(app, settings, manager=None, service=None):
                     "legacy": bool(acc["legacy"]),
                     "is_selected": bool(selected and acc["id"] == selected["id"]),
                     "has_cookie": sum_info.get("has_cookie", False),
-                    "is_running": sum_info.get("active", False),
+                    "is_running": is_active,
+                    "is_online": is_online,
                     "icon": sum_info.get("icon", "⚪"),
+                    "phase": sum_info.get("phase", "idle"),
+                    "status_text": sum_info.get("status_text", "Standby"),
+                    "wallet": str(acc_wallet_str),
+                    "wallet_num": acc_wallet_num,
+                    "today_income": str(acc_income_str),
+                    "today_income_num": acc_income_num,
+                    "trips": acc_trips,
+                    "fuel": sum_info.get("fuel") or acc_snap.get("fuel"),
+                    "condition": sum_info.get("condition") or acc_snap.get("condition"),
+                    "data": sum_info.get("data") or acc_snap.get("data"),
                 }
             )
+
+        active_accounts_count = len([a for a in accounts_payload if not a["archived"]])
+        all_accounts_summary = {
+            "total_accounts": active_accounts_count,
+            "active_workers": active_workers,
+            "online_accounts": online_accounts,
+            "total_wallet": format_coins(total_wallet),
+            "total_wallet_num": total_wallet,
+            "total_income": format_coins(total_income),
+            "total_income_num": total_income,
+            "total_trips": total_trips,
+        }
 
         if not selected:
             return {
                 "account": None,
                 "accounts": accounts_payload,
+                "all_accounts_summary": all_accounts_summary,
                 "summary": {},
                 "snapshot": {},
                 "auto_flags": {},
@@ -432,6 +505,7 @@ def register_web_routes(app, settings, manager=None, service=None):
         return {
             "account": selected,
             "accounts": accounts_payload,
+            "all_accounts_summary": all_accounts_summary,
             "summary": summary,
             "snapshot": state,
             "auto_flags": flags_payload,
