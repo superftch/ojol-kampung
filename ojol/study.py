@@ -11,6 +11,7 @@ from .healing import write_private
 from .models import now
 
 STUDY_LABELS = {"perpus": "Auto Perpus (gratis)", "kuliah": "Auto Kuliah (bayar)"}
+AUTO_SUBJECT = "auto"
 SUBJECTS = {
     "kesehatan": "Kesehatan",
     "mengajar": "Mengajar",
@@ -25,11 +26,46 @@ SUBJECTS = {
 }
 
 
+def pick_auto_track(tracks, mode, study_tracks=None):
+    if not isinstance(tracks, list):
+        return None
+    candidates = []
+    for t in tracks:
+        if not isinstance(t, dict):
+            continue
+        track_id = t.get("id")
+        if track_id not in SUBJECTS:
+            continue
+        if study_tracks is not None and track_id not in study_tracks:
+            continue
+        if is_track_max(t, mode):
+            continue
+        if t.get("pending"):
+            continue
+        candidates.append(t)
+    if not candidates:
+        return None
+    subject_order = list(SUBJECTS.keys())
+    candidates.sort(
+        key=lambda x: (
+            -(x.get("level", 0) if isinstance(x.get("level"), (int, float)) else 0),
+            subject_order.index(x["id"]) if x["id"] in subject_order else 999,
+        )
+    )
+    return candidates[0]["id"]
+
+
 def is_track_max(track_data, mode):
     if not isinstance(track_data, dict):
         return False
+    level = track_data.get("level", 0)
+    if isinstance(level, (int, float)) and level >= 5:
+        return True
     next_info = track_data.get("next")
     if not next_info:
+        return True
+    next_level = next_info.get("level")
+    if isinstance(next_level, (int, float)) and next_level > 5:
         return True
     if next_info.get("library") is False:
         return True
@@ -62,21 +98,23 @@ def subjects(directory):
     path = directory / "study-settings.json"
     saved = json.loads(path.read_text()) if path.is_file() else {}
     if not isinstance(saved, dict) or any(
-        mode not in STUDY_LABELS or track not in SUBJECTS for mode, track in saved.items()
+        mode not in STUDY_LABELS or (track not in SUBJECTS and track != AUTO_SUBJECT)
+        for mode, track in saved.items()
     ):
         raise ValueError("Pilihan bidang belajar akun tidak valid.")
     return {mode: saved.get(mode) for mode in STUDY_LABELS}
 
 
 def set_subject(directory, mode, track, skills=None):
-    if mode not in STUDY_LABELS or track not in SUBJECTS:
+    if mode not in STUDY_LABELS or (track not in SUBJECTS and track != AUTO_SUBJECT):
         raise ValueError("Pilihan bidang belajar tidak valid.")
-    if skills is None:
-        skills = cached_skills(directory)
-    if skills:
-        track_info = next((t for t in skills if isinstance(t, dict) and t.get("id") == track), None)
-        if track_info and is_track_max(track_info, mode):
-            raise ValueError("Bidang belajar sudah mencapai batas maksimal.")
+    if track != AUTO_SUBJECT:
+        if skills is None:
+            skills = cached_skills(directory)
+        if skills:
+            track_info = next((t for t in skills if isinstance(t, dict) and t.get("id") == track), None)
+            if track_info and is_track_max(track_info, mode):
+                raise ValueError("Bidang belajar sudah mencapai batas maksimal.")
     saved = {key: value for key, value in subjects(directory).items() if value is not None}
     saved[mode] = track
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -161,8 +199,13 @@ async def run_learning(controller):
                 ):
                     c.study_retry_at[mode] = time.monotonic() + 10
                     continue
-            quiz_due = quiz.get("available") is True and quiz.get("track", {}).get("id") == track
+            quiz_due = quiz.get("available") is True and (
+                quiz.get("track", {}).get("id") == track
+                or choices[mode] == AUTO_SUBJECT
+                or (previous and quiz.get("track", {}).get("id") == previous.get("track"))
+            )
             if quiz_due:
+                track = quiz.get("track", {}).get("id") or track
                 visit_id = quiz["visitId"]
                 attempted = c.journal.db.execute(
                     "SELECT id FROM actions WHERE kind='study_quiz' AND status<>'rejected' "
@@ -193,9 +236,14 @@ async def run_learning(controller):
                         time.monotonic() + (due - c.state.observed_at).total_seconds()
                     )
                     continue
-                skill = next((t for t in status["tracks"] if t["id"] == track), None)
                 service = facility["service"]
                 price = Decimal(service["priceMilli"]) / 1000
+                if choices[mode] == AUTO_SUBJECT:
+                    track = pick_auto_track(status["tracks"], mode, service.get("studyTracks"))
+                    if not track:
+                        c.study_retry_at[mode] = time.monotonic() + 300
+                        continue
+                skill = next((t for t in status["tracks"] if t["id"] == track), None)
                 if (
                     not skill
                     or is_track_max(skill, mode)

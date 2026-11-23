@@ -154,6 +154,7 @@ NEED_FALLBACK_PLOTS = {
         "makan": ("D01-U09", "restoran"),
         "kesehatan": ("D02-U02", "toko-obat"),
         "rekreasi": ("A02-U04", "coffee-shop"),
+        "penampilan": ("S09-U09", "barbershop"),
     },
 }
 

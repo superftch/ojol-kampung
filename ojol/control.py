@@ -32,7 +32,7 @@ from .journal import Journal, unresolved_action
 from .login_access import LoginAccess
 from .maintenance import GAME_COMMANDS, SCHEDULE_FILE, held_window, read_window
 from .models import NEEDS, ROOT, Settings, now
-from .study import STUDY_LABELS, SUBJECTS, subjects
+from .study import AUTO_SUBJECT, STUDY_LABELS, SUBJECTS, subjects
 from .telegram import (
     BUTTON_COMMANDS,
     TelegramClient,
@@ -296,7 +296,7 @@ class ControlService:
         )
         choices = subjects(directory)
         lines.extend(
-            f"Bidang {'Perpus' if mode == 'perpus' else 'Kuliah'} • {SUBJECTS.get(choices[mode], 'belum dipilih')}"
+            f"Bidang {'Perpus' if mode == 'perpus' else 'Kuliah'} • {'Auto (Pilih Otomatis)' if choices[mode] == AUTO_SUBJECT else SUBJECTS.get(choices[mode], 'belum dipilih')}"
             for mode in STUDY_LABELS
         )
         maintenance = held_window(self.maintenance_file)
@@ -392,6 +392,172 @@ class ControlService:
             )
         return "\n".join(lines)
 
+    def status_kebutuhan(self):
+        directory = self.settings.runtime_dir
+        data, status_updated = status_record(directory / "status.json")
+        state = data.get("snapshot") or {}
+        sync, _ = status_record(directory / "game-sync.json")
+        synced_at = status_timestamp(sync.get("checked_at"))
+        observed = status_timestamp(data.get("snapshot_received_at") or state.get("observed_at"))
+        if (
+            synced_at
+            and (observed is None or synced_at > observed)
+            and isinstance(sync.get("snapshot"), dict)
+        ):
+            state = sync["snapshot"]
+            observed = synced_at
+        busy = running(directory)
+        managed = self.worker is not None and self.worker.returncode is None
+        pid = data.get("pid")
+        recorded_worker = (
+            type(pid) is int
+            and pid > 0
+            and data.get("event") not in {"berhenti", "gagal", "dry_run"}
+        )
+        if busy and recorded_worker:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                recorded_worker = False
+            except PermissionError:
+                pass
+        active = busy and recorded_worker and (not managed or self.worker.pid == pid)
+        starting = managed and not active
+        flags = auto_flags(directory)
+        if active:
+            if flags.get("ojol"):
+                worker = "🟢 Worker aktif (Ojol & Kebutuhan)"
+            else:
+                worker = "🟢 Worker aktif (Auto Kebutuhan)"
+        elif starting:
+            worker = "🟡 Worker memulai"
+        elif busy:
+            worker = "🟠 Worker lain sedang memakai akun ini"
+        else:
+            worker = "🔴 Worker berhenti" if data else "⚪ Worker belum dijalankan"
+
+        profile = cached_profile(directory)
+        name = profile["nickname"] if profile else self.settings.account_name or "Utama"
+        lines = [f"🍲 Status Kebutuhan · {name}", "", worker]
+
+        wallet = state.get("wallet")
+        if wallet is not None:
+            lines.append(f"💰 Saldo • {koin(wallet)}")
+        if state.get("village") or state.get("home_plot"):
+            lines.append(
+                f"🏠 Rumah • {state.get('home_plot') or '?'} • {state.get('village') or '?'}"
+            )
+
+        lines.extend(["", "📊 Bar Kebutuhan · Nilai & Target:"])
+        need_icons = {
+            "makan": "🍚",
+            "kesehatan": "❤️",
+            "fisik": "💪",
+            "rekreasi": "🎡",
+            "kebersihan": "🧼",
+            "wc": "🚽",
+            "penampilan": "💇",
+            "rumah": "🏡",
+        }
+        needs_dict = state.get("needs") or {}
+        for key in NEEDS:
+            label = AUTO_LABELS.get(key, key.capitalize())
+            icon = need_icons.get(key, "•")
+            val = needs_dict.get(key, "?")
+            on_str = "ON" if flags.get(key) else "OFF"
+            thresh = self.settings.threshold_for(key)
+            lines.append(f"{icon} {label} • {val}% · Auto {on_str} (target {thresh}%)")
+
+        kondisi = state.get("kondisi") or {}
+        bersih = state.get("bersih") or {}
+        kondisi_lines = []
+        if kondisi:
+            bau_str = "Bau sekali ⚠️" if kondisi.get("bau") else "Bersih ✓"
+            kebelet_str = "Kebelet sekali ⚠️" if kondisi.get("kebelet") else "Normal ✓"
+            potong = (
+                f"-{kondisi['upahPotongBps'] // 100}%"
+                if kondisi.get("upahPotongBps")
+                else "Tidak ada (0%)"
+            )
+            kondisi_lines.append(f"• Kebersihan badan • {bau_str}")
+            kondisi_lines.append(f"• Buang air • {kebelet_str}")
+            kondisi_lines.append(f"• Potongan upah ojol • {potong}")
+        if bersih:
+            kondisi_lines.append(
+                f"• Kuota mandi hari ini • {bersih.get('mandi', 0)}/{bersih.get('mandiMaks', 2)}"
+            )
+            kondisi_lines.append(
+                f"• Kuota sikat gigi hari ini • {bersih.get('sikat', 0)}/{bersih.get('sikatMaks', 3)}"
+            )
+        if kondisi_lines:
+            lines.extend(["", "🚿 Kondisi Karakter:"] + kondisi_lines)
+
+        lines.extend(["", "🌱 Aktivitas Mandiri Lainnya:"])
+        kebun_on = "ON" if flags.get("kebun") else "OFF"
+        lines.append(f"• Kebun & kolam • Auto {kebun_on}")
+        choices = subjects(directory)
+        for mode in STUDY_LABELS:
+            study_on = "ON" if flags.get(mode) else "OFF"
+            label_m = "Perpustakaan" if mode == "perpus" else "Kuliah"
+            subj = (
+                "Auto (Pilih Otomatis)"
+                if choices.get(mode) == AUTO_SUBJECT
+                else SUBJECTS.get(choices.get(mode), "belum dipilih")
+            )
+            lines.append(f"• {label_m} • Auto {study_on} ({subj})")
+
+        moment = now()
+        if observed:
+            age = max(0, int((moment - observed).total_seconds()))
+            age_text = (
+                f"{age} detik"
+                if age < 60
+                else f"{age // 60} menit"
+                if age < 3600
+                else f"{age // 3600} jam"
+            )
+            stale = " · data lama, worker tidak aktif" if not active else ""
+            lines.extend(
+                [
+                    "",
+                    f"🕒 Update terakhir: {observed.astimezone(WIB):%d-%m-%Y %H:%M:%S} WIB ({age_text} lalu){stale}",
+                ]
+            )
+        else:
+            lines.extend(["", "🕒 Update terakhir: belum ada data"])
+
+        phase = state.get("phase")
+        if phase == "sleeping" and active:
+            lines.append("🌙 Semua Auto dijeda sampai karakter bangun di game.")
+        if not active and not starting:
+            lines.append("\n💡 Tekan Jalankan Kebutuhan untuk memulai auto kebutuhan.")
+        return "\n".join(lines)
+
+    def auto_kebutuhan_summary(self):
+        directory = self.settings.runtime_dir
+        flags = auto_flags(directory)
+        profile = cached_profile(directory)
+        name = profile["nickname"] if profile else self.settings.account_name or "Utama"
+        lines = [f"⚙️ Auto Kebutuhan · {name}", ""]
+        lines.append("Pengaturan fitur otomatis kebutuhan karakter:")
+        for key in NEEDS:
+            label = AUTO_LABELS.get(key, key.capitalize())
+            lines.append(
+                f"• {label} • {'ON' if flags.get(key) else 'OFF'} (target {self.settings.threshold_for(key)}%)"
+            )
+        lines.append(f"• Kebun & kolam • {'ON' if flags.get('kebun') else 'OFF'}")
+        choices = subjects(directory)
+        for mode in STUDY_LABELS:
+            label_m = "Perpus" if mode == "perpus" else "Kuliah"
+            subj = (
+                "Auto (Pilih Otomatis)"
+                if choices.get(mode) == AUTO_SUBJECT
+                else SUBJECTS.get(choices.get(mode), "belum dipilih")
+            )
+            lines.append(f"• {label_m} • {'ON' if flags.get(mode) else 'OFF'} ({subj})")
+        lines.append("\nTekan tombol di bawah untuk menjalankan atau menghentikan auto kebutuhan.")
+        return "\n".join(lines)
+
     def summary(self):
         directory = self.settings.runtime_dir
         data, status_updated = status_record(directory / "status.json")
@@ -454,7 +620,11 @@ class ControlService:
                 status_text = "Tidur di game"
                 icon = "💤"
             elif phase == "idle":
-                status_text = "Standby"
+                flags = auto_flags(directory)
+                if not flags.get("ojol") and any(flags.get(k) for k in NEEDS):
+                    status_text = "Memantau Kebutuhan"
+                else:
+                    status_text = "Standby"
                 icon = "🟢"
             else:
                 status_text = "Aktif"
@@ -694,6 +864,10 @@ class ControlService:
             )
         if command == "status":
             return self.status()
+        if command == "status_kebutuhan":
+            return self.status_kebutuhan()
+        if command == "auto_kebutuhan":
+            return self.auto_kebutuhan_summary()
         if command == "online":
             status = await self.fetch_online_status()
             nick = status.get("nickname") or self.settings.account_name or "Akun"
@@ -908,7 +1082,7 @@ class ControlService:
     async def execute(self, command, *, mode=None):
         try:
             response = await self.command(command, mode=mode)
-            if command == "status":
+            if command in {"status", "status_kebutuhan", "auto_kebutuhan"}:
                 markup = keyboard_status()
             elif command == "profit" or command.startswith("profit:"):
                 markup = self.profit_buttons(command.split(":", 1)[1] if ":" in command else None)
@@ -950,6 +1124,7 @@ class ControlService:
         cursor_file = self.settings.runtime_dir / "telegram-offset"
         offset = int(cursor_file.read_text()) if cursor_file.exists() else 0
         outage = None
+        last_outage_notice = 0
         async with TelegramClient(self.settings) as api:
             while not self.closing:
                 try:
@@ -997,13 +1172,17 @@ class ControlService:
                                     await self.execute("help")
                 except (TelegramError, OSError, ValueError) as exc:
                     retryable = isinstance(exc, TelegramError) and exc.retryable
-                    if outage is None or outage != retryable:
+                    now_ts = time.time()
+                    if (outage is None or outage != retryable) and (
+                        not retryable or now_ts - last_outage_notice >= 900
+                    ):
                         queue_error(
                             self.settings,
                             exc,
                             "telegram.poll",
                             stop_worker=not retryable,
                         )
+                        last_outage_notice = now_ts
                     outage = retryable
                     await flush_notices(self.settings)
                     await asyncio.sleep(15)

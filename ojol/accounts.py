@@ -22,7 +22,8 @@ class Accounts:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS users (
                     telegram_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1,
-                    max_accounts INTEGER, selected TEXT
+                    max_accounts INTEGER, selected TEXT,
+                    name TEXT, username TEXT
                 );
                 CREATE TABLE IF NOT EXISTS accounts (
                     id TEXT PRIMARY KEY, owner INTEGER NOT NULL REFERENCES users(telegram_id),
@@ -36,6 +37,11 @@ class Accounts:
                     created REAL NOT NULL, decided_by INTEGER, decided_at REAL
                 );
             """)
+            for col in ("name TEXT", "username TEXT"):
+                try:
+                    db.execute(f"ALTER TABLE users ADD COLUMN {col}")
+                except sqlite3.OperationalError:
+                    pass
             if self.admin:
                 db.execute("INSERT OR IGNORE INTO users(telegram_id) VALUES(?)", (self.admin,))
                 if not db.execute("SELECT 1 FROM accounts WHERE legacy=1").fetchone():
@@ -103,24 +109,50 @@ class Accounts:
         row = db.execute("SELECT max_accounts FROM users WHERE telegram_id=?", (owner,)).fetchone()
         return row[0] if row and row[0] is not None else self.value("max_accounts_per_user", db)
 
-    def whitelist(self, owner, enabled=True, maximum=None, db=None):
+    def whitelist(self, owner, enabled=True, maximum=None, name=None, username=None, db=None):
         owner = self.owner_id(owner)
         if owner == self.admin and not enabled:
             raise ValueError("Admin utama tidak bisa dicabut lewat bot.")
         maximum = self.limit(maximum) if maximum is not None else None
         if db is None:
             with self.db() as connection:
-                return self.whitelist(owner, enabled, maximum, connection)
+                return self.whitelist(owner, enabled, maximum, name, username, connection)
+        name = name.strip() if isinstance(name, str) and name.strip() else None
+        username = username.strip() if isinstance(username, str) and username.strip() else None
+        if not name and not username:
+            req = db.execute(
+                "SELECT name, username FROM access_requests WHERE telegram_id=?", (owner,)
+            ).fetchone()
+            if req:
+                name = req["name"] if req["name"] else None
+                username = req["username"] if req["username"] else None
         db.execute(
-            "INSERT INTO users(telegram_id,enabled,max_accounts) VALUES(?,?,?) "
+            "INSERT INTO users(telegram_id,enabled,max_accounts,name,username) VALUES(?,?,?,?,?) "
             "ON CONFLICT(telegram_id) DO UPDATE SET enabled=excluded.enabled, "
-            "max_accounts=COALESCE(excluded.max_accounts,users.max_accounts)",
-            (owner, int(enabled), maximum),
+            "max_accounts=COALESCE(excluded.max_accounts,users.max_accounts), "
+            "name=COALESCE(excluded.name, users.name), "
+            "username=COALESCE(excluded.username, users.username)",
+            (owner, int(enabled), maximum, name, username),
         )
         db.execute(
             "UPDATE access_requests SET status=?,decided_by=?,decided_at=? WHERE telegram_id=?",
             ("approved" if enabled else "rejected", self.admin, time.time(), owner),
         )
+
+    def update_user_profile(self, owner, name=None, username=None):
+        owner = self.owner_id(owner)
+        name = name.strip() if isinstance(name, str) and name.strip() else None
+        username = username.strip() if isinstance(username, str) and username.strip() else None
+        if not name and not username:
+            return
+        with self.db() as db:
+            db.execute(
+                "UPDATE users SET "
+                "name = COALESCE(?, name), "
+                "username = COALESCE(?, username) "
+                "WHERE telegram_id = ?",
+                (name, username, owner),
+            )
 
     def access_request(self, owner):
         with self.db() as db:
@@ -179,7 +211,13 @@ class Accounts:
                 raise ValueError(
                     "Pengajuan sudah diproses atau belum tersedia. Buka daftar pengajuan kembali."
                 )
-            self.whitelist(row["telegram_id"], enabled=approve, db=db)
+            self.whitelist(
+                row["telegram_id"],
+                enabled=approve,
+                name=row["name"],
+                username=row["username"],
+                db=db,
+            )
             return dict(
                 db.execute("SELECT * FROM access_requests WHERE id=?", (identifier,)).fetchone()
             )
@@ -316,4 +354,14 @@ class Accounts:
 
     def users(self):
         with self.db() as db:
-            return [dict(row) for row in db.execute("SELECT * FROM users ORDER BY telegram_id")]
+            return [
+                dict(row)
+                for row in db.execute(
+                    "SELECT u.telegram_id, u.enabled, u.max_accounts, u.selected, "
+                    "COALESCE(NULLIF(u.name, ''), NULLIF(ar.name, ''), '') AS name, "
+                    "COALESCE(NULLIF(u.username, ''), NULLIF(ar.username, ''), '') AS username "
+                    "FROM users u "
+                    "LEFT JOIN access_requests ar ON u.telegram_id = ar.telegram_id "
+                    "ORDER BY u.telegram_id"
+                )
+            ]

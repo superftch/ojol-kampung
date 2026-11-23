@@ -80,6 +80,10 @@ async def test_telegram_private_message_and_sanitized_network_error(settings):
         "run_kebutuhan",
         "stop_kebutuhan",
         "status",
+        "status_kebutuhan",
+        "auto",
+        "auto_ojol",
+        "auto_kebutuhan",
         "profit",
         "cleanup_scan",
         "visit_scan",
@@ -989,3 +993,47 @@ async def test_kebutuhan_and_ojol_separate_buttons(settings, monkeypatch):
     res_stop_keb = await service.command("stop_kebutuhan")
     assert "Aktivitas akun sudah dihentikan" in res_stop_keb
     child.terminate.assert_called_once()
+
+
+async def test_status_kebutuhan_and_auto_kebutuhan_commands(settings):
+    service = ControlService(settings)
+    (settings.runtime_dir / "status.json").write_text(
+        json.dumps(
+            {
+                "snapshot": {
+                    "observed_at": "2026-11-23T10:00:00Z",
+                    "wallet": "50.0",
+                    "phase": "idle",
+                    "needs": {
+                        "makan": 70,
+                        "kesehatan": 80,
+                        "fisik": 60,
+                        "rekreasi": 75,
+                        "kebersihan": 90,
+                        "wc": 100,
+                        "penampilan": 85,
+                        "rumah": 95,
+                    },
+                    "kondisi": {"bau": False, "kebelet": False, "upahPotongBps": 0},
+                    "bersih": {"mandi": 1, "sikat": 2, "mandiMaks": 2, "sikatMaks": 3},
+                    "home_plot": "K40-R01",
+                    "village": "kampung-sebelah",
+                }
+            }
+        )
+    )
+    status_keb = await service.command("status_kebutuhan")
+    assert "Status Kebutuhan" in status_keb
+    assert "Makan • 70%" in status_keb
+    assert "Kebersihan • 90%" in status_keb
+    assert "Buang air • 100%" in status_keb
+    assert "Kondisi Karakter" in status_keb
+    assert "Kuota mandi hari ini • 1/2" in status_keb
+    assert "Kuota sikat gigi hari ini • 2/3" in status_keb
+
+    auto_keb = await service.command("auto_kebutuhan")
+    assert "Auto Kebutuhan" in auto_keb
+    assert "Makan" in auto_keb
+    assert "Kebersihan" in auto_keb
+    assert "Buang air" in auto_keb
+

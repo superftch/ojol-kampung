@@ -2398,3 +2398,179 @@ async def test_snapshot_tracks_ojol_remaining_hours(api, world):
     state = await api.snapshot()
     assert state.ojol_shift_done is False
     assert state.ojol_hours_left == 4.5
+
+
+async def test_kamar_mandi_wc_preview_and_purchase(api, world):
+    world["needs"].update(
+        enabled=True,
+        needs=[
+            {"id": "wc", "name": "Buang air", "value": 0, "label": "Kebelet sekali"},
+            {"id": "kebersihan", "name": "Kebersihan", "value": 10, "label": "Bau sekali"},
+        ],
+        kondisi={"bau": True, "kebelet": True, "upahPotongBps": 1000},
+        bersih={"mandi": 0, "sikat": 0, "mandiMaks": 2, "sikatMaks": 3, "aktif": True},
+    )
+    preview = await api.preview("wc")
+    shops = preview["shops"]
+    assert len(shops) == 1
+    assert shops[0]["category"] == "kamar-mandi"
+    product = shops[0]["products"][0]
+    assert product["name"] == "Buang air di kloset"
+    assert Decimal(product["price"]) == Decimal(0)
+    assert product["effects"]["wc"] == 100
+
+    wc_posted = []
+    world.setdefault("post_responses", {})["/api/rumah/kamar-mandi"] = lambda req: (
+        wc_posted.append(json.loads(req.content)),
+        {"isi": 100, "wc": 100, "detik": 5},
+    )[1]
+
+    # Purchase WC
+    before = await api.snapshot()
+    assert before.needs["wc"] == 0
+    receipt = await api.purchase(
+        product, str(before.wallet), before.needs["wc"], "5", str(uuid4())
+    )
+    assert receipt["isi"] == 100
+    assert any(p.get("aksi") == "wc" for p in wc_posted)
+
+
+async def test_kamar_mandi_kebersihan_preview_and_purchase(api, world):
+    world["needs"].update(
+        enabled=True,
+        needs=[
+            {"id": "kebersihan", "name": "Kebersihan", "value": 15, "label": "Bau"},
+        ],
+        kondisi={"bau": True, "kebelet": False, "upahPotongBps": 1000},
+        bersih={"mandi": 1, "sikat": 0, "mandiMaks": 2, "sikatMaks": 3, "aktif": True},
+    )
+    preview = await api.preview("kebersihan")
+    shops = preview["shops"]
+    assert len(shops) == 1
+    assert shops[0]["category"] == "kamar-mandi"
+    product_names = [p["name"] for p in shops[0]["products"]]
+    assert "Mandi di kamar mandi" in product_names
+    assert "Sikat gigi" in product_names
+
+    posted = []
+    world.setdefault("post_responses", {})["/api/rumah/kamar-mandi"] = lambda req: (
+        posted.append(json.loads(req.content)),
+        {"aksi": "mandi", "isi": 65, "kebersihan": 80},
+    )[1]
+
+    mandi_prod = next(p for p in shops[0]["products"] if p["name"] == "Mandi di kamar mandi")
+    before = await api.snapshot()
+    receipt = await api.purchase(
+        mandi_prod, str(before.wallet), before.needs["kebersihan"], "5", str(uuid4())
+    )
+    assert receipt["aksi"] == "mandi"
+    assert any(p.get("aksi") == "mandi" for p in posted)
+
+
+async def test_penampilan_fallback_kampung_sebelah(api, world, monkeypatch):
+    from ojol.shop_locations import NEED_FALLBACK_PLOTS as REAL_FALLBACK_PLOTS
+
+    setup_food_catalog(world)
+    world["needs"]["needs"].append({"id": "penampilan", "name": "Penampilan", "value": 0})
+    monkeypatch.setattr("ojol.http_api.NEED_FALLBACK_PLOTS", REAL_FALLBACK_PLOTS)
+    world["me"]["home"]["desa"] = "kampung-sebelah"
+    await api.snapshot()
+    shop_id = "57458327-df64-483f-8904-0ec40bfc28fe"
+    world["plot_details"]["S09-U09"] = {
+        "id": "S09-U09",
+        "business": {
+            "id": shop_id,
+            "catalogId": "barbershop",
+            "name": "Cukur Sisi Jalan",
+            "desa": "kampung-sebelah",
+        },
+    }
+    world["shops"][shop_id] = {
+        "mine": False,
+        "open": True,
+        "plang": "Cukur Sisi Jalan",
+        "menu": [
+            {"item": "potong-rambut", "name": "Potong rambut", "priceMilli": 1000, "service": True},
+        ],
+    }
+    world["need_effects"]["potong-rambut"] = {"penampilan": 60}
+
+    preview = await api.preview("penampilan")
+    shops = preview["shops"]
+    assert len(shops) == 1
+    assert shops[0]["name"] == "Cukur Sisi Jalan"
+    assert shops[0]["products"][0]["name"] == "Potong rambut"
+    assert Decimal(shops[0]["products"][0]["price"]) == Decimal(1)
+
+    bought = []
+    world.setdefault("post_responses", {})[f"/api/shops/{shop_id}/buy"] = lambda req: (
+        bought.append(json.loads(req.content)),
+        {"ok": True, "penampilan": 60},
+    )[1]
+
+    prod = shops[0]["products"][0]
+    before = await api.snapshot()
+    receipt = await api.purchase(prod, str(before.wallet), before.needs.get("penampilan", 0), "5", str(uuid4()))
+    assert receipt["ok"] is True
+    assert any(b.get("item") == "potong-rambut" for b in bought)
+
+
+async def test_ojol_failure_continues_auto_kebutuhan(api, world, settings):
+    from ojol.auto_settings import auto_flags
+
+    # Ojol is broken / not a partner
+    world["ojol"] = {"enabled": False, "mitra": False, "problem": "Bukan mitra ojol"}
+    world["needs"].update(
+        enabled=True,
+        needs=[
+            {"id": "wc", "name": "Buang air", "value": 0, "label": "Kebelet"},
+            {"id": "kebersihan", "name": "Kebersihan", "value": 15, "label": "Bau"},
+        ],
+        kondisi={"bau": True, "kebelet": True, "upahPotongBps": 1000},
+        bersih={"mandi": 1, "sikat": 0, "mandiMaks": 2, "sikatMaks": 3, "aktif": True},
+    )
+    set_auto_flag(settings.runtime_dir, "ojol", True)
+    set_auto_flag(settings.runtime_dir, "wc", True)
+    set_auto_flag(settings.runtime_dir, "kebersihan", True)
+
+    km_posted = []
+
+    def handle_km(req):
+        body = json.loads(req.content)
+        km_posted.append(body)
+        if body.get("aksi") == "wc":
+            for n in world["needs"]["needs"]:
+                if n["id"] == "wc":
+                    n["value"] = 100
+            return {"isi": 100, "wc": 100}
+        if body.get("aksi") == "mandi":
+            for n in world["needs"]["needs"]:
+                if n["id"] == "kebersihan":
+                    n["value"] = 80
+            return {"isi": 65, "kebersihan": 80}
+        return {"ok": True}
+
+    world.setdefault("post_responses", {})["/api/rumah/kamar-mandi"] = handle_km
+
+    ui = HttpUI(settings, api=api)
+    with closing(Journal(settings.runtime_dir)) as journal:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        # After completing need action, let next wait terminate the loop
+        controller.wait = AsyncMock(side_effect=StopRequested("done"))
+        with pytest.raises(StopRequested):
+            await controller.run()
+
+        # Check: Ojol was disabled because it failed
+        flags = auto_flags(settings.runtime_dir)
+        assert flags["ojol"] is False
+        assert flags["wc"] is True
+        assert flags["kebersihan"] is True
+
+        # Check: WC need was fulfilled automatically
+        assert any(p.get("aksi") == "wc" for p in km_posted)
+        actions = journal.history()["actions"]
+        assert any(a["kind"] == "purchase" and a["status"] == "verified" for a in actions)
+
+
+
+

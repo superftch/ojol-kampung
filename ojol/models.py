@@ -1,7 +1,7 @@
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Literal, get_args
+from typing import Annotated, Any, Literal, get_args
 from zoneinfo import ZoneInfo
 
 from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
@@ -11,7 +11,9 @@ Coin = Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
 Percent = Annotated[int, Field(ge=0, le=100)]
 Resource = Literal["fuel", "condition", "data"]
 OjolVehicle = Literal["motor", "mobil"]
-Need = Literal["makan", "kesehatan", "fisik", "rekreasi", "penampilan", "rumah"]
+Need = Literal[
+    "makan", "kesehatan", "fisik", "rekreasi", "penampilan", "rumah", "kebersihan", "wc"
+]
 NEEDS = get_args(Need)
 
 
@@ -33,6 +35,8 @@ OPTIMAL_THRESHOLDS: dict[str, int] = {
     "rekreasi": 50,
     "penampilan": 50,
     "rumah": 50,
+    "kebersihan": 50,
+    "wc": 50,
 }
 
 
@@ -200,6 +204,8 @@ class Snapshot(Model):
     ojol_maintenance: bool = False
     ojol_mode: str | None = None
     trip_jemput: bool | None = None
+    kondisi: dict[str, Any] = Field(default_factory=dict)
+    bersih: dict[str, Any] = Field(default_factory=dict)
 
     def resource_value(self, resource: Resource | Need):
         return self.needs.get(resource) if resource in NEEDS else getattr(self, resource)

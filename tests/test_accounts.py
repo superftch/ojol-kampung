@@ -145,6 +145,36 @@ async def test_login_notice_import_button_keeps_original_account(managed):
     assert manager.registry.selected(111)["id"] == second.account_id
 
 
+async def test_auto_kebutuhan_menu_and_ojol_toggle(managed):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    first = manager.registry.selected(111)
+
+    # 1. Dispatch "Auto Kebutuhan" text
+    await manager.dispatch(111, "Auto Kebutuhan")
+    assert "Auto Kebutuhan · Utama" in manager.reply.call_args.args[1]
+
+    # 2. Toggle need in Auto Kebutuhan
+    await manager.dispatch(111, f"acct:{first['id']}:auto_kebutuhan:wc:0", callback=True)
+    first_dir = manager.registry.scoped_settings(first).runtime_dir
+    assert auto_flags(first_dir)["wc"] is False
+
+    # 3. Toggle Auto Ojol
+    await manager.dispatch(111, f"acct:{first['id']}:auto_ojol", callback=True)
+    assert auto_flags(first_dir)["ojol"] is False
+    assert "Auto Ojol dinonaktifkan" in manager.reply.call_args.args[1]
+
+    # 4. Turn all needs OFF
+    await manager.dispatch(111, f"acct:{first['id']}:auto_keb_all:0", callback=True)
+    assert auto_flags(first_dir)["makan"] is False
+    assert auto_flags(first_dir)["kebersihan"] is False
+
+    # 5. Turn all needs ON
+    await manager.dispatch(111, f"acct:{first['id']}:auto_keb_all:1", callback=True)
+    assert auto_flags(first_dir)["makan"] is True
+    assert auto_flags(first_dir)["kebersihan"] is True
+
+
 async def test_maintenance_schedule_is_admin_only_and_persistent(managed, monkeypatch):
     clock = datetime.fromisoformat("2026-11-11T23:00+07:00")
     monkeypatch.setattr("ojol.maintenance.now", lambda: clock)
@@ -1383,3 +1413,108 @@ async def test_dashboard_displays_all_accounts_summary_and_switches_selection(ma
 
     await manager.dispatch(111, "dashboard", callback=True)
     assert "📊 Dashboard Akun (2 Akun)" in manager.reply.call_args.args[1]
+
+
+@pytest.mark.asyncio
+async def test_study_menu_refreshes_profile_and_disables_max_tracks(managed):
+    from ojol.study import save_skills
+
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+    manager.refresh_account_profile = AsyncMock()
+    first = manager.registry.selected(111)
+    first_dir = manager.registry.scoped_settings(first).runtime_dir
+
+    skills = [
+        {"id": "administrasi", "name": "Administrasi", "level": 5, "next": {"level": 6, "library": False}},
+        {"id": "boga", "name": "Tata boga", "level": 2, "next": {"level": 3, "library": True}},
+    ]
+    save_skills(first_dir, skills)
+
+    await manager.dispatch(111, f"acct:{first['id']}:study:perpus", callback=True)
+    manager.refresh_account_profile.assert_awaited_once_with(first)
+
+    buttons = [
+        button for row in manager.reply.call_args.args[2]["inline_keyboard"] for button in row
+    ]
+    admin_btn = next(b for b in buttons if "Administrasi" in b["text"])
+    boga_btn = next(b for b in buttons if "Tata boga" in b["text"])
+
+    assert "(Maks Lv 5)" in admin_btn["text"]
+    assert admin_btn["callback_data"] == f"acct:{first['id']}:s_max:administrasi"
+    assert "(Maks" not in boga_btn["text"]
+    assert boga_btn["callback_data"] == f"acct:{first['id']}:study:perpus:boga"
+
+    # Clicking disabled max track gives warning and does not select it
+    await manager.dispatch(111, admin_btn["callback_data"], callback=True)
+    assert "mencapai level maksimal (5)" in manager.reply.call_args.args[1]
+    assert subjects(first_dir)["perpus"] is None
+
+    # Clicking valid track selects it
+    await manager.dispatch(111, boga_btn["callback_data"], callback=True)
+    assert subjects(first_dir)["perpus"] == "boga"
+
+    # Auto option exists and can be selected
+    auto_btn = next(b for b in buttons if "Auto (Pilih Otomatis)" in b["text"])
+    assert auto_btn["callback_data"] == f"acct:{first['id']}:study:perpus:auto"
+    await manager.dispatch(111, auto_btn["callback_data"], callback=True)
+    assert subjects(first_dir)["perpus"] == "auto"
+
+
+@pytest.mark.asyncio
+async def test_users_menu_and_user_menu_display_user_name_and_username(managed):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+
+    # User 1: via access request approval
+    req, _ = manager.registry.request_access(222, "Dewi Putri", "dewi_putri")
+    manager.registry.review_request(req["id"], 111, True)
+
+    # User 2: added with username only
+    manager.registry.whitelist(333, username="user_tiga")
+
+    # User 3: added without name
+    manager.registry.whitelist(444)
+
+    await manager.users_menu(111, 0)
+    buttons = [
+        btn for row in manager.reply.call_args.args[2]["inline_keyboard"] for btn in row
+    ]
+    texts = {btn["callback_data"]: btn["text"] for btn in buttons}
+
+    assert texts.get("user:222") == "Dewi Putri (222) · aktif"
+    assert texts.get("user:333") == "@user_tiga (333) · aktif"
+    assert texts.get("user:444") == "444 · aktif"
+
+    # Verify user_menu shows name and username
+    await manager.user_menu(111, 222)
+    reply_text = manager.reply.call_args.args[1]
+    assert "👤 Pengguna 222" in reply_text
+    assert "Nama • Dewi Putri" in reply_text
+    assert "Username • @dewi_putri" in reply_text
+    assert "Akses • aktif" in reply_text
+
+    await manager.user_menu(111, 444)
+    reply_no_name = manager.reply.call_args.args[1]
+    assert "Nama • -" in reply_no_name
+    assert "Username • -" in reply_no_name
+
+
+@pytest.mark.asyncio
+async def test_dispatch_updates_user_profile_and_persists_name(managed):
+    manager = MultiAccountService(managed)
+    manager.reply = AsyncMock()
+
+    manager.registry.whitelist(222)
+    user_before = next(u for u in manager.registry.users() if u["telegram_id"] == 222)
+    assert user_before["name"] == ""
+
+    # Dispatch interaction with Telegram profile
+    await manager.dispatch(
+        222,
+        "Akun Saya",
+        profile={"id": 222, "first_name": "Budi", "last_name": "Santoso", "username": "budis"},
+    )
+    user_after = next(u for u in manager.registry.users() if u["telegram_id"] == 222)
+    assert user_after["name"] == "Budi Santoso"
+    assert user_after["username"] == "budis"

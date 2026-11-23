@@ -9,6 +9,8 @@ AUTO_LABELS = {
     "kesehatan": "Kesehatan",
     "fisik": "Fisik",
     "rekreasi": "Rekreasi",
+    "kebersihan": "Kebersihan",
+    "wc": "Buang air",
     "penampilan": "Penampilan",
     "rumah": "Kondisi rumah",
     "kebun": "Kebun & kolam",

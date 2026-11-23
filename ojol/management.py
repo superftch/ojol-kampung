@@ -15,6 +15,7 @@ from .identity import save_profile, verified_profile
 from .maintenance import GAME_COMMANDS, SCHEDULE_FILE, MaintenanceWindow, held_window, read_window
 from .models import NEEDS
 from .study import (
+    AUTO_SUBJECT,
     STUDY_LABELS,
     SUBJECTS,
     cached_skills,
@@ -309,7 +310,15 @@ class MultiAccountService:
         row = self.registry.get(identifier, owner)
         selected = self.registry.selected(owner)
         buttons = [
-            [{"text": "Auto", "callback_data": f"acct:{identifier}:auto"}],
+            [
+                {"text": "Auto Ojol", "callback_data": f"acct:{identifier}:auto_ojol"},
+                {"text": "Auto Kebutuhan", "callback_data": f"acct:{identifier}:auto_kebutuhan"},
+            ],
+            [
+                {"text": "Status Ojol", "callback_data": f"acct:{identifier}:status_ojol"},
+                {"text": "Status Kebutuhan", "callback_data": f"acct:{identifier}:status_kebutuhan"},
+            ],
+            [{"text": "Semua Auto", "callback_data": f"acct:{identifier}:auto"}],
             [
                 {"text": "Arsipkan Akun", "callback_data": "archive:" + identifier},
             ],
@@ -326,6 +335,127 @@ class MultiAccountService:
             f"Akun terpilih • {selected['name'] if selected else 'belum ada'}\n"
             "Pilih pengaturan akun di bawah.",
             {"inline_keyboard": buttons},
+        )
+
+    async def auto_ojol_toggle(self, owner, account):
+        directory = self.registry.scoped_settings(account).runtime_dir
+        flags = auto_flags(directory)
+        new_val = not flags.get("ojol")
+        set_auto_flag(directory, "ojol", new_val)
+        status_str = "ON" if new_val else "OFF"
+        icon = "✅" if new_val else "⏹"
+        msg = f"{icon} Auto Ojol · {account['name']} • {status_str}\n\n"
+        if new_val:
+            msg += "Auto Ojol diaktifkan (mengurus trip, kondisi mesin, bensin, dan kuota)."
+        else:
+            msg += "Auto Ojol dinonaktifkan. Fitur auto kebutuhan tetap berjalan sesuai pengaturan."
+        await self.reply(
+            owner,
+            msg,
+            {
+                "inline_keyboard": [
+                    [
+                        {
+                            "text": "Auto Kebutuhan",
+                            "callback_data": f"acct:{account['id']}:auto_kebutuhan",
+                        },
+                        {"text": "Status Ojol", "callback_data": f"acct:{account['id']}:status_ojol"},
+                    ],
+                    [{"text": "Akun Saya", "callback_data": "accounts:0"}],
+                ]
+            },
+        )
+
+    async def auto_keb_all(self, owner, account, action):
+        directory = self.registry.scoped_settings(account).runtime_dir
+        val = action.split(":", 1)[1] == "1"
+        for key in NEEDS:
+            set_auto_flag(directory, key, val)
+        await self.auto_kebutuhan_menu(owner, account)
+
+    async def auto_kebutuhan_menu(self, owner, account, action="auto_kebutuhan"):
+        directory = self.registry.scoped_settings(account).runtime_dir
+        parts = action.split(":")
+        confirmation = ""
+        if len(parts) == 3 and parts[1] in AUTO_LABELS and parts[2] in {"0", "1"}:
+            if parts[1] in STUDY_LABELS and parts[2] == "1" and not subjects(directory)[parts[1]]:
+                await self.study_menu(owner, account, f"study:{parts[1]}")
+                return
+            set_auto_flag(directory, parts[1], parts[2] == "1")
+            enabled = parts[2] == "1"
+            confirmation = f"✅ {AUTO_LABELS[parts[1]]} • {'ON' if enabled else 'OFF'}\n\n"
+        flags = auto_flags(directory)
+        identifier = account["id"]
+        choices = subjects(directory)
+        skills = cached_skills(directory)
+        skills_by_id = {t["id"]: t for t in skills if isinstance(t, dict)} if skills else {}
+
+        need_keys = [k for k in NEEDS if k in AUTO_LABELS]
+        need_buttons = [
+            {
+                "text": f"{AUTO_LABELS[k]} {'ON' if flags[k] else 'OFF'}",
+                "callback_data": f"acct:{identifier}:auto_kebutuhan:{k}:{int(not flags[k])}",
+            }
+            for k in need_keys
+        ]
+        grid = []
+        for i in range(0, len(need_buttons), 2):
+            grid.append(need_buttons[i : i + 2])
+        grid.append(
+            [
+                {
+                    "text": f"Kebun & kolam {'ON' if flags.get('kebun') else 'OFF'}",
+                    "callback_data": f"acct:{identifier}:auto_kebutuhan:kebun:{int(not flags.get('kebun'))}",
+                }
+            ]
+        )
+        for mode in STUDY_LABELS:
+            subj_name = (
+                "Auto (Pilih Otomatis)"
+                if choices[mode] == AUTO_SUBJECT
+                else SUBJECTS.get(choices[mode], "belum dipilih")
+            )
+            is_max = (
+                choices[mode]
+                and choices[mode] != AUTO_SUBJECT
+                and is_track_max(skills_by_id.get(choices[mode]), mode)
+            )
+            grid.append(
+                [
+                    {
+                        "text": f"Bidang {'Perpus' if mode == 'perpus' else 'Kuliah'}: {subj_name}{' (Maks)' if is_max else ''}",
+                        "callback_data": f"acct:{identifier}:study:{mode}",
+                    }
+                ]
+            )
+        grid.append(
+            [
+                {"text": "Semua ON", "callback_data": f"acct:{identifier}:auto_keb_all:1"},
+                {"text": "Semua OFF", "callback_data": f"acct:{identifier}:auto_keb_all:0"},
+            ]
+        )
+        grid.append(
+            [
+                {
+                    "text": "Status Kebutuhan",
+                    "callback_data": f"acct:{identifier}:status_kebutuhan",
+                },
+                {"text": "Akun Saya", "callback_data": "accounts:0"},
+            ]
+        )
+        summary = "\n".join(
+            f"{AUTO_LABELS[k]} • {'ON' if flags[k] else 'OFF'} (target {self.settings.threshold_for(k)}%)"
+            for k in need_keys
+        )
+        await self.reply(
+            owner,
+            f"🍲 Auto Kebutuhan · {account['name']}\n\n"
+            + confirmation
+            + summary
+            + "\n\n"
+            + "Kebutuhan otomatis diisi saat nilai di bawah target.\n"
+            + "Tekan tombol untuk mengubah status per kebutuhan.",
+            {"inline_keyboard": grid},
         )
 
     async def auto_menu(self, owner, account, action="auto"):
@@ -381,7 +511,7 @@ class MultiAccountService:
                     *[
                         [
                             {
-                                "text": f"Bidang {'Perpus' if mode == 'perpus' else 'Kuliah'}: {SUBJECTS.get(choices[mode], 'belum dipilih')}{' (Maks)' if choices[mode] and is_track_max(skills_by_id.get(choices[mode]), mode) else ''}",
+                                "text": f"Bidang {'Perpus' if mode == 'perpus' else 'Kuliah'}: {'Auto (Pilih Otomatis)' if choices[mode] == AUTO_SUBJECT else SUBJECTS.get(choices[mode], 'belum dipilih')}{' (Maks)' if choices[mode] and choices[mode] != AUTO_SUBJECT and is_track_max(skills_by_id.get(choices[mode]), mode) else ''}",
                                 "callback_data": f"acct:{identifier}:study:{mode}",
                             }
                         ]
@@ -398,14 +528,25 @@ class MultiAccountService:
             raise ValueError("Pilihan belajar tidak valid.")
         mode = parts[1]
         directory = self.registry.scoped_settings(account).runtime_dir
+        if len(parts) == 2:
+            await self.refresh_account_profile(account)
         skills = cached_skills(directory)
         skills_by_id = {t["id"]: t for t in skills if isinstance(t, dict)} if skills else {}
         if len(parts) == 3:
             track = parts[2]
+            if track == AUTO_SUBJECT:
+                set_subject(directory, mode, AUTO_SUBJECT)
+                await self.auto_menu(owner, account)
+                return
             track_info = skills_by_id.get(track)
             if track_info and is_track_max(track_info, mode):
                 reason = (
-                    "sudah maksimal di perpustakaan"
+                    "sudah mencapai batas maksimal (keahlian 5)"
+                    if (
+                        track_info.get("level", 0) >= 5
+                        or (track_info.get("next") or {}).get("level", 0) > 5
+                    )
+                    else "sudah maksimal di perpustakaan"
                     if mode == "perpus"
                     else "sudah mencapai level maksimal"
                 )
@@ -434,16 +575,29 @@ class MultiAccountService:
             await self.auto_menu(owner, account)
             return
         selected = subjects(directory)[mode]
+        auto_check = "✓ " if selected == AUTO_SUBJECT else ""
+        auto_button = [
+            {
+                "text": f"{auto_check}🔄 Auto (Pilih Otomatis)",
+                "callback_data": f"acct:{account['id']}:study:{mode}:{AUTO_SUBJECT}",
+            }
+        ]
         buttons = []
         for key, label in SUBJECTS.items():
             track_info = skills_by_id.get(key)
             is_max = is_track_max(track_info, mode) if track_info else False
-            tag = " (Maks)" if is_max else ""
+            lvl_text = f" Lv {track_info.get('level')}" if track_info and "level" in track_info else ""
+            tag = f" (Maks{lvl_text})" if is_max else (f" ({lvl_text.strip()})" if lvl_text else "")
             check = "✓ " if selected == key else ""
+            callback_data = (
+                f"acct:{account['id']}:s_max:{key}"
+                if is_max
+                else f"acct:{account['id']}:study:{mode}:{key}"
+            )
             buttons.append(
                 {
                     "text": f"{check}{label}{tag}",
-                    "callback_data": f"acct:{account['id']}:study:{mode}:{key}",
+                    "callback_data": callback_data,
                 }
             )
         await self.reply(
@@ -451,9 +605,11 @@ class MultiAccountService:
             f"📚 {STUDY_LABELS[mode]} · {account['name']}\n\n"
             "Pilih bidang untuk sesi belajar berikutnya. Kuis bacaan dikerjakan otomatis.\n"
             "Pilihan disimpan per akun; aktifkan ON dari menu Auto setelah memilih.\n"
+            "Mode Auto Otomatis akan memilih bidang belajar yang belum maksimal secara otomatis.\n"
             "Bidang yang sudah maksimal tidak dapat dipilih.",
             {
                 "inline_keyboard": [
+                    auto_button,
                     *[buttons[index : index + 2] for index in range(0, len(buttons), 2)],
                     [{"text": "Kembali ke Auto", "callback_data": f"acct:{account['id']}:auto"}],
                 ]
@@ -524,7 +680,21 @@ class MultiAccountService:
             status = (
                 "admin" if uid == self.registry.admin else "aktif" if user["enabled"] else "dicabut"
             )
-            buttons.append([{"text": f"{uid} · {status}", "callback_data": f"user:{uid}"}])
+            name = (user.get("name") or "").strip()
+            username = (user.get("username") or "").strip()
+            display_name = (
+                f"@{username}"
+                if (not name or name == "Tanpa nama") and username
+                else name
+                if name and name != "Tanpa nama"
+                else (f"@{username}" if username else "")
+            )
+            if display_name:
+                short_name = display_name[:24] + ("…" if len(display_name) > 24 else "")
+                label = f"{short_name} ({uid}) · {status}"
+            else:
+                label = f"{uid} · {status}"
+            buttons.append([{"text": label, "callback_data": f"user:{uid}"}])
         navigation = []
         if page:
             navigation.append({"text": "◀ Sebelumnya", "callback_data": f"admin:users:{page - 1}"})
@@ -556,9 +726,13 @@ class MultiAccountService:
                 ]
             )
         buttons.append([{"text": "Daftar User", "callback_data": "admin:users:0"}])
+        name = user.get("name") if user.get("name") and user.get("name") != "Tanpa nama" else "-"
+        username = f"@{user['username']}" if user.get("username") else "-"
         await self.reply(
             owner,
             f"👤 Pengguna {uid}\n\n"
+            f"Nama • {name}\n"
+            f"Username • {username}\n"
             f"Akses • {'admin' if uid == self.registry.admin else 'aktif' if enabled else 'dicabut'}\n"
             f"Akun • {len(self.registry.list(uid))} dari {self.registry.quota(uid)} slot terpakai\n\n"
             "Pilih tindakan di bawah.",
@@ -710,6 +884,13 @@ class MultiAccountService:
             return
         async with self.lock:
             try:
+                if profile and profile.get("id") == owner:
+                    name = " ".join(
+                        str(profile.get(key) or "") for key in ("first_name", "last_name")
+                    ).strip()
+                    username = str(profile.get("username") or "").strip()
+                    if name or username:
+                        self.registry.update_user_profile(owner, name=name, username=username)
                 if not self.registry.allowed(owner):
                     await self.public_access(owner, text.strip(), callback, profile or {})
                     return
@@ -905,7 +1086,7 @@ class MultiAccountService:
             self.pending.pop(owner, None)
             await self.dashboard(owner)
             return
-        if text == "Auto" and not callback:
+        if text in {"Auto", "Semua Auto"} and not callback:
             self.pending.pop(owner, None)
             account = self.registry.selected(owner)
             if account is None:
@@ -914,6 +1095,26 @@ class MultiAccountService:
                 )
             else:
                 await self.auto_menu(owner, account)
+            return
+        if text == "Auto Kebutuhan" and not callback:
+            self.pending.pop(owner, None)
+            account = self.registry.selected(owner)
+            if account is None:
+                await self.reply(
+                    owner, "Belum ada akun terpilih. Tekan Tambah Akun atau Akun Saya."
+                )
+            else:
+                await self.auto_kebutuhan_menu(owner, account)
+            return
+        if text == "Auto Ojol" and not callback:
+            self.pending.pop(owner, None)
+            account = self.registry.selected(owner)
+            if account is None:
+                await self.reply(
+                    owner, "Belum ada akun terpilih. Tekan Tambah Akun atau Akun Saya."
+                )
+            else:
+                await self.auto_ojol_toggle(owner, account)
             return
         # Telegram sends /start when Start is pressed; users never need to type a command.
         if (not callback and text in {"/start", "Bantuan", "Menu Utama", "Batal"}) or (
@@ -1039,11 +1240,34 @@ class MultiAccountService:
                 self.pending.pop(owner, None)
                 await self.study_menu(owner, account, action)
                 return
+            if action.startswith("s_max:"):
+                self.pending.pop(owner, None)
+                key = action.split(":", 1)[1]
+                label = SUBJECTS.get(key, key)
+                await self.reply(
+                    owner,
+                    f"⚠️ Bidang {label} sudah mencapai level maksimal (5) dan tidak dapat dipilih lagi.",
+                )
+                return
             if action == "auto" or action.startswith("auto:"):
                 self.pending.pop(owner, None)
                 await self.auto_menu(owner, account, action)
                 return
-            if action.startswith("mode:"):
+            if action == "auto_kebutuhan" or action.startswith("auto_kebutuhan:"):
+                self.pending.pop(owner, None)
+                await self.auto_kebutuhan_menu(owner, account, action)
+                return
+            if action.startswith("auto_keb_all:"):
+                self.pending.pop(owner, None)
+                await self.auto_keb_all(owner, account, action)
+                return
+            if action == "auto_ojol":
+                self.pending.pop(owner, None)
+                await self.auto_ojol_toggle(owner, account)
+                return
+            if action in {"status_kebutuhan", "status_ojol"}:
+                command = "status_kebutuhan" if action == "status_kebutuhan" else "status"
+            elif action.startswith("mode:"):
                 mode = action.split(":", 1)[1]
                 if mode not in {"kendara", "otomatis"}:
                     return
@@ -1057,7 +1281,7 @@ class MultiAccountService:
                 )
                 return
             if (
-                action != "import_cookie"
+                action not in {"import_cookie", "status_kebutuhan", "status_ojol"}
                 and not re.fullmatch(r"profit:\d{4}-\d{2}-\d{2}", action)
                 and command is None
             ):
@@ -1112,6 +1336,7 @@ class MultiAccountService:
         cursor = self.settings.runtime_dir / "telegram-offset"
         offset = int(cursor.read_text()) if cursor.exists() else 0
         outage = None
+        last_outage_notice = 0
         async with TelegramClient(self.settings) as api:
             while not self.closing:
                 try:
@@ -1144,15 +1369,19 @@ class MultiAccountService:
                                     else message.get("text", ""),
                                     bool(callback),
                                     profile=profile,
-                                )
+                                    )
                         offset = max(offset, update["update_id"] + 1)
                         cursor.write_text(str(offset))
                 except (TelegramError, OSError, ValueError) as exc:
                     retryable = isinstance(exc, TelegramError) and exc.retryable
-                    if outage is None or outage != retryable:
+                    now_ts = time.time()
+                    if (outage is None or outage != retryable) and (
+                        not retryable or now_ts - last_outage_notice >= 900
+                    ):
                         queue_error(
                             self.hub.settings, exc, "telegram.poll", stop_worker=not retryable
                         )
+                        last_outage_notice = now_ts
                         if not retryable:
                             await asyncio.gather(
                                 *(s.stop_worker() for s in self.services.values()),

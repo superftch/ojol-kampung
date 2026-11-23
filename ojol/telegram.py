@@ -28,6 +28,11 @@ BUTTON_COMMANDS = {
     "Hentikan Kebutuhan": "stop_kebutuhan",
     "Lanjutkan": "resume",
     "Status": "status",
+    "Status Ojol": "status",
+    "Status Kebutuhan": "status_kebutuhan",
+    "Auto": "auto",
+    "Auto Ojol": "auto_ojol",
+    "Auto Kebutuhan": "auto_kebutuhan",
     "Laba Bersih": "profit",
     "Cari Rumah Kotor": "cleanup_scan",
     "Cari Rumah Mampir": "visit_scan",
@@ -45,7 +50,8 @@ def keyboard_main():
     return _kb(
         [
             [{"text": "Dashboard"}, {"text": "Status"}],
-            [{"text": "Akun Saya"}, {"text": "Auto"}],
+            [{"text": "Status Ojol"}, {"text": "Status Kebutuhan"}],
+            [{"text": "Akun Saya"}, {"text": "Auto Kebutuhan"}],
             [{"text": "Jalankan Ojol"}, {"text": "Hentikan Ojol"}],
             [{"text": "Jalankan Kebutuhan"}, {"text": "Hentikan Kebutuhan"}],
             [{"text": "Import Cookie"}],
@@ -70,9 +76,10 @@ def keyboard_status():
     return _kb(
         [
             [{"text": "Dashboard"}, {"text": "Laba Bersih"}],
+            [{"text": "Status Ojol"}, {"text": "Status Kebutuhan"}],
             [{"text": "Jalankan Ojol"}, {"text": "Hentikan Ojol"}],
             [{"text": "Jalankan Kebutuhan"}, {"text": "Hentikan Kebutuhan"}],
-            [{"text": "Auto"}, {"text": "Menu Utama"}],
+            [{"text": "Auto Kebutuhan"}, {"text": "Menu Utama"}],
         ]
     )
 
@@ -569,6 +576,9 @@ async def flush_notices(settings, client=None):
                 )
             except TelegramError:
                 data["attempts"] += 1
+                if data.get("context", {}).get("stage") == "telegram.poll":
+                    claimed.rename(path.with_suffix(".muted"))
+                    break
                 data["next_attempt"] = time.time() + min(300, 2 ** min(data["attempts"], 8))
                 claimed.write_text(json.dumps(data, ensure_ascii=False))
                 claimed.rename(path)

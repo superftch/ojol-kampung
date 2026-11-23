@@ -402,7 +402,8 @@ class Controller:
             await self.human_pause()
             await self.ui.buy(plan.product, before.wallet, current, self.settings.min_balance)
             self.stage = f"purchase.verify.{resource}"
-            tolerance = Decimal(0) if is_need else Decimal("0.015")
+            tolerance = Decimal("0.02")
+            price = plan.product.price
             after = await self.verify(
                 lambda state: (
                     (
@@ -410,8 +411,14 @@ class Controller:
                         or (current == 100 and (state.resource_value(resource) or 0) >= 100)
                     )
                     and (
-                        abs((before.wallet - state.wallet) - plan.product.price) <= tolerance
-                        or (plan.product.price == Decimal(0) and state.wallet >= before.wallet)
+                        abs((before.wallet - state.wallet) - price) <= tolerance
+                        or (
+                            price == Decimal(0)
+                            and (
+                                state.wallet >= before.wallet - tolerance
+                                or (state.resource_value(resource) or 0) > current
+                            )
+                        )
                     )
                 )
             )
@@ -616,11 +623,25 @@ class Controller:
                     continue
                 if (
                     flags.get("ojol")
-                    and ("mitra Ojol" in str(exc) or "ojol" in getattr(exc, "path", "").lower())
+                    and (
+                        "mitra Ojol" in str(exc)
+                        or "ojol" in str(getattr(exc, "path", "")).lower()
+                        or "ojol" in str(exc).lower()
+                    )
                     and self.handle_ojol_failure(exc)
                 ):
                     continue
                 raise
+            ojol_err = getattr(self.ui, "ojol_failure_error", None) or getattr(
+                getattr(self.ui, "api", None), "ojol_failure_error", None
+            )
+            if ojol_err and flags.get("ojol"):
+                if hasattr(self.ui, "ojol_failure_error"):
+                    self.ui.ojol_failure_error = None
+                if hasattr(getattr(self.ui, "api", None), "ojol_failure_error"):
+                    self.ui.api.ojol_failure_error = None
+                if self.handle_ojol_failure(ojol_err):
+                    flags = auto_flags(self.settings.runtime_dir)
             if is_global_maint:
                 self.state = previous
                 self.snapshot_received_at = previous_received_at
@@ -698,8 +719,13 @@ class Controller:
                 else:
                     deferred = set()
                     while step.action == "maintain":
-                        if await self.purchase(self.state, step.resource):
-                            break
+                        try:
+                            if await self.purchase(self.state, step.resource):
+                                break
+                        except RuntimeError as exc:
+                            if flags.get("ojol") and self.handle_ojol_failure(exc):
+                                break
+                            raise
                         deferred.add(step.resource)
                         step = next_step(self.state, self.settings, deferred=deferred)
                     if step.action == "maintain":
@@ -732,16 +758,21 @@ class Controller:
                         and value < self.settings.threshold_for(need)
                         and time.monotonic() >= self.need_retry_at.get(need, 0)
                         and (
-                            self.state.wallet >= Decimal(20)
-                            or need in {"fisik", "kesehatan", "makan"}
+                            not flags["ojol"]
+                            or self.state.wallet >= Decimal(20)
+                            or need in {"fisik", "kesehatan", "makan", "kebersihan", "wc", "penampilan"}
                         )
                     ),
                     key=self.state.needs.__getitem__,
                     default=None,
                 )
                 if need is not None:
+                    try:
+                        purchased = await self.purchase(self.state, need)
+                    except RuntimeError:
+                        purchased = False
                     if (
-                        not await self.purchase(self.state, need)
+                        not purchased
                         and auto_flags(self.settings.runtime_dir)[need]
                     ):
                         self.need_retry_at[need] = time.monotonic() + 300

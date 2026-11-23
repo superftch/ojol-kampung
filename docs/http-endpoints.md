@@ -30,7 +30,9 @@ Setiap request ke `https://www.kampungsebelah.com` kini menyertakan header brows
 | GET `/api/ojol` | `vehicle` default, `vehicles` tersedia, `bars` dan `pakai` bersama, mitra, trip, tarif, payout/history, sisa jam narik harian (maksimal 12 jam per hari pada mode otomatis) | HTTP200 13 November 2026 dengan `vehicle: "mobil"`, `vehicles: ["motor", "mobil"]`, dan konsumsi `bensin: 5`, `kendaraan: 2`, `kuota: 4`. Update #15 tanggal 19 November 2026: batas narik maksimal 8 jam/hari. Update #16 tanggal 20 November 2026: batas narik maksimal naik menjadi 12 jam/hari (`narikMaksMenit: 720`, reset 00.00 WIB) dan ongkos dasar naik 0.4 koin (`kabarTarif`). Mode berkendara (`kendara`) memiliki `tanpa_batas: true` (tidak dibatasi kuota 12 jam harian maupun istirahat wajib). |
 | GET `/api/kendaraan` | `items[]`, termasuk `family`, `listrik`, dan `name` | Bundle `3tkrjjmq3rsag.js` dan HTTP200 13 November 2026 dengan Motor bebek dan Mobil listrik |
 | GET `/api/game/me` | `balanceMilli`, `configVersion`, rumah/desa, `profile.nickname`, `profile.resting`, `profile.sleep` | HTTP200 historis; nickname dan saldo teramati lagi saat validasi Browser Harness 19 November 2026; field tidur dicocokkan dengan bundle client tersimpan pada 12 November 2026 |
-| GET `/api/kebutuhan` | `asleep`, status kebutuhan aktif, nilai per kebutuhan, dan kandidat tempat fisik | HTTP 200 untuk status kebutuhan. Bentuk kandidat fasilitas berasal dari bundle client. |
+| GET `/api/kebutuhan` | `asleep`, status kebutuhan aktif (`makan`, `kesehatan`, `fisik`, `rekreasi`, `kebersihan`, `wc`, `penampilan`, `bensin`, `kendaraan`, `kuota`, `rumah`), status `kondisi` (`bau`, `kebelet`, `upahPotongBps`), kuota harian `bersih` (`mandi`, `sikat`, `mandiMaks`, `sikatMaks`), dan kandidat tempat | HTTP 200 untuk status kebutuhan. Live verifikasi 23 November 2026 membuktikan `kebersihan` dan `wc`: kondisi `bau: true` dan `kebelet: true` memotong upah ojol 10% (`upahPotongBps: 1000`). Kuota mandi maks 2x dan sikat gigi maks 3x per hari. |
+| GET `/api/rumah/interior` | Data interior rumah akun: `plotId`, `mandi` (level fasilitas kamar mandi), `rak` (persediaan sabun, pasta, dll.) | Bundle client `14kftr3gt-5o6.js` dan GET live terotorisasi 23 November 2026. |
+| POST `/api/rumah/kamar-mandi` | Aksi kamar mandi rumah: `{"aksi": "wc"}` (buang air, mengisi wc ke 100, gratis, menghilangkan status kebelet); `{"aksi": "mandi"}` (mandi, kebersihan +65 pakai sabun / +20 tanpa sabun, maks 2x/hari, menghilangkan bau); `{"aksi": "sikat"}` (sikat gigi, kebersihan +35 pakai pasta / +10 tanpa pasta, maks 3x/hari); `{"aksi": "cuci"}` (cuci tangan, kebersihan +5); `{"beli": "sabun"|"pasta", "requestId"}` (beli persediaan rak: sabun 1 koin/10x, pasta 1 koin/15x) | Bundle client `14kftr3gt-5o6.js` dan POST live terotorisasi 23 November 2026. |
 | GET `/api/time` | waktu server untuk arrival/countdown | HTTP200 |
 | GET `/api/daily/house?plotId={plotId}` | Baca status kunjungan akun ke rumah kandidat; harus `visitedToday: false` | Bundle client dan HTTP200 pada 12 November 2026 |
 | GET `/api/rumah/interior/lihat?plotId={plotId}` | Pastikan server mengizinkan akses rumah sekarang sebelum menawarkan kandidat mampir | Bundle client terbaru dan GET terotorisasi pada 12 November 2026: HTTP403 `FORBIDDEN` ketika tutup; HTTP200 dengan `bentuk` string dan `layout` array pada akses yang diizinkan |
@@ -340,5 +342,24 @@ Inspeksi statis bundle `0wwcgg-bq-sxa.js` (komponen UI `#ks-kebun`, fungsi `a6`)
 - Siklus state kebun:
   1. `"siap"`: Hasil kebun/kolam sudah matang dan siap dipanen. Request `POST /api/daily/garden/{id}` dengan body `{"action": "panen"}` memanen item ke tas. Jumlah hasil panen adalah `cared ? caredYield : yield`.
   2. `"tumbuh"`: Tanaman/ikan sedang bertumbuh sampai timestamp `readyAt`. Bila `cared: false`, dapat dirawat/disiram satu kali lewat `POST /api/daily/garden/{id}` dengan body `{"action": "rawat"}` untuk meningkatkan hasil panen. Bila sudah dirawat (`cared: true`), kebun menunggu hingga waktu `readyAt` tiba (beralih ke state `"siap"`).
+
+## Kebutuhan Kebersihan, Buang Air (WC), dan Penampilan (23 November 2026)
+
+Inspeksi bundle aktif `14kftr3gt-5o6.js`, `026npiqik_trk.js`, dan uji live terotorisasi 23 November 2026:
+1. **Status Kebutuhan dan Dampak Upah**:
+   - `/api/kebutuhan` memuat kebutuhan `kebersihan` dan `wc`.
+   - `kondisi` memuat `bau: true` saat kebersihan 0 dan `kebelet: true` saat wc 0.
+   - Status bau atau kebelet menyebabkan penalti upah Ojol sebesar 10% (`upahPotongBps: 1000`).
+2. **Kamar Mandi Rumah (`POST /api/rumah/kamar-mandi`)**:
+   - `{"aksi": "wc"}`: Buang air di kloset kamar mandi rumah sendiri. Mengembalikan `{"isi": 100, "wc": 100, "cuciSampai": ..., "detik": 5}`. Mengisi penuh kebutuhan buang air (100) dan menghapus status kebelet. Gratis.
+   - `{"aksi": "mandi"}`: Mandi di kamar mandi. Menghapus status bau. Efek +65 (dengan sabun) atau +20 (tanpa sabun). Kuota maks 2x sehari (`bersih.mandi < bersih.mandiMaks`).
+   - `{"aksi": "sikat"}`: Sikat gigi di wastafel kamar mandi. Efek +35 (dengan pasta) atau +10 (tanpa pasta). Kuota maks 3x sehari (`bersih.sikat < bersih.sikatMaks`).
+   - `{"aksi": "cuci"}`: Cuci tangan. Efek +5.
+   - `{"beli": "sabun"|"pasta", "requestId"}`: Beli persediaan sabun batang (1 koin / 10x) atau pasta gigi (1 koin / 15x) ke rak kamar mandi.
+3. **Penampilan (Barbershop)**:
+   - Di desa `kampung-sebelah`, barbershop fallback tersedia di plot `S09-U09` ("Cukur Sisi Jalan", id usaha `57458327-df64-483f-8904-0ec40bfc28fe`).
+   - Layanan: `potong-rambut` (+60 penampilan, 1 koin), `cukur-jenggot` (+30, 0.5 koin), `keramas` (+25, 0.5 koin), `semir-rambut` (+40, 1.5 koin).
+   - Pembelian melalui `POST /api/shops/{businessId}/buy` dengan body `{"item": "potong-rambut", "requestId": ...}` terbukti live menaikkan penampilan dari 0 ke 60.
+
   3. `"kosong"`: Lahan belum ditanami. Request `POST /api/daily/garden/{id}` dengan body `{"action": "tanam"}` menanam bibit baru dengan biaya `seedMilli` jika saldo koin mencukupi.
 - Manajemen cooldown: Saat ada kebun/kolam dalam kondisi `"tumbuh"` dan sudah dirawat (`cared: true`), cooldown worker dijadwalkan berdasarkan nilai terkecil dari `readyAt` yang akan datang sehingga worker tidak melakukan polling berulang sebelum panen siap.

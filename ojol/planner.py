@@ -310,6 +310,7 @@ def select_need(
             not is_sppg_fasum,
             not is_rec_fasum,
             is_streak_exhausted,
+            not shop.preferred,
             plan.total_cost / points,
             plan.projected_percent < thresh,
             plan.total_cost,
@@ -326,6 +327,8 @@ def select_need(
             if shop.category != "fasum":
                 continue
         elif shop.category == "fasum" and resource in {"kesehatan", "makan", "rekreasi"}:
+            pass
+        elif shop.category == "kamar-mandi" and resource in {"kebersihan", "wc"}:
             pass
         elif not shop.preferred and not allow_fallback:
             continue

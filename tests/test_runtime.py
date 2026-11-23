@@ -1111,3 +1111,236 @@ async def test_ojol_stop_step_keeps_auto_kebutuhan_running(settings, state, shop
         assert flags["makan"] is True
     finally:
         journal.close()
+
+
+async def test_ojol_refill_failure_keeps_auto_kebutuhan_running(settings, state, shop_preview):
+    from ojol.auto_settings import auto_flags, set_auto_flag
+
+    set_auto_flag(settings.runtime_dir, "ojol", True)
+    set_auto_flag(settings.runtime_dir, "makan", True)
+
+    before_refill = state.model_copy(
+        update={
+            "phase": "idle",
+            "data": 10,  # Below reserve (maintain triggered for data)
+            "fuel": 80,
+            "condition": 80,
+            "needs": {"makan": 30},
+        }
+    )
+    after_makan = before_refill.model_copy(
+        update={
+            "wallet": before_refill.wallet - Decimal("0.8"),
+            "needs": {"makan": 80},
+        }
+    )
+
+    product = Product(
+        name="Nasi bungkus",
+        price="0.8",
+        effects={"makan": 50},
+        row_text="makan row",
+        enabled=True,
+    )
+    makan_shop = shop_preview([product]).model_copy(update={"name": "Akademis.ai Warung"})
+
+    snap_calls = 0
+
+    async def dynamic_snapshot():
+        nonlocal snap_calls
+        snap_calls += 1
+        if snap_calls <= 2:
+            return before_refill
+        return after_makan
+
+    async def dynamic_preview(resource):
+        if resource == "data":
+            return []  # No data product available (triggers refill failure)
+        return [makan_shop]
+
+    ui = SimpleNamespace(
+        snapshot=dynamic_snapshot,
+        preview_shops=AsyncMock(side_effect=dynamic_preview),
+        buy=AsyncMock(),
+        job_click=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.wait = AsyncMock(side_effect=StopRequested("selesai refill failure test"))
+
+        with pytest.raises(StopRequested):
+            await controller.run()
+
+        # Data failed to refill, which disabled Auto Ojol
+        flags = auto_flags(settings.runtime_dir)
+        assert flags["ojol"] is False
+        assert flags["makan"] is True
+
+        # But Auto Kebutuhan (makan) still proceeded and bought food!
+        ui.buy.assert_awaited_once()
+    finally:
+        journal.close()
+
+
+async def test_need_purchase_and_reconcile_with_tolerance_and_free_action(settings, state):
+    from datetime import timedelta
+    from decimal import Decimal
+    from ojol.reconciliation import reconcile
+
+    journal = Journal(settings.runtime_dir)
+    try:
+        run_id = journal.start(settings)
+        # 1. Test need purchase with small wallet rounding
+        before_state = state.model_copy(update={"needs": {"makan": 20}, "wallet": Decimal("50.00")})
+        # After state: makan increased to 70, wallet decreased by 9.99 (price 10.00, 0.01 tolerance)
+        after_state = before_state.model_copy(
+            update={
+                "needs": {"makan": 70},
+                "wallet": Decimal("40.01"),
+                "observed_at": before_state.observed_at + timedelta(seconds=5),
+            }
+        )
+        payload = {
+            "resource": "makan",
+            "product": {"name": "Nasi Goreng", "price": "10.00"},
+            "shop": "Warung",
+        }
+        action_id = journal.begin(run_id, "purchase", before_state, payload)
+        ui = SimpleNamespace(
+            snapshot=AsyncMock(return_value=after_state),
+            check_cancel=lambda: None,
+        )
+        resolved_state = await reconcile(ui, journal)
+        assert resolved_state is not None
+        assert not journal.unresolved()
+        row = journal.db.execute("SELECT status FROM actions WHERE id=?", (action_id,)).fetchone()
+        assert row["status"] == "verified"
+
+        # 2. Test free bathroom action (price 0) where resource increases even if wallet has tiny float delta
+        before_wc = state.model_copy(update={"needs": {"wc": 0}, "wallet": Decimal("50.00")})
+        after_wc = before_wc.model_copy(
+            update={
+                "needs": {"wc": 100},
+                "wallet": Decimal("49.99"),
+                "observed_at": before_wc.observed_at + timedelta(seconds=5),
+            }
+        )
+        payload_wc = {
+            "resource": "wc",
+            "product": {"name": "WC", "price": "0"},
+            "shop": "Kamar Mandi",
+        }
+        wc_action_id = journal.begin(run_id, "purchase", before_wc, payload_wc)
+        ui_wc = SimpleNamespace(
+            snapshot=AsyncMock(return_value=after_wc),
+            check_cancel=lambda: None,
+        )
+        resolved_wc = await reconcile(ui_wc, journal)
+        assert resolved_wc is not None
+        assert not journal.unresolved()
+        row_wc = journal.db.execute("SELECT status FROM actions WHERE id=?", (wc_action_id,)).fetchone()
+        assert row_wc["status"] == "verified"
+    finally:
+        journal.close()
+
+
+def test_select_need_strictly_prioritizes_akademis_ai_and_picks_most_worth_it(settings, state):
+    from ojol.models import ShopPreview
+    from ojol.planner import select_need
+
+    test_state = state.model_copy(
+        update={
+            "needs": {"makan": 30, "kesehatan": 70, "rekreasi": 40},
+            "wallet": Decimal("50.0"),
+        }
+    )
+
+    fallback_shop = ShopPreview(
+        id="warung-asing",
+        plot_id="J23-U01",
+        name="Warung Asing Non-Akademis",
+        category="restoran",
+        distance_squared=1,
+        products=[
+            Product(
+                name="Nasi Polos",
+                price=Decimal("0.2"),
+                effects={"makan": 20},
+                row_text=json.dumps({"shop": "warung-asing", "item": "nasi"}),
+                enabled=True,
+            )
+        ],
+    )
+
+    akademis_shop_1 = ShopPreview(
+        id="akademis-resto",
+        plot_id="K40-U04",
+        name="Akademis.ai Restaurant",
+        category="restoran",
+        distance_squared=10,
+        products=[
+            Product(
+                name="Paket Hemat",
+                price=Decimal("0.8"),
+                effects={"makan": 40},
+                row_text=json.dumps({"shop": "akademis-resto", "item": "hemat"}),
+                enabled=True,
+            ),
+            Product(
+                name="Paket Kenyang Bahagia",
+                price=Decimal("1.0"),
+                effects={"makan": 50, "rekreasi": 30},
+                row_text=json.dumps({"shop": "akademis-resto", "item": "kenyang"}),
+                enabled=True,
+            ),
+        ],
+    )
+
+    akademis_shop_2 = ShopPreview(
+        id="akademis-pecel",
+        plot_id="O39-U01",
+        name="Akademis.ai Pecel Lele & Ayam",
+        category="lamongan",
+        distance_squared=15,
+        products=[
+            Product(
+                name="Paket Pecel Lele Komplit",
+                price=Decimal("1.0"),
+                effects={"makan": 50, "rekreasi": 30},
+                row_text=json.dumps({"shop": "akademis-pecel", "item": "pecel"}),
+                enabled=True,
+            ),
+        ],
+    )
+
+    # 1. Akademis.ai MUST be Priority 1 over fallback even if fallback is cheaper
+    selection = select_need(
+        test_state,
+        "makan",
+        [fallback_shop, akademis_shop_1],
+        settings,
+        spent=Decimal(0),
+        last_purchases={},
+        allow_fallback=True,
+    )
+    assert selection is not None
+    shop, plan = selection
+    assert shop.preferred is True
+    assert shop.id == "akademis-resto"
+    # And among products in Akademis.ai, the most worth it (Paket Kenyang Bahagia) is selected
+    assert plan.product.name == "Paket Kenyang Bahagia"
+
+    # 2. Fair rotation among Akademis.ai shops: if akademis-resto was visited recently, akademis-pecel is picked
+    selection_rotated = select_need(
+        test_state,
+        "makan",
+        [akademis_shop_1, akademis_shop_2],
+        settings,
+        spent=Decimal(0),
+        last_purchases={"akademis-resto": 100},
+    )
+    assert selection_rotated is not None
+    shop_rot, plan_rot = selection_rotated
+    assert shop_rot.id == "akademis-pecel"
+    assert plan_rot.product.name == "Paket Pecel Lele Komplit"

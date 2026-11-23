@@ -14,9 +14,11 @@ from ojol.http_api import HttpCoreError
 from ojol.journal import Journal
 from ojol.reconciliation import reconcile
 from ojol.study import (
+    AUTO_SUBJECT,
     cached_skills,
     extract_quiz_bank,
     is_track_max,
+    pick_auto_track,
     run_learning,
     save_skills,
     set_subject,
@@ -96,7 +98,18 @@ def test_max_study_track_cannot_be_selected(settings):
     assert is_track_max(skills[0], "perpus") is True
     assert is_track_max(skills[0], "kuliah") is True
     assert is_track_max(skills[1], "perpus") is True
+    assert is_track_max(skills[1], "kuliah") is True
     assert is_track_max(skills[2], "perpus") is False
+    assert is_track_max(skills[2], "kuliah") is False
+
+    level_4_track = {
+        "id": "dagang",
+        "name": "Dagang",
+        "level": 4,
+        "next": {"level": 5, "library": True},
+    }
+    assert is_track_max(level_4_track, "perpus") is False
+    assert is_track_max(level_4_track, "kuliah") is False
 
     # Max track cannot be selected
     with pytest.raises(ValueError, match="sudah mencapai batas maksimal"):
@@ -105,9 +118,14 @@ def test_max_study_track_cannot_be_selected(settings):
     with pytest.raises(ValueError, match="sudah mencapai batas maksimal"):
         set_subject(settings.runtime_dir, "perpus", "administrasi")
 
+    with pytest.raises(ValueError, match="sudah mencapai batas maksimal"):
+        set_subject(settings.runtime_dir, "kuliah", "administrasi")
+
     # Non-max track can be selected
     set_subject(settings.runtime_dir, "perpus", "boga")
     assert subjects(settings.runtime_dir)["perpus"] == "boga"
+    set_subject(settings.runtime_dir, "kuliah", "boga")
+    assert subjects(settings.runtime_dir)["kuliah"] == "boga"
 
 
 @pytest.mark.parametrize("mode", ["perpus", "kuliah"])
@@ -278,3 +296,76 @@ async def test_learning_can_start_next_day_after_persisted_cooldown(settings, st
         assert await run_learning(restarted)
         assert ui.study_start.await_count == 2
         assert Decimal(journal.profit()["pengeluaran"]) == 8
+
+
+def test_pick_auto_track_selection_logic():
+    tracks = [
+        {"id": "administrasi", "level": 5, "next": None},
+        {"id": "boga", "level": 2, "next": {"level": 3, "library": True}},
+        {"id": "mengajar", "level": 1, "next": {"level": 2, "library": True}},
+        {"id": "dagang", "level": 0, "next": {"level": 1, "library": True}},
+    ]
+    # administrasi is max; boga is level 2 (highest in-progress < 5)
+    assert pick_auto_track(tracks, "perpus") == "boga"
+    assert pick_auto_track(tracks, "kuliah") == "boga"
+
+    # When boga becomes max
+    tracks[1]["level"] = 5
+    tracks[1]["next"] = None
+    assert pick_auto_track(tracks, "kuliah") == "mengajar"
+
+    # Pending track is skipped
+    tracks[2]["pending"] = {"level": 2}
+    assert pick_auto_track(tracks, "kuliah") == "dagang"
+
+    # study_tracks restricts options
+    assert pick_auto_track(tracks, "kuliah", study_tracks=["administrasi"]) is None
+    assert pick_auto_track(tracks, "kuliah", study_tracks=["dagang"]) == "dagang"
+
+    # All max returns None
+    tracks[3]["level"] = 5
+    tracks[3]["next"] = None
+    assert pick_auto_track(tracks, "kuliah") is None
+
+
+def test_set_subject_supports_auto(settings):
+    set_subject(settings.runtime_dir, "perpus", AUTO_SUBJECT)
+    set_subject(settings.runtime_dir, "kuliah", AUTO_SUBJECT)
+    assert subjects(settings.runtime_dir) == {"perpus": "auto", "kuliah": "auto"}
+
+
+@pytest.mark.asyncio
+async def test_run_learning_auto_mode_skips_max_and_picks_available_track(settings, state):
+    set_subject(settings.runtime_dir, "kuliah", AUTO_SUBJECT)
+    set_auto_flag(settings.runtime_dir, "kuliah", True)
+    ui, status, receipt = study_ui(state)
+    status["tracks"] = [
+        {"id": "administrasi", "level": 5, "next": None, "pending": None},
+        {"id": "boga", "level": 2, "next": {"level": 3, "library": True}, "pending": None},
+    ]
+    with closing(Journal(settings.runtime_dir)) as journal:
+        c = Controller(ui, settings, journal, journal.start(settings))
+        c.state = state
+        assert await run_learning(c)
+        assert ui.study_start.await_count == 1
+        call_args = ui.study_start.call_args.args
+        assert call_args[0] == "kuliah"
+        assert call_args[1] == "boga"
+        action = journal.history()["actions"][0]
+        assert json.loads(action["payload"])["track"] == "boga"
+
+
+@pytest.mark.asyncio
+async def test_run_learning_auto_mode_defers_when_all_tracks_max(settings, state):
+    set_subject(settings.runtime_dir, "kuliah", AUTO_SUBJECT)
+    set_auto_flag(settings.runtime_dir, "kuliah", True)
+    ui, status, _ = study_ui(state)
+    status["tracks"] = [
+        {"id": "administrasi", "level": 5, "next": None, "pending": None},
+        {"id": "boga", "level": 5, "next": None, "pending": None},
+    ]
+    with closing(Journal(settings.runtime_dir)) as journal:
+        c = Controller(ui, settings, journal, journal.start(settings))
+        c.state = state
+        assert not await run_learning(c)
+        ui.study_start.assert_not_awaited()

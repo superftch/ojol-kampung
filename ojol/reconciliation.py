@@ -247,17 +247,17 @@ async def reconcile(ui, journal, error_id=None, action_id=None):
         if action["kind"] == "purchase":
             resource = payload["resource"]
             previous, current = before.resource_value(resource), state.resource_value(resource)
-            tolerance = Decimal(0) if resource in NEEDS else Decimal("0.015")
+            tolerance = Decimal("0.02")
+            price = Decimal(payload["product"]["price"])
             valid = (
                 previous is not None
                 and current is not None
                 and (current > previous or (previous == 100 and current >= 100))
                 and (
-                    abs(before.wallet - state.wallet - Decimal(payload["product"]["price"]))
-                    <= tolerance
+                    abs(before.wallet - state.wallet - price) <= tolerance
                     or (
-                        Decimal(payload["product"]["price"]) == Decimal(0)
-                        and state.wallet >= before.wallet
+                        price == Decimal(0)
+                        and (state.wallet >= before.wallet - tolerance or current > previous)
                     )
                 )
             )
