@@ -1789,9 +1789,16 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             document.getElementById('presenceVal').innerText = sum.online ? '🟢 Online' : '⚪ Offline';
 
             // Realtime Countdown State
+            const oldPhase = currentPhase;
             currentPhase = sum.phase || snap.phase || null;
             const rawRem = sum.remaining_seconds != null ? sum.remaining_seconds : (snap.remaining_seconds != null ? snap.remaining_seconds : null);
-            currentRemainingSeconds = (rawRem !== null && !isNaN(rawRem)) ? Math.max(0, parseInt(rawRem)) : null;
+            const serverSec = (rawRem !== null && !isNaN(rawRem)) ? Math.max(0, parseInt(rawRem)) : null;
+
+            if (serverSec === null) {{
+                currentRemainingSeconds = null;
+            }} else if (currentRemainingSeconds === null || oldPhase !== currentPhase || Math.abs(currentRemainingSeconds - serverSec) > 3) {{
+                currentRemainingSeconds = serverSec;
+            }}
 
             const cdElem = document.getElementById('countdownVal');
             if (cdElem) {{
@@ -1808,6 +1815,12 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 }} else {{
                     cdElem.innerText = '-';
                 }}
+            }}
+
+            if (currentPhase === 'delivering' && currentRemainingSeconds !== null && currentRemainingSeconds > 0) {{
+                const m = Math.floor(currentRemainingSeconds / 60);
+                const s = currentRemainingSeconds % 60;
+                document.getElementById('statusTitle').innerText = `Mengantar order (${{m}}:${{s < 10 ? '0' : ''}}${{s}})`;
             }}
 
             // Notice Card if Limit is Reached

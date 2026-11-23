@@ -601,6 +601,22 @@ class ControlService:
             pass
 
         phase = state.get("phase")
+        rem = state.get("remaining_seconds")
+        if phase == "delivering" and type(rem) is int and rem > 0:
+            arrive_at = state.get("arrive_at")
+            if arrive_at:
+                try:
+                    from datetime import datetime
+                    target_time = datetime.fromisoformat(str(arrive_at).replace("Z", "+00:00"))
+                    rem = max(0, int((target_time - now()).total_seconds()))
+                except Exception:
+                    if observed:
+                        elapsed = int((now() - observed).total_seconds())
+                        rem = max(0, rem - elapsed)
+            elif observed:
+                elapsed = int((now() - observed).total_seconds())
+                rem = max(0, rem - elapsed)
+
         if not has_cookie:
             status_text = "Belum hubungkan cookie"
             icon = "⚪"
@@ -609,7 +625,6 @@ class ControlService:
             icon = "⚠️"
         elif active:
             if phase == "delivering":
-                rem = state.get("remaining_seconds")
                 time_str = f" ({rem // 60}:{rem % 60:02d})" if rem is not None else ""
                 status_text = f"Mengantar order{time_str}"
                 icon = "🟢"
@@ -654,7 +669,7 @@ class ControlService:
             "has_cookie": has_cookie,
             "cookie_valid": cookie_valid,
             "phase": phase,
-            "remaining_seconds": state.get("remaining_seconds"),
+            "remaining_seconds": rem,
             "trip": state.get("trip"),
             "sleep_schedule": state.get("sleep_schedule"),
             "icon": icon,
