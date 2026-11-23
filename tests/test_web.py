@@ -58,8 +58,8 @@ def test_telegram_widget_verification():
 
 
 def test_web_auth_registration_approval_flow(settings):
-    # Setting with admin chat id
-    admin_settings = settings.model_copy(update={"telegram_chat_id": 999})
+    # Setting with admin chat id and telegram enabled
+    admin_settings = settings.model_copy(update={"telegram_chat_id": 999, "telegram_enabled": True})
     registry = Accounts(admin_settings)
 
     # 1. Register new user -> status pending
@@ -143,7 +143,7 @@ def test_telegram_code_login_and_connect_flow(settings):
 
 def test_web_routes_and_dashboard_api(settings, monkeypatch):
     admin_settings = settings.model_copy(
-        update={"telegram_chat_id": 111, "telegram_bot_token": "mock-token"}
+        update={"telegram_chat_id": 111, "telegram_bot_token": "mock-token", "telegram_enabled": True}
     )
     manager = MultiAccountService(admin_settings)
     manager.start = AsyncMock()

@@ -116,9 +116,9 @@ class WebAuth:
             if existing:
                 raise ValueError("Username sudah terdaftar. Silakan pilih username lain.")
 
-            # If no admin configured and no web users yet, first user can be admin
+            # If no approved admin exists in web_users yet and Telegram is disabled, first user becomes admin
             total_users = db.execute("SELECT COUNT(*) FROM web_users").fetchone()[0]
-            if total_users == 0 and not self.accounts.admin:
+            if total_users == 0 and not (self.accounts.admin and self.accounts.settings.telegram_enabled):
                 status = "approved"
                 role = "admin"
             else:
