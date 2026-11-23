@@ -658,7 +658,94 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         .stat-label {{ font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }}
         .stat-val {{ font-size: 20px; font-weight: 700; color: var(--text); margin-top: 2px; }}
 
-        /* Buttons & Actions */
+        /* Unified Control Toolbar */
+        .control-toolbar {{
+            background: linear-gradient(180deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.8) 100%);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 12px 18px;
+            margin-bottom: 24px;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+        }}
+        .toolbar-group-wrap {{
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 20px;
+        }}
+        .control-group {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }}
+        .control-group-title {{
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            white-space: nowrap;
+        }}
+        .btn-segment-group {{
+            display: inline-flex;
+            background: #0b1120;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 8px;
+            padding: 3px;
+            gap: 3px;
+        }}
+        .btn-segment-group .btn {{
+            padding: 7px 15px;
+            font-size: 13px;
+            font-weight: 600;
+            border-radius: 6px;
+            border: 1px solid transparent;
+            background: transparent;
+            color: var(--text-muted);
+            transition: all 0.15s ease;
+        }}
+        .btn-segment-group .btn:hover:not(:disabled) {{
+            color: var(--text);
+            background: rgba(255, 255, 255, 0.07);
+        }}
+        .btn-segment-group .btn.active-run {{
+            background: var(--primary) !important;
+            color: #ffffff !important;
+            box-shadow: 0 1px 4px rgba(59, 130, 246, 0.4);
+        }}
+        .btn-segment-group .btn.active-stop {{
+            background: #ef4444 !important;
+            color: #ffffff !important;
+            box-shadow: 0 1px 4px rgba(239, 68, 68, 0.4);
+        }}
+        .btn-segment-group .btn.active-needs {{
+            background: var(--purple) !important;
+            color: #ffffff !important;
+            box-shadow: 0 1px 4px rgba(139, 92, 246, 0.4);
+        }}
+        .toolbar-utilities {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+        .btn-utility {{
+            padding: 8px 14px;
+            font-size: 13px;
+            font-weight: 500;
+            background: #1e293b;
+            color: var(--text);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            transition: all 0.15s ease;
+        }}
+        .btn-utility:hover:not(:disabled) {{
+            background: #293548;
+            border-color: #475569;
+        }}
         .action-bar {{
             display: flex;
             flex-wrap: wrap;
@@ -1360,16 +1447,33 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 </div>
             </div>
 
-            <!-- Primary Action Buttons -->
-            <div class="action-bar">
-                <button id="btnRunOjol" class="btn btn-primary" onclick="controlAction('run')">▶️ Jalankan Ojol</button>
-                <button id="btnStopOjol" class="btn btn-danger" onclick="controlAction('stop')">⏹️ Hentikan Ojol</button>
-                <button id="btnRunNeeds" class="btn btn-purple" onclick="controlAction('run-needs')">🔄 Jalankan Kebutuhan</button>
-                <button id="btnStopNeeds" class="btn btn-secondary" onclick="controlAction('stop-needs')">⏹️ Hentikan Kebutuhan</button>
-                <button class="btn btn-secondary" onclick="openModal('cookieModal')">🍪 Import Cookie</button>
-                <a href="/api/extension/download" class="btn btn-warning" style="background:#f59e0b; color:#0f172a; font-weight:600;">📦 Download Extension</a>
-                <button class="btn btn-secondary" onclick="openModal('extensionModal')">🧩 Panduan Extension</button>
-                <button id="btnRefreshDash" class="btn btn-secondary" onclick="manualRefreshDashboard()">🔄 Refresh</button>
+            <!-- Unified Control Toolbar -->
+            <div class="control-toolbar">
+                <div class="toolbar-group-wrap">
+                    <!-- Ojol Order Automation -->
+                    <div class="control-group">
+                        <span class="control-group-title">🛵 Order Ojol</span>
+                        <div class="btn-segment-group">
+                            <button id="btnRunOjol" class="btn" onclick="controlAction('run')">▶️ Jalankan</button>
+                            <button id="btnStopOjol" class="btn" onclick="controlAction('stop')">⏹️ Hentikan</button>
+                        </div>
+                    </div>
+
+                    <!-- Character Needs Automation -->
+                    <div class="control-group">
+                        <span class="control-group-title">🍲 Kebutuhan</span>
+                        <div class="btn-segment-group">
+                            <button id="btnRunNeeds" class="btn" onclick="controlAction('run-needs')">🔄 Jalankan</button>
+                            <button id="btnStopNeeds" class="btn" onclick="controlAction('stop-needs')">⏹️ Hentikan</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right Utility Actions -->
+                <div class="toolbar-utilities">
+                    <button class="btn btn-utility" onclick="openModal('cookieModal')" title="Perbarui cookie game">🍪 Ganti Cookie</button>
+                    <button id="btnRefreshDash" class="btn btn-utility" onclick="manualRefreshDashboard()" title="Segarkan status dashboard">🔄 Refresh</button>
+                </div>
             </div>
 
             <!-- Grid: Kendaraan & Kebutuhan -->
@@ -2292,6 +2396,41 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 document.getElementById('studySubjectSelect').value = data.study_subject;
             }}
 
+            // Update active state in control toolbar buttons
+            const isWorkerActive = Boolean(sum.active);
+            const curPhase = sum.phase || (snap ? snap.phase : '');
+
+            const btnRun = document.getElementById('btnRunOjol');
+            const btnStop = document.getElementById('btnStopOjol');
+            const btnRunN = document.getElementById('btnRunNeeds');
+            const btnStopN = document.getElementById('btnStopNeeds');
+
+            if (btnRun && btnStop) {{
+                if (isWorkerActive && (curPhase === 'delivering' || curPhase === 'searching' || curPhase === 'sleeping' || curPhase === 'standby')) {{
+                    btnRun.classList.add('active-run');
+                    btnStop.classList.remove('active-stop');
+                }} else if (!isWorkerActive) {{
+                    btnRun.classList.remove('active-run');
+                    btnStop.classList.add('active-stop');
+                }} else {{
+                    btnRun.classList.remove('active-run');
+                    btnStop.classList.remove('active-stop');
+                }}
+            }}
+
+            if (btnRunN && btnStopN) {{
+                if (isWorkerActive && curPhase === 'idle') {{
+                    btnRunN.classList.add('active-needs');
+                    btnStopN.classList.remove('active-stop');
+                }} else if (!isWorkerActive) {{
+                    btnRunN.classList.remove('active-needs');
+                    btnStopN.classList.remove('active-stop');
+                }} else {{
+                    btnRunN.classList.remove('active-needs');
+                    btnStopN.classList.remove('active-stop');
+                }}
+            }}
+
             // Logs
             const logBox = document.getElementById('logConsole');
             if (data.logs && data.logs.length) {{
@@ -2368,8 +2507,8 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 targetBtn.innerHTML = '<span class="btn-spinner"></span> Sedang memproses...';
             }}
 
-            // Disable all buttons in action-bar to prevent spam
-            const allActionBtns = document.querySelectorAll('.action-bar .btn');
+            // Disable all buttons in control-toolbar to prevent spam
+            const allActionBtns = document.querySelectorAll('.control-toolbar .btn, .action-bar .btn');
             allActionBtns.forEach(b => {{
                 b.disabled = true;
             }});
