@@ -689,6 +689,219 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         .btn-purple {{ background: var(--purple); color: white; }}
         .btn-purple:hover {{ background: #7c3aed; }}
 
+        /* Fleet Summary Section */
+        .fleet-box {{
+            background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 20px 24px;
+            margin-bottom: 24px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+        }}
+        .fleet-header {{
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: space-between;
+            align-items: center;
+            gap: 12px;
+            margin-bottom: 16px;
+            padding-bottom: 14px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+        }}
+        .fleet-title-wrap {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }}
+        .fleet-icon {{
+            width: 42px;
+            height: 42px;
+            border-radius: 12px;
+            background: rgba(59, 130, 246, 0.15);
+            border: 1px solid rgba(59, 130, 246, 0.3);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 22px;
+        }}
+        .fleet-title {{
+            font-size: 17px;
+            font-weight: 700;
+            color: var(--text);
+        }}
+        .fleet-subtitle {{
+            font-size: 13px;
+            color: var(--text-muted);
+        }}
+        .fleet-badges {{
+            display: flex;
+            gap: 8px;
+            align-items: center;
+            flex-wrap: wrap;
+        }}
+        .fleet-badge {{
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 5px 12px;
+            border-radius: 20px;
+            font-size: 12px;
+            font-weight: 600;
+            background: rgba(15, 23, 42, 0.8);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+        }}
+        .fleet-badge.badge-running {{
+            background: rgba(16, 185, 129, 0.15);
+            border-color: rgba(16, 185, 129, 0.3);
+            color: #34d399;
+        }}
+
+        .fleet-stats-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+            margin-bottom: 18px;
+        }}
+        .fleet-stat-card {{
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.06);
+            border-radius: 10px;
+            padding: 14px 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            transition: border-color 0.2s;
+        }}
+        .fleet-stat-card:hover {{
+            border-color: rgba(255, 255, 255, 0.15);
+        }}
+        .fleet-stat-label {{
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+        }}
+        .fleet-stat-val {{
+            font-size: 20px;
+            font-weight: 700;
+            color: var(--text);
+        }}
+        .fleet-stat-val.text-amber {{ color: #fbbf24; }}
+        .fleet-stat-val.text-green {{ color: #34d399; }}
+        .fleet-stat-val.text-blue {{ color: #38bdf8; }}
+
+        .fleet-accounts-title {{
+            font-size: 12px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        .fleet-cards-grid {{
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+            gap: 12px;
+        }}
+        .account-fleet-card {{
+            background: rgba(15, 23, 42, 0.7);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 14px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            position: relative;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 10px;
+        }}
+        .account-fleet-card:hover {{
+            border-color: #64748b;
+            transform: translateY(-2px);
+        }}
+        .account-fleet-card.is-active-account {{
+            border-color: var(--primary);
+            background: rgba(59, 130, 246, 0.08);
+            box-shadow: 0 0 0 1px var(--primary);
+        }}
+        .afc-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }}
+        .afc-name-wrap {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 700;
+            font-size: 15px;
+            color: var(--text);
+        }}
+        .afc-tag {{
+            font-size: 10px;
+            font-weight: 700;
+            text-transform: uppercase;
+            padding: 2px 7px;
+            border-radius: 10px;
+            background: rgba(59, 130, 246, 0.2);
+            color: #60a5fa;
+            border: 1px solid rgba(59, 130, 246, 0.4);
+        }}
+        .afc-status {{
+            font-size: 12px;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }}
+        .afc-metrics {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            background: rgba(0, 0, 0, 0.25);
+            border-radius: 6px;
+            padding: 8px 10px;
+            font-size: 12px;
+        }}
+        .afc-metric-item {{
+            display: flex;
+            flex-direction: column;
+        }}
+        .afc-metric-item .m-lbl {{ font-size: 10px; color: var(--text-muted); }}
+        .afc-metric-item .m-val {{ font-weight: 700; color: var(--text); }}
+
+        .active-account-divider {{
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            margin: 28px 0 16px 0;
+        }}
+        .active-account-divider .line {{
+            flex: 1;
+            height: 1px;
+            background: var(--border);
+        }}
+        .active-account-divider .banner-tag {{
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.5px;
+            text-transform: uppercase;
+            color: #38bdf8;
+            background: rgba(56, 189, 248, 0.1);
+            border: 1px solid rgba(56, 189, 248, 0.25);
+            padding: 6px 16px;
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }}
+
         /* Grid */
         .grid-2 {{
             display: grid;
@@ -984,6 +1197,66 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
             <!-- Active Dashboard Section (Tampil saat akun sudah terhubung) -->
             <div id="activeDashboardSection">
+                <!-- TOP SECTION: Summary All Accounts (Armada) -->
+                <div class="fleet-box">
+                    <div class="fleet-header">
+                        <div class="fleet-title-wrap">
+                            <div class="fleet-icon">🌐</div>
+                            <div>
+                                <div class="fleet-title">Ringkasan Semua Akun (Armada)</div>
+                                <div class="fleet-subtitle">Total koin, trip, dan status operasional seluruh akun game Anda</div>
+                            </div>
+                        </div>
+                        <div class="fleet-badges">
+                            <span id="fleetRunningBadge" class="fleet-badge badge-running">⚡ 0 Worker Aktif</span>
+                            <span id="fleetTotalAccountsBadge" class="fleet-badge">👥 0 Akun</span>
+                        </div>
+                    </div>
+
+                    <!-- Fleet KPI Cards -->
+                    <div class="fleet-stats-grid">
+                        <div class="fleet-stat-card">
+                            <div class="fleet-stat-label">💰 Saldo Gabungan</div>
+                            <div id="fleetTotalWallet" class="fleet-stat-val text-amber">- koin</div>
+                        </div>
+                        <div class="fleet-stat-card">
+                            <div class="fleet-stat-label">📈 Penghasilan Hari Ini</div>
+                            <div id="fleetTotalIncome" class="fleet-stat-val text-green">+0 koin</div>
+                        </div>
+                        <div class="fleet-stat-card">
+                            <div class="fleet-stat-label">🛵 Trip Gabungan Hari Ini</div>
+                            <div id="fleetTotalTrips" class="fleet-stat-val text-blue">0 Trip</div>
+                        </div>
+                        <div class="fleet-stat-card">
+                            <div class="fleet-stat-label">👥 Total Armada Akun</div>
+                            <div id="fleetCountAccounts" class="fleet-stat-val">-</div>
+                        </div>
+                        <div class="fleet-stat-card">
+                            <div class="fleet-stat-label">⚡ Worker Berjalan</div>
+                            <div id="fleetCountWorkers" class="fleet-stat-val text-green">-</div>
+                        </div>
+                    </div>
+
+                    <!-- Accounts Cards Grid / Switcher -->
+                    <div class="fleet-accounts-title">
+                        <span>Pilih & Pantau Akun:</span>
+                        <span style="font-weight: normal; text-transform: none; color: #94a3b8; font-size: 11px;">Klik kartu untuk beralih kontrol akun</span>
+                    </div>
+                    <div id="fleetAccountsGrid" class="fleet-cards-grid">
+                        <!-- Populated dynamically via JS -->
+                    </div>
+                </div>
+
+                <!-- Visual Divider to Active Account Detail & Control -->
+                <div class="active-account-divider">
+                    <div class="line"></div>
+                    <div class="banner-tag">
+                        <span>🛵 DETAIL & KONTROL AKUN AKTIF:</span>
+                        <strong id="activeAccountBannerName" style="color: #fff;">-</strong>
+                    </div>
+                    <div class="line"></div>
+                </div>
+
             <!-- Hero Status Card -->
             <div class="hero-card">
                 <div class="hero-info">
@@ -1777,6 +2050,79 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 }});
             }} else {{
                 sel.innerHTML = '<option value="">Belum ada akun</option>';
+            }}
+
+            // Render All Accounts Summary (Armada)
+            const sumAll = data.all_accounts_summary || {{}};
+            const totalW = document.getElementById('fleetTotalWallet');
+            if (totalW) totalW.innerText = (sumAll.total_wallet || '0') + ' koin';
+            const totalInc = document.getElementById('fleetTotalIncome');
+            if (totalInc) totalInc.innerText = '+' + (sumAll.total_income || '0') + ' koin';
+            const totalTr = document.getElementById('fleetTotalTrips');
+            if (totalTr) totalTr.innerText = (sumAll.total_trips || 0) + ' Trip';
+            const cntAcc = document.getElementById('fleetCountAccounts');
+            if (cntAcc) cntAcc.innerText = (sumAll.total_accounts || 0) + ' Akun';
+            const cntWrk = document.getElementById('fleetCountWorkers');
+            if (cntWrk) cntWrk.innerText = (sumAll.active_workers || 0) + ' / ' + (sumAll.total_accounts || 0) + ' Berjalan';
+            const runBdg = document.getElementById('fleetRunningBadge');
+            if (runBdg) runBdg.innerText = '⚡ ' + (sumAll.active_workers || 0) + ' Worker Aktif';
+            const totBdg = document.getElementById('fleetTotalAccountsBadge');
+            if (totBdg) totBdg.innerText = '👥 ' + (sumAll.total_accounts || 0) + ' Akun';
+
+            // Active Account Banner Name
+            const bannerName = document.getElementById('activeAccountBannerName');
+            if (bannerName) bannerName.innerText = data.account ? data.account.name : '-';
+
+            // Render Fleet Account Cards Grid
+            const gridElem = document.getElementById('fleetAccountsGrid');
+            if (gridElem) {{
+                gridElem.innerHTML = '';
+                if (data.accounts && data.accounts.length) {{
+                    data.accounts.forEach(acc => {{
+                        const isSel = !!acc.is_selected;
+                        const card = document.createElement('div');
+                        card.className = 'account-fleet-card' + (isSel ? ' is-active-account' : '');
+                        card.onclick = () => switchAccount(acc.id);
+
+                        const statusText = acc.status_text || (acc.is_running ? 'Aktif' : 'Standby');
+                        const statusIcon = acc.icon || (acc.is_running ? '🟢' : '⚪');
+                        const walletStr = acc.wallet ? (acc.wallet + ' koin') : '-';
+                        const tripsStr = (acc.trips !== undefined && acc.trips !== null) ? acc.trips : '0';
+                        const incomeStr = acc.today_income ? ('+' + acc.today_income + ' koin') : '-';
+
+                        card.innerHTML = `
+                            <div>
+                                <div class="afc-header">
+                                    <div class="afc-name-wrap">
+                                        <span>${{statusIcon}}</span>
+                                        <span>${{acc.name}}</span>
+                                    </div>
+                                    ${{isSel ? '<span class="afc-tag">● Aktif</span>' : '<span style="font-size:11px; color:#38bdf8; text-decoration:underline;">Pilih Akun Ini</span>'}}
+                                </div>
+                                <div class="afc-status" style="margin-top:6px;">
+                                    ${{statusText}}
+                                </div>
+                            </div>
+                            <div class="afc-metrics">
+                                <div class="afc-metric-item">
+                                    <span class="m-lbl">SALDO</span>
+                                    <span class="m-val" style="color:#fbbf24;">${{walletStr}}</span>
+                                </div>
+                                <div class="afc-metric-item">
+                                    <span class="m-lbl">TRIP</span>
+                                    <span class="m-val">${{tripsStr}}</span>
+                                </div>
+                                <div class="afc-metric-item">
+                                    <span class="m-lbl">HARI INI</span>
+                                    <span class="m-val" style="color:#34d399;">${{incomeStr}}</span>
+                                </div>
+                            </div>
+                        `;
+                        gridElem.appendChild(card);
+                    }});
+                }} else {{
+                    gridElem.innerHTML = '<div style="color:var(--text-muted); font-size:13px; grid-column:1/-1;">Belum ada akun yang terdaftar.</div>';
+                }}
             }}
 
             const sum = data.summary || {{}};

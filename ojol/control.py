@@ -606,7 +606,6 @@ class ControlService:
             arrive_at = state.get("arrive_at")
             if arrive_at:
                 try:
-                    from datetime import datetime
                     target_time = datetime.fromisoformat(str(arrive_at).replace("Z", "+00:00"))
                     rem = max(0, int((target_time - now()).total_seconds()))
                 except Exception:
