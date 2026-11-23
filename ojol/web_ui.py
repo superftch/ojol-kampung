@@ -931,9 +931,9 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     <div style="background: #0f172a; border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 22px;">
                         <div style="margin-bottom: 14px;">
                             <label style="display: block; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #94a3b8; margin-bottom: 6px;">
-                                Nama Akun (Opsional)
+                                Nama Akun (Otomatis Sesuai Nickname Game)
                             </label>
-                            <input type="text" id="onboardingAccountName" placeholder="Contoh: Akun Utama / Driver 1" style="width: 100%; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 14px; outline: none;">
+                            <input type="text" id="onboardingAccountName" placeholder="Otomatis memakai Nickname karakter game (kosongkan saja)" style="width: 100%; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; outline: none;">
                         </div>
 
                         <div style="margin-bottom: 16px;">
@@ -1818,7 +1818,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         }}
 
         async function submitOnboardingCookie() {{
-            const name = (document.getElementById('onboardingAccountName')?.value || '').trim() || 'Akun Utama';
+            const name = (document.getElementById('onboardingAccountName')?.value || '').trim();
             const cookie = (document.getElementById('onboardingCookieInput')?.value || '').trim();
             if (!cookie) return alert('Silakan tempel cookie KampungSebelah terlebih dahulu.');
 
@@ -1835,7 +1835,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 }});
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || 'Gagal mengimpor cookie');
-                alert('✅ Akun berhasil dihubungkan dan cookie terverifikasi!');
+                alert(data.message || '✅ Akun berhasil dihubungkan dan cookie terverifikasi!');
                 const inp = document.getElementById('onboardingCookieInput');
                 if (inp) inp.value = '';
                 await refreshDashboard();

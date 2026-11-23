@@ -670,7 +670,8 @@ def register_web_routes(app, settings, manager=None, service=None):
             raise HTTPException(400, f"Format cookie tidak valid: {exc}")
 
         owner = registry.owner_for_user(user) if registry else 0
-        account_name = (body.get("name") or "").strip() or "Akun Utama"
+        custom_name = (body.get("name") or "").strip()
+        account_name = custom_name or "Akun Utama"
 
         cur_service = resolve_account_service(request)
         account_id = (cur_service.account_id if cur_service else None) or (
@@ -698,10 +699,22 @@ def register_web_routes(app, settings, manager=None, service=None):
         if cur_service and hasattr(cur_service, "stop_worker"):
             await cur_service.stop_worker()
         try:
-            await import_session(cur_service.settings, json.dumps(payload))
+            profile = await import_session(cur_service.settings, json.dumps(payload))
+            nickname = (profile or {}).get("nickname")
+            if registry and account_id and nickname:
+                if not custom_name or custom_name in {"Akun Utama", "Draft"}:
+                    try:
+                        registry.rename(owner, account_id, nickname)
+                    except Exception:
+                        pass
             if registry and account_id and digest:
                 registry.bind_cookie(account_id, digest)
-            return {"success": True, "message": "Cookie berhasil diimpor dan sesi terverifikasi."}
+            display_name = nickname if (nickname and not custom_name) else account_name
+            return {
+                "success": True,
+                "message": f"Cookie berhasil diimpor! Akun terhubung sebagai '{display_name}'.",
+                "nickname": nickname,
+            }
         except Exception as exc:
             raise HTTPException(400, f"Verifikasi sesi gagal: {exc}")
 
