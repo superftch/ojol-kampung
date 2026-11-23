@@ -470,10 +470,16 @@ def register_web_routes(app, settings, manager=None, service=None):
         subj_dict = subjects(directory)
         cur_subj = subj_dict.get("perpus") or subj_dict.get("kuliah") or "dagang"
 
+        from .control import NEEDS
+        enabled_needs_count = sum(1 for k in NEEDS if flags.get(k))
+
         flags_payload = dict(flags)
         flags_payload["study"] = bool(flags.get("perpus") or flags.get("kuliah"))
         flags_payload["garden"] = bool(flags.get("kebun"))
         flags_payload["auto_subject"] = (cur_subj == "auto")
+        flags_payload["needs_active"] = (enabled_needs_count > 0)
+        flags_payload["needs_count"] = enabled_needs_count
+        flags_payload["total_needs"] = len(NEEDS)
 
         # Read last logs from history or journal or status
         logs = []

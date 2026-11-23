@@ -1466,6 +1466,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                             <button id="btnRunNeeds" class="btn" onclick="controlAction('run-needs')">🔄 Jalankan</button>
                             <button id="btnStopNeeds" class="btn" onclick="controlAction('stop-needs')">⏹️ Hentikan</button>
                         </div>
+                        <span id="toolbarNeedsBadge" style="display:none; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 10px;"></span>
                     </div>
                 </div>
 
@@ -1510,6 +1511,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 <div class="card">
                     <div class="card-header">
                         <div class="card-title">🍲 Kebutuhan Karakter</div>
+                        <span id="needsCardBadge" style="font-size: 11px; padding: 3px 9px; border-radius: 6px; font-weight: 600; border: 1px solid var(--border); background: rgba(15, 23, 42, 0.6); color: var(--text-muted);">Memuat...</span>
                     </div>
                     <div class="meter-row">
                         <div class="meter-label">
@@ -2396,9 +2398,10 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 document.getElementById('studySubjectSelect').value = data.study_subject;
             }}
 
-            // Update active state in control toolbar buttons
+            // Update active state in control toolbar buttons & badges
             const isWorkerActive = Boolean(sum.active);
-            const curPhase = sum.phase || (snap ? snap.phase : '');
+            const isOjolActive = isWorkerActive && Boolean(flags.ojol);
+            const isNeedsActive = Boolean(flags.needs_active);
 
             const btnRun = document.getElementById('btnRunOjol');
             const btnStop = document.getElementById('btnStopOjol');
@@ -2406,28 +2409,69 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             const btnStopN = document.getElementById('btnStopNeeds');
 
             if (btnRun && btnStop) {{
-                if (isWorkerActive && (curPhase === 'delivering' || curPhase === 'searching' || curPhase === 'sleeping' || curPhase === 'standby')) {{
+                if (isOjolActive) {{
                     btnRun.classList.add('active-run');
                     btnStop.classList.remove('active-stop');
-                }} else if (!isWorkerActive) {{
-                    btnRun.classList.remove('active-run');
-                    btnStop.classList.add('active-stop');
                 }} else {{
                     btnRun.classList.remove('active-run');
-                    btnStop.classList.remove('active-stop');
+                    btnStop.classList.add('active-stop');
                 }}
             }}
 
             if (btnRunN && btnStopN) {{
-                if (isWorkerActive && curPhase === 'idle') {{
+                if (isNeedsActive && isWorkerActive) {{
                     btnRunN.classList.add('active-needs');
-                    btnStopN.classList.remove('active-stop');
-                }} else if (!isWorkerActive) {{
-                    btnRunN.classList.remove('active-needs');
                     btnStopN.classList.remove('active-stop');
                 }} else {{
                     btnRunN.classList.remove('active-needs');
-                    btnStopN.classList.remove('active-stop');
+                    btnStopN.classList.add('active-stop');
+                }}
+            }}
+
+            // Toolbar Needs Badge
+            const tbNeedsBadge = document.getElementById('toolbarNeedsBadge');
+            if (tbNeedsBadge) {{
+                if (isNeedsActive && isWorkerActive) {{
+                    tbNeedsBadge.style.display = 'inline-block';
+                    tbNeedsBadge.innerText = '● AKTIF';
+                    tbNeedsBadge.style.background = 'rgba(139, 92, 246, 0.2)';
+                    tbNeedsBadge.style.color = '#c084fc';
+                    tbNeedsBadge.style.border = '1px solid rgba(139, 92, 246, 0.4)';
+                }} else if (isNeedsActive && !isWorkerActive) {{
+                    tbNeedsBadge.style.display = 'inline-block';
+                    tbNeedsBadge.innerText = 'STANDBY';
+                    tbNeedsBadge.style.background = 'rgba(245, 158, 11, 0.15)';
+                    tbNeedsBadge.style.color = '#fbbf24';
+                    tbNeedsBadge.style.border = '1px solid rgba(245, 158, 11, 0.3)';
+                }} else {{
+                    tbNeedsBadge.style.display = 'inline-block';
+                    tbNeedsBadge.innerText = 'OFF';
+                    tbNeedsBadge.style.background = 'rgba(100, 116, 139, 0.15)';
+                    tbNeedsBadge.style.color = '#94a3b8';
+                    tbNeedsBadge.style.border = '1px solid rgba(100, 116, 139, 0.25)';
+                }}
+            }}
+
+            // Kebutuhan Card Header Badge
+            const needsCardBadge = document.getElementById('needsCardBadge');
+            if (needsCardBadge) {{
+                const count = flags.needs_count !== undefined ? flags.needs_count : 0;
+                const total = flags.total_needs || 8;
+                if (isWorkerActive && isNeedsActive) {{
+                    needsCardBadge.innerText = `● Auto Memantau (${{count}}/${{total}} Kebutuhan)`;
+                    needsCardBadge.style.background = 'rgba(16, 185, 129, 0.15)';
+                    needsCardBadge.style.color = '#34d399';
+                    needsCardBadge.style.border = '1px solid rgba(16, 185, 129, 0.3)';
+                }} else if (!isWorkerActive && isNeedsActive) {{
+                    needsCardBadge.innerText = `● Siap Memantau (${{count}}/${{total}} Kebutuhan)`;
+                    needsCardBadge.style.background = 'rgba(245, 158, 11, 0.15)';
+                    needsCardBadge.style.color = '#fbbf24';
+                    needsCardBadge.style.border = '1px solid rgba(245, 158, 11, 0.3)';
+                }} else {{
+                    needsCardBadge.innerText = '⚪ Auto Nonaktif';
+                    needsCardBadge.style.background = 'rgba(100, 116, 139, 0.15)';
+                    needsCardBadge.style.color = '#94a3b8';
+                    needsCardBadge.style.border = '1px solid rgba(100, 116, 139, 0.3)';
                 }}
             }}
 
@@ -2518,10 +2562,10 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || data.message || 'Gagal menjalankan aksi');
                 const cmdTitles = {{
-                    'run': 'Ojol berhasil dijalankan',
-                    'stop': 'Ojol berhasil dihentikan',
-                    'run-needs': 'Kebutuhan berhasil dijalankan',
-                    'stop-needs': 'Kebutuhan berhasil dihentikan'
+                    'run': 'Order Ojol berhasil dijalankan',
+                    'stop': 'Order Ojol berhasil dihentikan',
+                    'run-needs': 'Auto Kebutuhan aktif (memantau 8 kebutuhan karakter)',
+                    'stop-needs': 'Auto Kebutuhan dinonaktifkan'
                 }};
                 showToast('✅ ' + (cmdTitles[cmd] || 'Aksi berhasil diproses'), 'success');
                 await refreshDashboard();
