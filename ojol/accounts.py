@@ -452,11 +452,14 @@ class Accounts:
         digest = hashlib.sha256(payload["cookies"][0]["value"].encode()).hexdigest()
         with self.db() as db:
             duplicate = db.execute(
-                "SELECT 1 FROM accounts WHERE cookie_hash=? AND id<>?", (digest, identifier)
+                "SELECT id, name, archived FROM accounts WHERE cookie_hash=? AND id<>?",
+                (digest, identifier),
             ).fetchone()
         if duplicate:
+            name = duplicate["name"]
+            archived = " (sedang diarsipkan)" if duplicate["archived"] else ""
             raise ValueError(
-                "Cookie sudah terhubung ke akun lain. Pilih akun tersebut lewat Akun Saya."
+                f"Cookie sudah terhubung ke akun lain ('{name}'{archived}). Pilih akun '{name}' lewat Akun Saya."
             )
         return digest
 
