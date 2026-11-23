@@ -13,13 +13,14 @@
     autoMancing: false,
     modeNatural: true,       // Gerakan natural manusiawi: refleks acak, micro-jitter, jeda observasi
     zeroLossGuard: true,     // Proteksi anti-putus & anti-lepas tali 100%
-    autoLempar: true,
+    autoCelup: true,         // Mode Celup: kail lurus ke bawah untuk ikan besar di laut dalam
     autoSentak: true,
     autoGulung: true,
     autoSimpan: true,
     autoJual: false,
+    smartProfit: true,       // Strategi 40 slot (20 Jual + 20 Tas): Jual ikan besar (>=1.4 koin), simpan/cadangkan murah, stop saat 40/40 penuh
     autoJualTasPenuh: true,  // Jika tas ikan penuh, otomatis jual agar tangkapan tidak sia-sia
-    autoJualSampah: true,    // Otomatis jual/buang sampah (seperti Sandal Jepit)
+    autoJualSampah: true,    // Otomatis buang/jual sampah laut (Sandal jepit, dll)
     autoUmpan: true,         // Otomatis beli umpan paling worth it (Cumi / Udang) saat habis
     autoUpgrade: true,       // Otomatis beli upgrade joran & pendingin bernilai tinggi (ROI Max)
     autoNavigasi: true,      // Otomatis arahkan & kemudikan kapal ke kedalaman paling worth it sesuai umpan & joran
@@ -40,7 +41,7 @@
   let isGulungActive = false;
   let isNavigating = false;
   let navStartTime = 0;
-  let lastLemparTime = 0;
+  let lastCelupTime = 0;
   let lastCatchId = null;
   let strikePending = false;
   let castPending = false;
@@ -162,32 +163,60 @@
     }, delay);
   }
 
-  // Lempar Kail Alami: jeda manusiawi 2.2s - 3.8s antar tarikan kail
-  function scheduleNaturalLempar() {
+  // Cari tombol Celup (prioritas testid resmi, fallback pencocokan teks tombol di area pancing)
+  function findCelupButton() {
+    const byTestId = document.querySelector('[data-testid="pancing-celup"]');
+    if (byTestId) return byTestId;
+
+    const scope = document.querySelector('[data-testid="pancing"]') || document;
+    const buttons = Array.from(scope.querySelectorAll("button"));
+    return buttons.find((b) => {
+      if (b.closest("#ks-mancing-hud")) return false;
+      const txt = (b.textContent || "").trim();
+      return /\bcelup\b/i.test(txt);
+    }) || null;
+  }
+
+  function isCelupButtonReady(btn) {
+    return !!(btn && !btn.disabled && !btn.getAttribute("aria-busy"));
+  }
+
+  // Celup Kail Alami: kail lurus ke bawah untuk ikan besar di laut dalam (jeda 2.2s - 3.8s)
+  function scheduleNaturalCelup() {
     if (castPending) return;
     const now = performance.now();
     const cooldown = mancingConfig.modeNatural ? humanJitter(2200, 3800) : 1200;
-    if (now - lastLemparTime < cooldown) return;
+    if (now - lastCelupTime < cooldown) return;
 
-    const btnLempar = document.querySelector('[data-testid="pancing-lempar"]');
-    if (!btnLempar || btnLempar.disabled || btnLempar.getAttribute("aria-busy") === "lempar") return;
+    const btnCelup = findCelupButton();
+    if (!isCelupButtonReady(btnCelup)) return;
 
     castPending = true;
-    lastLemparTime = now;
+    lastCelupTime = now;
 
     setTimeout(() => {
-      const btn = document.querySelector('[data-testid="pancing-lempar"]');
-      if (btn && !btn.disabled && btn.getAttribute("aria-busy") !== "lempar") {
+      const btn = findCelupButton();
+      if (isCelupButtonReady(btn)) {
         naturalClick(btn);
       }
       castPending = false;
     }, mancingConfig.modeNatural ? humanJitter(160, 360) : 30);
   }
 
+  function getEquippedUmpanType() {
+    const btnUmpan = document.querySelector('[data-testid="pancing-umpan"]');
+    const label = (btnUmpan?.textContent || "").toLowerCase();
+    if (label.includes("cumi")) return "umpan-cumi";
+    if (label.includes("udang")) return "umpan-udang";
+    if (label.includes("cacing")) return "umpan-cacing";
+    return mancingConfig.preferredUmpan;
+  }
+
   function getActiveUmpanCost() {
-    if (mancingConfig.preferredUmpan === "umpan-cumi") return 0.50;
-    if (mancingConfig.preferredUmpan === "umpan-udang") return 0.30;
-    if (mancingConfig.preferredUmpan === "umpan-cacing") return 0.20;
+    const active = getEquippedUmpanType();
+    if (active === "umpan-cumi") return 0.50;
+    if (active === "umpan-udang") return 0.30;
+    if (active === "umpan-cacing") return 0.20;
     return 0.50;
   }
 
@@ -254,7 +283,38 @@
     return Math.round(baseMilli * (1 + bonusRatio)) / 1000;
   }
 
-  // Penanganan Hasil Tangkapan (Zero-Loss & Profit Optimization)
+  function findCatchButton(hasilCard, testIds, textRegex) {
+    const roots = hasilCard ? [hasilCard, document] : [document];
+    for (const root of roots) {
+      for (const sel of testIds) {
+        const el = root.querySelector(sel);
+        if (el && !el.closest("#ks-mancing-hud")) return el;
+      }
+    }
+    for (const root of roots) {
+      const buttons = Array.from(root.querySelectorAll("button"));
+      const match = buttons.find((b) => {
+        if (b.closest("#ks-mancing-hud")) return false;
+        return textRegex.test((b.textContent || "").trim());
+      });
+      if (match) return match;
+    }
+    return null;
+  }
+
+  function isTrashCatch(hasilCard, fishName, fishClass) {
+    const nameLower = (fishName || "").toLowerCase();
+    const classLower = (fishClass || "").toLowerCase();
+    const cardText = (hasilCard?.textContent || "").toLowerCase();
+    return (
+      nameLower.includes("sandal") ||
+      classLower.includes("sampah") ||
+      cardText.includes("sampah laut") ||
+      !!findCatchButton(hasilCard, ['[data-testid="pancing-buang"]', '[data-testid="pancing-buang-sampah"]'], /\bbuang\b/i)
+    );
+  }
+
+  // Penanganan Hasil Tangkapan (Zero-Loss & 40-Slot Smart Profit: 20 Jual + 20 Tas)
   function handleCatch(hasilCard) {
     if (lootPending) return;
 
@@ -266,7 +326,8 @@
     const fishClass = fishClassEl ? fishClassEl.textContent.trim().toLowerCase() : "";
     const key = `${fishName}-${fishWeight}`;
 
-    const sellPrice = calcFishPrice(hasilCard, fishName, fishClass, fishWeight);
+    const isTrash = isTrashCatch(hasilCard, fishName, fishClass);
+    const sellPrice = isTrash ? 0 : calcFishPrice(hasilCard, fishName, fishClass, fishWeight);
     const baitCost = getActiveUmpanCost();
     const profit = sellPrice - baitCost;
     const profitSign = profit >= 0 ? "+" : "";
@@ -312,62 +373,99 @@
     // Jeda observasi manusiawi membaca kartu ikan: 1.4s - 2.5s
     const readDelay = mancingConfig.modeNatural ? humanJitter(1400, 2500) : 500;
 
+    function executeLootClick(btn, actionType, statusTitle, statusDetail, color) {
+      if (statusTitle) updateStatusMsg(statusTitle, statusDetail, color || "#38bdf8");
+      naturalClick(btn, (clicked) => {
+        if (clicked) {
+          if (actionType === "jual") {
+            pancingProfile.jualHariIni = Math.min(pancingProfile.jualMaks, pancingProfile.jualHariIni + 1);
+          } else if (actionType === "simpan") {
+            pancingProfile.tasIkan = Math.min(pancingProfile.tasMaks, pancingProfile.tasIkan + 1);
+          }
+          updateMancingUI();
+        }
+        lootPending = false;
+        setTimeout(() => fetchPancingData(true), 1200);
+      });
+    }
+
     setTimeout(() => {
-      const btnSimpan = document.querySelector('[data-testid="pancing-simpan"]');
-      const btnJual = document.querySelector('[data-testid="pancing-jual"]');
-      const isTrash = fishName.toLowerCase().includes("sandal") || fishClass.includes("sampah");
+      const btnBuang = findCatchButton(hasilCard, ['[data-testid="pancing-buang"]', '[data-testid="pancing-buang-sampah"]'], /\bbuang\b/i);
+      const btnSimpan = findCatchButton(hasilCard, ['[data-testid="pancing-simpan"]'], /\bsimpan\b/i);
+      const btnJual = findCatchButton(hasilCard, ['[data-testid="pancing-jual"]'], /\bjual\b/i);
+      const btnMakan = findCatchButton(hasilCard, ['[data-testid="pancing-makan"]'], /\bmakan\b/i);
 
-      // 1. Jika barang sampah (Sandal Jepit) -> jual/buang agar tidak menyia-nyiakan kapasitas tas
-      if (isTrash && mancingConfig.autoJualSampah && btnJual && !btnJual.disabled) {
-        updateStatusMsg("🗑️ Sampah Ditemukan", `Menjual ${fishName} otomatis`, "#94a3b8");
-        naturalClick(btnJual, () => {
-          lootPending = false;
-          setTimeout(() => fetchPancingData(true), 1200);
-        });
-        return;
+      // 1. Barang sampah (Sandal jepit / SAMPAH LAUT) -> klik "Buang ke tempat sampah" (atau jual jika tersedia)
+      if (isTrash && mancingConfig.autoJualSampah) {
+        if (btnBuang && !btnBuang.disabled) {
+          executeLootClick(btnBuang, "buang", "🗑️ Sampah Laut", `Membuang ${fishName} ke tempat sampah`, "#94a3b8");
+          return;
+        }
+        if (btnJual && !btnJual.disabled) {
+          executeLootClick(btnJual, "buang", "🗑️ Sampah Laut", `Menjual ${fishName} otomatis`, "#94a3b8");
+          return;
+        }
       }
 
-      // 2. Jika opsi Auto Jual aktif dan jatah jual masih ada
       const sisaJual = Math.max(0, pancingProfile.jualMaks - pancingProfile.jualHariIni);
-      if (mancingConfig.autoJual && sisaJual > 0 && btnJual && !btnJual.disabled) {
-        naturalClick(btnJual, () => {
-          lootPending = false;
-          setTimeout(() => fetchPancingData(true), 1200);
-        });
-        return;
+      const sisaTas = Math.max(0, pancingProfile.tasMaks - pancingProfile.tasIkan);
+      const isHighValue = sellPrice >= 1.40; // Ikan Besar (>=1.40) & Raksasa (>=2.40): layak pakai jatah jual 20/hari
+
+      // 2. Smart Profit Strategy (20 Jual + 20 Tas):
+      //    - Ikan mahal (>=1.40 koin): Jual langsung jika jatah jual masih ada (maksimalkan omzet 20 ekor/hari)
+      //    - Ikan kecil/sedang (<1.40 koin): Simpan ke tas dulu agar jatah jual 20/hari tidak terbuang untuk ikan murah
+      //    - Jika jatah jual habis (0/20): Simpan ke 20 slot tas untuk dijual besok setelah reset 00:00 WIB
+      if (mancingConfig.smartProfit) {
+        if ((mancingConfig.autoJual || isHighValue) && sisaJual > 0 && btnJual && !btnJual.disabled) {
+          executeLootClick(
+            btnJual,
+            "jual",
+            "💰 Jual Ikan Mahal",
+            `${fishName} (${sellPrice.toFixed(2)} koin) · Sisa jual ${Math.max(0, sisaJual - 1)}/${pancingProfile.jualMaks}`,
+            "#22c55e"
+          );
+          return;
+        }
+
+        if (mancingConfig.autoSimpan && sisaTas > 0 && btnSimpan && !btnSimpan.disabled) {
+          const reason = sisaJual === 0 ? "Jatah jual habis, simpan untuk besok" : "Hemat kuota jual untuk ikan besar";
+          executeLootClick(btnSimpan, "simpan", "🎒 Simpan ke Tas", `${fishName} · ${reason}`, "#38bdf8");
+          return;
+        }
+
+        if (mancingConfig.autoJualTasPenuh && sisaJual > 0 && btnJual && !btnJual.disabled) {
+          executeLootClick(btnJual, "jual", "🎒 Tas Penuh!", `Menjual ${fishName} (Zero-Loss)`, "#eab308");
+          return;
+        }
+      } else {
+        // Mode standar (non-smart)
+        if (mancingConfig.autoJual && sisaJual > 0 && btnJual && !btnJual.disabled) {
+          executeLootClick(btnJual, "jual", "💰 Menjual Ikan", `${fishName} (+${sellPrice.toFixed(2)} koin)`, "#22c55e");
+          return;
+        }
+
+        if (mancingConfig.autoSimpan && btnSimpan && !btnSimpan.disabled) {
+          executeLootClick(btnSimpan, "simpan", "🎒 Menyimpan Ikan", `${fishName} ke tas`, "#38bdf8");
+          return;
+        }
+
+        if (mancingConfig.autoJualTasPenuh && sisaJual > 0 && btnJual && !btnJual.disabled) {
+          executeLootClick(btnJual, "jual", "🎒 Tas Penuh!", `Menjual ${fishName} (Zero-Loss)`, "#eab308");
+          return;
+        }
       }
 
-      // 3. Simpan ke tas jika tombol simpan aktif
-      if (mancingConfig.autoSimpan && btnSimpan && !btnSimpan.disabled) {
-        naturalClick(btnSimpan, () => {
-          lootPending = false;
-          setTimeout(() => fetchPancingData(true), 1200);
-        });
-        return;
-      }
-
-      // 4. Proteksi Tanpa Rugi: Jika tas penuh dan masih ada jatah jual, jual ke BUMDes
-      if (mancingConfig.autoJualTasPenuh && sisaJual > 0 && btnJual && !btnJual.disabled) {
-        updateStatusMsg("🎒 Tas Penuh!", `Menjual ${fishName} menjadi koin (Zero-Loss)`, "#eab308");
-        naturalClick(btnJual, () => {
-          lootPending = false;
-          setTimeout(() => fetchPancingData(true), 1200);
-        });
-        return;
-      }
-
-      // 5. Jika jatah jual habis dan tas penuh -> Makan ikan untuk isi energi karakter warga
-      const btnMakan = document.querySelector('[data-testid="pancing-makan"]');
+      // 3. Fallback terakhir jika tas penuh dan jatah jual habis: makan ikan agar dialog tidak macet
       if (btnMakan && !btnMakan.disabled) {
-        updateStatusMsg("🍽️ Makan Ikan", `Memakan ${fishName} (+Makan)`, "#38bdf8");
-        naturalClick(btnMakan, () => {
-          lootPending = false;
-          setTimeout(() => fetchPancingData(true), 1200);
-        });
+        executeLootClick(btnMakan, "makan", "🍽️ Makan Ikan", `Memakan ${fishName} (+Makan)`, "#38bdf8");
         return;
       }
 
-      lootPending = false;
+      // 4. Jika semua tombol aksi nonaktif/tidak ditemukan -> tunggu dengan jeda aman agar tidak spam klik
+      updateStatusMsg("⚠️ Aksi Tangkapan Tertahan", "Tombol buang/simpan/jual tidak tersedia", "#ef4444");
+      setTimeout(() => {
+        lootPending = false;
+      }, 3000);
     }, readDelay);
   }
 
@@ -429,8 +527,9 @@
 
   // Helper: Tentukan target kedalaman laut paling bernilai (ROI Maksimal) berdasarkan peralatan & umpan
   function getTargetDepth() {
-    const isCumi = mancingConfig.preferredUmpan === "umpan-cumi";
-    const isUdang = mancingConfig.preferredUmpan === "umpan-udang";
+    const activeUmpan = getEquippedUmpanType();
+    const isCumi = activeUmpan === "umpan-cumi";
+    const isUdang = activeUmpan === "umpan-udang";
 
     const hasSamudra = mancingStats.upgradeTerpasang.some(j => j.toLowerCase().includes("samudra"));
     const hasTonda = mancingStats.upgradeTerpasang.some(j => j.toLowerCase().includes("tonda"));
@@ -543,8 +642,10 @@
     return pancingProfile;
   }
 
-  async function fetchSpots() {
-    if (cachedTitik.length > 0 && (performance.now() - lastTitikFetchTime < 180000)) {
+  async function fetchSpots(forceRefresh = false) {
+    const age = performance.now() - lastTitikFetchTime;
+    const ttl = forceRefresh ? 15000 : 180000;
+    if (cachedTitik.length > 0 && age < ttl) {
       return cachedTitik;
     }
     await fetchPancingData(true);
@@ -562,11 +663,11 @@
     const scored = spots.map(s => {
       const d = calcDepth(s.x, s.z);
       const dist = Math.hypot(s.x - shipX, s.z - shipZ);
-      // Prioritas:
-      // 1. Kedalaman laut (harus >= 24m agar Kuwe GT & Barakuda terbuka, bonus besar jika >= 28m)
+      // Prioritas untuk Celup laut dalam:
+      // 1. Kedalaman laut (>= 30m agar Kuwe GT & ikan raksasa laut dalam terbuka penuh)
       // 2. Kepadatan ikan s.kaya (makin kaya ikan makin sering melompat, 5 bar hijau)
       // 3. Jarak efisien
-      const depthBonus = d >= 28 ? 160 : d >= 24 ? 100 : d >= 18 ? 40 : 0;
+      const depthBonus = d >= 30 ? 220 : d >= 28 ? 150 : d >= 24 ? 100 : d >= 18 ? 40 : 0;
       const score = (s.kaya * 300) + depthBonus - (dist * 0.05);
       return { ...s, depth: d, dist, score };
     });
@@ -701,12 +802,17 @@
     updateStatusMsg("🛒 Beli Umpan...", "Membuka toko umpan...", "#38bdf8");
 
     function proceedInShop(sheetToko) {
-      // Step 2: Pilih paket jumlah (10 pcs / 5 pcs)
+      // Step 2: Pilih paket jumlah (pilih 5 jika sisa kuota 40 slot tinggal <= 5, selain itu 10)
       setTimeout(() => {
         const qtyButtons = Array.from(sheetToko.querySelectorAll('button[role="radio"]'));
         const btn10 = qtyButtons.find(b => b.textContent.trim() === "10");
         const btn5 = qtyButtons.find(b => b.textContent.trim() === "5");
-        if (btn10) naturalClick(btn10);
+        const sisaSlot = pancingProfile.loaded
+          ? Math.max(0, pancingProfile.jualMaks - pancingProfile.jualHariIni) + Math.max(0, pancingProfile.tasMaks - pancingProfile.tasIkan)
+          : 40;
+        const preferPack5 = mancingConfig.smartProfit && sisaSlot > 0 && sisaSlot <= 5;
+        if (preferPack5 && btn5) naturalClick(btn5);
+        else if (btn10) naturalClick(btn10);
         else if (btn5) naturalClick(btn5);
 
         // Step 3: Klik tombol beli umpan target
@@ -921,23 +1027,38 @@
     }, getActionDelay(0));
   }
 
-  async function toggleAutoMancing(forceState) {
+  let stopStatusOverride = null;
+
+  async function toggleAutoMancing(forceState, customStopStatus = null) {
     const nextState = typeof forceState === "boolean" ? forceState : !mancingConfig.autoMancing;
     if (nextState) {
+      stopStatusOverride = null;
       updateStatusMsg("🔄 Sinkronisasi Data...", "Mengambil data mancing hari ini...", "#38bdf8");
       await fetchPancingData(true);
 
       const sisaJual = Math.max(0, pancingProfile.jualMaks - pancingProfile.jualHariIni);
       const sisaTas = Math.max(0, pancingProfile.tasMaks - pancingProfile.tasIkan);
 
+      if (mancingConfig.smartProfit && sisaJual === 0 && sisaTas === 0) {
+        stopStatusOverride = {
+          title: "🏆 Kuota Harian Maksimal (40/40)!",
+          detail: "20/20 terjual & 20/20 tas penuh. Nonaktifkan Smart Profit jika tetap ingin memancing.",
+          color: "#f59e0b"
+        };
+        mancingConfig.autoMancing = false;
+        updateMancingUI();
+        return;
+      }
+
       if (sisaJual === 0) {
-        updateStatusMsg("ℹ️ Jatah Jual Habis (20/20)", `Tas: ${pancingProfile.tasIkan}/${pancingProfile.tasMaks}. Ikan akan disimpan atau dimakan.`, "#f59e0b");
+        updateStatusMsg("ℹ️ Jatah Jual Habis (20/20)", `Tas: ${pancingProfile.tasIkan}/${pancingProfile.tasMaks}. Sisa ikan disimpan di tas untuk besok.`, "#f59e0b");
       } else if (sisaTas === 0) {
-        updateStatusMsg("⚠️ Tas Penuh!", `Tas ${pancingProfile.tasIkan}/${pancingProfile.tasMaks}. Jual ke BUMDes (sisa kuota ${sisaJual}).`, "#ef4444");
+        updateStatusMsg("⚠️ Tas Penuh (20/20)!", `Sisa kuota jual BUMDes: ${sisaJual} ekor. Ikan akan langsung dijual.`, "#eab308");
       } else {
-        updateStatusMsg("✅ Siap Memancing!", `Hari ini: ${pancingProfile.lempar} lempar. Sisa jual: ${sisaJual} ekor.`, "#22c55e");
+        updateStatusMsg("✅ Siap Memancing!", `Hari ini: ${pancingProfile.lempar} celup. Sisa jual: ${sisaJual}, sisa tas: ${sisaTas}.`, "#22c55e");
       }
     } else {
+      stopStatusOverride = customStopStatus;
       stopAutopilot();
       releaseGulung();
       strikePending = false;
@@ -1188,7 +1309,7 @@
             📊 Profil Mancing Hari Ini
           </div>
           <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
-            <span style="color: #94a3b8;">🎣 Lemparan:</span>
+            <span style="color: #94a3b8;">🎣 Celupan:</span>
             <b id="ks-stat-hari-ini" style="color: #38bdf8;">Memuat...</b>
           </div>
           <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
@@ -1265,8 +1386,8 @@
         <!-- Pilihan Aksi Otomatisasi -->
         <div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; font-size: 11px; color: #cbd5e1;">
           <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="checkbox" id="ks-opt-lempar" checked style="cursor: pointer;">
-            <span>🎣 Auto Lempar Kail</span>
+            <input type="checkbox" id="ks-opt-celup" checked style="cursor: pointer;">
+            <span>⬇️ Auto Celup Kail (Laut Dalam)</span>
           </label>
           <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-sentak" checked style="cursor: pointer;">
@@ -1281,8 +1402,12 @@
             <span>🎒 Auto Simpan ke Tas Ikan</span>
           </label>
           <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+            <input type="checkbox" id="ks-opt-smart-profit" checked style="cursor: pointer;">
+            <span>🧠 Smart Profit (20 Jual Besar + 20 Tas)</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-jual-penuh" checked style="cursor: pointer;">
-            <span>🪙 Auto Jual jika Tas Penuh / Sampah</span>
+            <span>🪙 Auto Jual Tas Penuh / Buang Sampah</span>
           </label>
         </div>
 
@@ -1315,10 +1440,11 @@
     document.getElementById("ks-opt-auto-umpan").onchange = (e) => mancingConfig.autoUmpan = e.target.checked;
     document.getElementById("ks-opt-auto-upgrade").onchange = (e) => mancingConfig.autoUpgrade = e.target.checked;
     document.getElementById("ks-opt-auto-navigasi").onchange = (e) => mancingConfig.autoNavigasi = e.target.checked;
-    document.getElementById("ks-opt-lempar").onchange = (e) => mancingConfig.autoLempar = e.target.checked;
+    document.getElementById("ks-opt-celup").onchange = (e) => mancingConfig.autoCelup = e.target.checked;
     document.getElementById("ks-opt-sentak").onchange = (e) => mancingConfig.autoSentak = e.target.checked;
     document.getElementById("ks-opt-gulung").onchange = (e) => mancingConfig.autoGulung = e.target.checked;
     document.getElementById("ks-opt-simpan").onchange = (e) => mancingConfig.autoSimpan = e.target.checked;
+    document.getElementById("ks-opt-smart-profit").onchange = (e) => mancingConfig.smartProfit = e.target.checked;
     document.getElementById("ks-opt-jual-penuh").onchange = (e) => {
       mancingConfig.autoJualTasPenuh = e.target.checked;
       mancingConfig.autoJualSampah = e.target.checked;
@@ -1344,7 +1470,7 @@
 
     if (pancingProfile.loaded) {
       if (statHariIniEl) {
-        statHariIniEl.textContent = `${pancingProfile.lempar} lempar · ${pancingProfile.dapat} dapat`;
+        statHariIniEl.textContent = `${pancingProfile.lempar} celup · ${pancingProfile.dapat} dapat`;
       }
       if (statTasEl) {
         const sisaTas = Math.max(0, pancingProfile.tasMaks - pancingProfile.tasIkan);
@@ -1379,7 +1505,9 @@
         btn.style.background = "linear-gradient(90deg, #16a34a, #22c55e)";
         btn.style.boxShadow = "0 4px 12px rgba(22, 163, 74, 0.35)";
         if (hud) hud.style.boxShadow = "0 8px 32px rgba(0, 0, 0, 0.55), 0 0 16px rgba(0, 229, 255, 0.25)";
-        if (statusEl) {
+        if (stopStatusOverride) {
+          updateStatusMsg(stopStatusOverride.title, stopStatusOverride.detail, stopStatusOverride.color);
+        } else if (statusEl) {
           statusEl.textContent = "⚪ Dihentikan";
           statusEl.style.color = "#94a3b8";
         }
@@ -1491,11 +1619,11 @@
       return;
     }
 
-    // 4. Fase Jalan / Diam (Siap Melempar Kail)
+    // 4. Fase Jalan / Diam (Siap Menurunkan Kail / Celup)
     if (fase === "jalan" || fase === "diam") {
       releaseGulung();
 
-      // 4a. Jika ada jendela sheet (toko / kapal / tas) sedang terbuka di layar, JANGAN LEMPAR KAIL!
+      // 4a. Jika ada jendela sheet (toko / kapal / tas) sedang terbuka di layar, JANGAN CELUP KAIL!
       if (isSheetOpen()) {
         stopAutopilot();
         const sheetToko = document.querySelector('[data-testid="pancing-toko"]');
@@ -1505,10 +1633,24 @@
         return;
       }
 
-      // 4b. Cek jika proses auto umpan atau upgrade sedang berlangsung
-      if (autoUmpanPending || autoUpgradePending) {
+      // 4b. Cek jika proses loot hasil, auto umpan, atau upgrade sedang berlangsung
+      if (lootPending || autoUmpanPending || autoUpgradePending) {
         stopAutopilot();
         return;
+      }
+
+      // 4b-2. Smart Profit Guard: Stop otomatis saat kuota 20 Jual + 20 Tas (40 ikan) penuh agar tidak rugi umpan
+      if (mancingConfig.smartProfit && pancingProfile.loaded) {
+        const sisaJual = Math.max(0, pancingProfile.jualMaks - pancingProfile.jualHariIni);
+        const sisaTas = Math.max(0, pancingProfile.tasMaks - pancingProfile.tasIkan);
+        if (sisaJual === 0 && sisaTas === 0) {
+          toggleAutoMancing(false, {
+            title: "🏆 Target 40/40 Tercapai!",
+            detail: "20/20 terjual & 20/20 tas penuh. Berhenti otomatis agar hemat umpan.",
+            color: "#22c55e"
+          });
+          return;
+        }
       }
 
       // 4c. Cek stok umpan aktif (harus > 0) dan cek pesan peringatan habis
@@ -1533,13 +1675,13 @@
         return;
       }
 
-      // 4e. Autopilot Navigasi Kapal ke Spot Paling Ramai & Paling Cuan
+      // 4e. Autopilot Navigasi Kapal ke Spot Laut Dalam Paling Ramai (kunci akurasi mode Celup)
       if (mancingConfig.autoNavigasi) {
         const sonar = getSonarData();
         const target = getTargetDepth();
         const spots = cachedTitik.length > 0 ? cachedTitik : liveShipData.titik;
-        if (spots.length === 0) {
-          fetchSpots();
+        if (spots.length === 0 || (!isNavigating && sonar.crowd === "Sepi")) {
+          fetchSpots(sonar.crowd === "Sepi");
         }
 
         const bestSpot = findBestCrowdedSpot(spots, liveShipData.x, liveShipData.z);
@@ -1549,13 +1691,10 @@
           const dz = bestSpot.z - liveShipData.z;
           const dist = Math.hypot(dx, dz);
 
-          // Cek kondisi sampai di spot yang produktif & aman:
-          // 1. Di dalam radius spot (dist <= radius * 0.65)
-          // 2. ATAU sonar sudah menunjukkan perairan "Ramai" / "Lumayan" di kedalaman yang layak
-          // 3. ATAU kedalaman optimal target telah tercapai
-          const reachedSpotRadius = dist <= Math.max(16, (bestSpot.r || 30) * 0.65);
+          // Mode Celup menurunkan kail lurus ke bawah: pastikan kedalaman target tercapai & perairan ramai
+          const reachedSpotRadius = dist <= Math.max(16, (bestSpot.r || 30) * 0.65) && sonar.depth >= target.minDepth;
           const reachedCrowdSonar = (sonar.crowd === "Ramai" || (sonar.crowd === "Lumayan" && sonar.depth >= 22)) && sonar.depth >= target.allowCrowdStopAt;
-          const reachedOptimalDepth = sonar.depth >= target.optimalDepth;
+          const reachedOptimalDepth = sonar.depth >= target.optimalDepth && sonar.crowd !== "Sepi";
 
           if (!reachedSpotRadius && !reachedCrowdSonar && !reachedOptimalDepth) {
             startAutopilotToSpot(bestSpot, liveShipData.x, liveShipData.z, liveShipData.h);
@@ -1571,8 +1710,8 @@
             return;
           }
         } else {
-          // Fallback navigasi lurus jika koordinat titik belum terambil
-          if (sonar.depth < target.minDepth && sonar.crowd !== "Ramai") {
+          // Fallback navigasi lurus ke laut dalam jika koordinat titik belum terambil
+          if (sonar.depth < target.minDepth) {
             steerShip(1, 0);
             return;
           } else if (isNavigating) {
@@ -1584,9 +1723,9 @@
         stopAutopilot();
       }
 
-      updateStatusMsg("🎣 Mempersiapkan Lemparan...", "Jeda alami mengayunkan kail...", "#38bdf8");
-      if (mancingConfig.autoLempar) {
-        scheduleNaturalLempar();
+      updateStatusMsg("⬇️ Menurunkan Kail (Celup)...", "Jeda alami mencelupkan kail ke laut dalam...", "#38bdf8");
+      if (mancingConfig.autoCelup) {
+        scheduleNaturalCelup();
       }
       return;
     }

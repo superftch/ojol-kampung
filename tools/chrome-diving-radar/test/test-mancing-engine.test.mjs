@@ -492,4 +492,132 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     assert.equal(decideLootAction({ sisaJual: 4, sisaTas: 0, autoSimpan: true, autoJual: false, autoJualTasPenuh: true }), "JUAL_BUMDES_KARENA_TAS_PENUH");
     assert.equal(decideLootAction({ sisaJual: 0, sisaTas: 0, autoSimpan: true, autoJual: false, autoJualTasPenuh: true }), "MAKAN_IKAN");
   });
+
+  await t.test("Celup mode button resolution, readiness check, and lootPending guard", () => {
+    function findCelupButton(buttons) {
+      const byTestId = buttons.find((b) => b.testId === "pancing-celup");
+      if (byTestId) return byTestId;
+      return buttons.find((b) => !b.inHud && /\bcelup\b/i.test(b.text || "")) || null;
+    }
+
+    function isCelupButtonReady(btn) {
+      return !!(btn && !btn.disabled && !btn.ariaBusy);
+    }
+
+    // Never pick Lempar even if Celup has no testid yet
+    const fallbackButtons = [
+      { testId: "pancing-lempar", text: "Lempar", disabled: false, ariaBusy: null, inHud: false },
+      { testId: null, text: "Celup", disabled: false, ariaBusy: null, inHud: false },
+      { testId: null, text: "Auto Celup", disabled: false, ariaBusy: null, inHud: true }
+    ];
+    const picked = findCelupButton(fallbackButtons);
+    assert.equal(picked.text, "Celup");
+    assert.equal(picked.inHud, false);
+    assert.equal(isCelupButtonReady(picked), true);
+
+    // Reject busy or disabled Celup button
+    assert.equal(isCelupButtonReady({ disabled: true, ariaBusy: null }), false);
+    assert.equal(isCelupButtonReady({ disabled: false, ariaBusy: "celup" }), false);
+    assert.equal(isCelupButtonReady({ disabled: false, ariaBusy: "true" }), false);
+
+    // Must block Celup while lootPending is active
+    function canProceedToCelup({ isSheetOpen, lootPending, autoUmpanPending, autoUpgradePending }) {
+      return !(isSheetOpen || lootPending || autoUmpanPending || autoUpgradePending);
+    }
+    assert.equal(canProceedToCelup({ isSheetOpen: false, lootPending: true, autoUmpanPending: false, autoUpgradePending: false }), false);
+    assert.equal(canProceedToCelup({ isSheetOpen: false, lootPending: false, autoUmpanPending: false, autoUpgradePending: false }), true);
+  });
+
+  await t.test("Celup deep-sea spot selection prioritizes >=30m and re-navigates when crowd turns Sepi", () => {
+    function calcDepth(x, z) {
+      let n = Math.min(1, Math.max(0, (-z - 10) / 630));
+      return Math.max(1.5, 2 + n * n * 18 + 20 * n + Math.sin(0.021 * x + 1.3) * Math.cos(0.017 * z) * 3 * n);
+    }
+
+    function scoreSpot(s, shipX, shipZ) {
+      const d = calcDepth(s.x, s.z);
+      const dist = Math.hypot(s.x - shipX, s.z - shipZ);
+      const depthBonus = d >= 30 ? 220 : d >= 28 ? 150 : d >= 24 ? 100 : d >= 18 ? 40 : 0;
+      return { ...s, depth: d, dist, score: (s.kaya * 300) + depthBonus - (dist * 0.05) };
+    }
+
+    const spots = [
+      scoreSpot({ x: 0, z: -495, r: 30, kaya: 0.5 }, 0, -46), // ~28m
+      scoreSpot({ x: 0, z: -560, r: 30, kaya: 0.5 }, 0, -46)  // >= 30m
+    ];
+    spots.sort((a, b) => b.score - a.score);
+    assert.ok(spots[0].depth >= 30, `Deep >=30m spot must beat ~28m spot (got ${spots[0].depth.toFixed(2)}m)`);
+
+    // Re-navigate when sonar turns Sepi even if depth >= optimalDepth (32m)
+    const minDepth = 30;
+    const optimalDepth = 32;
+    const allowCrowdStopAt = 30;
+    function shouldStopAtSpot({ dist, radius, sonarDepth, sonarCrowd }) {
+      const reachedSpotRadius = dist <= Math.max(16, (radius || 30) * 0.65) && sonarDepth >= minDepth;
+      const reachedCrowdSonar = (sonarCrowd === "Ramai" || (sonarCrowd === "Lumayan" && sonarDepth >= 22)) && sonarDepth >= allowCrowdStopAt;
+      const reachedOptimalDepth = sonarDepth >= optimalDepth && sonarCrowd !== "Sepi";
+      return reachedSpotRadius || reachedCrowdSonar || reachedOptimalDepth;
+    }
+
+    assert.equal(shouldStopAtSpot({ dist: 47, radius: 30, sonarDepth: 33, sonarCrowd: "Sepi" }), false);
+    assert.equal(shouldStopAtSpot({ dist: 10, radius: 30, sonarDepth: 30, sonarCrowd: "Ramai" }), true);
+    assert.equal(shouldStopAtSpot({ dist: 10, radius: 30, sonarDepth: 12, sonarCrowd: "Ramai" }), false);
+  });
+
+  await t.test("Trash catch ('SAMPAH LAUT' / 'Buang ke tempat sampah') and 40-slot Smart Profit strategy (20 sell + 20 bag)", () => {
+    function detectTrash({ fishName, fishClass, cardText, buttons }) {
+      const hasBuang = buttons.some((b) => /\bbuang\b/i.test(b.text || "") || b.testId === "pancing-buang");
+      return (
+        fishName.toLowerCase().includes("sandal") ||
+        fishClass.toLowerCase().includes("sampah") ||
+        cardText.toLowerCase().includes("sampah laut") ||
+        hasBuang
+      );
+    }
+
+    assert.equal(
+      detectTrash({
+        fishName: "Sandal jepit",
+        fishClass: "",
+        cardText: "SAMPAH LAUT Sandal jepit 172 g Buang ke tempat sampah",
+        buttons: [{ text: "Pamer di obrolan" }, { text: "Buang ke tempat sampah" }]
+      }),
+      true
+    );
+
+    function decideSmartLoot({ isTrash, sellPrice, sisaJual, sisaTas, smartProfit = true, autoSimpan = true, autoJualTasPenuh = true }) {
+      if (isTrash) return "BUANG";
+      const isHighValue = sellPrice >= 1.40;
+      if (smartProfit) {
+        if (isHighValue && sisaJual > 0) return "JUAL";
+        if (autoSimpan && sisaTas > 0) return "SIMPAN";
+        if (autoJualTasPenuh && sisaJual > 0) return "JUAL_TAS_PENUH";
+        return "MAKAN";
+      }
+      return autoSimpan && sisaTas > 0 ? "SIMPAN" : "JUAL";
+    }
+
+    // 1. Trash -> BUANG
+    assert.equal(decideSmartLoot({ isTrash: true, sellPrice: 0, sisaJual: 20, sisaTas: 20 }), "BUANG");
+
+    // 2. High-value fish (>= 1.40) while sell quota available -> JUAL immediately
+    assert.equal(decideSmartLoot({ isTrash: false, sellPrice: 2.50, sisaJual: 20, sisaTas: 20 }), "JUAL");
+
+    // 3. Cheap/medium fish (< 1.40) while bag has room -> SIMPAN to preserve 20 sell quota for big fish
+    assert.equal(decideSmartLoot({ isTrash: false, sellPrice: 0.80, sisaJual: 20, sisaTas: 20 }), "SIMPAN");
+
+    // 4. Cheap/medium fish when bag is full (sisaTas=0) and sell quota remains -> JUAL_TAS_PENUH (Zero-Loss)
+    assert.equal(decideSmartLoot({ isTrash: false, sellPrice: 0.80, sisaJual: 5, sisaTas: 0 }), "JUAL_TAS_PENUH");
+
+    // 5. High-value fish after 20/20 daily sells used (sisaJual=0), bag still has room -> SIMPAN for tomorrow
+    assert.equal(decideSmartLoot({ isTrash: false, sellPrice: 3.40, sisaJual: 0, sisaTas: 12 }), "SIMPAN");
+
+    // 6. Stop guard before next Celup when all 40 slots (20 sell + 20 bag) are full
+    function shouldStopForFullQuota(sisaJual, sisaTas, smartProfit) {
+      return smartProfit && sisaJual === 0 && sisaTas === 0;
+    }
+    assert.equal(shouldStopForFullQuota(0, 0, true), true);
+    assert.equal(shouldStopForFullQuota(0, 1, true), false);
+    assert.equal(shouldStopForFullQuota(1, 0, true), false);
+  });
 });

@@ -4,7 +4,7 @@ Ekstensi Chrome multi-fitur untuk minigame dan aktivitas di KampungSebelah:
 1. **👻 TPU & Pusaka Mbah Rukmi Radar (Auto-Geledah)**: HUD Live Tracker Jam Angker (23.00 - 03.00 WIB), radar 12 koordinat perabot rumah & pekarangan, transparansi server RNG (1:200), serta auto-geledah rute optimal 12 perabot.
 2. **🚗 Auto-Ojol Pro (Khusus Mode Kendarai)**: Otomatisasi ojol tanpa batas 12 jam harian, auto-pilih order tarif tertinggi (max omzet), solver SVG captcha cek 2-angka instan, proteksi retry 409 penumpang turun, dan loop otomatis.
 3. **🤿 Diving Radar & Full Auto-Pilot**: HUD Live Compass 3D, filter potensi mutiara (300 koin & 100 koin), auto-pilot berenang navigasi 3D, auto-buka kerang, dan auto-chain loop ke kerang berikutnya di `/diving`.
-4. **🎣 Auto-Mancing Pro**: Modul otomatisasi memancing lengkap di `/mancing`: auto lempar kail, auto sentak instan (< 100ms), smart tension reel control (gulung pintar anti-putus & anti-kendur), dan auto simpan/jual tangkapan.
+4. **🎣 Auto-Mancing Pro**: Modul otomatisasi memancing lengkap di `/mancing`: auto celup kail (laut dalam), auto sentak instan (< 100ms), smart tension reel control (gulung pintar anti-putus & anti-kendur), dan auto simpan/jual tangkapan.
 
 ---
 
@@ -56,7 +56,7 @@ Ekstensi Chrome multi-fitur untuk minigame dan aktivitas di KampungSebelah:
 - **🌿 Mode Gerakan Natural Manusiawi (Anti-Bot / Human Rhythm)**:
   - **Refleks Sambaran Manusia**: Jeda sentak kail diacak alami antara `220ms - 380ms` (bukan instan 0ms robot), tetap jauh di bawah batas waktu 10 detik game.
   - **Koordinat Pointer Acak**: Event klik mouse dikirim dengan koordinat $(x, y)$ acak di dalam tombol, bukan titik $(0,0)$ robotik.
-  - **Jeda Lempar Kail Alami**: Cooldown antar lemparan diacak `2.2s - 3.8s`, menyerupai jeda manusia saat mengayunkan kail dan memasang umpan.
+  - **Jeda Celup Kail Alami**: Cooldown antar celupan diacak `2.2s - 3.8s`, menyerupai jeda manusia saat menurunkan kail lurus ke laut dalam dan memasang umpan.
   - **Jeda Inspeksi Tangkapan**: Jeda `1.4s - 2.5s` sebelum menekan Simpan/Jual, mensimulasikan pemain membaca kartu nama & berat ikan.
 
 - **🛡️ Zero-Loss Engine (Pasti Untung & Anti-Rugi)**:
@@ -67,7 +67,7 @@ Ekstensi Chrome multi-fitur untuk minigame dan aktivitas di KampungSebelah:
   - **Anti-Lepas Ikan**: Otomatis menarik kail saat tegangan turun ke `58% - 63%` (game lepas jika $< 8\%$ selama $> 3.2$s).
   - **Smart Bag Fallback (Tas Penuh $\rightarrow$ Auto Jual)**: Jika tas ikan penuh sehingga tombol simpan tidak aktif, sistem otomatis beralih menjual tangkapan menjadi koin desa agar tidak ada ikan yang hangus atau terbuang.
   - **Anti-Sampah**: Otomatis menjual tangkapan sampah (seperti Sandal Jepit) untuk mengosongkan slot tas demi ikan bernilai tinggi.
-  - **Auto-Beli Umpan Paling Worth It (Zero Downtime)**: Otomatis mendeteksi saat umpan habis, membuka toko umpan, membeli paket umpan cumi (atau udang jika modal tipis), memilihnya, dan kembali melempar kail tanpa intervensi manual!
+  - **Auto-Beli Umpan Paling Worth It (Zero Downtime)**: Otomatis mendeteksi saat umpan habis, membuka toko umpan, membeli paket umpan cumi (atau udang jika modal tipis), memilihnya, dan kembali mencelupkan kail tanpa intervensi manual!
   - **Auto-Upgrade Joran & Peralatan (High-ROI Engine)**: Otomatis memeriksa dan membeli upgrade joran (Tonda / Samudra) saat saldo koin mencukupi.
 
 - **📊 Kalkulasi Matematis: Umpan & Upgrade Paling Worth It**:

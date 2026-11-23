@@ -279,6 +279,7 @@
         document.querySelector('[data-testid="pancing"]'),
         document.querySelector('[data-testid="pancing-sonar"]'),
         document.querySelector('[data-testid="pancing-gulung"]'),
+        document.querySelector('[data-testid="pancing-celup"]'),
         document.querySelector('[data-testid="pancing-lempar"]'),
         document.querySelector('[data-testid="diving-dalam"]'),
         document.querySelector('[data-testid="diving-kerang-dekat"]'),
