@@ -1670,18 +1670,19 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             }}
 
             // Meters
-            updateMeter('fuel', sum.fuel);
-            updateMeter('cond', sum.condition);
-            updateMeter('data', sum.data);
+            updateMeter('fuel', (sum && sum.fuel !== undefined) ? sum.fuel : (snap ? snap.fuel : null));
+            updateMeter('cond', (sum && sum.condition !== undefined) ? sum.condition : (snap ? snap.condition : null));
+            updateMeter('data', (sum && sum.data !== undefined) ? sum.data : (snap ? snap.data : null));
 
-            updateMeter('makan', snap.makan);
-            updateMeter('kesehatan', snap.kesehatan);
-            updateMeter('fisik', snap.fisik);
-            updateMeter('rekreasi', snap.rekreasi);
-            updateMeter('kebersihan', snap.kebersihan);
-            updateMeter('wc', snap.wc);
-            updateMeter('penampilan', snap.penampilan);
-            updateMeter('rumah', snap.rumah);
+            const needs = (snap && snap.needs) ? snap.needs : (snap || {{}});
+            updateMeter('makan', needs.makan !== undefined ? needs.makan : (snap ? snap.makan : null));
+            updateMeter('kesehatan', needs.kesehatan !== undefined ? needs.kesehatan : (snap ? snap.kesehatan : null));
+            updateMeter('fisik', needs.fisik !== undefined ? needs.fisik : (snap ? snap.fisik : null));
+            updateMeter('rekreasi', needs.rekreasi !== undefined ? needs.rekreasi : (snap ? snap.rekreasi : null));
+            updateMeter('kebersihan', needs.kebersihan !== undefined ? needs.kebersihan : (snap ? snap.kebersihan : null));
+            updateMeter('wc', needs.wc !== undefined ? needs.wc : (snap ? snap.wc : null));
+            updateMeter('penampilan', needs.penampilan !== undefined ? needs.penampilan : (snap ? snap.penampilan : null));
+            updateMeter('rumah', needs.rumah !== undefined ? needs.rumah : (snap ? snap.rumah : null));
 
             // Auto toggles
             const flags = data.auto_flags || {{}};
