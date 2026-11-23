@@ -668,15 +668,46 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         .btn {{
             display: inline-flex;
             align-items: center;
+            justify-content: center;
             gap: 8px;
             padding: 10px 18px;
             border-radius: 8px;
             font-size: 14px;
             font-weight: 600;
-            border: none;
+            border: 1px solid transparent;
             cursor: pointer;
-            transition: all 0.2s;
+            transition: all 0.15s ease-in-out;
             text-decoration: none;
+            user-select: none;
+            position: relative;
+        }}
+        .btn:active:not(:disabled) {{
+            transform: scale(0.98);
+        }}
+        .btn:disabled, .btn[disabled] {{
+            opacity: 0.55 !important;
+            cursor: not-allowed !important;
+            pointer-events: none !important;
+            filter: grayscale(25%);
+        }}
+        .btn-loading {{
+            opacity: 0.85 !important;
+            cursor: wait !important;
+            pointer-events: none !important;
+        }}
+        .btn-spinner {{
+            width: 15px;
+            height: 15px;
+            border: 2px solid rgba(255, 255, 255, 0.35);
+            border-top-color: #ffffff;
+            border-radius: 50%;
+            animation: btn-spin 0.65s linear infinite;
+            display: inline-block;
+            vertical-align: middle;
+            flex-shrink: 0;
+        }}
+        @keyframes btn-spin {{
+            to {{ transform: rotate(360deg); }}
         }}
         .btn-primary {{ background: var(--primary); color: white; }}
         .btn-primary:hover {{ background: var(--primary-hover); }}
@@ -684,10 +715,53 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         .btn-success:hover {{ background: #059669; }}
         .btn-danger {{ background: var(--danger); color: white; }}
         .btn-danger:hover {{ background: #dc2626; }}
-        .btn-secondary {{ background: #334155; color: var(--text); }}
+        .btn-secondary {{ background: #334155; color: var(--text); border-color: rgba(255, 255, 255, 0.08); }}
         .btn-secondary:hover {{ background: #475569; }}
         .btn-purple {{ background: var(--purple); color: white; }}
         .btn-purple:hover {{ background: #7c3aed; }}
+
+        /* Non-blocking Toast Notification */
+        .toast-container {{
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            max-width: 380px;
+            pointer-events: none;
+        }}
+        .toast {{
+            background: #1e293b;
+            color: #f8fafc;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 12px 18px;
+            font-size: 13px;
+            font-weight: 500;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            pointer-events: auto;
+            transform: translateY(20px);
+            opacity: 0;
+            transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+        }}
+        .toast.toast-show {{
+            transform: translateY(0);
+            opacity: 1;
+        }}
+        .toast-success {{
+            border-left: 4px solid var(--success);
+        }}
+        .toast-error {{
+            border-left: 4px solid var(--danger);
+        }}
+        .toast-info {{
+            border-left: 4px solid var(--primary);
+        }}
 
         /* Fleet Summary Section */
         .fleet-box {{
@@ -1295,7 +1369,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 <button class="btn btn-secondary" onclick="openModal('cookieModal')">🍪 Import Cookie</button>
                 <a href="/api/extension/download" class="btn btn-warning" style="background:#f59e0b; color:#0f172a; font-weight:600;">📦 Download Extension</a>
                 <button class="btn btn-secondary" onclick="openModal('extensionModal')">🧩 Panduan Extension</button>
-                <button class="btn btn-secondary" onclick="refreshDashboard()">🔄 Refresh</button>
+                <button id="btnRefreshDash" class="btn btn-secondary" onclick="manualRefreshDashboard()">🔄 Refresh</button>
             </div>
 
             <!-- Grid: Kendaraan & Kebutuhan -->
@@ -2248,14 +2322,100 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             }}
         }}
 
+        function showToast(msg, type = 'info') {{
+            let container = document.getElementById('toastContainer');
+            if (!container) {{
+                container = document.createElement('div');
+                container.id = 'toastContainer';
+                container.className = 'toast-container';
+                document.body.appendChild(container);
+            }}
+            const toast = document.createElement('div');
+            toast.className = `toast toast-${{type}}`;
+            toast.innerText = msg;
+            container.appendChild(toast);
+
+            requestAnimationFrame(() => {{
+                toast.classList.add('toast-show');
+            }});
+
+            setTimeout(() => {{
+                toast.classList.remove('toast-show');
+                setTimeout(() => {{
+                    if (toast.parentNode) toast.remove();
+                }}, 300);
+            }}, 3500);
+        }}
+
+        let isActionPending = false;
+
         async function controlAction(cmd) {{
+            if (isActionPending) return;
+            isActionPending = true;
+
+            const btnMap = {{
+                'run': document.getElementById('btnRunOjol'),
+                'stop': document.getElementById('btnStopOjol'),
+                'run-needs': document.getElementById('btnRunNeeds'),
+                'stop-needs': document.getElementById('btnStopNeeds')
+            }};
+
+            const targetBtn = btnMap[cmd];
+            let origHtml = '';
+            if (targetBtn) {{
+                origHtml = targetBtn.innerHTML;
+                targetBtn.classList.add('btn-loading');
+                targetBtn.innerHTML = '<span class="btn-spinner"></span> Sedang memproses...';
+            }}
+
+            // Disable all buttons in action-bar to prevent spam
+            const allActionBtns = document.querySelectorAll('.action-bar .btn');
+            allActionBtns.forEach(b => {{
+                b.disabled = true;
+            }});
+
             try {{
                 const res = await fetch('/api/control/' + cmd, {{ method: 'POST' }});
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || data.message || 'Gagal menjalankan aksi');
-                refreshDashboard();
+                const cmdTitles = {{
+                    'run': 'Ojol berhasil dijalankan',
+                    'stop': 'Ojol berhasil dihentikan',
+                    'run-needs': 'Kebutuhan berhasil dijalankan',
+                    'stop-needs': 'Kebutuhan berhasil dihentikan'
+                }};
+                showToast('✅ ' + (cmdTitles[cmd] || 'Aksi berhasil diproses'), 'success');
+                await refreshDashboard();
             }} catch (e) {{
-                alert('Aksi gagal: ' + e.message);
+                showToast('⚠️ Aksi gagal: ' + e.message, 'error');
+            }} finally {{
+                if (targetBtn && origHtml) {{
+                    targetBtn.classList.remove('btn-loading');
+                    targetBtn.innerHTML = origHtml;
+                }}
+                allActionBtns.forEach(b => {{
+                    b.disabled = false;
+                }});
+                isActionPending = false;
+            }}
+        }}
+
+        async function manualRefreshDashboard() {{
+            const btn = document.getElementById('btnRefreshDash');
+            if (btn) {{
+                btn.disabled = true;
+                btn.innerHTML = '<span class="btn-spinner"></span> Memuat...';
+            }}
+            try {{
+                await refreshDashboard();
+                showToast('🔄 Status dashboard diperbarui', 'info');
+            }} catch (e) {{
+                showToast('⚠️ Gagal refresh: ' + e.message, 'error');
+            }} finally {{
+                if (btn) {{
+                    btn.disabled = false;
+                    btn.innerHTML = '🔄 Refresh';
+                }}
             }}
         }}
 
@@ -2268,23 +2428,27 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 }});
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || data.message || 'Gagal mengubah pengaturan Auto');
-                refreshDashboard();
+                showToast('Pengaturan auto ' + flag + ': ' + (enabled ? 'Aktif' : 'Nonaktif'), 'info');
+                await refreshDashboard();
             }} catch (e) {{
-                alert(e.message);
-                refreshDashboard();
+                showToast('⚠️ Gagal: ' + e.message, 'error');
+                await refreshDashboard();
             }}
         }}
 
         async function toggleModeOjol(isKendara) {{
             try {{
                 const mode = isKendara ? 'kendara' : 'otomatis';
-                await fetch('/api/control/mode-ojol', {{
+                const res = await fetch('/api/control/mode-ojol', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ mode }})
                 }});
+                if (!res.ok) throw new Error('Gagal mengubah mode ojol');
+                showToast('Mode ojol: ' + (isKendara ? 'Kendara (Manual)' : 'Otomatis'), 'info');
+                await refreshDashboard();
             }} catch (e) {{
-                alert(e.message);
+                showToast('⚠️ Gagal: ' + e.message, 'error');
             }}
         }}
 
@@ -2297,10 +2461,11 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 }});
                 const data = await res.json();
                 if (!res.ok) throw new Error(data.detail || data.message || 'Gagal mengubah bidang belajar');
-                refreshDashboard();
+                showToast('Bidang belajar: ' + subject.toUpperCase(), 'info');
+                await refreshDashboard();
             }} catch (e) {{
-                alert('Gagal mengubah bidang belajar: ' + e.message);
-                refreshDashboard();
+                showToast('⚠️ Gagal: ' + e.message, 'error');
+                await refreshDashboard();
             }}
         }}
 
@@ -2313,9 +2478,10 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     body: JSON.stringify({{ account_id: accountId }})
                 }});
                 if (!res.ok) throw new Error('Gagal mengganti akun');
-                refreshDashboard();
+                showToast('✅ Akun aktif dialihkan', 'success');
+                await refreshDashboard();
             }} catch (e) {{
-                alert(e.message);
+                showToast('⚠️ Gagal mengganti akun: ' + e.message, 'error');
             }}
         }}
 
