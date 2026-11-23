@@ -1,6 +1,7 @@
 """Persistent whitelist, quotas and account ownership. No credentials in registry."""
 
 import hashlib
+import json
 import re
 import sqlite3
 import time
@@ -54,6 +55,7 @@ class Accounts:
                         "UPDATE users SET selected=? WHERE telegram_id=?", (identifier, self.admin)
                     )
         self.path.chmod(0o600)
+        self.apply_db_settings()
         from .session_transfer import parse_cookie_input
 
         for account in self.list() + self.list(archived=True):
@@ -94,7 +96,111 @@ class Accounts:
             with self.db() as connection:
                 return self.value(name, connection)
         row = db.execute("SELECT value FROM settings WHERE name=?", (name,)).fetchone()
-        return row[0] if row else getattr(self.settings, name)
+        if not row:
+            return getattr(self.settings, name, None)
+        raw = row[0]
+        try:
+            return json.loads(raw)
+        except Exception:
+            return raw
+
+    def apply_db_settings(self):
+        try:
+            with self.db() as db:
+                rows = db.execute("SELECT name, value FROM settings").fetchall()
+        except sqlite3.OperationalError:
+            return
+        for r in rows:
+            name, raw_val = r["name"], r["value"]
+            try:
+                val = json.loads(raw_val)
+            except Exception:
+                val = raw_val
+            if hasattr(self.settings, name):
+                try:
+                    if name == "telegram_bot_token":
+                        from pydantic import SecretStr
+                        setattr(self.settings, name, SecretStr(str(val or "")))
+                    elif name in {"threshold", "resource_reserve_percent", "idle_poll_seconds", "max_accounts_per_user", "max_active_workers"}:
+                        setattr(self.settings, name, int(val) if val is not None else getattr(self.settings, name))
+                    elif name in {"min_balance", "max_spend"}:
+                        setattr(self.settings, name, float(val) if val is not None and str(val).strip() != "" else None)
+                    elif name in {"max_jobs", "max_minutes", "telegram_chat_id"}:
+                        setattr(self.settings, name, int(val) if val is not None and str(val).strip() != "" else None)
+                    elif name in {"smart_thresholds", "auto_start", "tunnel_enabled", "telegram_enabled"}:
+                        setattr(self.settings, name, bool(val))
+                    elif name in {"ojol_mode", "login_public_url"}:
+                        setattr(self.settings, name, str(val))
+                except Exception:
+                    pass
+        if hasattr(self.settings, "telegram_chat_id"):
+            self.admin = self.settings.telegram_chat_id
+
+    def get_all_settings(self) -> dict:
+        self.apply_db_settings()
+        raw_token = ""
+        token_obj = getattr(self.settings, "telegram_bot_token", None)
+        if token_obj:
+            raw_token = token_obj.get_secret_value() if hasattr(token_obj, "get_secret_value") else str(token_obj)
+        return {
+            "threshold": getattr(self.settings, "threshold", 60),
+            "smart_thresholds": getattr(self.settings, "smart_thresholds", True),
+            "resource_reserve_percent": getattr(self.settings, "resource_reserve_percent", 20),
+            "min_balance": float(getattr(self.settings, "min_balance", 5.0)),
+            "max_spend": float(self.settings.max_spend) if getattr(self.settings, "max_spend", None) is not None else None,
+            "max_jobs": getattr(self.settings, "max_jobs", None),
+            "max_minutes": getattr(self.settings, "max_minutes", None),
+            "idle_poll_seconds": getattr(self.settings, "idle_poll_seconds", 10),
+            "ojol_mode": getattr(self.settings, "ojol_mode", "otomatis"),
+            "max_accounts_per_user": getattr(self.settings, "max_accounts_per_user", 3),
+            "max_active_workers": getattr(self.settings, "max_active_workers", 3),
+            "auto_start": getattr(self.settings, "auto_start", True),
+            "login_public_url": getattr(self.settings, "login_public_url", "http://localhost:6080"),
+            "tunnel_enabled": getattr(self.settings, "tunnel_enabled", False),
+            "telegram_enabled": getattr(self.settings, "telegram_enabled", False),
+            "telegram_bot_token": raw_token,
+            "telegram_chat_id": getattr(self.settings, "telegram_chat_id", None),
+        }
+
+    def update_settings(self, updates: dict) -> dict:
+        allowed = {
+            "threshold", "smart_thresholds", "resource_reserve_percent",
+            "min_balance", "max_spend", "max_jobs", "max_minutes",
+            "idle_poll_seconds", "ojol_mode", "max_accounts_per_user",
+            "max_active_workers", "auto_start", "login_public_url",
+            "tunnel_enabled", "telegram_enabled", "telegram_bot_token",
+            "telegram_chat_id"
+        }
+        with self.db() as db:
+            for k, v in updates.items():
+                if k not in allowed:
+                    continue
+                if v is None or (isinstance(v, str) and v.strip() == ""):
+                    if k in {"max_spend", "max_jobs", "max_minutes", "telegram_chat_id"}:
+                        val = None
+                    elif k in {"telegram_bot_token"}:
+                        val = ""
+                    else:
+                        val = v
+                elif k in {"threshold", "resource_reserve_percent", "idle_poll_seconds", "max_accounts_per_user", "max_active_workers"}:
+                    val = int(v)
+                elif k in {"min_balance", "max_spend"}:
+                    val = float(v)
+                elif k in {"max_jobs", "max_minutes", "telegram_chat_id"}:
+                    val = int(v)
+                elif k in {"smart_thresholds", "auto_start", "tunnel_enabled", "telegram_enabled"}:
+                    val = bool(v)
+                elif k in {"ojol_mode", "login_public_url", "telegram_bot_token"}:
+                    val = str(v).strip()
+                else:
+                    val = v
+
+                db.execute(
+                    "INSERT OR REPLACE INTO settings(name, value) VALUES(?,?)",
+                    (k, json.dumps(val))
+                )
+        self.apply_db_settings()
+        return self.get_all_settings()
 
     @staticmethod
     def limit(value):
@@ -231,8 +337,8 @@ class Accounts:
     def set_limit(self, name, value):
         if name not in {"max_accounts_per_user", "max_active_workers"}:
             raise ValueError("Pilihan pengaturan belum dikenali. Buka menu kembali.")
-        with self.db() as db:
-            db.execute("INSERT OR REPLACE INTO settings VALUES(?,?)", (name, self.limit(value)))
+        val = self.limit(value)
+        self.update_settings({name: val})
 
     def list(self, owner=None, archived=False):
         with self.db() as db:

@@ -826,3 +826,18 @@ def register_web_routes(app, settings, manager=None, service=None):
             return {"success": True}
         except ValueError as exc:
             raise HTTPException(400, str(exc))
+
+    @app.get("/api/admin/settings")
+    async def admin_get_settings(user: dict = Depends(require_admin)):
+        return registry.get_all_settings()
+
+    @app.post("/api/admin/settings")
+    async def admin_update_settings(request: Request, user: dict = Depends(require_admin)):
+        body = await request.json()
+        try:
+            updated = registry.update_settings(body)
+            if manager:
+                manager.settings = registry.settings
+            return {"success": True, "settings": updated}
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))

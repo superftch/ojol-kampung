@@ -1377,6 +1377,149 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     </table>
                 </div>
             </div>
+
+            <!-- CARD 3: PENGATURAN ADMIN & GLOBAL -->
+            <div class="card" style="margin-top: 24px;">
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                    <div>
+                        <div class="card-title">⚙️ Pengaturan Global & Konfigurasi Sistem</div>
+                        <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+                            Kelola semua konfigurasi server, batas akun, otomatisasi, dan integrasi tanpa edit .env
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" onclick="saveAdminSettings()" style="font-weight: 600;">💾 Simpan Pengaturan</button>
+                </div>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-top: 16px;">
+                    <!-- Bagian 1: Otomatisasi & Game Play -->
+                    <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 10px; padding: 18px;">
+                        <h4 style="font-size: 14px; font-weight: 700; color: #f8fafc; margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+                            <span>🎮</span> Otomatisasi & Kebutuhan
+                        </h4>
+                        
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Ambang Batas Kebutuhan (% Default)</label>
+                            <input type="number" id="setting_threshold" min="10" max="100" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <span style="font-size: 11px; color: var(--text-muted);">Bot memulihkan kebutuhan saat nilai turun di bawah persentase ini.</span>
+                        </div>
+
+                        <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <div style="font-size: 13px; font-weight: 600;">Smart Thresholds</div>
+                                <div style="font-size: 11px; color: var(--text-muted);">Gunakan batas pintar per kebutuhan</div>
+                            </div>
+                            <label class="switch"><input type="checkbox" id="setting_smart_thresholds"><span class="slider"></span></label>
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Cadangan Sumber Daya (%)</label>
+                            <input type="number" id="setting_resource_reserve_percent" min="0" max="50" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Saldo Koin Minimal (Cadangan)</label>
+                            <input type="number" step="0.1" id="setting_min_balance" min="0" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <span style="font-size: 11px; color: var(--text-muted);">Koin minimal yang disisihkan sebelum belanja/kuliah.</span>
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Interval Cek Polling Status (Detik)</label>
+                            <input type="number" id="setting_idle_poll_seconds" min="3" max="60" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Mode Ojol Default</label>
+                            <select id="setting_ojol_mode" class="account-select" style="width: 100%;">
+                                <option value="otomatis">Otomatis (HTTP Background Bot)</option>
+                                <option value="kendara">Kendara (Manual / Ekstensi Chrome)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Bagian 2: Batasan Shift & Kuota Akun -->
+                    <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 10px; padding: 18px;">
+                        <h4 style="font-size: 14px; font-weight: 700; color: #f8fafc; margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+                            <span>⏱️</span> Batasan Shift & Kuota Akun
+                        </h4>
+
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Maksimal Pengeluaran Koin (Opsional)</label>
+                            <input type="number" step="0.1" id="setting_max_spend" placeholder="Kosong = Tanpa batas" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Batas Jumlah Order per Shift (Opsional)</label>
+                            <input type="number" id="setting_max_jobs" placeholder="Kosong = Tanpa batas" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Batas Durasi Shift (Menit, Opsional)</label>
+                            <input type="number" id="setting_max_minutes" placeholder="Kosong = Tanpa batas" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Maksimal Akun Game per User</label>
+                            <input type="number" id="setting_max_accounts_per_user" min="1" max="100" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Maksimal Worker Aktif Bersamaan</label>
+                            <input type="number" id="setting_max_active_workers" min="1" max="100" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+
+                        <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <div style="font-size: 13px; font-weight: 600;">Auto-Start Worker</div>
+                                <div style="font-size: 11px; color: var(--text-muted);">Otomatis mulai akun saat server startup</div>
+                            </div>
+                            <label class="switch"><input type="checkbox" id="setting_auto_start"><span class="slider"></span></label>
+                        </div>
+                    </div>
+
+                    <!-- Bagian 3: Domain, Jaringan & Integrasi -->
+                    <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 10px; padding: 18px;">
+                        <h4 style="font-size: 14px; font-weight: 700; color: #f8fafc; margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+                            <span>🌐</span> Domain & Integrasi
+                        </h4>
+
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Domain Publik Dashboard (URL)</label>
+                            <input type="text" id="setting_login_public_url" placeholder="https://ojol.jnck.pl" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <span style="font-size: 11px; color: var(--text-muted);">Alamat URL publik dashboard untuk akses dan redirect.</span>
+                        </div>
+
+                        <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <div style="font-size: 13px; font-weight: 600;">Cloudflare Tunnel Bawaan</div>
+                                <div style="font-size: 11px; color: var(--text-muted);">Aktifkan jika tanpa reverse proxy Nginx/Caddy</div>
+                            </div>
+                            <label class="switch"><input type="checkbox" id="setting_tunnel_enabled"><span class="slider"></span></label>
+                        </div>
+
+                        <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <div style="font-size: 13px; font-weight: 600;">Integrasi Telegram Bot</div>
+                                <div style="font-size: 11px; color: var(--text-muted);">Aktifkan jika ingin bot Telegram tetap hidup</div>
+                            </div>
+                            <label class="switch"><input type="checkbox" id="setting_telegram_enabled"><span class="slider"></span></label>
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Telegram Bot Token</label>
+                            <input type="password" id="setting_telegram_bot_token" placeholder="Token dari @BotFather" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Admin Telegram Chat ID</label>
+                            <input type="number" id="setting_telegram_chat_id" placeholder="Contoh: 811190245" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+                    </div>
+                </div>
+
+                <div style="margin-top: 20px; display: flex; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 16px;">
+                    <button class="btn btn-primary" onclick="saveAdminSettings()" style="padding: 10px 24px; font-size: 14px; font-weight: 700;">💾 Simpan & Terapkan Pengaturan</button>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -1952,12 +2095,16 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
         async function loadAdminData() {{
             try {{
-                const [pRes, uRes] = await Promise.all([
+                const [pRes, uRes, sRes] = await Promise.all([
                     fetch('/api/admin/pending'),
-                    fetch('/api/admin/users')
+                    fetch('/api/admin/users'),
+                    fetch('/api/admin/settings')
                 ]);
                 const pending = await pRes.json();
                 const users = await uRes.json();
+                const settings = await sRes.json();
+
+                renderAdminSettings(settings);
 
                 const pTbody = document.getElementById('pendingTableBody');
                 pTbody.innerHTML = '';
@@ -2001,6 +2148,85 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 }});
             }} catch (e) {{
                 console.error('Admin load error:', e);
+            }}
+        }}
+
+        function renderAdminSettings(s) {{
+            if (!s) return;
+            const setVal = (id, val) => {{
+                const el = document.getElementById(id);
+                if (el) el.value = (val !== null && val !== undefined) ? val : '';
+            }};
+            const setChk = (id, val) => {{
+                const el = document.getElementById(id);
+                if (el) el.checked = !!val;
+            }};
+
+            setVal('setting_threshold', s.threshold);
+            setChk('setting_smart_thresholds', s.smart_thresholds);
+            setVal('setting_resource_reserve_percent', s.resource_reserve_percent);
+            setVal('setting_min_balance', s.min_balance);
+            setVal('setting_max_spend', s.max_spend);
+            setVal('setting_max_jobs', s.max_jobs);
+            setVal('setting_max_minutes', s.max_minutes);
+            setVal('setting_idle_poll_seconds', s.idle_poll_seconds);
+            setVal('setting_ojol_mode', s.ojol_mode || 'otomatis');
+
+            setVal('setting_max_accounts_per_user', s.max_accounts_per_user);
+            setVal('setting_max_active_workers', s.max_active_workers);
+            setChk('setting_auto_start', s.auto_start);
+
+            setVal('setting_login_public_url', s.login_public_url);
+            setChk('setting_tunnel_enabled', s.tunnel_enabled);
+            setChk('setting_telegram_enabled', s.telegram_enabled);
+            setVal('setting_telegram_bot_token', s.telegram_bot_token);
+            setVal('setting_telegram_chat_id', s.telegram_chat_id);
+        }}
+
+        async function saveAdminSettings() {{
+            const getVal = (id) => {{
+                const el = document.getElementById(id);
+                const v = el ? el.value.trim() : '';
+                return v !== '' ? v : null;
+            }};
+            const getChk = (id) => {{
+                const el = document.getElementById(id);
+                return el ? el.checked : false;
+            }};
+
+            const payload = {{
+                threshold: getVal('setting_threshold'),
+                smart_thresholds: getChk('setting_smart_thresholds'),
+                resource_reserve_percent: getVal('setting_resource_reserve_percent'),
+                min_balance: getVal('setting_min_balance'),
+                max_spend: getVal('setting_max_spend'),
+                max_jobs: getVal('setting_max_jobs'),
+                max_minutes: getVal('setting_max_minutes'),
+                idle_poll_seconds: getVal('setting_idle_poll_seconds'),
+                ojol_mode: getVal('setting_ojol_mode'),
+                max_accounts_per_user: getVal('setting_max_accounts_per_user'),
+                max_active_workers: getVal('setting_max_active_workers'),
+                auto_start: getChk('setting_auto_start'),
+                login_public_url: getVal('setting_login_public_url'),
+                tunnel_enabled: getChk('setting_tunnel_enabled'),
+                telegram_enabled: getChk('setting_telegram_enabled'),
+                telegram_bot_token: getVal('setting_telegram_bot_token') || '',
+                telegram_chat_id: getVal('setting_telegram_chat_id')
+            }};
+
+            try {{
+                const res = await fetch('/api/admin/settings', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify(payload)
+                }});
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || data.message || 'Gagal menyimpan pengaturan');
+                renderAdminSettings(data.settings);
+                alert('✅ Pengaturan admin berhasil disimpan dan diterapkan!');
+                refreshDashboard();
+            }} catch (e) {{
+                alert('Gagal menyimpan: ' + e.message);
             }}
         }}
 
