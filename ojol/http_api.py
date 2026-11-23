@@ -624,6 +624,8 @@ class OjolHttpApi:
                 "/api/realtime/token",
                 "/api/rumah/kamar-mandi",
                 "/api/rumah/interior",
+                "/api/diving",
+                "/api/diving/realtime",
             }
             or re.fullmatch(
                 r"/api/world/plots\?v=2&blocks=[A-Z][0-9]{2}(?:,[A-Z][0-9]{2}){0,23}", path
@@ -644,7 +646,7 @@ class OjolHttpApi:
             or "//" in path
             or (
                 payload is not None
-                and path not in {"/api/ojol", "/api/rumah/kamar-mandi"}
+                and path not in {"/api/ojol", "/api/rumah/kamar-mandi", "/api/diving"}
                 and not garden_action
                 and not path.endswith(("/buy", "/use", "/kuis", "/bayar", "/kegiatan", "/minigame"))
             )
@@ -828,10 +830,7 @@ class OjolHttpApi:
             else:
                 raise
         me, needs, clock = await asyncio.gather(
-            *(
-                self.request(path)
-                for path in ("/api/game/me", "/api/kebutuhan", "/api/time")
-            )
+            *(self.request(path) for path in ("/api/game/me", "/api/kebutuhan", "/api/time"))
         )
         self.config_version = me["configVersion"]
         self.home = me["home"]
@@ -847,7 +846,9 @@ class OjolHttpApi:
             else []
         )
         # The server clock, not the machine's timezone/clock, gates completion.
-        require_ojol = (flags["ojol"] or bool((ojol or {}).get("trip"))) and not (has_kebutuhan and ojol_error is not None)
+        require_ojol = (flags["ojol"] or bool((ojol or {}).get("trip"))) and not (
+            has_kebutuhan and ojol_error is not None
+        )
         try:
             state = snapshot_from_api(
                 ojol, me, needs, timestamp(clock["now"]), require_ojol=require_ojol

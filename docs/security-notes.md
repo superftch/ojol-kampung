@@ -88,8 +88,52 @@ karena trip sampel tidak pernah membuka cek saat diuji.
 Id fasilitas gym/perpus dipatok di skrip dari capture lama; ganti bila desa
 berganti bangunan. Skrip memakai sesi di `.local/http-session.json`.
 
+## 6. Permukaan admin (`/api/admin/*`) — tidak terbuka untuk warga
+
+Tidak ada di bundle client publik (hanya `kades-chat` dan `keamanan` yang
+dipakai UI), jadi ditemukan lewat enumerasi. Yang ada, semua `403
+{"code":"FORBIDDEN","message":"Khusus kepala desa."}` untuk sesi warga:
+
+`GET stats`, `GET kas`, `GET report`, `GET rt`, `GET facilities`, `GET toa`,
+`GET topups` (+`/topups/export`), `POST keamanan`, `POST|GET rewards`
+(GET 405, perlu body), `GET kades-chat` (200 — satu-satunya yang sengaja
+dibuka untuk warga).
+
+Urutan lapisan benar: tanpa cookie `401 UNAUTHENTICATED`, sesi
+pending/ditolak ditahan di gerbang akun, warga `403`. Semua penolakan datang
+dari lookup peran di DB, bukan dari input request.
+
+Bypass yang dicoba dan gagal: `?desaId=`/`?desa=` (diabaikan), header
+`X-Role`/`X-Peran`/`X-User-Role`/`X-Forwarded-User`/`X-Desa-Id`,
+`X-HTTP-Method-Override`, serta varian method PUT/DELETE/PATCH (405). Tidak
+ada route anak tanpa guard.
+
+Kebocoran kecil yang nyata: `GET /api/admin/kades-chat` untuk warga
+mengembalikan `userId`, `seenAt`, dan `online` milik kades + camat desa
+(warga desa lain tidak terlihat). Cookie sesi `__Secure-better-auth` opaque
+dan server-side, jadi tidak bisa ditempah.
+
+Jalur naik peran: calon RT `POST /api/rt {"action":"daftar","promise"}` (janji
+10–200 karakter, divalidasi) → menang pemilihan RT → baru bisa daftar calon
+kades lewat `/api/pilkades`, dengan syarat top up total Rp25.000. Jadi admin
+desa praktis butuh bayar, bukan celah.
+
+Percobaan eskalasi izin (23 Nov, akun Eskobar): `electionId` karangan dan
+tanpa `electionId` sama-sama `404 Pemilihan tidak ditemukan` (validasi id
+duluan, gate syarat belum tercapai); `?desa=` pada `/api/pilkades` dan
+`/api/balai` diterima 200 tapi desa lain tidak membuka daftar pemilu; sebagai
+calon RT tetap `403` di `/api/admin/*`. Tidak ada eskalasi lewat bug — peran
+hanya berpindah lewat pemilu terjadwal.
+
+Enumerasi ulang: `.local/probe_admin.py` dan `.local/probe_admin2.py`
+(memakai sesi yang sama, hasil 403/404 dibedakan).
+
 ## Belum diperiksa
 
+- Isi dan kontrak `/api/admin/{stats,kas,topups,rewards,report,rt,toa,facilities}`
+  belum bisa diuji karena akun sampel bukan kades — perlu akun kades (top up
+  Rp25k + menang pilkades, atau pinjam sesi kades) untuk mengecek IDOR
+  `desaId` antar desa, batas `rewards`/`topups`, dan idempotensi `kas`.
 - Minigame lain (mancing, penalti, badminton, lari, renang, basket) — pola
   `holds`/`casts`/`strikes` kemungkinan sama, belum diuji.
 - Kebun/kolam (`/api/daily/garden`): akun ini belum punya kebun, jadi `panen`

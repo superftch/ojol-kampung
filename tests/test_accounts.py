@@ -1426,7 +1426,12 @@ async def test_study_menu_refreshes_profile_and_disables_max_tracks(managed):
     first_dir = manager.registry.scoped_settings(first).runtime_dir
 
     skills = [
-        {"id": "administrasi", "name": "Administrasi", "level": 5, "next": {"level": 6, "library": False}},
+        {
+            "id": "administrasi",
+            "name": "Administrasi",
+            "level": 5,
+            "next": {"level": 6, "library": False},
+        },
         {"id": "boga", "name": "Tata boga", "level": 2, "next": {"level": 3, "library": True}},
     ]
     save_skills(first_dir, skills)
@@ -1477,9 +1482,7 @@ async def test_users_menu_and_user_menu_display_user_name_and_username(managed):
     manager.registry.whitelist(444)
 
     await manager.users_menu(111, 0)
-    buttons = [
-        btn for row in manager.reply.call_args.args[2]["inline_keyboard"] for btn in row
-    ]
+    buttons = [btn for row in manager.reply.call_args.args[2]["inline_keyboard"] for btn in row]
     texts = {btn["callback_data"]: btn["text"] for btn in buttons}
 
     assert texts.get("user:222") == "Dewi Putri (222) · aktif"

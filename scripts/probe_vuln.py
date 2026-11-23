@@ -8,7 +8,6 @@ dipakai supaya tidak terhalang allowlist adapter.
 
 import argparse
 import asyncio
-import json
 import sys
 import uuid
 from pathlib import Path
@@ -24,7 +23,9 @@ PERPUS = "90ae44da-6d71-495d-83f7-5b0b69400504"
 
 async def call(api, path, payload=None):
     method = "GET" if payload is None else "POST"
-    r = await api.client.request(method, path, json=payload, headers=api.browser_headers(path, method))
+    r = await api.client.request(
+        method, path, json=payload, headers=api.browser_headers(path, method)
+    )
     try:
         body = r.json()
     except Exception:
@@ -39,31 +40,61 @@ async def balance(api):
 async def play(api, out, label, make_holds, wait=True):
     st, info = await call(api, f"/api/minigame?projectId={GYM}&game=gym")
     if st != 200:
-        out.append((label + " GET", st, str(info)[:120])); return
-    st, started = await call(api, "/api/minigame", {
-        "action": "start", "projectId": GYM, "requestId": str(uuid.uuid4()), "game": "gym"})
+        out.append((label + " GET", st, str(info)[:120]))
+        return
+    st, started = await call(
+        api,
+        "/api/minigame",
+        {"action": "start", "projectId": GYM, "requestId": str(uuid.uuid4()), "game": "gym"},
+    )
     play_id = started.get("playId") if st == 200 else None
     if not play_id:
-        out.append((label + " start", st, str(started)[:200])); return
+        out.append((label + " start", st, str(started)[:200]))
+        return
     reps = (started.get("plan") or {}).get("reps") or []
     holds = make_holds(reps)
     if wait:
         await asyncio.sleep((sum(holds) / 1000) + 1.1 * len(holds))
     before = await balance(api)
-    st, fin = await call(api, "/api/minigame", {"action": "finish", "playId": play_id, "holds": holds})
+    st, fin = await call(
+        api, "/api/minigame", {"action": "finish", "playId": play_id, "holds": holds}
+    )
     after = await balance(api)
-    out.append((label, st, f"holds={len(holds)} score={fin.get('score')} invalid={(fin.get('detail') or {}).get('invalid')} deltaMilli={after - before}"))
+    out.append(
+        (
+            label,
+            st,
+            f"holds={len(holds)} score={fin.get('score')} invalid={(fin.get('detail') or {}).get('invalid')} deltaMilli={after - before}",
+        )
+    )
     return play_id, holds
 
 
 async def t_minigame_holds(api, out):
     """Skor gym dihitung dari `holds` kiriman client: coba holds mustahil, tanpa tunggu, dan replay."""
-    await play(api, out, "A normal tanpa tunggu", lambda reps: [round(r["fill"] * r["center"]) for r in reps], wait=False)
-    await play(api, out, "B 50 holds sempurna", lambda reps: [round(r["fill"] * r["center"]) for r in reps] * 7)
-    await play(api, out, "C 1 hold sempurna", lambda reps: [round(reps[0]["fill"] * reps[0]["center"])])
+    await play(
+        api,
+        out,
+        "A normal tanpa tunggu",
+        lambda reps: [round(r["fill"] * r["center"]) for r in reps],
+        wait=False,
+    )
+    await play(
+        api,
+        out,
+        "B 50 holds sempurna",
+        lambda reps: [round(r["fill"] * r["center"]) for r in reps] * 7,
+    )
+    await play(
+        api, out, "C 1 hold sempurna", lambda reps: [round(reps[0]["fill"] * reps[0]["center"])]
+    )
     # replay: finish play terakhir dua kali lagi
     st, info = await call(api, f"/api/minigame?projectId={GYM}&game=gym")
-    st, started = await call(api, "/api/minigame", {"action": "start", "projectId": GYM, "requestId": str(uuid.uuid4()), "game": "gym"})
+    st, started = await call(
+        api,
+        "/api/minigame",
+        {"action": "start", "projectId": GYM, "requestId": str(uuid.uuid4()), "game": "gym"},
+    )
     pid = started.get("playId")
     if pid:
         reps = (started.get("plan") or {}).get("reps") or []
@@ -71,9 +102,17 @@ async def t_minigame_holds(api, out):
         await asyncio.sleep((sum(holds) / 1000) + 1.1 * len(holds))
         for n in (1, 2, 3):
             before = await balance(api)
-            st, fin = await call(api, "/api/minigame", {"action": "finish", "playId": pid, "holds": holds})
+            st, fin = await call(
+                api, "/api/minigame", {"action": "finish", "playId": pid, "holds": holds}
+            )
             after = await balance(api)
-            out.append((f"D finish ke-{n} playId sama", st, f"score={fin.get('score')} deltaMilli={after - before}"))
+            out.append(
+                (
+                    f"D finish ke-{n} playId sama",
+                    st,
+                    f"score={fin.get('score')} deltaMilli={after - before}",
+                )
+            )
 
 
 async def t_kuis_replay(api, out):
@@ -82,7 +121,9 @@ async def t_kuis_replay(api, out):
     out.append(("facility GET", st, str(fas)[:200]))
     if st != 200:
         return
-    st, use = await call(api, f"/api/facilities/{PERPUS}/use", {"requestId": str(uuid.uuid4()), "track": "kesehatan"})
+    st, use = await call(
+        api, f"/api/facilities/{PERPUS}/use", {"requestId": str(uuid.uuid4()), "track": "kesehatan"}
+    )
     out.append(("use", st, str(use)[:200]))
     st, kuis = await call(api, f"/api/facilities/{PERPUS}/kuis")
     out.append(("kuis GET", st, str(kuis)[:250]))
@@ -90,11 +131,13 @@ async def t_kuis_replay(api, out):
     if not visit:
         return
     n = len(kuis.get("soal", []))
-    st, ans = await call(api, f"/api/facilities/{PERPUS}/kuis",
-                         {"visitId": visit, "answers": [0] * n})
+    st, ans = await call(
+        api, f"/api/facilities/{PERPUS}/kuis", {"visitId": visit, "answers": [0] * n}
+    )
     out.append(("kuis jawab", st, str(ans)[:200]))
-    st, ans2 = await call(api, f"/api/facilities/{PERPUS}/kuis",
-                          {"visitId": visit, "answers": [0] * n})
+    st, ans2 = await call(
+        api, f"/api/facilities/{PERPUS}/kuis", {"visitId": visit, "answers": [0] * n}
+    )
     out.append(("kuis replay", st, str(ans2)[:200]))
 
 
@@ -127,7 +170,11 @@ async def t_ojol(api, out):
     if not pilihan:
         return
     pick = max(pilihan, key=lambda p: p.get("fareMilli", 0))
-    st, ambil = await call(api, "/api/ojol", {"action": "ambil", "vehicle": "motor", "mode": "kendara", "pilih": pick.get("id")})
+    st, ambil = await call(
+        api,
+        "/api/ojol",
+        {"action": "ambil", "vehicle": "motor", "mode": "kendara", "pilih": pick.get("id")},
+    )
     out.append(("ambil", st, str(ambil)[:300]))
     # teleport 1 lompatan jauh (aturan bundle: maks 1.8 petak/detik)
     st, lacak = await call(api, "/api/ojol", {"action": "lacak", "x": 9999, "y": 9999})

@@ -1186,6 +1186,7 @@ async def test_ojol_refill_failure_keeps_auto_kebutuhan_running(settings, state,
 async def test_need_purchase_and_reconcile_with_tolerance_and_free_action(settings, state):
     from datetime import timedelta
     from decimal import Decimal
+
     from ojol.reconciliation import reconcile
 
     journal = Journal(settings.runtime_dir)
@@ -1239,7 +1240,9 @@ async def test_need_purchase_and_reconcile_with_tolerance_and_free_action(settin
         resolved_wc = await reconcile(ui_wc, journal)
         assert resolved_wc is not None
         assert not journal.unresolved()
-        row_wc = journal.db.execute("SELECT status FROM actions WHERE id=?", (wc_action_id,)).fetchone()
+        row_wc = journal.db.execute(
+            "SELECT status FROM actions WHERE id=?", (wc_action_id,)
+        ).fetchone()
         assert row_wc["status"] == "verified"
     finally:
         journal.close()

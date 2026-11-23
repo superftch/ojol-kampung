@@ -1,38 +1,38 @@
 # Ojol KampungSebelah
 
-Automation Ojol multi-account dengan **adapter HTTP langsung (tanpa ADK/MCP)**. Satu bot Telegram melayani beberapa user dalam whitelist; setiap user bisa memiliki beberapa akun game. `OJOL_TELEGRAM_CHAT_ID` menjadi admin. Chrome, Browser Harness, fallback browser, dan migrasi profil browser dihapus.
+Automation Ojol multi-account dengan **adapter HTTP langsung (tanpa ADK/MCP)** dan **Fully Web Dashboard**. Antarmuka dikendalikan penuh melalui browser di port `6080` (`/` dan `/login`), dengan sistem autentikasi mandiri, feed notifikasi in-app, kontrol worker, serta manajemen user multi-akun. Bot Telegram dinonaktifkan.
 
-- Default **3 akun per user**, **3 worker aktif global**; admin dapat mengubahnya tanpa restart.
-- **1 akun = 1 subprocess worker**, dengan klien HTTP, cookie, SQLite ledger, status dan pengaturan notifikasi sendiri. Semua berjalan dalam satu container aplikasi.
-- Tanpa batas trip/durasi default; saldo utama production minimal **20 koin**.
+- Default **3 akun per user**, **3 worker aktif global**; admin dapat mengubahnya melalui panel web tanpa restart.
+- **1 akun = 1 subprocess worker**, dengan klien HTTP, cookie, SQLite ledger, status dan log tersendiri. Semua berjalan dalam satu container aplikasi.
+- Tanpa batas trip/durasi default; saldo utama minimal **5 koin**.
 - Default `OJOL_AUTO_START=true`: semua akun aktif dengan cookie tersimpan dicoba start pada setiap boot/deploy, mengikuti whitelist dan batas worker global.
 - Pembacaan HTTP sementara gagal dicoba maksimal 3 kali (backoff 1/2 detik). Transaksi dikirim sekali; hasil ambigu menghentikan akun dan memblokir replay.
-- Laporan laba harian WIB dan tombol navigasi tanggal terikat ke akun asal. Notifikasi diberi nama akun dan hanya dikirim ke pemiliknya.
+- Feed notifikasi dan laporan laba harian WIB terikat ke akun asal langsung di dashboard web.
 
 Gunakan dengan izin operator game. Satu akun game jangan dijalankan bersamaan di server/aplikasi lain. Fingerprint cookie menolak cookie sama pada dua slot akun, termasuk arsip; dua sesi berbeda milik akun game sama belum bisa diidentifikasi tanpa ID pemain stabil dari API.
 
-## Management Telegram
+## Management Web Dashboard
 
-Admin pertama adalah ID pribadi dalam `OJOL_TELEGRAM_CHAT_ID`; ID ini selalu boleh masuk dan tidak bisa dicabut lewat bot. User lain belum bisa memakai fitur akun sampai admin menyetujui pengajuan atau menambahkan ID numeriknya. Kontrol hanya menerima private chat dengan `chat.id == from.id`; grup dan callback milik user lain ditolak.
+Pengguna pertama yang mendaftar melalui halaman `/register` secara otomatis memperoleh hak akses **Administrator** (`approved` dan `admin`). User pendaftar berikutnya berstatus *pending* dan dapat disetujui atau ditolak oleh admin melalui tab **Admin Panel** di dashboard web.
 
-Saat user ditambahkan atau diaktifkan ulang, bot mengirim menu utama ke chat pribadi user. Jika user belum pernah membuka bot, minta user menekan **Start** dahulu; [Telegram melarang bot memulai percakapan pribadi](https://core.telegram.org/bots#how-are-bots-different-from-users). Jika tombol belum terlihat, admin bisa memilih **Kirim Menu**, atau user mengirim pesan **menu** ke bot. Setelah menu muncul: **Tambah Akun → ketik nama → Import Cookie**.
+Semua operasi kontrol akun dan otomasi dilakukan langsung melalui antarmuka web yang responsif:
 
-User belum terdaftar bisa menekan **Start** atau mengirim **`/start` → Ajukan Akses**. Bot menyimpan **nama dari profil Telegram, username (jika ada), dan Telegram ID** pemohon, lalu mengirim notifikasi ke admin dengan tombol **Setujui / Tolak**. Daftar persisten tersedia lewat **Management → Pengajuan Akses**, termasuk setelah bot restart. Pengajuan berulang saat menunggu tidak menambah notifikasi admin. Persetujuan memasukkan user ke whitelist dan mengirim menu utama; penolakan tetap menutup akses, dan aktivasi ulang harus dilakukan admin melalui Daftar User. Pengajuan tidak otomatis membuat akun game atau menjalankan worker.
-
-Semua operasi bot memakai tombol. Ketik hanya nilai yang diminta: ID Telegram, nama akun, batas angka, atau tanggal. Tidak perlu mengetik perintah. Tombol **Batal** selalu bisa membatalkan input; **Menu Utama** mengembalikan tombol utama.
-
-| Aksi admin | Alur tombol |
+| Aksi User di Web | Alur Antarmuka |
 |---|---|
-| Tinjau pengajuan beserta nama pemohon | **Management → Pengajuan Akses → pilih pemohon → Setujui / Tolak** |
-| Lihat whitelist, kuota dan worker aktif | **Management → Daftar User** |
-| Tambah user | **Management → Tambah User**, lalu ketik ID Telegram |
-| Aktifkan ulang user | **Daftar User → pilih user → Aktifkan Akses** |
-| Kirim ulang tombol utama user | **Daftar User → pilih user → Kirim Menu** |
-| Cabut akses dan hentikan seluruh akun user | **Daftar User → pilih user → Cabut Akses → Ya, Cabut Akses** |
-| Default akun per user | **Management → Batas Akun Default**, lalu ketik angka |
-| Override akun user tertentu | **Daftar User → pilih user → Ubah Batas Akun**, lalu ketik angka |
-| Batas worker aktif global | **Management → Batas Worker**, lalu ketik angka |
-| Jadwal maintenance game | **Management → Maintenance → Atur Jadwal**, lalu ketik waktu mulai dan selesai (WIB) |
+| Masuk ke dashboard | Buka `/login`, masukkan username & password |
+| Daftar akun baru | Buka `/register`, lengkapi form pendaftaran |
+| Tambah slot akun game | Tekan tombol **+ Akun** di header dashboard |
+| Impor cookie sesi game | Pilih akun → Tab **Dashboard** → **Impor Cookie** |
+| Mulai / Hentikan Otomasi | Tombol **Jalankan Ojol** / **Hentikan Ojol** |
+| Konfigurasi Fitur Auto | Tab **Auto & Kebutuhan** → Toggle fitur on/off (Makan, SPPG, Fisik, dll.) |
+| Pantau Notifikasi & Error | Tab **Notifikasi** → Riwayat pekerjaan, pembelian, dan error ID |
+| Laporan & Riwayat | Tab **Akun Saya** / **Dashboard** → Snapshot, saldo, dan log |
+
+| Aksi Admin di Web | Alur Antarmuka |
+|---|---|
+| Tinjau pendaftaran user | Tab **Admin Panel** → Bagian Pengajuan Tertunda → Tekan **Setujui / Tolak** |
+| Kelola user & kuota | Tab **Admin Panel** → Daftar User Terdaftar |
+| Batas worker aktif global | Tab **Admin Panel** → Pengaturan Limit Sistem |
 
 Batas valid 1–100. Override management disimpan di `accounts.sqlite3` dan mengalahkan default env setelah restart. Menurunkan batas tidak menghapus akun atau memutus worker yang sudah aktif; batas berlaku pada tambah/pulihkan/start berikutnya. Override user yang sudah dibuat tetap mengalahkan default global. Pencabutan whitelist menghentikan worker user, mencabut tiket/sesi import, dan membatalkan notifikasi pending; data/history tetap disimpan. Aktivasi ulang tidak otomatis menjalankan game.
 
@@ -103,13 +103,11 @@ Isi `.env` di server; jangan commit:
 | `OJOL_OPERATOR_AUTHORIZED` | `true` setelah izin operator tersedia |
 | `OJOL_CORE` | `http`; nilai lain ditolak |
 | `OJOL_AUTO_START` | `true` default: start semua akun saat boot; `false`: seluruh start manual |
-| `OJOL_TELEGRAM_BOT_TOKEN` | Token BotFather |
-| `OJOL_TELEGRAM_CHAT_ID` | Telegram ID **admin**, buka bot dan Start dahulu |
 | `OJOL_MAX_ACCOUNTS_PER_USER` | `3` default sebelum override management |
 | `OJOL_MAX_ACTIVE_WORKERS` | `3` default sebelum override management |
 | `OJOL_LOGIN_PUBLIC_URL` | Origin HTTPS form, misalnya `https://ojolkampung.sftch.web.id` |
 | `OJOL_TUNNEL_ENABLED` | `true` untuk connector dalam container |
-| `OJOL_MIN_BALANCE` | `20` atau lebih |
+| `OJOL_MIN_BALANCE` | `5` atau lebih |
 | `OJOL_THRESHOLD` | `60` default target isi ulang |
 | `OJOL_SMART_THRESHOLDS` | `true` default: gunakan threshold optimal dinamis per kebutuhan |
 | `OJOL_MAX_JOBS`, `OJOL_MAX_MINUTES`, `OJOL_MAX_SPEND` | Kosong untuk tanpa batas |
@@ -123,7 +121,7 @@ curl -fsS http://127.0.0.1:6080/health
 docker compose logs --tail 50 app
 ```
 
-Production menolak Telegram kosong, origin tanpa HTTPS, dan saldo minimum di bawah20. Proses berjalan sebagai UID1000. Docker mengelola rotasi log3file×10MiB. Tidak memasang Docker socket atau memberi bot kewenangan membuat container.
+Production menolak origin tanpa HTTPS dan saldo minimum di bawah 5. Proses berjalan sebagai UID1000. Docker mengelola rotasi log3file×10MiB. Tidak memasang Docker socket atau memberi bot kewenangan membuat container.
 
 Saat upgrade dari versi satu akun, **Utama** milik admin otomatis menunjuk direktori runtime lama. Ledger, cookie HTTP, dan pengaturan tidak dipindah/dihapus. Profil Chrome lama dibiarkan sebagai arsip tetapi tidak dibaca; jika hanya profil Chrome yang tersedia, lakukan **Import Cookie** baru. Hapus variabel lama `OJOL_MANAGED_BROWSER`, `OJOL_CDP_URL`, dan `OJOL_BROWSER_FALLBACK` dari konfigurasi; pastikan `OJOL_CORE=http`.
 

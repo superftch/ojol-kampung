@@ -14,7 +14,7 @@ from .journal import load_journal_snapshot
 
 RESUME_BUTTON = {"inline_keyboard": [[{"text": "▶️ Lanjutkan", "callback_data": "resume"}]]}
 from .maintenance import SCHEDULE_FILE, held_window
-from .models import NEEDS, now
+from .models import now
 from .telegram import queue_error, queue_notice
 
 

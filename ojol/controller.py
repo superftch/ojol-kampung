@@ -760,7 +760,8 @@ class Controller:
                         and (
                             not flags["ojol"]
                             or self.state.wallet >= Decimal(20)
-                            or need in {"fisik", "kesehatan", "makan", "kebersihan", "wc", "penampilan"}
+                            or need
+                            in {"fisik", "kesehatan", "makan", "kebersihan", "wc", "penampilan"}
                         )
                     ),
                     key=self.state.needs.__getitem__,
@@ -771,10 +772,7 @@ class Controller:
                         purchased = await self.purchase(self.state, need)
                     except RuntimeError:
                         purchased = False
-                    if (
-                        not purchased
-                        and auto_flags(self.settings.runtime_dir)[need]
-                    ):
+                    if not purchased and auto_flags(self.settings.runtime_dir)[need]:
                         self.need_retry_at[need] = time.monotonic() + 300
                     continue
             if self.state.phase == "idle" and await run_gym(self):

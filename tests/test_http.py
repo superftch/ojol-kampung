@@ -2428,9 +2428,7 @@ async def test_kamar_mandi_wc_preview_and_purchase(api, world):
     # Purchase WC
     before = await api.snapshot()
     assert before.needs["wc"] == 0
-    receipt = await api.purchase(
-        product, str(before.wallet), before.needs["wc"], "5", str(uuid4())
-    )
+    receipt = await api.purchase(product, str(before.wallet), before.needs["wc"], "5", str(uuid4()))
     assert receipt["isi"] == 100
     assert any(p.get("aksi") == "wc" for p in wc_posted)
 
@@ -2510,7 +2508,9 @@ async def test_penampilan_fallback_kampung_sebelah(api, world, monkeypatch):
 
     prod = shops[0]["products"][0]
     before = await api.snapshot()
-    receipt = await api.purchase(prod, str(before.wallet), before.needs.get("penampilan", 0), "5", str(uuid4()))
+    receipt = await api.purchase(
+        prod, str(before.wallet), before.needs.get("penampilan", 0), "5", str(uuid4())
+    )
     assert receipt["ok"] is True
     assert any(b.get("item") == "potong-rambut" for b in bought)
 
@@ -2570,7 +2570,3 @@ async def test_ojol_failure_continues_auto_kebutuhan(api, world, settings):
         assert any(p.get("aksi") == "wc" for p in km_posted)
         actions = journal.history()["actions"]
         assert any(a["kind"] == "purchase" and a["status"] == "verified" for a in actions)
-
-
-
-

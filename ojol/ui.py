@@ -75,7 +75,7 @@ class HttpUI:
         )
 
     async def _run_job_action(self, kind, mode=None):
-        mode = mode or getattr(self.settings, "ojol_mode", "kendara")
+        mode = mode or getattr(self.settings, "ojol_mode", "otomatis")
         return await self.api.job_action(kind, mode=mode)
 
     async def snapshot(self):
@@ -142,5 +142,5 @@ class HttpUI:
         )
         if kind is None:
             raise HttpCoreError("Aksi HTTP tidak dikenal", category="blocked")
-        mode = getattr(self.settings, "ojol_mode", "kendara")
+        mode = getattr(self.settings, "ojol_mode", "otomatis")
         return await self.call_tool("ojol_job_action", kind=kind, mode=mode)

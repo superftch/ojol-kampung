@@ -1,0 +1,34 @@
+{
+  "manifest_version": 3,
+  "name": "KampungSebelah - Diving, Mancing, Ojol & TPU Pusaka",
+  "version": "2.2.0",
+  "description": "Radar & Auto-Pilot Diving Laut, Otomatisasi Mancing Pro, Auto-Ojol, serta Radar & Auto-Geledah Pusaka TPU Rumah Mbah Rukmi untuk Kampung Sebelah.",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://www.kampungsebelah.com/*",
+    "https://kampungsebelah.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "KampungSebelah Helper"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.kampungsebelah.com/*",
+        "https://kampungsebelah.com/*"
+      ],
+      "js": ["content.js", "mancing.js", "ojol.js", "tpu.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["inject.js"],
+      "matches": [
+        "https://www.kampungsebelah.com/*",
+        "https://kampungsebelah.com/*"
+      ]
+    }
+  ]
+}

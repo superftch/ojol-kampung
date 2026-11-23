@@ -27,7 +27,7 @@ Setiap request ke `https://www.kampungsebelah.com` kini menyertakan header brows
 
 | Endpoint | Pemakaian | Bukti |
 |---|---|---|
-| GET `/api/ojol` | `vehicle` default, `vehicles` tersedia, `bars` dan `pakai` bersama, mitra, trip, tarif, payout/history, sisa jam narik harian (maksimal 12 jam per hari pada mode otomatis) | HTTP200 13 November 2026 dengan `vehicle: "mobil"`, `vehicles: ["motor", "mobil"]`, dan konsumsi `bensin: 5`, `kendaraan: 2`, `kuota: 4`. Update #15 tanggal 19 November 2026: batas narik maksimal 8 jam/hari. Update #16 tanggal 20 November 2026: batas narik maksimal naik menjadi 12 jam/hari (`narikMaksMenit: 720`, reset 00.00 WIB) dan ongkos dasar naik 0.4 koin (`kabarTarif`). Mode berkendara (`kendara`) memiliki `tanpa_batas: true` (tidak dibatasi kuota 12 jam harian maupun istirahat wajib). |
+| GET `/api/ojol` | `vehicle` default, `vehicles` tersedia, `bars` dan `pakai` bersama, mitra, trip, tarif, payout/history, sisa jam narik harian (maksimal 14 jam per hari) | HTTP200 13 November 2026 dengan `vehicle: "mobil"`, `vehicles: ["motor", "mobil"]`. Update #15 tanggal 19 November 2026: batas narik maksimal 8 jam/hari. Update #16 tanggal 20 November 2026: batas narik maksimal 12 jam/hari (`narikMaksMenit: 720`). Update #17 tanggal 21-22 November 2026 (bundle `14kftr3gt-5o6.js`): batas narik harian naik menjadi 14 jam/hari (`narik_harian_menit: 840`), istirahat wajib dipersingkat 15 -> 10 menit (`istirahat_menit: 10`), batas jalan terus-menerus 3 jam (`narik_maks_menit: 180`). Konsumsi bensin dasar `bensin: 6` (rumus jarak: `2 + jarak/10`, maks 6), `kendaraan: 2`, `kuota: 4`. Aturan anti-bot `cek_kilat` (terima ongkos < 2.5 detik memicu verifikasi di setiap order). Mode kendara kini `ikut_batas_harian: true` (terhitung ke kuota 14 jam, tapi tetap bebas jeda istirahat wajib). |
 | GET `/api/kendaraan` | `items[]`, termasuk `family`, `listrik`, dan `name` | Bundle `3tkrjjmq3rsag.js` dan HTTP200 13 November 2026 dengan Motor bebek dan Mobil listrik |
 | GET `/api/game/me` | `balanceMilli`, `configVersion`, rumah/desa, `profile.nickname`, `profile.resting`, `profile.sleep` | HTTP200 historis; nickname dan saldo teramati lagi saat validasi Browser Harness 19 November 2026; field tidur dicocokkan dengan bundle client tersimpan pada 12 November 2026 |
 | GET `/api/kebutuhan` | `asleep`, status kebutuhan aktif (`makan`, `kesehatan`, `fisik`, `rekreasi`, `kebersihan`, `wc`, `penampilan`, `bensin`, `kendaraan`, `kuota`, `rumah`), status `kondisi` (`bau`, `kebelet`, `upahPotongBps`), kuota harian `bersih` (`mandi`, `sikat`, `mandiMaks`, `sikatMaks`), dan kandidat tempat | HTTP 200 untuk status kebutuhan. Live verifikasi 23 November 2026 membuktikan `kebersihan` dan `wc`: kondisi `bau: true` dan `kebelet: true` memotong upah ojol 10% (`upahPotongBps: 1000`). Kuota mandi maks 2x dan sikat gigi maks 3x per hari. |
@@ -60,6 +60,9 @@ Setiap request ke `https://www.kampungsebelah.com` kini menyertakan header brows
 | GET `/api/daily/garden` | Status kebun dan kolam: `now`, `gardens[]` (`id`, `kind`, `state`, `readyAt`, `cared`, `seedMilli`, dll.), `perlengkapan`, `letak`, `ukuran`, `tas` | Bundle client `0wwcgg-bq-sxa.js`, `3g13rrtpxw-ld.js`, dan GET live terotorisasi 19 November 2026 |
 | POST `/api/daily/garden/{id}` | Aksi kebun/kolam: `{"action": "panen" \| "rawat" \| "tanam"}` | Bundle client `0wwcgg-bq-sxa.js` (komponen `#ks-kebun`, fungsi `a6`) dan bundle `3g13rrtpxw-ld.js` (modul 649755) |
 | GET `/api/realtime/token` | Token koneksi realtime / presence client | Bundle client `0wwcgg-bq-sxa.js`, `087o49eachamv.js`, dan katalog API. Mengembalikan `{url}` token realtime; dipanggil bersama `/api/game/me` dan `/api/time` untuk menjaga status akun tetap online |
+| GET `/api/diving` | Status diving Pulau Seberang: `nama`, `aktif`, `tiketMilli` (10.000 m-koin), `tabungMenit` (30 menit oksigen), `rekreasi: 30`, `mutiara` (`perHari`, `ketemu`, `dipegang`, `hargaMilli`, `langka`), `diPulau`, `bisaBeli`, `sesi` (`id`, `mulai`, `hangus`, `buka[]`) | Chunk `1j_v3n6k6p7js.js`, rules `2p8n67a_wffd0.js`, dan GET live terotorisasi 23 November 2026. |
+| POST `/api/diving` | Aksi diving: `{"aksi": "masuk"}` (beli tiket 10 koin / lanjut tabung); `{"aksi": "kerang", "id", "kerang": int}` (buka kerang 0-47); `{"aksi": "jual"}` (jual mutiara ke desa, 100 koin biasa / 300 koin langka); `{"aksi": "selesai", "id"}` (selesai menyelam, +30 rekreasi); `{"aksi": "hiu", "id"}` (terkena hiu) | Chunk `1j_v3n6k6p7js.js`, rules `2p8n67a_wffd0.js`, dan GET/POST live terotorisasi 23 November 2026. |
+| GET `/api/diving/realtime` | Endpoint URL realtime websocket posisi penyelam lain di perairan | Chunk `1j_v3n6k6p7js.js` |
 
 Capture historis `/api/ojol` dalam `.local/http-discovery/ojol.json` memuat `todayCount` dan receipt `history[]` dengan `id`, `doneAt`, `kind`, `from.label`, `to.label`, serta `netMilli`. Trip aktif memuat `id` dan `arriveAt`. Adapter memakai ID receipt dan waktu server untuk rekonsiliasi, serta `netMilli` untuk ongkos diterima. Snapshot menyimpan penghitung dan riwayat yang tersedia pada respons, bukan seluruh riwayat akun. Tidak ada endpoint baru atau asumsi idempotensi POST untuk fitur ini.
 
@@ -67,25 +70,32 @@ Panel Ojol memilih dari `vehicles`, memakai `vehicle` sebagai default UI, dan me
 
 Pada tanggal yang sama, katalog Bengkel motor Gotei menawarkan **Servis motor** 1.500 mili-koin dan **Servis mobil** 2.500 mili-koin. Efek client keduanya `kendaraan: 60`, sesuai bar Kondisi mesin bersama pada respons Ojol. **Konfirmasi pengguna pada 19 November 2026: Servis motor dapat dipakai untuk mobil.** Adapter tetap memasukkan item perawatan motor saat mobil aktif; planner membandingkan biaya per poin dan total biaya, lalu memverifikasi kenaikan bar setelah pembelian. Dengan efek sama +60 dan harga 1,5 vs 2,5 koin, Servis motor dipilih. Tes HTTP terisolasi `test_car_condition_prefers_lower_cost_for_same_recovery` mencakup pemilihan dan satu POST `servis-motor` saat kendaraan mobil. Konfirmasi pengguna dan tes simulasi ini dibedakan dari observasi POST live oleh agen, yang belum dilakukan untuk kasus tersebut. Batas anggaran, saldo minimum, kapasitas resource, dan pemeriksaan perubahan kendaraan tetap berlaku.
 
-## Bukti dan Alur Mode Berkendara / Kendarai Sendiri (20 November 2026)
+## Bukti dan Alur Mode Berkendara / Kendarai Sendiri (Update 20-22 November 2026)
 
-Inspeksi client bundle `3txiswhto39cq.js` dan verifikasi sesi live 20 November 2026 membuktikan fitur baru **Kendarai Sendiri** (`mode: "kendara"`):
+Inspeksi client bundle `3txiswhto39cq.js` dan bundle terbaru `14kftr3gt-5o6.js` (audit Eka 21-22 November 2026) membuktikan perkembangan aturan **Kendarai Sendiri** (`mode: "kendara"`):
 1. **Konfigurasi Server/Client (`config.kendara`)**:
    - `enabled: true`
    - `laju_maks: 1.8` (kecepatan perpindahan koordinat maksimal 1.8 petak per detik)
    - `dekat_petak: 3.5` (radius maksimal penjemputan dan penurunan dari target)
    - `naik_detik: 8`, `turun_detik: 8`
    - `lacak_detik: 5`, `lacak_basi_detik: 45`
-   - `tanpa_batas: true`: **Penting** — order mode kendara tidak dibatasi kuota 12 jam per hari (`narikMaksMenit: 720`) dan tidak terkena aturan istirahat wajib 30 menit.
-2. **Siklus Pemanggilan API**:
+   - `tanpa_batas: true`: **Penting** — order mode kendara **bebas dari aturan istirahat wajib 10 menit** (`istirahat_menit: 10`).
+   - `ikut_batas_harian: true` (Update 21-22 Nov 2026): Order mode kendara kini ikut dihitung ke batas kuota narik harian **14 jam per hari** (`narik_harian_menit: 840`, reset 00.00 WIB); durasi order yang dihitung adalah dari ambil sampai selesai (maksimal `hitung_maks_menit: 15` per order).
+   - `jemput_asal_menit: 30`: Penumpang paling cepat naik setelah jarak lurus dari posisi awal (lokasi order sebelumnya bila selesai < 30 menit lalu, selain itu rumah) dibagi `laju_maks`.
+   - `pesanan_maks_menit: 10`: Pesanan warga wajib diselesaikan dalam 10 menit sejak diambil agar tidak dialihkan ke Mitra Ojek Desa.
+   - `gerak_petak: 0.5`, `luar_jalan_maks: 0.2`: Server mengecek jejak jalan koordinat (minimal gerak 0.5 petak per laporan dan di luar jalan maksimal 20%).
+2. **Aturan Anti-Bot `cek_kilat` (Update 21-22 Nov 2026)**:
+   - `cek_kilat_detik: 2.5`, `cek_kilat_dari: 6`, `cek_kilat_min: 5`.
+   - Bila pengemudi menerima ongkos kurang dari 2.5 detik setelah sampai pada $\ge 5$ dari 6 order terakhir, server menandai akun dan memicu cek verifikasi (Turnstile / SVG 2 angka) pada **SETIAP ORDER**.
+   - Mitigasi: Bot/ekstensi wajib menerapkan human jitter dan menunda klaim ongkos minimal $\ge 2.8$ detik setelah tiba (`arrived`).
+3. **Siklus Pemanggilan API**:
    - `POST /api/ojol {"action": "tawar", "vehicle": "mobil", "mode": "kendara"}`: Server merespons `pilihan[]` berisi 3 order dengan rincian `id`, `fareMilli`, `warga`, `from`, `to`, dan `distance`. Bot memprioritaskan order dengan `fareMilli` tertinggi.
    - `POST /api/ojol {"action": "ambil", "mode": "kendara", "pilih": "<chosen_order_id>", "vehicle": "mobil"}`: Server merespons status `trip` dengan `mode: "kendara"` dan `jemput: false`.
    - `POST /api/ojol {"action": "lacak", "x": from.x, "y": from.y}`: Memperbarui posisi koordinat mitra ke titik penjemputan.
    - `POST /api/ojol {"action": "jemput"}`: Menjemput penumpang; server merespons `jemput: true` dan menghitung waktu kedatangan `arriveAt`.
    - `POST /api/ojol {"action": "lacak", "x": to.x, "y": to.y}`: Memperbarui posisi koordinat mitra ke titik tujuan.
-   - `POST /api/ojol {"action": "selesai"}`: Dipanggil setelah server `arriveAt` tercapai untuk mencairkan ongkos (`netMilli`) ke dompet koin dan menambah `todayCount`. Bila `cek` trip aktif, `selesai` mengirim `kode` 2 angka hasil pemecahan otomatis gambar SVG cek.
-   - Verifikasi cek muncul sesekali (`cek_tiap_order: 10`, bunyi changelog 19 November 2026: "sesekali cek ketik 2 angka sebelum terima ongkos"); dua order live 20 November 2026 mengirim `cek: false` dan selesai tanpa `kode`.
-3. **Konfigurasi Akun & Default**:
+   - `POST /api/ojol {"action": "selesai"}`: Dipanggil setelah server `arriveAt` tercapai (ditambah jeda aman $> 2.5$ detik anti cek kilat) untuk mencairkan ongkos (`netMilli`) ke dompet koin dan menambah `todayCount`. Bila `cek` trip aktif, `selesai` mengirim `kode` 2 angka hasil pemecahan otomatis gambar SVG cek.
+4. **Konfigurasi Akun & Default**:
    - `Settings.ojol_mode`: pilihan `"kendara"` (default) atau `"otomatis"`.
    - Jika `ojol_mode == "kendara"`, otomatisasi melakukan siklus penawaran (memilih tarif tertinggi) dan penjemputan/pengantaran.
    - Jika mode kendara menghasilkan daftar penawaran kosong atau fallback diperlukan, sistem beralih ke mode otomatis reguler.

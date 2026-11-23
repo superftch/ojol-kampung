@@ -654,6 +654,9 @@ class ControlService:
             "has_cookie": has_cookie,
             "cookie_valid": cookie_valid,
             "phase": phase,
+            "remaining_seconds": state.get("remaining_seconds"),
+            "trip": state.get("trip"),
+            "sleep_schedule": state.get("sleep_schedule"),
             "icon": icon,
             "status_text": status_text,
             "wallet": str(wallet) if wallet is not None else None,
@@ -661,6 +664,8 @@ class ControlService:
             "fuel": fuel,
             "condition": condition,
             "data": kuota,
+            "shift_done": bool(state.get("ojol_shift_done")),
+            "hours_left": state.get("ojol_hours_left"),
             "online": is_online or active,
             "online_updated": (
                 datetime.fromtimestamp(online_updated / 1e9, tz=UTC).isoformat()
@@ -953,9 +958,7 @@ class ControlService:
                     "Fitur auto kebutuhan tetap berjalan normal. Tekan Jalankan Ojol jika ingin melanjutkan Ojol."
                 )
             await self.stop_worker()
-            return (
-                "⏹ Aktivitas akun sudah dihentikan.\n\nTekan Jalankan Ojol atau Jalankan Kebutuhan jika ingin melanjutkan."
-            )
+            return "⏹ Aktivitas akun sudah dihentikan.\n\nTekan Jalankan Ojol atau Jalankan Kebutuhan jika ingin melanjutkan."
         if command == "stop_kebutuhan":
             for key in NEEDS:
                 set_auto_flag(self.settings.runtime_dir, key, False)
@@ -969,14 +972,10 @@ class ControlService:
                     "Auto Ojol tetap berjalan normal. Tekan Jalankan Kebutuhan jika ingin mengaktifkan kembali."
                 )
             await self.stop_worker()
-            return (
-                "⏹ Aktivitas akun sudah dihentikan.\n\nTekan Jalankan Ojol atau Jalankan Kebutuhan jika ingin melanjutkan."
-            )
+            return "⏹ Aktivitas akun sudah dihentikan.\n\nTekan Jalankan Ojol atau Jalankan Kebutuhan jika ingin melanjutkan."
         if command == "stop":
             await self.stop_worker()
-            return (
-                "⏹ Aktivitas akun sudah dihentikan.\n\nTekan Jalankan Ojol atau Jalankan Kebutuhan jika ingin melanjutkan."
-            )
+            return "⏹ Aktivitas akun sudah dihentikan.\n\nTekan Jalankan Ojol atau Jalankan Kebutuhan jika ingin melanjutkan."
         if command == "run_kebutuhan":
             async with self.lock:
                 for key in NEEDS:
@@ -1098,7 +1097,8 @@ class ControlService:
                 f"control.command.{command}",
                 {"account_id": self.account_id},
                 stop_worker=not command.startswith("profit")
-                and command not in {
+                and command
+                not in {
                     "cleanup_scan",
                     "visit_scan",
                     "stop_ojol",
@@ -1111,7 +1111,8 @@ class ControlService:
                 exc,
                 f"control.command.{command}",
                 {"account_id": self.account_id},
-                stop_worker=command not in {
+                stop_worker=command
+                not in {
                     "cleanup_scan",
                     "visit_scan",
                     "stop_ojol",
@@ -1271,6 +1272,7 @@ class ControlService:
             await flush_notices(self.settings)
         if (
             poll
+            and self.settings.telegram_enabled
             and self.settings.telegram_bot_token.get_secret_value()
             and self.settings.telegram_chat_id
         ):
@@ -1359,7 +1361,16 @@ def create_app(settings, service=None):
                 "Cache-Control": "no-store",
                 "X-Frame-Options": "DENY",
                 "X-Content-Type-Options": "nosniff",
-                "Content-Security-Policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'",
+                "Content-Security-Policy": (
+                    "default-src 'self'; "
+                    "script-src 'self' 'unsafe-inline' https://telegram.org https://oauth.telegram.org; "
+                    "frame-src https://oauth.telegram.org; "
+                    "style-src 'self' 'unsafe-inline'; "
+                    "img-src 'self' data: https://telegram.org https://*.telegram.org; "
+                    "connect-src 'self'; "
+                    "form-action 'self'; "
+                    "frame-ancestors 'none'"
+                ),
             }
         )
         return response
@@ -1486,6 +1497,10 @@ def create_app(settings, service=None):
         )
         response.delete_cookie("ojol_import", path=service.url_prefix + "/")
         return response
+
+    from .web_api import register_web_routes
+
+    register_web_routes(app, settings, manager=manager, service=service)
 
     app.state.management = manager
     return app

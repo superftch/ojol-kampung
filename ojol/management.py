@@ -316,7 +316,10 @@ class MultiAccountService:
             ],
             [
                 {"text": "Status Ojol", "callback_data": f"acct:{identifier}:status_ojol"},
-                {"text": "Status Kebutuhan", "callback_data": f"acct:{identifier}:status_kebutuhan"},
+                {
+                    "text": "Status Kebutuhan",
+                    "callback_data": f"acct:{identifier}:status_kebutuhan",
+                },
             ],
             [{"text": "Semua Auto", "callback_data": f"acct:{identifier}:auto"}],
             [
@@ -359,7 +362,10 @@ class MultiAccountService:
                             "text": "Auto Kebutuhan",
                             "callback_data": f"acct:{account['id']}:auto_kebutuhan",
                         },
-                        {"text": "Status Ojol", "callback_data": f"acct:{account['id']}:status_ojol"},
+                        {
+                            "text": "Status Ojol",
+                            "callback_data": f"acct:{account['id']}:status_ojol",
+                        },
                     ],
                     [{"text": "Akun Saya", "callback_data": "accounts:0"}],
                 ]
@@ -586,7 +592,9 @@ class MultiAccountService:
         for key, label in SUBJECTS.items():
             track_info = skills_by_id.get(key)
             is_max = is_track_max(track_info, mode) if track_info else False
-            lvl_text = f" Lv {track_info.get('level')}" if track_info and "level" in track_info else ""
+            lvl_text = (
+                f" Lv {track_info.get('level')}" if track_info and "level" in track_info else ""
+            )
             tag = f" (Maks{lvl_text})" if is_max else (f" ({lvl_text.strip()})" if lvl_text else "")
             check = "✓ " if selected == key else ""
             callback_data = (
@@ -740,6 +748,27 @@ class MultiAccountService:
         )
 
     async def public_access(self, owner, text, callback, profile):
+        if not callback and (text.startswith("/connect") or text.startswith("connect")):
+            parts = text.split()
+            if len(parts) >= 2:
+                code = parts[1].strip()
+                try:
+                    name = " ".join(
+                        str(profile.get(key) or "") for key in ("first_name", "last_name")
+                    ).strip()
+                    web_user = self.registry.web.consume_telegram_link_code(
+                        code, owner, name=name, username=str(profile.get("username") or "")
+                    )
+                    await self.reply(
+                        owner,
+                        f"✅ Akun web '{web_user['username']}' berhasil dihubungkan ke Telegram!\n\n"
+                        "Akses bot Anda kini aktif. Kirim /start untuk membuka menu utama.",
+                    )
+                    return
+                except ValueError as exc:
+                    await self.reply(owner, f"❌ Gagal menghubungkan: {exc}")
+                    return
+
         if not (
             (not callback and text.split(maxsplit=1)[0:1] == ["/start"])
             or (callback and text in {"access:request", "access:status"})
@@ -980,6 +1009,15 @@ class MultiAccountService:
                     ACCESS_STATUS,
                 )
             await self.request_menu(owner, identifier)
+        elif text.startswith(("web_appr:", "web_rejc:")):
+            action, user_id_str = text.split(":", 1)
+            uid = int(user_id_str)
+            approve = action == "web_appr"
+            updated = self.registry.web.review_user(uid, owner, approve=approve)
+            await self.reply(
+                owner,
+                f"✅ Pendaftaran akun web '{updated['username']}' telah {'disetujui' if approve else 'ditolak'}.",
+            )
         elif text.startswith("admin:users:"):
             await self.users_menu(owner, int(text.rsplit(":", 1)[1]))
         elif text == "admin:add_user":
@@ -1121,6 +1159,40 @@ class MultiAccountService:
             callback and text in {"home", "cancel"}
         ):
             await self.home(owner)
+            return
+        if not callback and text in {"/web", "/login", "Web", "Login Web"}:
+            self.pending.pop(owner, None)
+            code = self.registry.web.issue_telegram_login_code(owner)
+            url = self.public_url()
+            await self.reply(
+                owner,
+                "🌐 Login Web Kampung Ojol\n\n"
+                f"Kode login Anda:\n`{code}`\n\n"
+                f"Buka browser dan masukkan kode di atas:\n"
+                f"{url}/login?code={code}\n\n"
+                "⏳ Kode berlaku selama 10 menit.",
+            )
+            return
+        if not callback and (text.startswith("/connect") or text.startswith("connect")):
+            self.pending.pop(owner, None)
+            parts = text.split()
+            if len(parts) < 2:
+                await self.reply(
+                    owner,
+                    "⚠️ Format: `/connect <KODE>`\n\n"
+                    "Dapatkan 6-digit kode penghubung dari menu Hubungkan Telegram di dashboard web.",
+                )
+                return
+            code = parts[1].strip()
+            try:
+                web_user = self.registry.web.consume_telegram_link_code(code, owner)
+                await self.reply(
+                    owner,
+                    f"✅ Akun Telegram berhasil dihubungkan ke akun web '{web_user['username']}'!\n\n"
+                    "Sekarang Anda dapat mengelola akun game secara bersamaan lewat web dan Telegram.",
+                )
+            except ValueError as exc:
+                await self.reply(owner, f"❌ Gagal: {exc}")
             return
         if not callback and text == "Pengaturan":
             self.pending.pop(owner, None)
@@ -1369,7 +1441,7 @@ class MultiAccountService:
                                     else message.get("text", ""),
                                     bool(callback),
                                     profile=profile,
-                                    )
+                                )
                         offset = max(offset, update["update_id"] + 1)
                         cursor.write_text(str(offset))
                 except (TelegramError, OSError, ValueError) as exc:
@@ -1574,7 +1646,11 @@ class MultiAccountService:
         self.tasks.append(
             asyncio.create_task(self.guard_task(self.supervise, "management.supervise"))
         )
-        if self.settings.telegram_bot_token.get_secret_value() and self.registry.admin:
+        if (
+            self.settings.telegram_enabled
+            and self.settings.telegram_bot_token.get_secret_value()
+            and self.registry.admin
+        ):
             self.tasks.append(
                 asyncio.create_task(self.guard_task(self.poll_telegram, "telegram.poll"))
             )

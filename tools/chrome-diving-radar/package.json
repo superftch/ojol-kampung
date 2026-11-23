@@ -1,0 +1,19 @@
+{
+  "name": "kampungsebelah-helper-extension",
+  "version": "2.1.0",
+  "description": "Chrome Extension for KampungSebelah: 3D Diving Compass & Auto-Pilot, Auto-Mancing Pro, and Auto-Ojol Mode Kendarai",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node test/run-tests.mjs",
+    "lint": "node -c *.js test/*.mjs"
+  },
+  "keywords": [
+    "chrome-extension",
+    "kampungsebelah",
+    "diving-radar",
+    "auto-mancing"
+  ],
+  "author": "",
+  "license": "ISC"
+}

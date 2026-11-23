@@ -112,7 +112,7 @@ async def import_session(settings, payload):
         settings,
         "✅ Akun game sudah terhubung\n\n"
         f"Nickname • {profile['nickname']}\nSaldo profil • {display(coin(profile['balanceMilli']))} koin\n\n"
-        "Kembali ke Telegram dan tekan Jalankan Ojol untuk mulai.",
+        "Kembali ke dashboard web dan tekan Jalankan Ojol untuk mulai.",
     )
     await flush_notices(settings)
     return profile

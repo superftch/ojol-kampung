@@ -11,9 +11,7 @@ Coin = Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
 Percent = Annotated[int, Field(ge=0, le=100)]
 Resource = Literal["fuel", "condition", "data"]
 OjolVehicle = Literal["motor", "mobil"]
-Need = Literal[
-    "makan", "kesehatan", "fisik", "rekreasi", "penampilan", "rumah", "kebersihan", "wc"
-]
+Need = Literal["makan", "kesehatan", "fisik", "rekreasi", "penampilan", "rumah", "kebersihan", "wc"]
 NEEDS = get_args(Need)
 
 
@@ -53,6 +51,7 @@ class Settings(Model):
     max_jobs: int | None = Field(default=None, gt=0)
     max_minutes: int | None = Field(default=None, gt=0)
     idle_poll_seconds: int = Field(default=10, ge=3, le=60)
+    telegram_enabled: bool = False
     telegram_bot_token: SecretStr = Field(default=SecretStr(""), exclude=True, repr=False)
     telegram_chat_id: int | None = Field(default=None, gt=0)
     login_public_url: str = "http://localhost:6080"
@@ -62,7 +61,7 @@ class Settings(Model):
     max_active_workers: int = Field(default=3, ge=1, le=100)
     tunnel_enabled: bool = False
     auto_start: bool = True
-    ojol_mode: Literal["kendara", "otomatis"] = "kendara"
+    ojol_mode: Literal["kendara", "otomatis"] = "otomatis"
 
     @field_validator("telegram_chat_id", mode="before")
     @classmethod
@@ -128,8 +127,6 @@ class Settings(Model):
     @model_validator(mode="after")
     def isolate_test(self):
         if self.env == "production":
-            if not self.telegram_bot_token.get_secret_value() or not self.telegram_chat_id:
-                raise ValueError("Production memerlukan token Telegram dan Chat ID admin pribadi")
             if not self.login_public_url.startswith("https://"):
                 raise ValueError("Production memerlukan origin HTTPS untuk Import Cookie")
             if self.min_balance < 5:

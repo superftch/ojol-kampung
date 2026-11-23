@@ -14,19 +14,15 @@ from ojol.models import Settings
 from ojol.telegram import TelegramError, flush_notices
 
 
-def test_production_requires_https_telegram_and_cash_floor(settings):
+def test_production_requires_https_and_cash_floor(settings):
     values = dict(
         env="production",
         runtime_dir=settings.runtime_dir,
-        telegram_bot_token="isolated-test-secret",
-        telegram_chat_id=123,
         login_public_url="https://ojol.example.test",
     )
     valid = Settings(**values)
     assert valid.max_jobs is None and valid.max_minutes is None
     for change in (
-        {"telegram_bot_token": ""},
-        {"telegram_chat_id": None},
         {"login_public_url": "http://localhost:6080"},
         {"min_balance": "4.99"},
     ):

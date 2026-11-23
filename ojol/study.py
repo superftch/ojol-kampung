@@ -112,7 +112,9 @@ def set_subject(directory, mode, track, skills=None):
         if skills is None:
             skills = cached_skills(directory)
         if skills:
-            track_info = next((t for t in skills if isinstance(t, dict) and t.get("id") == track), None)
+            track_info = next(
+                (t for t in skills if isinstance(t, dict) and t.get("id") == track), None
+            )
             if track_info and is_track_max(track_info, mode):
                 raise ValueError("Bidang belajar sudah mencapai batas maksimal.")
     saved = {key: value for key, value in subjects(directory).items() if value is not None}

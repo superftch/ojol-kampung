@@ -942,12 +942,12 @@ def test_control_summary_and_dashboard_command(settings):
 
 
 async def test_kebutuhan_and_ojol_separate_buttons(settings, monkeypatch):
+    import json
     from types import SimpleNamespace
     from unittest.mock import Mock
-    from ojol.auto_settings import auto_flags, set_auto_flag
-    from ojol.session_transfer import parse_cookie_input
 
-    import json
+    from ojol.auto_settings import auto_flags
+    from ojol.session_transfer import parse_cookie_input
 
     settings = settings.model_copy(update={"env": "local", "operator_authorized": True})
     service = ControlService(settings)
@@ -1036,4 +1036,3 @@ async def test_status_kebutuhan_and_auto_kebutuhan_commands(settings):
     assert "Makan" in auto_keb
     assert "Kebersihan" in auto_keb
     assert "Buang air" in auto_keb
-

@@ -66,6 +66,9 @@ class Accounts:
                     raise ValueError(
                         "Sesi akun lama ambigu/duplikat; periksa sebelum startup"
                     ) from None
+        from .web_auth import WebAuth
+
+        self.web = WebAuth(self)
 
     @contextmanager
     def db(self):
@@ -82,6 +85,9 @@ class Accounts:
         with self.db() as db:
             row = db.execute("SELECT enabled FROM users WHERE telegram_id=?", (owner,)).fetchone()
         return bool(row and row[0])
+
+    def owner_for_user(self, user):
+        return self.web.get_owner_for_user(user)
 
     def value(self, name, db=None):
         if db is None:

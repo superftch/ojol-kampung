@@ -512,6 +512,8 @@ def queue_notice(settings, message, context=None, reply_markup=None):
                 "reply_markup": reply_markup,
                 "attempts": 0,
                 "next_attempt": 0,
+                "created_at": now().isoformat(),
+                "read": False,
             },
             ensure_ascii=False,
         )
