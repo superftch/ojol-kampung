@@ -2854,13 +2854,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
             try {{
                 const data = await apiFetch('/api/control/' + cmd, {{ method: 'POST' }});
-                const cmdTitles = {{
-                    'run': 'Order Ojol berhasil dijalankan',
-                    'stop': 'Order Ojol berhasil dihentikan',
-                    'run-needs': 'Auto Kebutuhan aktif (memantau 8 kebutuhan karakter)',
-                    'stop-needs': 'Auto Kebutuhan dinonaktifkan'
-                }};
-                showToast('✅ ' + (cmdTitles[cmd] || 'Aksi berhasil diproses'), 'success');
+                showToast(data.message || 'Aksi diproses', 'info');
                 await refreshDashboard();
             }} catch (e) {{
                 showToast('⚠️ Aksi gagal: ' + e.message, 'error');

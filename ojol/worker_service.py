@@ -209,9 +209,8 @@ class WorkerService:
 
             env = {
                 **os.environ,
-                "OJOL_RUNTIME_DIR": str(directory),
-                "OJOL_TELEGRAM_CHAT_ID": str(acc_settings.telegram_chat_id or ""),
-                "OJOL_ACCOUNT_NAME": acc_settings.account_name,
+                # The CLI resolves --account against the root registry before scoping settings.
+                "OJOL_RUNTIME_DIR": str(self.runtime_dir),
                 "OJOL_ACCOUNT_ID": acc_id,
                 "OJOL_WORKER_AUTO_START": "1" if auto_start else "0",
                 "OJOL_MAINTENANCE_FILE": str(self.maintenance_file),

@@ -1,8 +1,11 @@
 import asyncio
 import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
+from ojol.session_transfer import parse_cookie_input
 from ojol.worker_service import (
     WorkerService,
     get_commands_dir,
@@ -90,3 +93,26 @@ async def test_worker_service_start_validations(settings):
     resp = await service.start_account_worker(account_id=None)
     assert resp["ok"] is False
     assert "belum diizinkan" in resp["error"]
+
+
+@pytest.mark.asyncio
+async def test_worker_starts_additional_account_from_root_registry(settings, monkeypatch):
+    settings = settings.model_copy(update={"operator_authorized": True, "telegram_chat_id": 1001})
+    monkeypatch.setenv("OJOL_TELEGRAM_CHAT_ID", "1001")
+    service = WorkerService(settings)
+    owner = 1002
+    service.registry.whitelist(owner)
+    account_id = service.registry.create(owner, "Akun tambahan")["id"]
+    scoped, _ = service.scoped_account_settings(account_id)
+    scoped.runtime_dir.mkdir(parents=True)
+    (scoped.runtime_dir / "http-session.json").write_text(
+        json.dumps(parse_cookie_input("fixture-session"))
+    )
+    spawn = AsyncMock(return_value=SimpleNamespace(pid=1234))
+    monkeypatch.setattr("ojol.worker_service.asyncio.create_subprocess_exec", spawn)
+
+    assert (await service.start_account_worker(account_id))["ok"]
+    args, kwargs = spawn.await_args
+    assert args[-4:] == ("--account", account_id, "run", "--live")
+    assert kwargs["env"]["OJOL_RUNTIME_DIR"] == str(settings.runtime_dir)
+    assert kwargs["env"]["OJOL_TELEGRAM_CHAT_ID"] == "1001"
