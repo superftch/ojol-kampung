@@ -9,9 +9,10 @@ COPY pyproject.toml uv.lock ./
 RUN pip install --no-cache-dir uv==0.11.6 && UV_PYTHON_DOWNLOADS=never uv sync --frozen --no-dev --no-cache && pip uninstall -y uv
 COPY main.py ./
 COPY ojol ./ojol
+COPY tools/chrome-diving-radar ./tools/chrome-diving-radar
 COPY docker/entrypoint.sh /usr/local/bin/ojol-entrypoint
 # Checkout permissions may be 600/700; the runtime switches to UID 1000.
-RUN chmod -R a+rX /app/ojol && chmod 644 /app/main.py /app/pyproject.toml /app/uv.lock && chmod 755 /usr/local/bin/ojol-entrypoint
+RUN chmod -R a+rX /app/ojol /app/tools && chmod 644 /app/main.py /app/pyproject.toml /app/uv.lock && chmod 755 /usr/local/bin/ojol-entrypoint
 ENV PATH="/app/.venv/bin:$PATH" OJOL_CONFIG_FILE=/data/config.env OJOL_RUNTIME_DIR=/data/runtime
 EXPOSE 6080
 ENTRYPOINT ["ojol-entrypoint"]
