@@ -1590,7 +1590,6 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             updateMeter('cond', sum.condition);
             updateMeter('data', sum.data);
 
-            const snap = data.snapshot || {{}};
             updateMeter('makan', snap.makan);
             updateMeter('kesehatan', snap.kesehatan);
             updateMeter('fisik', snap.fisik);
