@@ -912,6 +912,78 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 </div>
             </div>
 
+            <!-- Onboarding Card: Belum Ada Akun (Langsung Import Cookie) -->
+            <div id="onboardingCard" style="display: none; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 32px 28px; margin-bottom: 24px;">
+                <div style="max-width: 780px; margin: 0 auto;">
+                    <div style="display: flex; align-items: flex-start; gap: 16px; margin-bottom: 18px;">
+                        <div style="width: 48px; height: 48px; border-radius: 12px; background: rgba(59, 130, 246, 0.12); border: 1px solid rgba(59, 130, 246, 0.3); display: flex; align-items: center; justify-content: center; font-size: 24px; flex-shrink: 0;">🛵</div>
+                        <div>
+                            <h2 style="font-size: 19px; font-weight: 700; color: #f8fafc; letter-spacing: -0.01em; margin-bottom: 4px;">
+                                Hubungkan Akun KampungSebelah
+                            </h2>
+                            <p style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
+                                Belum ada akun game yang terhubung. Masukkan cookie sesi peramban game Anda di bawah untuk mengaktifkan otomatisasi order di background.
+                            </p>
+                        </div>
+                    </div>
+
+                    <!-- Inline Import Cookie Form -->
+                    <div style="background: #0f172a; border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 22px;">
+                        <div style="margin-bottom: 14px;">
+                            <label style="display: block; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #94a3b8; margin-bottom: 6px;">
+                                Nama Akun (Opsional)
+                            </label>
+                            <input type="text" id="onboardingAccountName" placeholder="Contoh: Akun Utama / Driver 1" style="width: 100%; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 14px; outline: none;">
+                        </div>
+
+                        <div style="margin-bottom: 16px;">
+                            <label style="display: block; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #94a3b8; margin-bottom: 6px;">
+                                Cookie Sesi Game (Nilai vtW... atau Format Utuh)
+                            </label>
+                            <textarea id="onboardingCookieInput" rows="4" placeholder="Tempel cookie KampungSebelah di sini (contoh: vtW1tcmp4qCDI9cxOfOjr0YSykpDHKfS...)" style="width: 100%; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: #38bdf8; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; outline: none; resize: vertical; line-height: 1.5;"></textarea>
+                        </div>
+
+                        <div style="display: flex; justify-content: flex-end; gap: 12px; align-items: center; flex-wrap: wrap;">
+                            <span id="onboardingLoadingText" style="display: none; font-size: 13px; color: #fbbf24;">
+                                ⏳ Memverifikasi cookie dengan server KampungSebelah...
+                            </span>
+                            <button id="btnOnboardingSubmit" class="btn btn-primary" onclick="submitOnboardingCookie()" style="padding: 10px 22px; font-weight: 600; font-size: 14px;">
+                                🚀 Hubungkan Akun & Mulai
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- 3 Langkah Cepat -->
+                    <div style="border-top: 1px solid var(--border); padding-top: 18px;">
+                        <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 12px;">
+                            Cara Mengambil Cookie dari Browser (3 Langkah Mudah)
+                        </div>
+                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px;">
+                            <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;">
+                                <div style="font-size: 11px; font-weight: 700; color: #38bdf8; margin-bottom: 4px;">1. BUKA GAME</div>
+                                <p style="font-size: 12px; color: #94a3b8; line-height: 1.4; margin: 0;">
+                                    Buka <code style="color:#e2e8f0; font-size: 11px;">kampungsebelah.com</code> di browser dan pastikan sudah masuk sampai desa tampil.
+                                </p>
+                            </div>
+                            <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;">
+                                <div style="font-size: 11px; font-weight: 700; color: #38bdf8; margin-bottom: 4px;">2. TEKAN F12</div>
+                                <p style="font-size: 12px; color: #94a3b8; line-height: 1.4; margin: 0;">
+                                    Buka tab <b>Application</b> (Chrome) atau <b>Storage</b> (Firefox) &gt; <b>Cookies</b> &gt; cari nilai <code style="color:#e2e8f0; font-size: 11px;">vtW...</code>.
+                                </p>
+                            </div>
+                            <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;">
+                                <div style="font-size: 11px; font-weight: 700; color: #38bdf8; margin-bottom: 4px;">3. SALIN & TEMPEL</div>
+                                <p style="font-size: 12px; color: #94a3b8; line-height: 1.4; margin: 0;">
+                                    Salin nilainya, tempelkan di kotak di atas, lalu klik <b>Hubungkan Akun & Mulai</b>.
+                                </p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Active Dashboard Section (Tampil saat akun sudah terhubung) -->
+            <div id="activeDashboardSection">
             <!-- Hero Status Card -->
             <div class="hero-card">
                 <div class="hero-info">
@@ -1070,6 +1142,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 </div>
                 <div id="logConsole" class="log-box">Memuat aktivitas terbaru...</div>
             </div>
+            </div> <!-- end #activeDashboardSection -->
         </div>
 
         <!-- TAB 2: AUTO & KEBUTUHAN -->
@@ -1526,6 +1599,17 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         }}
 
         function renderDashboard(data) {{
+            // Toggle Onboarding Card vs Active Dashboard Section
+            const hasAccounts = Boolean(data.account || (data.accounts && data.accounts.length > 0));
+            const onboardingCard = document.getElementById('onboardingCard');
+            const activeDashboard = document.getElementById('activeDashboardSection');
+            if (onboardingCard) {{
+                onboardingCard.style.display = hasAccounts ? 'none' : 'block';
+            }}
+            if (activeDashboard) {{
+                activeDashboard.style.display = hasAccounts ? 'block' : 'none';
+            }}
+
             // Populate account selector
             const sel = document.getElementById('accountDropdown');
             sel.innerHTML = '';
@@ -1730,6 +1814,37 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 alert('Akun baru berhasil dibuat! Buka Import Cookie untuk menghubungkan sesi game.');
             }} catch (e) {{
                 alert('Error: ' + e.message);
+            }}
+        }}
+
+        async function submitOnboardingCookie() {{
+            const name = (document.getElementById('onboardingAccountName')?.value || '').trim() || 'Akun Utama';
+            const cookie = (document.getElementById('onboardingCookieInput')?.value || '').trim();
+            if (!cookie) return alert('Silakan tempel cookie KampungSebelah terlebih dahulu.');
+
+            const btn = document.getElementById('btnOnboardingSubmit');
+            const loading = document.getElementById('onboardingLoadingText');
+            if (btn) btn.disabled = true;
+            if (loading) loading.style.display = 'inline';
+
+            try {{
+                const res = await fetch('/api/control/import-cookie', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ name, cookie }})
+                }});
+                const data = await res.json();
+                if (!res.ok) throw new Error(data.detail || 'Gagal mengimpor cookie');
+                alert('✅ Akun berhasil dihubungkan dan cookie terverifikasi!');
+                const inp = document.getElementById('onboardingCookieInput');
+                if (inp) inp.value = '';
+                await refreshDashboard();
+                await loadAccounts();
+            }} catch (e) {{
+                alert('Gagal menghubungkan akun: ' + e.message);
+            }} finally {{
+                if (btn) btn.disabled = false;
+                if (loading) loading.style.display = 'none';
             }}
         }}
 

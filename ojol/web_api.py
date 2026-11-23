@@ -669,10 +669,24 @@ def register_web_routes(app, settings, manager=None, service=None):
         except Exception as exc:
             raise HTTPException(400, f"Format cookie tidak valid: {exc}")
 
+        owner = registry.owner_for_user(user) if registry else 0
+        account_name = (body.get("name") or "").strip() or "Akun Utama"
+
         cur_service = resolve_account_service(request)
-        account_id = cur_service.account_id or (
-            registry.selected(registry.owner_for_user(user)) or {}
+        account_id = (cur_service.account_id if cur_service else None) or (
+            registry.selected(owner) or {}
         ).get("id")
+
+        if not account_id and registry:
+            account_id = registry.create(owner, account_name)
+            registry.select(owner, account_id)
+            if manager:
+                cur_service = manager.service(account_id)
+        elif not cur_service and manager and account_id:
+            cur_service = manager.service(account_id)
+
+        if not cur_service:
+            raise HTTPException(500, "Layanan akun tidak dapat diinisialisasi")
 
         digest = None
         if registry and account_id:
@@ -681,7 +695,8 @@ def register_web_routes(app, settings, manager=None, service=None):
             except ValueError as exc:
                 raise HTTPException(409, str(exc))
 
-        await cur_service.stop_worker()
+        if cur_service and hasattr(cur_service, "stop_worker"):
+            await cur_service.stop_worker()
         try:
             await import_session(cur_service.settings, json.dumps(payload))
             if registry and account_id and digest:
