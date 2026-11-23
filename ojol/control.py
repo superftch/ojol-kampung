@@ -1025,7 +1025,6 @@ class ControlService:
                         if auto_start:
                             self.auto_start_pending = True
                         return maintenance.message()
-                set_auto_flag(self.settings.runtime_dir, "ojol", False)
                 from .worker_service import send_worker_command
 
                 worker_resp = await send_worker_command(

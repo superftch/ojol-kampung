@@ -510,7 +510,7 @@ def register_web_routes(app, settings, manager=None, service=None):
         )
 
         return {
-            "account": selected,
+            "account": {**selected, "has_cookie": summary.get("has_cookie", False)},
             "accounts": accounts_payload,
             "all_accounts_summary": all_accounts_summary,
             "summary": summary,
@@ -691,7 +691,7 @@ def register_web_routes(app, settings, manager=None, service=None):
         if not cur_service:
             raise HTTPException(400, "Belum ada akun game yang terhubung atau dipilih.")
         try:
-            res = await cur_service.command("stop")
+            res = await cur_service.command("stop_ojol")
             return {"success": True, "message": res}
         except Exception as exc:
             raise HTTPException(400, str(exc))
