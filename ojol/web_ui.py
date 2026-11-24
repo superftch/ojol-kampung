@@ -813,6 +813,17 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                             <option value="penerbangan">✈️ Penerbangan</option>
                         </select>
                     </div>
+
+                    <!-- RIWAYAT BELAJAR LENGKAP -->
+                    <div class="study-history-section" style="margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span style="font-weight: 700; font-size: 13px;">📚 Riwayat Belajar Lengkap</span>
+                            <span id="studyHistoryBadge" class="meta" style="font-size: 11px;"></span>
+                        </div>
+                        <div id="studyHistoryList" class="study-history-box" style="max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
+                            <div class="empty-state" style="padding: 16px; text-align: center; color: var(--text-muted); font-size: 12px;">Belum ada riwayat belajar tercatat.</div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
@@ -1901,6 +1912,73 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                             </div>
                             <div style="font-weight: 700; color: #ef4444; white-space: nowrap; margin-left: 12px; font-variant-numeric: tabular-nums;">
                                 -${{amountStr}} koin
+                            </div>
+                        </div>`;
+                    }}).join('');
+                }}
+            }}
+
+            // Riwayat Belajar Lengkap
+            const studyContainer = document.getElementById('studyHistoryList');
+            const studyBadge = document.getElementById('studyHistoryBadge');
+            const studyItems = data.study_history || [];
+            if (studyBadge) {{
+                studyBadge.textContent = studyItems.length ? `${{studyItems.length}} sesi tercatat` : '';
+            }}
+            if (studyContainer) {{
+                if (!studyItems.length) {{
+                    studyContainer.innerHTML = '<div class="empty-state" style="padding: 16px; text-align: center; color: var(--text-muted); font-size: 12px;">Belum ada riwayat belajar tercatat.</div>';
+                }} else {{
+                    const modeIcons = {{
+                        perpus: '📖',
+                        kuliah: '🎓',
+                    }};
+                    const trackIcons = {{
+                        dagang: '🛒',
+                        teknik: '🔧',
+                        administrasi: '📋',
+                        kesehatan: '🏥',
+                        mengajar: '👨‍🏫',
+                        rawat: '🏡',
+                        konveksi: '👕',
+                        keamanan: '🛡️',
+                        boga: '🍳',
+                        penerbangan: '✈️',
+                    }};
+                    studyContainer.innerHTML = studyItems.map(item => {{
+                        const mIcon = modeIcons[item.mode] || '📚';
+                        const tIcon = trackIcons[item.track_id] || '🎯';
+                        const facility = escapeHtml(item.facility_name || (item.mode === 'perpus' ? 'Perpustakaan Desa' : 'Universitas'));
+                        const modeLabel = escapeHtml(item.mode_label || (item.mode === 'perpus' ? 'Perpustakaan' : 'Universitas'));
+                        const trackName = escapeHtml(item.track_name || 'Keahlian');
+                        const levelBadge = item.level_display ? `<span class="badge" style="font-size: 11px; padding: 1px 6px; border-radius: 4px; background: rgba(16, 185, 129, 0.12); color: #10b981; font-weight: 700;">${{escapeHtml(item.level_display)}}</span>` : '';
+                        const skillGain = escapeHtml(item.skill_gain || 'Selesai');
+                        const costStr = escapeHtml(item.cost || 'Gratis');
+                        const costColor = item.cost_num > 0 ? '#ef4444' : '#10b981';
+                        const timeStr = escapeHtml(item.time_display || '');
+                        const modeBadgeClass = item.mode === 'perpus' ? 'background: rgba(59, 130, 246, 0.12); color: #3b82f6;' : 'background: rgba(168, 85, 247, 0.12); color: #a855f7;';
+
+                        return `<div class="study-card-item" style="border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: rgba(255, 255, 255, 0.02); display: flex; justify-content: space-between; align-items: flex-start; gap: 10px;">
+                            <div style="min-width: 0; flex: 1;">
+                                <div style="display: flex; align-items: center; gap: 6px; flex-wrap: wrap;">
+                                    <span style="font-size: 16px;">${{mIcon}}</span>
+                                    <strong style="font-size: 13px; color: var(--text-main);">${{facility}}</strong>
+                                    <span class="badge" style="font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 4px; ${{modeBadgeClass}}">${{modeLabel}}</span>
+                                </div>
+                                <div style="display: flex; align-items: center; gap: 6px; margin-top: 5px; flex-wrap: wrap;">
+                                    <span style="font-size: 12px; font-weight: 600;">${{tIcon}} ${{trackName}}</span>
+                                    ${{levelBadge}}
+                                    <span style="font-size: 12px; color: #10b981; font-weight: 600;">▲ ${{skillGain}}</span>
+                                </div>
+                                <div style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">
+                                    🕒 ${{timeStr}}
+                                </div>
+                            </div>
+                            <div style="text-align: right; white-space: nowrap; flex-shrink: 0;">
+                                <div style="font-size: 12px; font-weight: 700; color: ${{costColor}}; font-variant-numeric: tabular-nums;">
+                                    ${{costStr}}
+                                </div>
+                                <span class="badge" style="display: inline-block; margin-top: 4px; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(16, 185, 129, 0.1); color: #10b981;">✓ ${{escapeHtml(item.status || 'Selesai')}}</span>
                             </div>
                         </div>`;
                     }}).join('');

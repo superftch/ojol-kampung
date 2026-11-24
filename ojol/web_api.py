@@ -18,7 +18,7 @@ from .finance import WIB, report_date
 from .journal import Journal
 from .maintenance import held_window
 from .models import Settings
-from .study import set_subject, subjects
+from .study import SUBJECTS, cached_skills, set_subject, subjects
 from .web_ui import dashboard_html, login_html, register_html, setup_password_html
 
 
@@ -467,6 +467,243 @@ def register_web_routes(app, settings, manager=None, service=None):
         except Exception:
             return []
 
+    def get_account_study_history(directory, limit: int = 50) -> list:
+        if not directory:
+            return []
+        db_file = directory / "history.sqlite3"
+        if not db_file.is_file():
+            return []
+
+        # Ambil level keahlian terkini dari game-skills.json
+        current_skills = {}
+        try:
+            for s in cached_skills(directory):
+                if isinstance(s, dict) and "id" in s:
+                    current_skills[s["id"]] = s
+        except Exception:
+            pass
+
+        try:
+            with closing(sqlite3.connect(db_file)) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT id, run_id, created, kind, status, payload FROM actions "
+                    "WHERE kind IN ('study', 'study_quiz') "
+                    "ORDER BY id DESC LIMIT ?",
+                    (limit * 2,),
+                ).fetchall()
+
+                study_actions = []
+                quiz_actions = []
+                for row in rows:
+                    payload = {}
+                    try:
+                        if row["payload"]:
+                            payload = json.loads(row["payload"])
+                    except Exception:
+                        pass
+                    item = {
+                        "id": row["id"],
+                        "run_id": row["run_id"],
+                        "created": row["created"],
+                        "kind": row["kind"],
+                        "status": row["status"],
+                        "payload": payload,
+                    }
+                    if row["kind"] == "study":
+                        study_actions.append(item)
+                    else:
+                        quiz_actions.append(item)
+
+                matched_quiz_ids = set()
+                sessions = []
+
+                for st in study_actions:
+                    st_payload = st["payload"]
+                    receipt = st_payload.get("receipt") or {}
+                    visit_id = receipt.get("id") or st_payload.get("before_visit_id")
+                    matching_quiz = None
+                    if visit_id:
+                        for qz in quiz_actions:
+                            if qz["id"] not in matched_quiz_ids and qz["payload"].get("visit_id") == visit_id:
+                                matching_quiz = qz
+                                matched_quiz_ids.add(qz["id"])
+                                break
+
+                    mode = st_payload.get("mode") or "perpus"
+                    track = st_payload.get("track") or (matching_quiz["payload"].get("track") if matching_quiz else "dagang")
+                    shop = st_payload.get("shop")
+                    if not shop:
+                        shop = "Perpustakaan Desa" if mode == "perpus" else "Universitas Terbuka"
+                    product = st_payload.get("product") or {}
+                    raw_price = product.get("price")
+                    cost_num = parse_coins(raw_price) if raw_price is not None else (Decimal(0) if mode == "perpus" else Decimal(4000))
+                    cost_str = "Gratis (0 koin)" if cost_num == Decimal(0) else f"-{format_coins(cost_num)} koin"
+
+                    created_raw = matching_quiz["created"] if matching_quiz else st["created"]
+                    time_display = "Terkini"
+                    if created_raw:
+                        try:
+                            dt = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00")).astimezone(WIB)
+                            time_display = dt.strftime("%d/%m %H:%M WIB")
+                        except Exception:
+                            time_display = str(created_raw)
+
+                    track_name = SUBJECTS.get(track, track.capitalize() if isinstance(track, str) else "Keahlian")
+                    skill_cur = current_skills.get(track, {})
+                    cur_level = skill_cur.get("level")
+
+                    if matching_quiz:
+                        q_receipt = matching_quiz["payload"].get("receipt") or {}
+                        benar = q_receipt.get("benar")
+                        total = q_receipt.get("total")
+                        bonus = q_receipt.get("bonus", 1)
+                        if benar is not None and total is not None:
+                            skill_gain = f"Kuis {benar}/{total} Benar (+{bonus} Keahlian)"
+                        else:
+                            skill_gain = f"+{bonus} Keahlian"
+                        status_text = "Selesai"
+                    else:
+                        skill_gain = "Kunjungan terdaftar (menunggu kuis)"
+                        status_text = "Menunggu kuis"
+
+                    level_display = f"Lv. {cur_level}" if cur_level is not None else ""
+
+                    sessions.append({
+                        "id": f"study_{st['id']}",
+                        "time_display": time_display,
+                        "created": created_raw,
+                        "mode": mode,
+                        "mode_label": "Perpustakaan" if mode == "perpus" else "Universitas",
+                        "facility_name": shop,
+                        "track_id": track,
+                        "track_name": track_name,
+                        "cost": cost_str,
+                        "cost_num": float(cost_num),
+                        "skill_level": cur_level,
+                        "level_display": level_display,
+                        "skill_gain": skill_gain,
+                        "status": status_text,
+                    })
+
+                for qz in quiz_actions:
+                    if qz["id"] in matched_quiz_ids:
+                        continue
+                    qz_payload = qz["payload"]
+                    mode = qz_payload.get("mode") or "perpus"
+                    track = qz_payload.get("track") or "dagang"
+                    shop = qz_payload.get("shop") or ("Perpustakaan Desa" if mode == "perpus" else "Universitas Terbuka")
+                    cost_num = Decimal(0) if mode == "perpus" else Decimal(4000)
+                    cost_str = "Gratis (0 koin)" if cost_num == Decimal(0) else f"-{format_coins(cost_num)} koin"
+
+                    created_raw = qz["created"]
+                    time_display = "Terkini"
+                    if created_raw:
+                        try:
+                            dt = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00")).astimezone(WIB)
+                            time_display = dt.strftime("%d/%m %H:%M WIB")
+                        except Exception:
+                            time_display = str(created_raw)
+
+                    track_name = SUBJECTS.get(track, track.capitalize() if isinstance(track, str) else "Keahlian")
+                    skill_cur = current_skills.get(track, {})
+                    cur_level = skill_cur.get("level")
+
+                    q_receipt = qz_payload.get("receipt") or {}
+                    benar = q_receipt.get("benar")
+                    total = q_receipt.get("total")
+                    bonus = q_receipt.get("bonus", 1)
+                    if benar is not None and total is not None:
+                        skill_gain = f"Kuis {benar}/{total} Benar (+{bonus} Keahlian)"
+                    else:
+                        skill_gain = f"+{bonus} Keahlian"
+
+                    level_display = f"Lv. {cur_level}" if cur_level is not None else ""
+
+                    sessions.append({
+                        "id": f"quiz_{qz['id']}",
+                        "time_display": time_display,
+                        "created": created_raw,
+                        "mode": mode,
+                        "mode_label": "Perpustakaan" if mode == "perpus" else "Universitas",
+                        "facility_name": shop,
+                        "track_id": track,
+                        "track_name": track_name,
+                        "cost": cost_str,
+                        "cost_num": float(cost_num),
+                        "skill_level": cur_level,
+                        "level_display": level_display,
+                        "skill_gain": skill_gain,
+                        "status": "Selesai",
+                    })
+
+                # Jika belum ada sesi dari actions, fallback baca events
+                if not sessions:
+                    event_rows = conn.execute(
+                        "SELECT id, created, event, data FROM events "
+                        "WHERE event IN ('belajar_dimulai', 'kuis_belajar_selesai') "
+                        "ORDER BY id DESC LIMIT ?",
+                        (limit,),
+                    ).fetchall()
+                    for erow in event_rows:
+                        edata = {}
+                        try:
+                            if erow["data"]:
+                                edata = json.loads(erow["data"])
+                        except Exception:
+                            pass
+                        mode = edata.get("mode") or "perpus"
+                        track = edata.get("track") or "dagang"
+                        track_name = SUBJECTS.get(track, str(track).capitalize())
+                        cost_val = parse_coins(edata.get("cost", 0))
+                        cost_str = "Gratis (0 koin)" if cost_val == Decimal(0) else f"-{format_coins(cost_val)} koin"
+
+                        created_raw = erow["created"]
+                        time_display = "Terkini"
+                        if created_raw:
+                            try:
+                                dt = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00")).astimezone(WIB)
+                                time_display = dt.strftime("%d/%m %H:%M WIB")
+                            except Exception:
+                                time_display = str(created_raw)
+
+                        shop = "Perpustakaan Desa" if mode == "perpus" else "Universitas Terbuka"
+                        skill_cur = current_skills.get(track, {})
+                        cur_level = skill_cur.get("level")
+                        level_display = f"Lv. {cur_level}" if cur_level is not None else ""
+
+                        if erow["event"] == "kuis_belajar_selesai":
+                            b = edata.get("benar")
+                            t = edata.get("total")
+                            bon = edata.get("bonus", 1)
+                            gain = f"Kuis {b}/{t} Benar (+{bon} Keahlian)" if b is not None and t is not None else f"+{bon} Keahlian"
+                            st_text = "Selesai"
+                        else:
+                            gain = "Kunjungan dimulai"
+                            st_text = "Menunggu kuis"
+
+                        sessions.append({
+                            "id": f"event_{erow['id']}",
+                            "time_display": time_display,
+                            "created": created_raw,
+                            "mode": mode,
+                            "mode_label": "Perpustakaan" if mode == "perpus" else "Universitas",
+                            "facility_name": shop,
+                            "track_id": track,
+                            "track_name": track_name,
+                            "cost": cost_str,
+                            "cost_num": float(cost_val),
+                            "skill_level": cur_level,
+                            "level_display": level_display,
+                            "skill_gain": gain,
+                            "status": st_text,
+                        })
+
+                sessions.sort(key=lambda s: s.get("created") or "", reverse=True)
+                return sessions[:limit]
+        except Exception:
+            return []
+
     async def build_dashboard_payload(request: Request, user: dict) -> dict:
         owner = registry.owner_for_user(user)
         accounts_list = registry.list(owner)
@@ -628,6 +865,8 @@ def register_web_routes(app, settings, manager=None, service=None):
                 "accounts": accounts_payload,
                 "all_accounts_summary": all_accounts_summary,
                 "finance": empty_finance,
+                "study_history": [],
+                "skills": [],
                 "summary": {},
                 "snapshot": {},
                 "auto_flags": {},
@@ -774,6 +1013,8 @@ def register_web_routes(app, settings, manager=None, service=None):
         )
 
         selected_expense_history = get_account_expense_history(directory, limit=50)
+        selected_study_history = get_account_study_history(directory, limit=50)
+        selected_skills = cached_skills(directory)
         finance_payload = {
             **(selected_finance_info or empty_finance),
             "expense_history": selected_expense_history,
@@ -788,6 +1029,8 @@ def register_web_routes(app, settings, manager=None, service=None):
             "accounts": accounts_payload,
             "all_accounts_summary": all_accounts_summary,
             "finance": finance_payload,
+            "study_history": selected_study_history,
+            "skills": selected_skills,
             "summary": summary,
             "snapshot": state,
             "auto_flags": flags_payload,

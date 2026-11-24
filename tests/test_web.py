@@ -1084,4 +1084,128 @@ def test_web_dashboard_finance_and_expense_history(admin_web):
     assert "Riwayat Pengeluaran" in html_res.text
 
 
+def test_web_dashboard_study_history(admin_web):
+    import json
+    from datetime import UTC, datetime, timedelta
+    from ojol.journal import Journal
+    from ojol.study import save_skills
+
+    client, manager = admin_web
+    create_res = client.post("/api/accounts/create", json={"name": "Akun Belajar"})
+    assert create_res.status_code == 200
+    account = create_res.json()["account"]
+
+    r_dir = manager.registry.scoped_settings(account).runtime_dir
+    r_dir.mkdir(parents=True, exist_ok=True)
+
+    # Simpan skills akun
+    skills = [
+        {"id": "administrasi", "name": "Administrasi", "level": 3, "next": {"level": 4, "library": True}},
+        {"id": "boga", "name": "Tata boga", "level": 2, "next": {"level": 3, "library": True}},
+    ]
+    save_skills(r_dir, skills)
+
+    now_utc = datetime.now(UTC)
+
+    # Inisialisasi history.sqlite3 via Journal
+    j = Journal(r_dir)
+    with j.db:
+        j.db.execute("INSERT INTO runs(id,started,outcome,settings) VALUES (1, ?, 'ok', '{}')", (now_utc.isoformat(),))
+
+        # 1. Sesi Perpustakaan: study + study_quiz
+        visit_perpus = "visit-perpus-123"
+        st_perpus_payload = {
+            "mode": "perpus",
+            "track": "administrasi",
+            "facility_id": "fac-perpus",
+            "shop": "Perpustakaan Desa T6",
+            "product": {"name": "Belajar", "price": "0"},
+            "receipt": {"id": visit_perpus},
+        }
+        j.db.execute(
+            "INSERT INTO actions(id,run_id,created,kind,status,before_state,payload,after_state) VALUES (?,?,?,?,?,?,?,?)",
+            (10, 1, (now_utc - timedelta(hours=2)).isoformat(), "study", "verified", "{}", json.dumps(st_perpus_payload), "{}"),
+        )
+        qz_perpus_payload = {
+            "mode": "perpus",
+            "track": "administrasi",
+            "facility_id": "fac-perpus",
+            "visit_id": visit_perpus,
+            "receipt": {"benar": 3, "total": 3, "bonus": 1},
+        }
+        j.db.execute(
+            "INSERT INTO actions(id,run_id,created,kind,status,before_state,payload,after_state) VALUES (?,?,?,?,?,?,?,?)",
+            (11, 1, (now_utc - timedelta(hours=2, minutes=-5)).isoformat(), "study_quiz", "verified", "{}", json.dumps(qz_perpus_payload), "{}"),
+        )
+
+        # 2. Sesi Kuliah: study + study_quiz
+        visit_kuliah = "visit-kuliah-456"
+        st_kuliah_payload = {
+            "mode": "kuliah",
+            "track": "boga",
+            "facility_id": "fac-kuliah",
+            "shop": "Universitas Terbuka",
+            "product": {"name": "Kuliah", "price": "4000"},
+            "receipt": {"id": visit_kuliah},
+        }
+        j.db.execute(
+            "INSERT INTO actions(id,run_id,created,kind,status,before_state,payload,after_state) VALUES (?,?,?,?,?,?,?,?)",
+            (20, 1, (now_utc - timedelta(hours=1)).isoformat(), "study", "verified", "{}", json.dumps(st_kuliah_payload), "{}"),
+        )
+        qz_kuliah_payload = {
+            "mode": "kuliah",
+            "track": "boga",
+            "facility_id": "fac-kuliah",
+            "visit_id": visit_kuliah,
+            "receipt": {"benar": 5, "total": 5, "bonus": 1},
+        }
+        j.db.execute(
+            "INSERT INTO actions(id,run_id,created,kind,status,before_state,payload,after_state) VALUES (?,?,?,?,?,?,?,?)",
+            (21, 1, (now_utc - timedelta(hours=1, minutes=-10)).isoformat(), "study_quiz", "verified", "{}", json.dumps(qz_kuliah_payload), "{}"),
+        )
+    j.close()
+
+    dash_res = client.get("/api/dashboard")
+    assert dash_res.status_code == 200
+    data = dash_res.json()
+
+    # Pastikan study_history dan skills ada di respons
+    assert "study_history" in data
+    assert "skills" in data
+    history = data["study_history"]
+    assert len(history) == 2
+
+    # Sesi terbaru: Kuliah
+    sesi_kuliah = history[0]
+    assert sesi_kuliah["mode"] == "kuliah"
+    assert sesi_kuliah["mode_label"] == "Universitas"
+    assert sesi_kuliah["facility_name"] == "Universitas Terbuka"
+    assert sesi_kuliah["track_name"] == "Tata boga"
+    assert sesi_kuliah["cost"] == "-4.000 koin"
+    assert "Kuis 5/5 Benar (+1 Keahlian)" in sesi_kuliah["skill_gain"]
+    assert sesi_kuliah["skill_level"] == 2
+    assert sesi_kuliah["level_display"] == "Lv. 2"
+    assert sesi_kuliah["status"] == "Selesai"
+
+    # Sesi pertama: Perpus
+    sesi_perpus = history[1]
+    assert sesi_perpus["mode"] == "perpus"
+    assert sesi_perpus["mode_label"] == "Perpustakaan"
+    assert sesi_perpus["facility_name"] == "Perpustakaan Desa T6"
+    assert sesi_perpus["track_name"] == "Administrasi"
+    assert sesi_perpus["cost"] == "Gratis (0 koin)"
+    assert "Kuis 3/3 Benar (+1 Keahlian)" in sesi_perpus["skill_gain"]
+    assert sesi_perpus["skill_level"] == 3
+    assert sesi_perpus["level_display"] == "Lv. 3"
+    assert sesi_perpus["status"] == "Selesai"
+
+    # Periksa elemen DOM di HTML root
+    html_res = client.get("/")
+    assert html_res.status_code == 200
+    assert "studyHistoryList" in html_res.text
+    assert "studyHistoryBadge" in html_res.text
+    assert "Riwayat Belajar Lengkap" in html_res.text
+
+
+
 

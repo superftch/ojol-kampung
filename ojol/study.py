@@ -227,6 +227,8 @@ async def run_learning(controller):
                     "track": track,
                     "facility_id": facility["id"],
                     "visit_id": visit_id,
+                    "shop": facility.get("title"),
+                    "resource": mode,
                     "next_at": facility.get("nextAt"),
                 }
                 price = Decimal(0)
