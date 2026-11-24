@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from math import ceil, floor
 from pathlib import Path
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_DNS, UUID, uuid4, uuid5
 
 import httpx
 
@@ -670,6 +670,7 @@ class OjolHttpApi:
             or minigame_view
             or re.fullmatch(r"/api/world/plots/[A-Z][0-9]{2}-U[0-9]{2}\?t=[0-9]{1,15}", path)
             or re.fullmatch(r"/api/facilities/[a-f0-9-]{36}(?:/(?:use|kuis|kegiatan))?", path)
+            or re.fullmatch(r"/api/spbu/[A-Z0-9-]+", path)
             or garden_action
             or re.fullmatch(r"/_next/static/[a-zA-Z0-9_./-]+\.js", path)
         )
@@ -682,6 +683,7 @@ class OjolHttpApi:
                 payload is not None
                 and path not in {"/api/ojol", "/api/rumah/kamar-mandi", "/api/diving"}
                 and not garden_action
+                and not re.fullmatch(r"/api/spbu/[A-Z0-9-]+", path)
                 and not path.endswith(("/buy", "/use", "/kuis", "/bayar", "/kegiatan", "/minigame"))
             )
         ):
@@ -1688,6 +1690,85 @@ class OjolHttpApi:
                 if resource in {"fuel", "condition"} or not getattr(self, "home", None):
                     current = await self.snapshot()
                     if resource == "fuel" and current.ojol_min_fuel is not None:
+                        try:
+                            dest = await self.request("/api/tujuan")
+                            spbus = [
+                                u
+                                for u in dest.get("usaha", [])
+                                if isinstance(u, dict) and u.get("item") == "spbu-pertamina"
+                            ]
+                        except Exception:
+                            spbus = []
+                        if spbus:
+                            ref_x = (self.home or {}).get("x", 0)
+                            ref_y = (self.home or {}).get("y", 0)
+                            spbus.sort(
+                                key=lambda s: (s.get("x", 0) - ref_x) ** 2
+                                + (s.get("y", 0) - ref_y) ** 2
+                            )
+                            spbu = spbus[0]
+                            plot_id = spbu["plotId"]
+                            v_type = current.ojol_vehicle or "motor"
+                            is_electric = False
+                            if v_type == "mobil":
+                                try:
+                                    kd = await self.request("/api/kendaraan")
+                                    items = kd.get("items", []) if isinstance(kd, dict) else []
+                                    car = next((c for c in items if c.get("family") == "mobil"), None)
+                                    is_electric = bool(car and car.get("listrik"))
+                                except Exception:
+                                    pass
+                            if is_electric:
+                                item_name = "isi-daya-spklu"
+                                prod_name = "Isi daya SPKLU (mobil listrik)"
+                            elif v_type == "mobil":
+                                item_name = "isi-bensin-mobil"
+                                prod_name = "Isi bensin mobil"
+                            else:
+                                item_name = "isi-bensin-motor"
+                                prod_name = "Isi bensin motor"
+                            missing = max(1, 100 - current.fuel)
+                            price = (Decimal(missing) * Decimal(20)) / Decimal(1000)
+                            biz_id = spbu.get("businessId")
+                            try:
+                                shop_id = str(UUID(biz_id)) if biz_id else str(uuid5(NAMESPACE_DNS, plot_id))
+                            except (ValueError, TypeError):
+                                shop_id = str(uuid5(NAMESPACE_DNS, plot_id))
+                            identity = json.dumps(
+                                {
+                                    "shop": shop_id,
+                                    "resource": "fuel",
+                                    "plotId": plot_id,
+                                    "x": spbu.get("x", 0),
+                                    "y": spbu.get("y", 0),
+                                    "item": item_name,
+                                    "vehicle": v_type,
+                                }
+                            )
+                            product = Product(
+                                name=prod_name,
+                                price=price,
+                                effects={"fuel": missing},
+                                row_text=identity,
+                                enabled=True,
+                            )
+                            dist_sq = (spbu.get("x", 0) - ref_x) ** 2 + (spbu.get("y", 0) - ref_y) ** 2
+                            spbu_shop = ShopPreview(
+                                id=shop_id,
+                                plot_id=plot_id,
+                                name=spbu.get("name") or "SPBU",
+                                category="spbu",
+                                distance_squared=dist_sq,
+                                products=[product],
+                            )
+                            self.catalog.setdefault("fuel", {})[shop_id] = spbu_shop
+                            return {
+                                "shops": [spbu_shop.model_dump()],
+                                "navigation": {
+                                    "method": "spbu_refill",
+                                    "travel_request_sent": False,
+                                },
+                            }
                         return {
                             "shops": [],
                             "navigation": {"method": "spbu_visit", "travel_request_sent": False},
@@ -2049,6 +2130,30 @@ class OjolHttpApi:
             raise HttpCoreError(
                 "Fitur Auto dinonaktifkan sebelum pembelian", category="auto_disabled"
             )
+        if shop.category == "spbu":
+            kend_res = await self.request("/api/kendaraan")
+            items = kend_res.get("items", []) if isinstance(kend_res, dict) else []
+            v_family = identity.get("vehicle", "motor")
+            target_veh = next((v for v in items if v.get("family") == v_family), items[0] if items else None)
+            veh_code = (target_veh or {}).get("kode")
+            if not veh_code:
+                raise HttpCoreError("Kode kendaraan Ojol tidak ditemukan", category="rejected")
+            plot_id = identity.get("plotId") or shop.plot_id
+            pos_x = identity.get("x", 0)
+            pos_y = identity.get("y", 0)
+            await self.request(
+                f"/api/spbu/{plot_id}",
+                {"aksi": "datang", "kode": veh_code, "dorong": False, "x": pos_x, "y": pos_y},
+            )
+            receipt = await self.request(
+                f"/api/spbu/{plot_id}",
+                {"aksi": "isi", "jumlah": "penuh", "x": pos_x, "y": pos_y, "requestId": request_id},
+            )
+            try:
+                await self.request(f"/api/spbu/{plot_id}", {"aksi": "pamit"})
+            except Exception:
+                pass
+            return receipt
         if shop.category == "fasum":
             if identity.get("item") == "minigame":
                 receipt = await self.complete_minigame(
@@ -2081,11 +2186,12 @@ class OjolHttpApi:
         is_need = resource in NEEDS
         is_facility = shop.category == "fasum"
         is_bathroom = shop.category == "kamar-mandi"
-        fallback = is_need and not is_facility and not is_bathroom and not shop.preferred
+        is_spbu = shop.category == "spbu"
+        fallback = is_need and not is_facility and not is_bathroom and not is_spbu and not shop.preferred
         version = self.config_version
         vehicle = self.vehicle
         allowed_items = None if is_need else await self.resource_items(resource)
-        if not is_facility and not is_bathroom:
+        if not is_facility and not is_bathroom and not is_spbu:
             effects = await self.effects(for_needs=is_need, required_items=allowed_items or ())
             if not fallback:
                 catalog, fresh = await self.products(shop_id, resource, effects, allowed_items)
@@ -2098,7 +2204,7 @@ class OjolHttpApi:
         state = await self.snapshot()
         if state.phase == "sleeping":
             raise HttpCoreError("Karakter sedang tidur; transaksi ditunda", category="sleeping")
-        if resource == "fuel" and state.ojol_min_fuel is not None:
+        if resource == "fuel" and state.ojol_min_fuel is not None and not is_spbu:
             raise HttpCoreError(
                 "Pengisian tangki memerlukan kunjungan ke SPBU", category="rejected"
             )
@@ -2133,6 +2239,8 @@ class OjolHttpApi:
             else:
                 place = next((p for p in self.physical_places if p.get("id") == shop_id), {})
                 eligible = await self.physical_facility(place, effects) == shop
+        elif is_spbu:
+            eligible = True
         elif is_facility and resource in {"kesehatan", "makan", "rekreasi"}:
             details = await self.request(f"/api/facilities/{shop_id}")
             service = details.get("service") or {}

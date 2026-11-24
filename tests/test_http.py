@@ -676,14 +676,67 @@ async def test_spbu_worker_reads_selected_tank_and_waits_for_refill(
     state = await api.snapshot()
     assert state.ojol_vehicle == vehicle
     assert state.fuel == 2
-    assert next_step(state, settings).action == "wait"
+    assert next_step(state, settings).action == "maintain"
     assert next_step(state, settings).resource == "fuel"
+    assert next_step(state, settings, deferred=("fuel",)).action == "wait"
+    assert next_step(state, settings, deferred=("fuel",)).resource == "fuel"
     preview = await api.preview("fuel")
     assert preview["shops"] == [] and preview["navigation"]["method"] == "spbu_visit"
     rows[-1]["value"] = 100
     world["ojol"].update(problem=None, fix=None)
     assert next_step(await api.snapshot(), settings).action == "search"
     assert all(request.method == "GET" for request in api.calls)
+
+
+async def test_spbu_worker_auto_refills_at_spbu(api, world, settings):
+    world["ojol"].update(
+        vehicle="motor",
+        vehicles=["motor"],
+        pakai={"bensin": 6, "bensinMin": 3, "kendaraan": 2, "kuota": 4},
+        bars={"bensin": 4, "kendaraan": 90, "kuota": 90},
+    )
+    world["directory"] = [
+        {
+            "item": "spbu-pertamina",
+            "plotId": "P29-U01",
+            "name": "SPBU Desa Timur 2",
+            "x": 66,
+            "y": -103,
+        }
+    ]
+    world["garage"] = {
+        "items": [
+            {"family": "motor", "name": "Motor matic", "kode": "motor-matic:putih:0", "listrik": False}
+        ]
+    }
+    world["home"] = {"plotId": "T30-R08", "x": 75, "y": -68}
+    state = await api.snapshot()
+    assert state.fuel == 4
+    step = next_step(state, settings)
+    assert step.action == "maintain" and step.resource == "fuel"
+
+    preview = await api.preview("fuel")
+    assert len(preview["shops"]) == 1
+    shop = ShopPreview.model_validate(preview["shops"][0])
+    assert shop.category == "spbu"
+    assert shop.plot_id == "P29-U01"
+    assert shop.products[0].name == "Isi bensin motor"
+    assert shop.products[0].effects == {"fuel": 96}
+
+    receipt = await api.purchase(
+        shop.products[0].model_dump(mode="json"),
+        str(state.wallet),
+        4,
+        "5",
+        str(uuid4()),
+    )
+    spbu_posts = [r for r in api.calls if r.method == "POST" and r.url.path == "/api/spbu/P29-U01"]
+    assert len(spbu_posts) == 3
+    assert json.loads(spbu_posts[0].content)["aksi"] == "datang"
+    assert json.loads(spbu_posts[0].content)["kode"] == "motor-matic:putih:0"
+    assert json.loads(spbu_posts[1].content)["aksi"] == "isi"
+    assert json.loads(spbu_posts[1].content)["jumlah"] == "penuh"
+    assert json.loads(spbu_posts[2].content)["aksi"] == "pamit"
 
 
 async def test_car_condition_prefers_lower_cost_for_same_recovery(api, world, settings):

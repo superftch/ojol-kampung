@@ -140,8 +140,6 @@ def next_step(
         )
     resources = sorted((getattr(state, key), key) for key in ("fuel", "condition", "data"))
     for value, resource in resources:
-        if resource == "fuel" and state.ojol_min_fuel is not None:
-            continue
         thresh = settings.threshold_for(resource)
         if value < thresh and resource not in (deferred or ()):
             return Step(
@@ -166,7 +164,13 @@ def next_step(
 
 
 ALLOWED_ITEMS = {
-    "fuel": {"Isi Pertalite", "Isi Pertamax", "Isi daya SPKLU (mobil listrik)"},
+    "fuel": {
+        "Isi Pertalite",
+        "Isi Pertamax",
+        "Isi daya SPKLU (mobil listrik)",
+        "Isi bensin motor",
+        "Isi bensin mobil",
+    },
     "condition": {
         "Servis motor",
         "Ganti oli",
@@ -202,8 +206,14 @@ def select_shop(
                 continue
             if (
                 resource == "fuel"
-                and product.name == "Isi daya SPKLU (mobil listrik)"
+                and product.name in {"Isi daya SPKLU (mobil listrik)", "Isi bensin mobil"}
                 and state.ojol_vehicle != "mobil"
+            ):
+                continue
+            if (
+                resource == "fuel"
+                and product.name == "Isi bensin motor"
+                and state.ojol_vehicle != "motor"
             ):
                 continue
             if (
