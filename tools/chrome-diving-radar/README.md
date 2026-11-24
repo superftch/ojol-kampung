@@ -108,6 +108,64 @@ Ekstensi Chrome multi-fitur untuk minigame dan aktivitas di KampungSebelah:
 
 ---
 
+### 📊 Knowledge Base & Logika Server Mutiara Diving
+
+Berdasarkan bedah source code game engine resmi (`src/lib/diving-rules.ts`, `src/lib/diving.ts`, dan chunk `1j_v3n6k6p7js.js`):
+
+#### 1. Kuota Terbatas & Kolam Bersama (*Shared Global Pool*)
+- **Total Kerang di Laut**: Ada **48 kerang fisik** di dasar laut (posisi 3D deterministik berdasarkan seed tanggal harian).
+- **Kuota Mutiara Server**: **Hanya ada 7 mutiara per hari** untuk seluruh pemain di 1 server:
+  - **5 Mutiara Biasa (100 koin)**: Bernilai Rp100.000 / 100 koin, dibeli langsung oleh kas desa Pulau Seberang.
+  - **2 Mutiara Langka (300 koin)**: Bernilai Rp300.000 / 300 koin, berada di palung gelap berisiko hiu.
+- **Kategori Kedalaman Laut**:
+  - **Cetek ($< 18$m)**: 10 kerang $\to$ **100% PASTI KOSONG**. Dilarang oleh server berisi mutiara. Radar otomatis mengabaikan kerang cetek ini.
+  - **Lereng ($18\text{m} - 39\text{m}$)**: 29 kerang $\to$ **Kandidat Mutiara Biasa (100 koin)**.
+  - **Palung ($\ge 40$m)**: 9 kerang $\to$ **Kandidat Mutiara Langka (300 koin)**.
+
+#### 2. 🕒 Tabel Jadwal & Probabilitas Kemunculan Mutiara (`muncul_jam`)
+Server sengaja tidak menaruh semua mutiara di awal hari (jam 00:00) agar tidak diborong oleh satu pemain. Mutiara baru "diisi" ke dalam kerang pada menit acak di rentang jadwal berikut:
+
+| Kategori Mutiara | Nilai Jual | Kuota / Hari | Jendela Waktu Server (`muncul_jam`) | Probabilitas & Golden Window |
+| :--- | :---: | :---: | :--- | :--- |
+| **Mutiara Langka Sesi 1** | **300 koin** | 1 butir | `07:00 – 14:00 WIB` (Siang) | **Golden Window**: `11:00 – 13:00 WIB` (Probabilitas spawn tinggi sebelum disapu warga lain). |
+| **Mutiara Langka Sesi 2** | **300 koin** | 1 butir | `15:00 – 22:00 WIB` (Malam) | **Golden Window**: `19:30 – 21:00 WIB` (Probabilitas spawn tinggi di paruh akhir jendela). |
+| **Mutiara Biasa #1** | 100 koin | 1 butir | `06:00 – 10:00 WIB` (Pagi) | Golden Window: `08:00 – 09:30 WIB` |
+| **Mutiara Biasa #2** | 100 koin | 1 butir | `09:00 – 13:00 WIB` (Siang) | Golden Window: `11:00 – 12:30 WIB` |
+| **Mutiara Biasa #3** | 100 koin | 1 butir | `12:00 – 16:00 WIB` (Sore) | Golden Window: `14:00 – 15:30 WIB` |
+| **Mutiara Biasa #4** | 100 koin | 1 butir | `15:00 – 19:00 WIB` (Sore-Malam) | Golden Window: `17:00 – 18:30 WIB` |
+| **Mutiara Biasa #5** | 100 koin | 1 butir | `18:00 – 22:00 WIB` (Malam) | Golden Window: `20:00 – 21:30 WIB` |
+
+> [!NOTE]
+> Jam dan menit pastinya diundi secara rahasia di sisi **SERVER**. Client browser tidak pernah dikirimi timestamp pasti untuk mencegah bot/script melakukan *sniping* pada detik tertentu.
+
+#### 3. ❓ Mengapa Buka 9/9 Kerang Palung Bisa Tetap Kosong?
+Banyak pemain bingung saat membuka semua 9 kerang palung ($\ge 40$m) tetapi muncul pesan *"Kerang ini kosong. Cari kerang lain."*:
+1. **Radar Menandai "Kandidat Kedalaman", Bukan Kepastian Isi**: Di palung memang ada 9 kerang, tetapi kuota mutiara langka hanya 2 per hari. Minimal 7 kerang palung memang dijamin kosong.
+2. **Jam Acak Sesi Belum Tercapai**: Jika Anda menyelam pukul 18:30 pada sesi malam (`15:00 - 22:00`), dan server mengundi jam spawn jatuh pada pukul 20:15, maka pada pukul 18:30 seluruh 9 kerang palung **memang belum diisi mutiara oleh server**.
+3. **Sudah Diambil Penyelam Lain**: Karena sifatnya *shared pool*, jika ada penyelam lain yang membuka kerang tersebut 10 menit sebelum Anda, mutiara langka tersebut sudah diambil.
+
+#### 4. 💡 Strategi Efisiensi Tiket (10 Koin) & Profit Maksimal
+1. **Baca Counter Modal Sebelum Bayar Tiket**:
+   - Selalu periksa baris dialog dermaga: *"Mutiara hari ini: X dari 7 belum ditemukan. Y di antaranya mutiara langka..."*
+   - Jika tertulis **`0 mutiara langka`**: Jangan buang waktu dan oksigen berenang ke palung $\ge 40$m!
+2. **Sapu Kerang Lereng (100 Koin) Saat Palung Kosong**:
+   - Jika Anda sudah membuka kerang palung dan kosong, jangan sia-siakan sisa tabung oksigen (30 menit).
+   - Segera klik filter **`🟡 100 & 300`** pada Radar: ada **29 kerang lereng (18m–39m)** yang jaraknya saling berdekatan. Peluang mendapatkan mutiara biasa (100 koin) jauh lebih besar (kuota 5 butir/hari).
+3. **Waspada Hiu ($\ge 6$m)**:
+   - Hiu berpatroli tiap 8 menit selama 70–100 detik di kedalaman $> 6$ meter. Jika sirene berbunyi atau sirip hiu mendekat, segera tekan tombol **Naik** ke kedalaman $< 6$m (zona aman hiu) agar tidak tertangkap dan dirawat 12 jam di rumah sakit.
+
+#### 5. 🗺️ Panduan Akses Lokasi & Titik Koordinat
+Diving hanya dapat dimulai jika akun Anda berada di **Pulau Seberang** (`diPulau: true`). Jika berada di daratan utama, tombol "Mulai menyelam" dikunci:
+1. **Menyeberang ke Pulau Seberang**:
+   - **Kapal Penyeberangan (2 koin)**: Datang ke Dermaga Pantai Sebelah (`X: 113, Y: -22`), naik kapal selama 30 detik ke Pelabuhan Pulau Seberang (`X: 1120, Y: 122`).
+   - **Pesawat Desa (5 koin)**: Datang ke Bandara Kampung Sebelah (`X: 171, Y: 43`).
+2. **Dermaga Diving Laut Seberang**:
+   - Terletak di pantai utara Pulau Seberang.
+   - Pintu masuk: `X: 1197, Y: 11`, Papan nama: `X: 1199, Y: 3`.
+   - *Cara termudah*: Buka menu **"Mau ke mana"** pada peta, cari **`Diving`**, dan klik untuk panduan rute otomatis.
+
+---
+
 ## 🚀 Cara Memperbarui di Chrome:
 
 1. Buka tab baru: `chrome://extensions`.

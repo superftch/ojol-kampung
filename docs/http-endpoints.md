@@ -387,3 +387,26 @@ Inspeksi bundle aktif `14kftr3gt-5o6.js`, `026npiqik_trk.js`, dan uji live terot
 
   3. `"kosong"`: Lahan belum ditanami. Request `POST /api/daily/garden/{id}` dengan body `{"action": "tanam"}` menanam bibit baru dengan biaya `seedMilli` jika saldo koin mencukupi.
 - Manajemen cooldown: Saat ada kebun/kolam dalam kondisi `"tumbuh"` dan sudah dirawat (`cared: true`), cooldown worker dijadwalkan berdasarkan nilai terkecil dari `readyAt` yang akan datang sehingga worker tidak melakukan polling berulang sebelum panen siap.
+
+## Bukti Diving Laut Seberang & Mekanisme Mutiara (23 November 2026)
+
+Inspeksi chunk `1j_v3n6k6p7js.js`, rules game `2p8n67a_wffd0.js` (modul `239710`), `3j_72f3o9xl4h.js`, dan pengujian live 23 November 2026:
+1. **Akses & Syarat Masuk (`GET /api/diving`)**:
+   - Akun harus memiliki rumah dan sedang berada di Pulau Seberang (`diPulau: true`). Jika akun berada di daratan utama (Kampung Sebelah / Desa Utara), tombol masuk dikunci dengan pesan `"Diving ada di Pulau Seberang. Naik kapal atau pesawat ke sana dulu, lalu datangi dermaga diving di pantai utara."`.
+   - Titik akses Dermaga Diving: Pantai Utara Pulau Seberang (`pintu: {x: 1197, y: 11}`, `papan: {x: 1199, y: 3}`).
+   - Tiket masuk: 10.000 milli-koin (10 koin), durasi tabung oksigen 30 menit. Menyelesaikan diving menghasilkan `rekreasi: +30` jika menyelam $\ge 3$ menit.
+2. **Kuota Global Mutiara & Kedalaman Kerang**:
+   - Total kerang fisik di laut: **48 kerang** (koordinat 3D deterministik per hari WIB).
+   - Kuota mutiara seluruh laut: **Maksimal 7 butir per hari** untuk seluruh pemain dalam satu server (kolam bersama / *shared pool*).
+   - Zona Kedalaman:
+     - Cetek ($< 18$m, 10 kerang): **100% PASTI KOSONG**.
+     - Lereng ($18\text{m} - 39\text{m}$, 29 kerang): Kandidat **Mutiara Biasa (100 koin)**, kuota 5 butir/hari.
+     - Palung ($\ge 40$m, 9 kerang): Kandidat **Mutiara Langka (300 koin)**, kuota hanya 2 butir/hari.
+3. **Mekanisme Jam Muncul Acak Server (`muncul_jam`)**:
+   - Mutiara tidak langsung dispawn pada jam 00:00 tengah malam. Server mengundi menit acak pada rentang jendela berikut:
+     - Mutiara Biasa (5 butir): `[06:00, 10:00]`, `[09:00, 13:00]`, `[12:00, 16:00]`, `[15:00, 19:00]`, `[18:00, 22:00]` WIB.
+     - Mutiara Langka (2 butir): `[07:00, 14:00]` (Siang) dan `[15:00, 22:00]` (Malam) WIB.
+   - Jika 9/9 kerang palung dibuka dan kosong (`POST /api/diving {"aksi": "kerang"}` mengembalikan `isi: "kosong"`), hal tersebut membuktikan jam acak spawn server pada jendela tersebut belum tercapai atau mutiara sudah diambil warga lain sebelumnya.
+4. **Patroli Hiu & Zona Aman**:
+   - Hiu berpatroli tiap 8 menit selama 70–100 detik di kedalaman $> 6$ meter (`laju: 2.5` m/s, `sergap: 4.4` m/s).
+   - Kedalaman $< 6$ meter (`aman_m: 6.0`) adalah zona aman mutlak di mana hiu tidak mengejar. Tertangkap hiu memicu rawat rumah sakit 12 jam.

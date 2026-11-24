@@ -207,12 +207,14 @@ def select_shop(
             if (
                 resource == "fuel"
                 and product.name in {"Isi daya SPKLU (mobil listrik)", "Isi bensin mobil"}
+                and state.ojol_vehicle is not None
                 and state.ojol_vehicle != "mobil"
             ):
                 continue
             if (
                 resource == "fuel"
                 and product.name == "Isi bensin motor"
+                and state.ojol_vehicle is not None
                 and state.ojol_vehicle != "motor"
             ):
                 continue

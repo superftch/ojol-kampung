@@ -1160,6 +1160,8 @@ class OjolHttpApi:
         return shop.model_copy(update={"distance_squared": distance_squared}) if shop else None
 
     async def need_suppliers(self, resource, effects, *, preferred_only=False):
+        if getattr(self, "akademis_need_shops", None) is not None and self.akademis_need_shops != self.need_suppliers:
+            return await self.akademis_need_shops(resource, effects, preferred_only=preferred_only)
         village = self.home["desa"]
         registered = tuple(
             loc
@@ -1231,6 +1233,8 @@ class OjolHttpApi:
             if available:
                 return available, True
         return [], True
+
+    akademis_need_shops = need_suppliers
 
     minigame_wait_multiplier: float = 1.0
 
@@ -2360,7 +2364,7 @@ class OjolHttpApi:
                 pass
             try:
                 if "<polyline" in text:
-                    kode = solve_polyline_captcha(text, self.directory)
+                    kode = solve_polyline_captcha(text, self.directory, trip_id=trip_id)
                 else:
                     kode = solve_svg_captcha(text)
             except Exception as exc:

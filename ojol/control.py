@@ -1018,6 +1018,7 @@ class ControlService:
             async with self.lock:
                 if self.closing:
                     raise RuntimeError("Akun tidak tersedia. Pilih akun lain.")
+                set_auto_flag(self.settings.runtime_dir, "ojol", False)
                 for key in NEEDS:
                     set_auto_flag(self.settings.runtime_dir, key, True)
                 if (self.worker and self.worker.returncode is None) or running(

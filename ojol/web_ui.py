@@ -566,6 +566,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         <button class="nav-btn" onclick="showTab('tab-auto')"><span class="nav-label-wide">Pengaturan Auto</span><span class="nav-label-short">Auto</span></button>
         <button class="nav-btn" onclick="showTab('tab-accounts')">Akun</button>
         <button class="nav-btn" onclick="showTab('tab-notifications')">Notifikasi <span id="notifBadge" class="nav-count" style="display: none;">0</span></button>
+        <button class="nav-btn" onclick="showTab('tab-bank-angka')">Bank Angka <span id="bankReviewBadge" class="nav-count" style="display: none; background: var(--danger, #ef4444); color: white;">0</span></button>
         <button id="adminTabBtn" class="nav-btn" style="display: {
         "block" if user.get("role") == "admin" else "none"
     };" onclick="showTab('tab-admin')">Admin</button>
@@ -584,6 +585,17 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     <span id="dashboardFreshness" class="freshness" role="status">Memuat dashboard…</span>
                     <button id="btnRefreshDash" class="btn btn-utility" type="button" onclick="manualRefreshDashboard()">Segarkan</button>
                 </div>
+            </div>
+
+            <div id="bankReviewBanner" class="alert alert-warning" style="display: none; margin-bottom: 20px; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 8px; padding: 14px 18px; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 20px;">🚨</span>
+                    <div>
+                        <div style="font-weight: 700; color: var(--danger, #ef4444); font-size: 14px;">Ada <span id="bankPendingHeaderCount">0</span> angka cek belum dikenali bot!</div>
+                        <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Order ojol gagal memecahkan captcha angka baru. Silakan tentukan angkanya agar bot dapat melanjutkan order.</div>
+                    </div>
+                </div>
+                <button class="btn btn-primary" type="button" onclick="showTab('tab-bank-angka')" style="padding: 6px 14px; font-size: 12px; font-weight: 700;">Review Angka Sekarang</button>
             </div>
             <section id="onboardingCard" class="card onboarding" hidden aria-labelledby="onboardingTitle">
                 <h2 id="onboardingTitle" class="card-title">Hubungkan akun game</h2>
@@ -1133,6 +1145,51 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 </div>
             </div>
         </div>
+
+        <!-- TAB 5: BANK ANGKA -->
+        <div id="tab-bank-angka" class="tab-panel">
+            <div class="page-title">
+                <div>
+                    <h1>Bank Angka Cek</h1>
+                    <p>Kelola dan latih bentuk angka (glyph) verifikasi order Ojol agar captcha selalu berhasil dipecahkan.</p>
+                </div>
+                <div class="page-title-actions">
+                    <button class="btn btn-utility" type="button" onclick="loadBankAngka()">Segarkan Bank</button>
+                    <button class="btn btn-secondary" type="button" onclick="openManualGlyphModal()">+ Tambah Manual</button>
+                </div>
+            </div>
+
+            <!-- Antrean Review Glyph Gagal -->
+            <div class="card" style="margin-bottom: 24px;">
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <h2 class="card-title">🔍 Antrean Review Angka (Cek Gagal)</h2>
+                        <span id="bankPendingCountBadge" class="nav-count" style="display: none; background: var(--danger, #ef4444); color: white;">0</span>
+                    </div>
+                    <span style="font-size: 12px; color: var(--text-muted);">Jika bot gagal mengenali angka pada order Ojol, bentuknya akan muncul di sini untuk Anda konfirmasi.</span>
+                </div>
+                <div id="bankPendingList" style="padding: 16px 0;">
+                    <div style="text-align: center; color: var(--text-muted); padding: 32px 0;">
+                        Memuat antrean review...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Koleksi Bank Angka 0 - 9 -->
+            <div class="card">
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <div>
+                        <h2 class="card-title">📚 Koleksi Angka Terdaftar (Digit 0 – 9)</h2>
+                        <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Total <span id="bankTotalTemplatesCount">0</span> varian bentuk tersimpan di server.</div>
+                    </div>
+                </div>
+                <div id="bankTemplatesGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-top: 16px;">
+                    <div style="text-align: center; color: var(--text-muted); padding: 32px 0; grid-column: 1 / -1;">
+                        Memuat data bank angka...
+                    </div>
+                </div>
+            </div>
+        </div>
     </main>
 
     <!-- MODAL: Import Cookie -->
@@ -1195,6 +1252,35 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         </div>
     </dialog>
 
+    <!-- MODAL: Tambah Glyph Manual -->
+    <dialog id="manualGlyphModal" class="modal" aria-labelledby="manualGlyphModalTitle">
+        <div class="modal-content" style="max-width: 520px;">
+            <div class="modal-header">
+                <h3 id="manualGlyphModalTitle">Tambah Angka ke Bank Manual</h3>
+                <button class="close-btn" type="button" aria-label="Tutup dialog" onclick="closeModal('manualGlyphModal')">&times;</button>
+            </div>
+            <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px; line-height: 1.5;">
+                Pilih digit angka dan masukkan data koordinat titik stroke / JSON glyph dari log error bot.
+            </p>
+            <div style="margin-bottom: 14px;">
+                <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Pilih Digit Angka (0 – 9):</label>
+                <div id="manualDigitButtons" style="display: flex; gap: 6px; flex-wrap: wrap;"></div>
+            </div>
+            <div style="margin-bottom: 14px;">
+                <label for="manualGlyphJson" style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Data Glyph JSON / Titik:</label>
+                <textarea id="manualGlyphJson" class="cookie-box" rows="5" placeholder='Contoh: [[[0.86, 1.0], [0.86, 0.0], ...]]]' spellcheck="false" autocomplete="off" oninput="onManualGlyphInput()"></textarea>
+            </div>
+            <div id="manualGlyphPreview" style="margin-bottom: 14px; display: none;">
+                <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Pratinjau Bentuk:</label>
+                <div id="manualGlyphSvgWrap" style="display: flex; justify-content: center; background: var(--bg); padding: 12px; border-radius: 8px;"></div>
+            </div>
+            <div class="actions" style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;">
+                <button class="btn btn-secondary" type="button" onclick="closeModal('manualGlyphModal')">Batal</button>
+                <button class="btn btn-primary" type="button" onclick="submitManualGlyph()">Simpan ke Bank Angka</button>
+            </div>
+        </div>
+    </dialog>
+
     <script>
         const currentUser = {user_json};
         let dashboardData = null;
@@ -1219,6 +1305,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 }}
             }}
             if (tabId === 'tab-admin') loadAdminData();
+            if (tabId === 'tab-bank-angka') loadBankAngka();
         }}
 
         function openModal(id) {{
@@ -1563,6 +1650,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             document.getElementById('fleetCountAccounts').textContent = accounts.length + ' akun';
             document.getElementById('fleetCountWorkers').textContent = (totals.active_workers ?? 0) + ' dari ' + accounts.length;
             document.getElementById('activeAccountBannerName').textContent = selected?.name ?? 'Akun terpilih';
+            updateBankBadge(data.pending_bank_reviews_count || 0);
 
             const listKey = JSON.stringify(accounts.map(acc => [acc.id, acc.name, acc.status_text, acc.is_selected, acc.wallet, acc.has_cookie]));
             if (accountListKey !== listKey) {{
@@ -2198,6 +2286,327 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 await fetch('/api/auth/logout', {{ method: 'POST' }});
             }} catch (e) {{}}
             window.location.href = '/login';
+        }}
+
+        // ==========================================
+        // BANK ANGKA (CAPTCHA SOLVER REVIEW & TRAIN)
+        // ==========================================
+        const selectedReviewDigits = {{}};
+        let manualSelectedDigit = '0';
+
+        function updateBankBadge(count) {{
+            const badge = document.getElementById('bankReviewBadge');
+            const pendingBadge = document.getElementById('bankPendingCountBadge');
+            const banner = document.getElementById('bankReviewBanner');
+            const headerCount = document.getElementById('bankPendingHeaderCount');
+            if (badge) {{
+                if (count > 0) {{
+                    badge.innerText = count;
+                    badge.style.display = 'inline-block';
+                }} else {{
+                    badge.style.display = 'none';
+                }}
+            }}
+            if (pendingBadge) {{
+                if (count > 0) {{
+                    pendingBadge.innerText = count;
+                    pendingBadge.style.display = 'inline-block';
+                }} else {{
+                    pendingBadge.style.display = 'none';
+                }}
+            }}
+            if (banner) {{
+                if (count > 0) {{
+                    banner.style.display = 'flex';
+                    if (headerCount) headerCount.innerText = count;
+                }} else {{
+                    banner.style.display = 'none';
+                }}
+            }}
+        }}
+
+        function renderGlyphSvg(glyph, width = 100, height = 100, strokeColor = '#10b981') {{
+            if (!glyph || !Array.isArray(glyph) || glyph.length === 0) {{
+                return `<div style="width:${{width}}px;height:${{height}}px;background:#0f172a;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#64748b;font-size:11px;">(kosong)</div>`;
+            }}
+            const pad = 12;
+            const drawW = width - pad * 2;
+            const drawH = height - pad * 2;
+            const allPts = [];
+            for (const stroke of glyph) {{
+                if (Array.isArray(stroke)) {{
+                    for (const pt of stroke) {{
+                        if (Array.isArray(pt) && pt.length >= 2) {{
+                            const x = parseFloat(pt[0]);
+                            const y = parseFloat(pt[1]);
+                            if (!isNaN(x) && !isNaN(y)) allPts.push([x, y]);
+                        }}
+                    }}
+                }}
+            }}
+            if (allPts.length === 0) return '';
+            const minX = Math.min(...allPts.map(p => p[0]));
+            const maxX = Math.max(...allPts.map(p => p[0]));
+            const minY = Math.min(...allPts.map(p => p[1]));
+            const maxY = Math.max(...allPts.map(p => p[1]));
+            const spanX = maxX - minX || 1.0;
+            const spanY = maxY - minY || 1.0;
+
+            let polylines = '';
+            for (const stroke of glyph) {{
+                if (!Array.isArray(stroke) || stroke.length === 0) continue;
+                const ptsStr = stroke.map(pt => {{
+                    const nx = (parseFloat(pt[0]) - minX) / spanX;
+                    const ny = (parseFloat(pt[1]) - minY) / spanY;
+                    const px = (nx * drawW + pad).toFixed(1);
+                    const py = (ny * drawH + pad).toFixed(1);
+                    return `${{px}},${{py}}`;
+                }}).join(' ');
+                polylines += `<polyline points="${{ptsStr}}" fill="none" stroke="${{strokeColor}}" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>`;
+            }}
+            return `<svg width="${{width}}" height="${{height}}" viewBox="0 0 ${{width}} ${{height}}" style="background:#0f172a;border-radius:8px;display:block;box-shadow:inset 0 0 8px rgba(0,0,0,0.5);">${{polylines}}</svg>`;
+        }}
+
+        async function loadBankAngka() {{
+            const listEl = document.getElementById('bankPendingList');
+            const gridEl = document.getElementById('bankTemplatesGrid');
+            try {{
+                const res = await apiFetch('/api/bank-angka');
+                const templates = res.templates || {{}};
+                const pending = res.pending || [];
+                const totalTemplates = res.total_templates || 0;
+
+                updateBankBadge(pending.length);
+                const countEl = document.getElementById('bankTotalTemplatesCount');
+                if (countEl) countEl.innerText = totalTemplates;
+
+                // 1. Render Pending Reviews
+                if (pending.length === 0) {{
+                    listEl.innerHTML = `
+                        <div style="text-align: center; color: var(--success); padding: 36px 16px; background: rgba(16, 185, 129, 0.08); border-radius: 8px; border: 1px dashed rgba(16, 185, 129, 0.3);">
+                            <div style="font-size: 28px; margin-bottom: 6px;">✅</div>
+                            <div style="font-weight: 700; font-size: 15px;">Semua angka cek saat ini dikenali!</div>
+                            <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Tidak ada antrean review gagal cek polyline.</div>
+                        </div>
+                    `;
+                }} else {{
+                    listEl.innerHTML = pending.map((item, idx) => {{
+                        const svgHtml = renderGlyphSvg(item.glyph, 120, 120, '#f59e0b');
+                        const glyphJsonStr = escapeHtml(JSON.stringify(item.glyph));
+                        const errIdStr = item.error_id ? `<span style="background: rgba(239, 68, 68, 0.18); color: var(--danger); border-radius: 4px; padding: 2px 8px; font-weight: 700; font-size: 12px;">🚨 ${{escapeHtml(item.error_id)}}</span>` : '';
+                        const timeStr = item.time ? new Date(item.time).toLocaleTimeString('id-ID', {{ hour: '2-digit', minute: '2-digit', second: '2-digit' }}) : 'Baru saja';
+                        const rid = escapeHtml(item.id);
+
+                        return `
+                            <div style="background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 12px; display: flex; gap: 16px; flex-wrap: wrap; align-items: center; justify-content: space-between;">
+                                <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
+                                    ${{svgHtml}}
+                                    <div>
+                                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
+                                            ${{errIdStr}}
+                                            <span style="font-size: 12px; color: var(--text-muted);">Pukul ${{timeStr}}</span>
+                                        </div>
+                                        <div style="font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 8px;">
+                                            Bentuk angka di samping adalah angka berapa?
+                                        </div>
+                                        <div style="display: flex; gap: 5px; flex-wrap: wrap;" id="reviewDigitsWrap_${{rid}}">
+                                            ${{[0,1,2,3,4,5,6,7,8,9].map(d => `
+                                                <button type="button" class="btn btn-utility" style="padding: 4px 10px; font-weight: 700; font-size: 13px;" onclick="selectReviewDigit('${{rid}}', '${{d}}', this)">
+                                                    ${{d}}
+                                                </button>
+                                            `).join('')}}
+                                        </div>
+                                    </div>
+                                </div>
+                                <div style="display: flex; gap: 8px; align-items: center;">
+                                    <button class="btn btn-secondary" type="button" onclick="dismissReview('${{rid}}', '${{escapeHtml(item.error_id || '')}}')" style="padding: 8px 12px; font-size: 12px;">Abaikan</button>
+                                    <button class="btn btn-primary" type="button" onclick="saveReviewToBank('${{rid}}', '${{escapeHtml(item.error_id || '')}}', '${{glyphJsonStr}}')" style="padding: 8px 16px; font-size: 13px; font-weight: 700;">Simpan ke Bank Angka</button>
+                                </div>
+                            </div>
+                        `;
+                    }}).join('');
+                }}
+
+                // 2. Render Bank Templates (0 - 9)
+                const digits = ['0','1','2','3','4','5','6','7','8','9'];
+                gridEl.innerHTML = digits.map(d => {{
+                    const variants = templates[d] || [];
+                    const varCount = variants.length;
+                    const previews = variants.map((v, vIdx) => `
+                        <div style="position: relative; display: inline-block;">
+                            ${{renderGlyphSvg(v, 68, 68, '#38bdf8')}}
+                            <button type="button" onclick="deleteBankVariant('${{d}}', ${{vIdx}})" title="Hapus varian ini" style="position: absolute; top: -6px; right: -6px; background: rgba(239,68,68,0.9); color: white; border: none; border-radius: 50%; width: 18px; height: 18px; font-size: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1;">&times;</button>
+                        </div>
+                    `).join('');
+
+                    return `
+                        <div style="background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 14px;">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+                                <div style="font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 6px;">
+                                    <span style="font-size: 20px; color: var(--primary);">${{d}}</span>
+                                    <span>Angka ${{d}}</span>
+                                </div>
+                                <span style="font-size: 11px; background: rgba(56, 189, 248, 0.15); color: var(--primary); padding: 2px 8px; border-radius: 12px; font-weight: 600;">${{varCount}} varian</span>
+                            </div>
+                            <div style="display: flex; gap: 8px; flex-wrap: wrap; min-height: 70px; align-items: center;">
+                                ${{varCount > 0 ? previews : '<div style="color: var(--text-muted); font-size: 12px; font-style: italic;">Belum ada varian tersimpan</div>'}}
+                            </div>
+                        </div>
+                    `;
+                }}).join('');
+
+            }} catch (e) {{
+                listEl.innerHTML = `<div style="color: var(--danger); padding: 16px;">Gagal memuat bank angka: ${{escapeHtml(e.message)}}</div>`;
+            }}
+        }}
+
+        function selectReviewDigit(reviewId, digit, btnEl) {{
+            selectedReviewDigits[reviewId] = digit;
+            const wrap = document.getElementById(`reviewDigitsWrap_${{reviewId}}`);
+            if (wrap) {{
+                wrap.querySelectorAll('button').forEach(b => {{
+                    b.classList.remove('btn-primary');
+                    b.classList.add('btn-utility');
+                    b.style.background = '';
+                    b.style.color = '';
+                }});
+            }}
+            if (btnEl) {{
+                btnEl.classList.remove('btn-utility');
+                btnEl.classList.add('btn-primary');
+            }}
+        }}
+
+        async function saveReviewToBank(reviewId, errorId, glyphJsonStr) {{
+            const sel = selectedReviewDigits[reviewId];
+            if (sel === undefined || sel === null || sel === '') {{
+                alert('Silakan tentukan angka (0 - 9) untuk bentuk ini terlebih dahulu!');
+                return;
+            }}
+            try {{
+                const glyph = JSON.parse(glyphJsonStr);
+                const res = await apiFetch('/api/bank-angka/save', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        digit: String(sel),
+                        glyph: glyph,
+                        review_id: reviewId,
+                        error_id: errorId || null
+                    }})
+                }});
+                if (res && res.ok) {{
+                    alert(`✅ Bentuk berhasil disimpan ke Bank Angka sebagai digit ${{sel}}!`);
+                    await loadBankAngka();
+                    manualRefreshDashboard();
+                }}
+            }} catch (e) {{
+                alert('Gagal menyimpan ke bank angka: ' + e.message);
+            }}
+        }}
+
+        async function dismissReview(reviewId, errorId) {{
+            if (!confirm('Abaikan review angka ini?')) return;
+            try {{
+                await apiFetch('/api/bank-angka/dismiss', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ review_id: reviewId, error_id: errorId || null }})
+                }});
+                await loadBankAngka();
+                manualRefreshDashboard();
+            }} catch (e) {{
+                alert('Gagal mengabaikan: ' + e.message);
+            }}
+        }}
+
+        async function deleteBankVariant(digit, index) {{
+            if (!confirm(`Hapus varian ke-${{index + 1}} dari angka ${{digit}}?`)) return;
+            try {{
+                await apiFetch('/api/bank-angka/delete', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{ digit: String(digit), index: index }})
+                }});
+                await loadBankAngka();
+            }} catch (e) {{
+                alert('Gagal menghapus varian: ' + e.message);
+            }}
+        }}
+
+        function openManualGlyphModal() {{
+            document.getElementById('manualGlyphJson').value = '';
+            document.getElementById('manualGlyphPreview').style.display = 'none';
+            manualSelectedDigit = '0';
+            updateManualDigitButtons();
+            openModal('manualGlyphModal');
+        }}
+
+        function updateManualDigitButtons() {{
+            const wrap = document.getElementById('manualDigitButtons');
+            if (!wrap) return;
+            wrap.innerHTML = [0,1,2,3,4,5,6,7,8,9].map(d => `
+                <button type="button" class="btn ${{String(d) === String(manualSelectedDigit) ? 'btn-primary' : 'btn-utility'}}" style="padding: 4px 10px; font-weight: 700; font-size: 13px;" onclick="selectManualDigit('${{d}}')">
+                    ${{d}}
+                </button>
+            `).join('');
+        }}
+
+        function selectManualDigit(digit) {{
+            manualSelectedDigit = String(digit);
+            updateManualDigitButtons();
+        }}
+
+        function onManualGlyphInput() {{
+            const val = document.getElementById('manualGlyphJson').value.trim();
+            const preview = document.getElementById('manualGlyphPreview');
+            const wrap = document.getElementById('manualGlyphSvgWrap');
+            if (!val) {{
+                preview.style.display = 'none';
+                return;
+            }}
+            try {{
+                const parsed = JSON.parse(val);
+                if (Array.isArray(parsed)) {{
+                    wrap.innerHTML = renderGlyphSvg(parsed, 120, 120, '#10b981');
+                    preview.style.display = 'block';
+                }}
+            }} catch (_) {{
+                preview.style.display = 'none';
+            }}
+        }}
+
+        async function submitManualGlyph() {{
+            const val = document.getElementById('manualGlyphJson').value.trim();
+            if (!val) {{
+                alert('Silakan masukkan data JSON glyph');
+                return;
+            }}
+            let glyph;
+            try {{
+                glyph = JSON.parse(val);
+                if (!Array.isArray(glyph) || glyph.length === 0) throw new Error('Format harus berupa array stroke');
+            }} catch (e) {{
+                alert('Format JSON glyph tidak valid: ' + e.message);
+                return;
+            }}
+            try {{
+                const res = await apiFetch('/api/bank-angka/save', {{
+                    method: 'POST',
+                    headers: {{ 'Content-Type': 'application/json' }},
+                    body: JSON.stringify({{
+                        digit: manualSelectedDigit,
+                        glyph: glyph
+                    }})
+                }});
+                if (res && res.ok) {{
+                    alert(`✅ Angka ${{manualSelectedDigit}} berhasil ditambahkan ke bank!`);
+                    closeModal('manualGlyphModal');
+                    loadBankAngka();
+                }}
+            }} catch (e) {{
+                alert('Gagal menyimpan: ' + e.message);
+            }}
         }}
 
         // Initial setup

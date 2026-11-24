@@ -217,6 +217,10 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
         assert "cookieTargetAccountId" in dash_page.text
         assert '<dialog id="cookieModal"' in dash_page.text
         assert 'aria-label="Pilih akun game"' in dash_page.text
+        assert "tab-bank-angka" in dash_page.text
+        assert "Bank Angka" in dash_page.text
+        assert "bankReviewBanner" in dash_page.text
+        assert "manualGlyphModal" in dash_page.text
         stylesheet = client.get("/ui/console.css")
         assert stylesheet.status_code == 200 and "DM Sans" in stylesheet.text
         assert client.get("/ui/dm-sans.woff2").content.startswith(b"wOF2")
@@ -228,6 +232,39 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
         assert "accounts" in dash_json
         assert "summary" in dash_json
         assert "limit_reached" in dash_json
+        assert "pending_bank_reviews_count" in dash_json
+
+        # Bank Angka Endpoints
+        bank_get = client.get("/api/bank-angka")
+        assert bank_get.status_code == 200
+        bank_data = bank_get.json()
+        assert "templates" in bank_data
+        assert "pending" in bank_data
+        assert "total_templates" in bank_data
+
+        save_res = client.post(
+            "/api/bank-angka/save",
+            json={"digit": "4", "glyph": [[[0.86, 1.0], [0.86, 0.0], [0.0, 0.74]]]},
+        )
+        assert save_res.status_code == 200
+        assert save_res.json()["ok"] is True
+        assert save_res.json()["digit"] == "4"
+
+        bank_after = client.get("/api/bank-angka").json()
+        assert "4" in bank_after["templates"]
+
+        del_res = client.post(
+            "/api/bank-angka/delete",
+            json={"digit": "4", "index": len(bank_after["templates"]["4"]) - 1},
+        )
+        assert del_res.status_code == 200
+        assert del_res.json()["ok"] is True
+
+        dismiss_res = client.post(
+            "/api/bank-angka/dismiss",
+            json={"review_id": "dummy-rev-id"},
+        )
+        assert dismiss_res.status_code == 200
 
         # 9b. Download extension zip endpoint
         import io
