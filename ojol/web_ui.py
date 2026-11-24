@@ -2585,7 +2585,10 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     }})
                 }});
                 if (res && res.ok) {{
-                    alert(`✅ Bentuk berhasil disimpan ke Bank Angka sebagai digit ${{sel}}!`);
+                    const retried = res.retried_accounts && res.retried_accounts.length > 0
+                        ? `\n🚀 Langsung mencoba menyelesaikan order tertahan pada akun: ${{res.retried_accounts.join(', ')}}`
+                        : '';
+                    alert(`✅ Bentuk berhasil disimpan ke Bank Angka sebagai digit ${{sel}}!${{retried}}`);
                     await loadBankAngka();
                     manualRefreshDashboard();
                 }}

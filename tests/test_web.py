@@ -959,8 +959,14 @@ def test_shared_bank_angka_and_crowdsourced_contribution(admin_web):
         json={"digit": "7", "glyph": dummy_glyph, "error_id": "OJL-998877665544"},
     )
     assert save_res.status_code == 200
-    assert save_res.json()["ok"] is True
-    assert save_res.json()["by"] is not None
+    save_json = save_res.json()
+    assert save_json["ok"] is True
+    assert save_json["by"] is not None
+    assert "Akun Eskobar" in save_json["retried_accounts"]
+    # WAKE file created and Auto Ojol enabled
+    from ojol.auto_settings import auto_flags
+    assert auto_flags(r_dir)["ojol"] is True
+    assert (r_dir / "WAKE").is_file()
 
     # 4. Bank Angka now has the new variant marked with contributor and pending is cleared
     bank_after = client.get("/api/bank-angka").json()

@@ -1166,7 +1166,7 @@ def register_web_routes(app, settings, manager=None, service=None):
         if not glyph or not isinstance(glyph, list):
             raise HTTPException(400, "Data glyph tidak valid")
 
-        fleet_dirs, _ = get_all_fleet_directories()
+        fleet_dirs, acc_names = get_all_fleet_directories()
         user_name = user.get("name") or user.get("username") or "Pengguna"
 
         from .svg_captcha_solver import resolve_review, save_template_to_bank
@@ -1178,7 +1178,84 @@ def register_web_routes(app, settings, manager=None, service=None):
         if error_id:
             resolve_review(fleet_dirs, error_id, digit=digit, glyph=glyph, resolved_by=user_name)
 
-        return {"ok": True, "digit": digit, "by": user_name}
+        retried_accounts = []
+        try:
+            from pathlib import Path
+            from .auto_settings import set_auto_flag
+            from .management import running
+
+            target_dirs = []
+            for d in fleet_dirs:
+                p = Path(d)
+                matched = False
+                if review_id and (p / "cek-reviews" / f"{review_id}.json").is_file():
+                    matched = True
+                if error_id and (
+                    (p / "errors" / f"{error_id}.json").is_file()
+                    or (p / "errors" / f"OJL-{error_id}.json").is_file()
+                ):
+                    matched = True
+                status_file = p / "status.json"
+                if status_file.is_file():
+                    try:
+                        sdata = json.loads(status_file.read_text())
+                        snap = sdata.get("snapshot") or {}
+                        if snap.get("phase") == "complete" or str(sdata.get("stage", "")).startswith("job.complete"):
+                            matched = True
+                    except Exception:
+                        pass
+                if matched and p not in target_dirs:
+                    target_dirs.append(p)
+
+            # Jika target_dirs kosong, coba periksa akun yang sedang memiliki phase == complete
+            if not target_dirs:
+                for d in fleet_dirs:
+                    p = Path(d)
+                    status_file = p / "status.json"
+                    if status_file.is_file():
+                        try:
+                            sdata = json.loads(status_file.read_text())
+                            snap = sdata.get("snapshot") or {}
+                            if snap.get("phase") == "complete":
+                                target_dirs.append(p)
+                        except Exception:
+                            pass
+
+            for p in target_dirs:
+                name = acc_names.get(str(p)) or p.name
+                # 1. Aktifkan kembali Auto Ojol
+                set_auto_flag(p, "ojol", True)
+                # 2. Sentuh file WAKE agar worker yang sedang standby/menunggu segera bangun
+                try:
+                    (p / "WAKE").touch()
+                except OSError:
+                    pass
+
+                # 3. Cari service akun terkait
+                acc_service = None
+                if manager and registry:
+                    for acc in registry.list() + registry.list(archived=True):
+                        if str(registry.scoped_settings(acc).runtime_dir) == str(p):
+                            acc_service = manager.service(acc["id"])
+                            name = acc.get("name", name)
+                            break
+                if acc_service is None:
+                    acc_service = service
+
+                # 4. Jika worker belum aktif, jalankan
+                if acc_service:
+                    is_active = (acc_service.worker and acc_service.worker.returncode is None) or running(p)
+                    if not is_active:
+                        try:
+                            await acc_service.command("run")
+                        except Exception:
+                            pass
+
+                retried_accounts.append(name)
+        except Exception:
+            pass
+
+        return {"ok": True, "digit": digit, "by": user_name, "retried_accounts": retried_accounts}
 
     @app.post("/api/bank-angka/delete")
     async def delete_bank_angka(request: Request, user: dict = Depends(require_user)):

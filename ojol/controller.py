@@ -162,8 +162,15 @@ class Controller:
         self.report("tidur" if sleeping else "menunggu", seconds=round(seconds, 3))
         deadline = time.monotonic() + seconds
         last_presence = time.monotonic()
+        wake_file = self.settings.runtime_dir / "WAKE"
         while time.monotonic() < deadline:
             self.check_cancel()
+            if wake_file.is_file():
+                try:
+                    wake_file.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                break
             await asyncio.sleep(min(0.25, max(0, deadline - time.monotonic())))
             if time.monotonic() - last_presence >= 35:
                 if hasattr(self.ui, "fetch_online_status"):
