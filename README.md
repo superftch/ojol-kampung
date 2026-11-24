@@ -270,7 +270,8 @@ uv sync --frozen
 uv run ruff check .
 uv run ruff format --check .
 uv run python scripts/test.py --prepare
-uv run python scripts/test.py
+uv run python scripts/test.py           # Cakupan fitur web cepat (~3.5 detik, 264 pengujian)
+uv run python scripts/test.py --all     # Seluruh test suite (771 pengujian)
 docker build --target test -t ojol-kampung:test .
 ```
 
