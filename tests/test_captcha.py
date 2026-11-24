@@ -112,3 +112,35 @@ def test_save_and_delete_bank_template():
         delete_template_from_bank(tmp, "4", idx)
         bank2 = get_bank_templates(tmp)
         assert len(bank2.get("4", [])) == idx
+
+
+def test_matching_sample_svg_attached_to_review():
+    import json
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as tmp:
+        # Create a sample SVG in cek-samples
+        samples_dir = Path(tmp) / "cek-samples"
+        samples_dir.mkdir(parents=True)
+        raw_svg = '<svg xmlns="http://www.w3.org/2000/svg"><polyline points="10,0 10,40"/><polyline points="50,0 55,10 60,0"/></svg>'
+        (samples_dir / "trip-sample-99.svg").write_text(raw_svg)
+
+        # Create an error with unknown glyph from that trip
+        err_dir = Path(tmp) / "errors"
+        err_dir.mkdir(parents=True)
+        from ojol.svg_captcha_solver import _glyphs, _normalize
+        second_glyph = _normalize(_glyphs(raw_svg)[1])
+
+        sample_error = {
+            "error_id": "OJL-AABBCCDDEEFF",
+            "category": "SvgCaptchaSolverError",
+            "message": f"Gagal memecahkan gambar cek: Glyph cek belum dikenali: {json.dumps(second_glyph)}",
+            "time": "2026-11-24T08:00:00Z",
+        }
+        (err_dir / "OJL-AABBCCDDEEFF.json").write_text(json.dumps(sample_error))
+
+        pending = get_pending_reviews(tmp)
+        assert len(pending) == 1
+        assert pending[0]["error_id"] == "OJL-AABBCCDDEEFF"
+        # Must attach matching raw_svg from cek-samples
+        assert pending[0]["svg_text"] == raw_svg

@@ -268,6 +268,33 @@ def get_pending_reviews(directory):
     reviews = []
     seen_ids = set()
 
+    # Muat cache sampel SVG dari direktori cek-samples untuk mencocokkan gambar asli game
+    samples_dir = path / "cek-samples"
+    samples_cache = []
+    if samples_dir.is_dir():
+        for s_file in sorted(samples_dir.glob("*.svg"), key=lambda f: f.stat().st_mtime, reverse=True):
+            try:
+                content = s_file.read_text().strip()
+                if content.startswith("<svg"):
+                    samples_cache.append((s_file.stem, content))
+            except OSError:
+                pass
+
+    def find_matching_svg(target_glyph, trip_id=None):
+        if trip_id:
+            for stem, c in samples_cache:
+                if stem == trip_id:
+                    return c
+        try:
+            norm_target = _normalize(target_glyph)
+            for _, sample_svg in samples_cache:
+                for s_glyph in _glyphs(sample_svg):
+                    if _shape_distance(norm_target, _normalize(s_glyph)) < 0.08:
+                        return sample_svg
+        except Exception:
+            pass
+        return None
+
     # 1. Dari cek-reviews
     rev_dir = path / "cek-reviews"
     if rev_dir.is_dir():
@@ -280,13 +307,14 @@ def get_pending_reviews(directory):
                     glyph = data.get("normalized_glyph") or data.get("raw_glyph")
                     rid = data.get("id") or file.stem
                     if glyph and rid not in seen_ids:
+                        svg_text = data.get("svg_text") or find_matching_svg(glyph, data.get("trip_id"))
                         reviews.append({
                             "id": rid,
                             "error_id": data.get("error_id"),
                             "trip_id": data.get("trip_id"),
                             "time": data.get("time"),
                             "glyph": glyph,
-                            "svg_text": data.get("svg_text"),
+                            "svg_text": svg_text,
                         })
                         seen_ids.add(rid)
             except (ValueError, OSError):
@@ -307,13 +335,14 @@ def get_pending_reviews(directory):
                     match = re.search(r"Glyph cek belum dikenali:\s*(\[\[\[.*?\]\]\])", msg)
                     if match:
                         glyph = json.loads(match.group(1))
+                        svg_text = find_matching_svg(glyph, data.get("trip_id"))
                         reviews.append({
                             "id": rev_err_id,
                             "error_id": err_id,
-                            "trip_id": None,
+                            "trip_id": data.get("trip_id"),
                             "time": data.get("time"),
                             "glyph": glyph,
-                            "svg_text": None,
+                            "svg_text": svg_text,
                         })
                         seen_ids.add(err_id)
                         seen_ids.add(rev_err_id)

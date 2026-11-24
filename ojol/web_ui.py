@@ -2391,36 +2391,72 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     `;
                 }} else {{
                     listEl.innerHTML = pending.map((item, idx) => {{
-                        const svgHtml = renderGlyphSvg(item.glyph, 120, 120, '#f59e0b');
                         const glyphJsonStr = escapeHtml(JSON.stringify(item.glyph));
                         const errIdStr = item.error_id ? `<span style="background: rgba(239, 68, 68, 0.18); color: var(--danger); border-radius: 4px; padding: 2px 8px; font-weight: 700; font-size: 12px;">🚨 ${{escapeHtml(item.error_id)}}</span>` : '';
                         const timeStr = item.time ? new Date(item.time).toLocaleTimeString('id-ID', {{ hour: '2-digit', minute: '2-digit', second: '2-digit' }}) : 'Baru saja';
                         const rid = escapeHtml(item.id);
 
+                        let capturedSvgBlock = '';
+                        if (item.svg_text && item.svg_text.trim().startsWith('<svg')) {{
+                            let cleanSvg = item.svg_text.replace(/<svg\b([^>]*)>/i, '<svg $1 style="width: 180px; height: 84px; display: block; border-radius: 6px;">');
+                            capturedSvgBlock = `
+                                <div style="background: #0f172a; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; align-items: center; justify-content: center;">
+                                    <div style="font-size: 11px; font-weight: 700; color: #38bdf8; margin-bottom: 6px; display: flex; align-items: center; gap: 4px;">
+                                        <span>📸</span> GAMBAR CAPTURE GAME (2 ANGKA)
+                                    </div>
+                                    <div style="display: flex; align-items: center; justify-content: center; background: #f4efe2; border-radius: 6px; box-shadow: 0 2px 8px rgba(0,0,0,0.4); overflow: hidden;">
+                                        ${{cleanSvg}}
+                                    </div>
+                                    <div style="font-size: 10px; color: var(--text-muted); margin-top: 5px;">Tangkapan layar asli dari game</div>
+                                </div>
+                            `;
+                        }}
+
+                        const focusGlyphBlock = `
+                            <div style="background: #0f172a; border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; align-items: center; justify-content: center;">
+                                <div style="font-size: 11px; font-weight: 700; color: #f59e0b; margin-bottom: 6px; display: flex; align-items: center; gap: 4px;">
+                                    <span>🎯</span> FOKUS GLYPH YANG DILATIH
+                                </div>
+                                <div style="display: flex; align-items: center; justify-content: center;">
+                                    ${{renderGlyphSvg(item.glyph, 100, 84, '#f59e0b')}}
+                                </div>
+                                <div style="font-size: 10px; color: var(--text-muted); margin-top: 5px;">Pilih angka bentuk ini di bawah</div>
+                            </div>
+                        `;
+
                         return `
-                            <div style="background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 12px; display: flex; gap: 16px; flex-wrap: wrap; align-items: center; justify-content: space-between;">
-                                <div style="display: flex; gap: 16px; align-items: center; flex-wrap: wrap;">
-                                    ${{svgHtml}}
+                            <div style="background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px;">
+                                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
+                                    <div style="display: flex; align-items: center; gap: 8px;">
+                                        ${{errIdStr}}
+                                        <span style="font-size: 12px; color: var(--text-muted);">Waktu kejadian: ${{timeStr}}</span>
+                                        ${{item.trip_id ? `<span style="font-size: 11px; color: var(--text-muted); background: var(--bg); padding: 2px 6px; border-radius: 4px;">Trip: ${{escapeHtml(item.trip_id)}}</span>` : ''}}
+                                    </div>
+                                    <span style="font-size: 12px; color: #f59e0b; font-weight: 600;">⚠️ Bot butuh konfirmasi digit</span>
+                                </div>
+
+                                <div style="display: flex; gap: 16px; flex-wrap: wrap; align-items: center; margin-bottom: 16px;">
+                                    ${{capturedSvgBlock}}
+                                    ${{focusGlyphBlock}}
+                                </div>
+
+                                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; background: var(--bg); padding: 12px 14px; border-radius: 8px; border: 1px solid var(--border);">
                                     <div>
-                                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
-                                            ${{errIdStr}}
-                                            <span style="font-size: 12px; color: var(--text-muted);">Pukul ${{timeStr}}</span>
+                                        <div style="font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 8px;">
+                                            Tentukan angka untuk bentuk yang ditandai:
                                         </div>
-                                        <div style="font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 8px;">
-                                            Bentuk angka di samping adalah angka berapa?
-                                        </div>
-                                        <div style="display: flex; gap: 5px; flex-wrap: wrap;" id="reviewDigitsWrap_${{rid}}">
+                                        <div style="display: flex; gap: 6px; flex-wrap: wrap;" id="reviewDigitsWrap_${{rid}}">
                                             ${{[0,1,2,3,4,5,6,7,8,9].map(d => `
-                                                <button type="button" class="btn btn-utility" style="padding: 4px 10px; font-weight: 700; font-size: 13px;" onclick="selectReviewDigit('${{rid}}', '${{d}}', this)">
+                                                <button type="button" class="btn btn-utility" style="padding: 6px 12px; font-weight: 700; font-size: 14px; min-width: 36px;" onclick="selectReviewDigit('${{rid}}', '${{d}}', this)">
                                                     ${{d}}
                                                 </button>
                                             `).join('')}}
                                         </div>
                                     </div>
-                                </div>
-                                <div style="display: flex; gap: 8px; align-items: center;">
-                                    <button class="btn btn-secondary" type="button" onclick="dismissReview('${{rid}}', '${{escapeHtml(item.error_id || '')}}')" style="padding: 8px 12px; font-size: 12px;">Abaikan</button>
-                                    <button class="btn btn-primary" type="button" onclick="saveReviewToBank('${{rid}}', '${{escapeHtml(item.error_id || '')}}', '${{glyphJsonStr}}')" style="padding: 8px 16px; font-size: 13px; font-weight: 700;">Simpan ke Bank Angka</button>
+                                    <div style="display: flex; gap: 8px; align-items: center;">
+                                        <button class="btn btn-secondary" type="button" onclick="dismissReview('${{rid}}', '${{escapeHtml(item.error_id || '')}}')" style="padding: 8px 14px; font-size: 12px;">Abaikan</button>
+                                        <button class="btn btn-primary" type="button" onclick="saveReviewToBank('${{rid}}', '${{escapeHtml(item.error_id || '')}}', '${{glyphJsonStr}}')" style="padding: 8px 18px; font-size: 13px; font-weight: 700;">💾 Simpan ke Bank Angka</button>
+                                    </div>
                                 </div>
                             </div>
                         `;
