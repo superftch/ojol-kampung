@@ -11,9 +11,11 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from app.core.models import ROOT
 from app.integrations.kampung import session_transfer
+from app.modules.auth.schemas import CookieImportForm
 from app.modules.notifications.service import queue_error
 from app.modules.worker.maintenance import held_window
 from app.web.deps import WebContext, get_ctx
+from app.web.payloads import validate_payload
 
 router = APIRouter()
 
@@ -43,7 +45,7 @@ async def health(ctx: Annotated[WebContext, Depends(get_ctx)]):
         "service": "ok",
         "tunnel_enabled": ctx.settings.tunnel_enabled,
         "tunnel_process_alive": (
-            ctx.manager.hub.tunnel_alive() if ctx.manager else ctx.service.tunnel_alive()
+            ctx.manager.tunnel.is_alive() if ctx.manager else ctx.service.tunnel_alive()
         ),
     }
 
@@ -105,14 +107,14 @@ async def submit(request: Request, ctx: Annotated[WebContext, Depends(get_ctx)])
             raise HTTPException(413, "Cookie terlalu besar")
 
     try:
-        fields = parse_qs(body.decode())
-        if not scoped.access.valid_csrf(
-            request.cookies.get("ojol_import"), fields.get("csrf", [""])[0]
-        ):
+        fields = validate_payload(
+            CookieImportForm, {key: values[0] for key, values in parse_qs(body.decode()).items()}
+        )
+        if not scoped.access.valid_csrf(request.cookies.get("ojol_import"), fields.csrf):
             raise HTTPException(
                 403, "Form kedaluwarsa/berubah. Buka ulang link Import Cookie terbaru."
             )
-        payload = session_transfer.parse_cookie_input(fields.get("cookie", [""])[0])
+        payload = session_transfer.parse_cookie_input(fields.cookie)
     except (ValueError, TypeError, KeyError, UnicodeError):
         return HTMLResponse(
             "Cookie tidak valid. Kembali dan masukkan cookie sesi KampungSebelah saja.",

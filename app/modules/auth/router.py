@@ -6,15 +6,16 @@ from urllib.parse import quote_plus, urlsplit
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
+from app.modules.auth.schemas import Credentials, PasswordConfirmation, Registration
 from app.web.deps import (
     WebContext,
     get_ctx,
     get_current_user,
-    parse_body,
     public_user,
     require_user,
 )
 from app.web.html import dashboard_html, login_html, register_html, setup_password_html
+from app.web.payloads import parse_body, validate_payload
 
 router = APIRouter()
 
@@ -73,18 +74,11 @@ async def setup_password_api(
     if not user:
         raise HTTPException(401, "Sesi belum aktif")
     body, is_json = await parse_body(request)
-    username = body.get("username", "")
-    password = body.get("password", "")
-    confirm = body.get("confirm_password", "")
-
-    if password != confirm:
-        err = "Konfirmasi password tidak cocok."
-        if is_json:
-            raise HTTPException(400, err)
-        return RedirectResponse("/setup-password?error=" + quote_plus(err), status_code=303)
-
     try:
-        updated = ctx.registry.web.setup_password(user["id"], username, password)
+        form = validate_payload(PasswordConfirmation, body)
+        if form.password != form.confirm_password:
+            raise ValueError("Konfirmasi password tidak cocok.")
+        updated = ctx.registry.web.setup_password(user["id"], form.username, form.password)
         if is_json:
             return {"success": True, "user": public_user(updated), "redirect": "/"}
         return RedirectResponse("/", status_code=303)
@@ -134,18 +128,11 @@ async def register_api(request: Request, ctx: Annotated[WebContext, Depends(get_
     if not ctx.registry:
         raise HTTPException(500, "Registry belum siap")
     body, is_json = await parse_body(request)
-    username = body.get("username", "")
-    password = body.get("password", "")
-    confirm = body.get("confirm_password", "")
-    name = body.get("name", "")
-
-    if not is_json and confirm and password != confirm:
-        return RedirectResponse(
-            "/register?error=" + quote_plus("Konfirmasi password tidak cocok."), status_code=303
-        )
-
     try:
-        user = ctx.registry.web.register(username, password, name)
+        form = validate_payload(Registration, body)
+        if not is_json and form.confirm_password and form.password != form.confirm_password:
+            raise ValueError("Konfirmasi password tidak cocok.")
+        user = ctx.registry.web.register(form.username, form.password, form.name)
         if user.get("status") == "approved":
             msg = "Pendaftaran berhasil! Akun Anda aktif sebagai admin. Silakan masuk."
         else:
@@ -164,11 +151,9 @@ async def login_api(request: Request, ctx: Annotated[WebContext, Depends(get_ctx
     if not ctx.registry:
         raise HTTPException(500, "Registry belum siap")
     body, is_json = await parse_body(request)
-    username = body.get("username", "")
-    password = body.get("password", "")
-
     try:
-        user = ctx.registry.web.authenticate_password(username, password)
+        form = validate_payload(Credentials, body)
+        user = ctx.registry.web.authenticate_password(form.username, form.password)
         token = ctx.registry.web.issue_session(user["id"])
         res: Response = (
             JSONResponse({"success": True, "user": public_user(user)})

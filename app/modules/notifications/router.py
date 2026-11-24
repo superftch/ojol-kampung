@@ -5,7 +5,9 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Request
 
 from app.modules.notifications.repository import list_notifications, mark_notifications_read
+from app.modules.notifications.schemas import NoticeSelection
 from app.web.deps import WebContext, get_ctx, require_user, resolve_account_service
+from app.web.payloads import is_json_request, read_json
 
 router = APIRouter()
 
@@ -31,12 +33,9 @@ async def mark_read(
     user: Annotated[dict, Depends(require_user)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    body = (
-        await request.json()
-        if request.headers.get("content-type", "").startswith("application/json")
-        else {}
+    notice_ids = (
+        (await read_json(request, NoticeSelection)).ids if is_json_request(request) else None
     )
-    notice_ids = body.get("ids")
     cur_service = resolve_account_service(
         ctx, user, explicit_id=request.query_params.get("account_id")
     )

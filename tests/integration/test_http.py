@@ -89,7 +89,7 @@ def study_fixture(world, settings, monkeypatch, mode):
         },
     }
     monkeypatch.setattr(
-        "app.integrations.kampung.http_api.STUDY_FACILITIES_BY_VILLAGE",
+        "app.integrations.kampung.facility_workflows.STUDY_FACILITIES_BY_VILLAGE",
         {"fixture-desa": {mode: identifier}},
     )
     set_subject(settings.runtime_dir, mode, "administrasi")
@@ -373,10 +373,11 @@ def add_shop(world, number, name, category, item, product_name, price_milli, **c
 async def api(settings, world, monkeypatch):
     calls = []
     monkeypatch.setattr(
-        "app.integrations.kampung.http_api.SHOPS_BY_VILLAGE", {"fixture-desa": world["locations"]}
+        "app.integrations.kampung.shop_workflows.SHOPS_BY_VILLAGE",
+        {"fixture-desa": world["locations"]},
     )
     monkeypatch.setattr(
-        "app.integrations.kampung.http_api.NEED_SHOPS_BY_VILLAGE",
+        "app.integrations.kampung.shop_workflows.NEED_SHOPS_BY_VILLAGE",
         {"fixture-desa": world["need_locations"]},
     )
 
@@ -1945,7 +1946,8 @@ async def test_daily_wallet_page_limit_is_partial(settings, monkeypatch):
 async def test_bpjs_auto_buy_when_not_owned(api, world, monkeypatch):
     kantor_id = "5149bd70-4b0b-4b4e-be2e-839b7099f8dc"
     monkeypatch.setattr(
-        "app.integrations.kampung.http_api.BPJS_KANTOR_BY_VILLAGE", {"fixture-desa": kantor_id}
+        "app.integrations.kampung.facility_workflows.BPJS_KANTOR_BY_VILLAGE",
+        {"fixture-desa": kantor_id},
     )
     bpjs_state: dict[str, object] = {
         "rules": {"iuranMilli": 5000, "masaHari": 30, "gratisPerHari": 1},
@@ -1976,7 +1978,7 @@ async def test_bpjs_auto_buy_when_not_owned(api, world, monkeypatch):
 async def test_kesehatan_free_checkup_at_puskesmas_with_tensi_minigame(api, world, monkeypatch):
     puskesmas_id = "2ff500f4-fe31-438b-be99-801eb4e6b363"
     monkeypatch.setattr(
-        "app.integrations.kampung.http_api.HEALTH_FACILITIES_BY_VILLAGE",
+        "app.integrations.kampung.shop_workflows.HEALTH_FACILITIES_BY_VILLAGE",
         {"fixture-desa": (puskesmas_id,)},
     )
     world["needs"].update(enabled=True, needs=[{"id": "kesehatan", "value": 50}])
@@ -2039,7 +2041,8 @@ async def test_kesehatan_free_checkup_at_puskesmas_with_tensi_minigame(api, worl
 async def test_kesehatan_free_checkup_at_rs_with_detak_minigame(api, world, monkeypatch):
     rs_id = "dbc8fb79-43d3-4b75-b3ab-dac2d0c17b10"
     monkeypatch.setattr(
-        "app.integrations.kampung.http_api.HEALTH_FACILITIES_BY_VILLAGE", {"fixture-desa": (rs_id,)}
+        "app.integrations.kampung.shop_workflows.HEALTH_FACILITIES_BY_VILLAGE",
+        {"fixture-desa": (rs_id,)},
     )
     world["needs"].update(enabled=True, needs=[{"id": "kesehatan", "value": 50}])
     bpjs_state: dict[str, object] = {
@@ -2101,7 +2104,7 @@ async def test_kesehatan_free_checkup_at_rs_with_detak_minigame(api, world, monk
 async def test_kesehatan_fallback_to_medicine_when_no_free_quota(api, world, monkeypatch):
     puskesmas_id = "2ff500f4-fe31-438b-be99-801eb4e6b363"
     monkeypatch.setattr(
-        "app.integrations.kampung.http_api.HEALTH_FACILITIES_BY_VILLAGE",
+        "app.integrations.kampung.shop_workflows.HEALTH_FACILITIES_BY_VILLAGE",
         {"fixture-desa": (puskesmas_id,)},
     )
     bpjs_state: dict[str, object] = {
@@ -2123,7 +2126,7 @@ async def test_kesehatan_fallback_to_medicine_when_no_free_quota(api, world, mon
     toko_shop = NeedShop(toko_id, "K40-U06", "Akademis.ai Farma", "toko-obat")
     world["need_locations"]["kesehatan"] = (toko_shop,)
     monkeypatch.setattr(
-        "app.integrations.kampung.http_api.NEED_SHOPS_BY_VILLAGE",
+        "app.integrations.kampung.shop_workflows.NEED_SHOPS_BY_VILLAGE",
         {"fixture-desa": {"kesehatan": (toko_shop,)}},
     )
     world["shops"][toko_id] = {
@@ -2497,7 +2500,8 @@ async def test_hardcoded_gym_included_and_prioritized_over_paid_gym(
 ):
     gym_id = str(uuid4())
     monkeypatch.setattr(
-        "app.integrations.kampung.http_api.GYM_FACILITIES_BY_VILLAGE", {"fixture-desa": (gym_id,)}
+        "app.integrations.kampung.shop_workflows.GYM_FACILITIES_BY_VILLAGE",
+        {"fixture-desa": (gym_id,)},
     )
     # physical_places in world["needs"] does NOT include the gym (e.g. only contains badminton)
     other_id = str(uuid4())

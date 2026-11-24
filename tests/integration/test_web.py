@@ -266,6 +266,38 @@ def admin_web(settings):
         yield client, app.state.manager
 
 
+def test_web_auth_form_redirect_and_validation_redacts_secrets(admin_web):
+    client, _ = admin_web
+    client.post("/api/auth/logout")
+    fixture_value = "fixture-password"
+    invalid = client.post("/api/auth/login", json={"password": [fixture_value]})
+    assert invalid.status_code == 400 and fixture_value not in invalid.text
+    login = client.post(
+        "/api/auth/login",
+        data={"username": "web_admin", "password": fixture_value},
+        follow_redirects=False,
+    )
+    assert login.status_code == 303 and login.headers["location"] == "/"
+
+    invalid_cookie = client.post("/api/control/import-cookie", json={"cookie": [fixture_value]})
+    assert invalid_cookie.status_code == 400 and fixture_value not in invalid_cookie.text
+
+
+def test_web_rejects_malformed_mutation_payloads(admin_web):
+    client, _ = admin_web
+    assert client.post("/api/accounts/create", json=[]).status_code == 400
+    assert client.post("/api/notifications/read", json={"ids": "all"}).status_code == 400
+    assert (
+        client.post(
+            "/api/control/toggle-auto", json={"flag": "ojol", "enabled": "false"}
+        ).status_code
+        == 400
+    )
+    assert (
+        client.post("/api/bank-angka/save", json={"digit": "7", "glyph": [[1]]}).status_code == 400
+    )
+
+
 def test_web_cookie_onboarding_and_archive(admin_web, monkeypatch):
     client, manager = admin_web
 

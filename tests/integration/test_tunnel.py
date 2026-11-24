@@ -1,3 +1,4 @@
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -35,13 +36,17 @@ async def test_tunnel_secret_file_and_single_owned_process(settings, monkeypatch
     is_file = Path.is_file
     monkeypatch.setattr(Path, "is_file", lambda path: path == Path("/.dockerenv") or is_file(path))
     monkeypatch.setattr(
-        "app.modules.worker.service.shutil.which", lambda binary: "/bin/cloudflared"
+        "app.integrations.cloudflared.shutil.which", lambda binary: "/bin/cloudflared"
     )
     child = SimpleNamespace(returncode=None, terminate=Mock(), wait=AsyncMock())
-    spawn = AsyncMock(return_value=child)
-    monkeypatch.setattr("app.modules.worker.service.asyncio.create_subprocess_exec", spawn)
-    await service.start_tunnel()
-    await service.start_tunnel()
+
+    async def spawn_after_yield(*args, **kwargs):
+        await asyncio.sleep(0)
+        return child
+
+    spawn = AsyncMock(side_effect=spawn_after_yield)
+    monkeypatch.setattr("app.integrations.cloudflared.asyncio.create_subprocess_exec", spawn)
+    await asyncio.gather(service.start_tunnel(), service.start_tunnel())
     spawn.assert_awaited_once()
     args = spawn.call_args.args
     assert args[-2:] == ("--token-file", str(token_file))
@@ -55,7 +60,7 @@ async def test_tunnel_secret_file_and_single_owned_process(settings, monkeypatch
 async def test_disabled_tunnel_never_spawns(settings, monkeypatch):
     service = ControlService(settings)
     spawn = AsyncMock()
-    monkeypatch.setattr("app.modules.worker.service.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("app.integrations.cloudflared.asyncio.create_subprocess_exec", spawn)
     await service.start_tunnel()
     spawn.assert_not_awaited()
 
@@ -64,10 +69,10 @@ async def test_missing_tunnel_secret_reports_error_without_spawn(settings, monke
     service = tunnel_service(settings)
     monkeypatch.setattr(Path, "is_file", lambda path: path == Path("/.dockerenv"))
     monkeypatch.setattr(
-        "app.modules.worker.service.shutil.which", lambda binary: "/bin/cloudflared"
+        "app.integrations.cloudflared.shutil.which", lambda binary: "/bin/cloudflared"
     )
     spawn = AsyncMock()
-    monkeypatch.setattr("app.modules.worker.service.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("app.integrations.cloudflared.asyncio.create_subprocess_exec", spawn)
     with pytest.raises(RuntimeError, match="secret cloudflared_token"):
         await service.start_tunnel()
     spawn.assert_not_awaited()
@@ -75,7 +80,7 @@ async def test_missing_tunnel_secret_reports_error_without_spawn(settings, monke
 
 async def test_tunnel_exit_stops_worker_once_and_reports_stage(settings, monkeypatch):
     service = tunnel_service(settings)
-    service.tunnel_process = SimpleNamespace(returncode=1)
+    service.tunnel.process = SimpleNamespace(returncode=1)
     service.stop_worker = AsyncMock()
     iterations = 0
 
@@ -96,7 +101,7 @@ async def test_tunnel_exit_stops_worker_once_and_reports_stage(settings, monkeyp
 
 async def test_shutdown_cleans_tunnel_even_when_worker_stop_fails(settings):
     service = tunnel_service(settings)
-    child = service.tunnel_process = SimpleNamespace(
+    child = service.tunnel.process = SimpleNamespace(
         returncode=None, terminate=Mock(), wait=AsyncMock()
     )
     service.stop_worker = AsyncMock(side_effect=RuntimeError("Worker fixture stuck"))

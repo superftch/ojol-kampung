@@ -3,7 +3,6 @@
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
-from urllib.parse import parse_qs
 
 from fastapi import Depends, HTTPException, Request
 
@@ -104,17 +103,3 @@ def get_all_fleet_directories(ctx: WebContext) -> tuple[list[Path], dict[str, st
             acc_names[str(scoped.runtime_dir)] = acc.get("name", "Akun")
             acc_names[acc["id"]] = acc.get("name", "Akun")
     return dirs, acc_names
-
-
-async def parse_body(request: Request) -> tuple[dict[str, Any], bool]:
-    """Parse either JSON or application/x-www-form-urlencoded request payloads."""
-    is_json = request.headers.get("content-type", "").startswith("application/json")
-    if is_json:
-        try:
-            data = await request.json()
-            return (data if isinstance(data, dict) else {}), True
-        except ValueError:
-            return {}, True
-    body_bytes = await request.body()
-    parsed = parse_qs(body_bytes.decode("utf-8", errors="replace"))
-    return {k: v[0] for k, v in parsed.items()}, False

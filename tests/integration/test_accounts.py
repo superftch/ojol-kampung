@@ -262,12 +262,12 @@ async def test_manager_start_testing_never_starts_gameplay(managed, monkeypatch)
         service.start = AsyncMock()
         service.close = AsyncMock()
     manager.start_tunnel = AsyncMock()
-    manager.supervise = AsyncMock()
+    manager.supervisor.supervise = AsyncMock()
     await manager.start()
     for service in services:
         service.start.assert_awaited_once_with()
         assert service.worker is None
-    assert len(manager.tasks) == 1  # No bot token: supervision only.
+    assert len(manager.supervisor.tasks) == 1  # No bot token: supervision only.
     await manager.close()
 
 
@@ -282,10 +282,10 @@ async def test_fatal_control_error_stops_every_account_not_only_admin(managed, m
     async def fail():
         raise RuntimeError("fixture failure")
 
-    await manager.guard_task(fail, "management.supervise")
+    await manager.supervisor.guard_task(fail, "management.supervise")
     for service in services:
         service.stop_worker.assert_awaited_once()
     assert (
-        json.loads((manager.hub.settings.runtime_dir / "last-error.json").read_text())["stage"]
+        json.loads((manager.control_settings.runtime_dir / "last-error.json").read_text())["stage"]
         == "management.supervise"
     )

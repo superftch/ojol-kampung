@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import json
 import os
-import shutil
 import sys
 from decimal import Decimal
 from pathlib import Path
@@ -15,6 +14,7 @@ from app.core.formatting import format_koin as koin
 from app.core.locks import running
 from app.core.models import NEEDS, ROOT, Settings, now
 from app.core.storage import write_private
+from app.integrations.cloudflared import CloudflaredTunnel
 from app.integrations.kampung.http_api import HttpCoreError, OjolHttpApi
 from app.modules.auth.import_access import LoginAccess
 from app.modules.gameplay.cleanup import find_unvisited, scan
@@ -38,7 +38,7 @@ class ControlService:
         self.settings = settings
         self.access = LoginAccess(settings.runtime_dir)
         self.worker = None
-        self.tunnel_process = None
+        self.tunnel = CloudflaredTunnel()
         self.expected_stop = False
         self.closing = False
         self.tasks = []
@@ -66,30 +66,13 @@ class ControlService:
             if session_expired(payload):
                 raise HttpCoreError("Cookie sesi game sudah kedaluwarsa.", category="auth")
 
-    def tunnel_alive(self):
-        return bool(self.tunnel_process and self.tunnel_process.returncode is None)
+    def tunnel_alive(self) -> bool:
+        return self.tunnel.is_alive()
 
-    async def start_tunnel(self, token_file=None):
-        if not self.settings.tunnel_enabled or self.tunnel_alive():
-            return
-        if not Path("/.dockerenv").is_file():
-            raise RuntimeError("Tunnel terkelola hanya boleh dijalankan dalam container Docker")
-        token_file = token_file or self.settings.runtime_dir.parent / "cloudflared-token"
-        binary = shutil.which("cloudflared")
-        if not binary or not token_file.is_file() or not token_file.stat().st_size:
-            raise RuntimeError("Binary cloudflared atau secret cloudflared_token tidak tersedia")
-        # Keep credentials out of argv/environment; Docker rotates connector stdout.
-        self.tunnel_process = await asyncio.create_subprocess_exec(
-            binary,
-            "tunnel",
-            "--no-autoupdate",
-            "--metrics",
-            "127.0.0.1:2000",
-            "run",
-            "--token-file",
-            str(token_file),
-            stderr=asyncio.subprocess.STDOUT,
-            start_new_session=True,
+    async def start_tunnel(self, token_file: Path | None = None) -> None:
+        await self.tunnel.start(
+            enabled=self.settings.tunnel_enabled,
+            token_file=token_file or self.settings.runtime_dir.parent / "cloudflared-token",
         )
 
     def public_url(self):
@@ -511,13 +494,7 @@ class ControlService:
 
     async def supervise(self):
         while not self.closing:
-            if (
-                self.tunnel_process
-                and self.tunnel_process.returncode is not None
-                and not self.lock.locked()
-            ):
-                code = self.tunnel_process.returncode
-                self.tunnel_process = None
+            if not self.lock.locked() and (code := self.tunnel.take_exit()) is not None:
                 queue_error(
                     self.settings,
                     RuntimeError(f"Tunnel berhenti tiba-tiba (exit code {code})."),
@@ -613,13 +590,4 @@ class ControlService:
                         "♻️ Aplikasi sedang ditutup\n\nAktivitas akun dijeda. Kabar berikutnya dikirim saat bot kembali siap.",
                     )
         finally:
-            if self.tunnel_process:
-                process = self.tunnel_process
-                if process.returncode is None:
-                    process.terminate()
-                    try:
-                        await asyncio.wait_for(process.wait(), 10)
-                    except TimeoutError:
-                        process.kill()
-                        await process.wait()
-                self.tunnel_process = None
+            await self.tunnel.close()

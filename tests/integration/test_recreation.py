@@ -239,7 +239,7 @@ async def test_buy_recreation_fasum_executes_use_and_foto_minigame(monkeypatch, 
 
     monkeypatch.setattr(api, "validate_purchase", AsyncMock())
     monkeypatch.setattr(
-        "app.integrations.kampung.http_api.auto_flags", lambda _: {"rekreasi": True}
+        "app.integrations.kampung.shop_workflows.auto_flags", lambda _: {"rekreasi": True}
     )
 
     requests_made = []

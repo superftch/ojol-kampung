@@ -3,6 +3,7 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 
 from app.modules.captcha import (
     delete_template_from_bank,
@@ -12,10 +13,20 @@ from app.modules.captcha import (
     resolve_review,
     save_template_to_bank,
 )
+from app.modules.captcha.schemas import ReviewDismissal, TemplateDelete, TemplateSave
 from app.modules.captcha.service import retry_pending_bank_accounts
-from app.web.deps import WebContext, get_all_fleet_directories, get_ctx, parse_body, require_user
+from app.web.deps import WebContext, get_all_fleet_directories, get_ctx, require_user
+from app.web.payloads import parse_body, validate_payload
 
 router = APIRouter()
+
+
+async def _read_review[Payload: BaseModel](request: Request, schema: type[Payload]) -> Payload:
+    body, _ = await parse_body(request)
+    try:
+        return validate_payload(schema, body)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
 
 
 @router.get("/api/bank-angka")
@@ -62,16 +73,9 @@ async def save_bank_angka(
     user: Annotated[dict, Depends(require_user)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    body, _ = await parse_body(request)
-    digit = str(body.get("digit", "")).strip()
-    glyph = body.get("glyph")
-    review_id = body.get("review_id")
-    error_id = body.get("error_id")
-
-    if not digit or len(digit) != 1 or not digit.isdigit():
-        raise HTTPException(400, "Digit harus berupa angka 0-9 tunggal")
-    if not glyph or not isinstance(glyph, list):
-        raise HTTPException(400, "Data glyph tidak valid")
+    body = await _read_review(request, TemplateSave)
+    digit, glyph = body.digit, body.glyph
+    review_id, error_id = body.review_id, body.error_id
 
     fleet_dirs, acc_names = get_all_fleet_directories(ctx)
     user_name = user.get("name") or user.get("username") or "Pengguna"
@@ -94,14 +98,8 @@ async def delete_bank_angka(
     user: Annotated[dict, Depends(require_user)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    body, _ = await parse_body(request)
-    digit = str(body.get("digit", "")).strip()
-    index = body.get("index")
-
-    if not digit or len(digit) != 1 or not digit.isdigit():
-        raise HTTPException(400, "Digit harus berupa angka 0-9 tunggal")
-    if index is None or not isinstance(index, int):
-        raise HTTPException(400, "Index varian tidak valid")
+    body = await _read_review(request, TemplateDelete)
+    digit, index = body.digit, body.index
 
     fleet_dirs, _ = get_all_fleet_directories(ctx)
     delete_template_from_bank(fleet_dirs, digit, index)
@@ -114,14 +112,13 @@ async def dismiss_bank_angka(
     user: Annotated[dict, Depends(require_user)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    body, _ = await parse_body(request)
-    review_id = body.get("review_id")
-    error_id = body.get("error_id")
+    body = await _read_review(request, ReviewDismissal)
+    review_id, error_id = body.review_id, body.error_id
     if not review_id and not error_id:
         raise HTTPException(400, "Review ID atau Error ID diperlukan")
 
     fleet_dirs, _ = get_all_fleet_directories(ctx)
-    glyph = body.get("glyph")
+    glyph = body.glyph
     if review_id:
         dismiss_review(fleet_dirs, review_id, glyph=glyph)
     if error_id:

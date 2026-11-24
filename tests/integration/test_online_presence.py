@@ -175,7 +175,7 @@ async def test_multi_account_maintain_and_fetch_all(settings):
         assert "Belum ada sesi cookie" in res[acc2["id"]]["error"]
 
         # Test maintain_online_presence triggers fetch
-        await manager.maintain_online_presence()
+        await manager.supervisor.maintain_online_presence()
         assert fetch1.await_count >= 1
 
 

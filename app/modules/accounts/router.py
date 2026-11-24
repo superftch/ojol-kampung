@@ -5,8 +5,15 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from app.modules.accounts.schemas import (
+    AccountArchive,
+    AccountName,
+    AccountRename,
+    AccountSelection,
+)
 from app.modules.worker.settings import auto_flags
 from app.web.deps import WebContext, get_ctx, require_user, resolve_account_service
+from app.web.payloads import read_json
 
 router = APIRouter()
 
@@ -52,8 +59,8 @@ async def select_account_api(
     user: Annotated[dict, Depends(require_user)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    body = await request.json()
-    account_id = body.get("account_id")
+    body = await read_json(request, AccountSelection)
+    account_id = body.account_id
     if not account_id:
         raise HTTPException(400, "ID akun diperlukan")
     owner = ctx.registry.owner_for_user(user)
@@ -70,8 +77,8 @@ async def create_account_api(
     user: Annotated[dict, Depends(require_user)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    body = await request.json()
-    name = body.get("name")
+    body = await read_json(request, AccountName)
+    name = body.name
     owner = ctx.registry.owner_for_user(user)
     try:
         acc = ctx.registry.create(owner, name) if name else ctx.registry.create(owner)
@@ -86,9 +93,9 @@ async def rename_account_api(
     user: Annotated[dict, Depends(require_user)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    body = await request.json()
-    account_id = body.get("account_id")
-    name = body.get("name")
+    body = await read_json(request, AccountRename)
+    account_id = body.account_id
+    name = body.name
     if not account_id or not name:
         raise HTTPException(400, "ID akun dan nama baru diperlukan")
     owner = ctx.registry.owner_for_user(user)
@@ -105,9 +112,9 @@ async def archive_account_api(
     user: Annotated[dict, Depends(require_user)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    body = await request.json()
-    account_id = body.get("account_id")
-    archived = bool(body.get("archived", True))
+    body = await read_json(request, AccountArchive)
+    account_id = body.account_id
+    archived = body.archived
     if not account_id:
         raise HTTPException(400, "ID akun diperlukan")
     owner = ctx.registry.owner_for_user(user)

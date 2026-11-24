@@ -26,14 +26,16 @@ app/
     gameplay/             Studi, kebutuhan, dan aktivitas pendukung
     notifications/        Notifikasi dashboard
     captcha/              Bank template dan pemeriksaan SVG
-  integrations/kampung/   Adapter HTTP game, parser, dan katalog toko
+  integrations/
+    kampung/              Sesi HTTP, parser, alur toko dan fasilitas, pemilihan order
+    cloudflared.py        Lifecycle proses konektor Cloudflared
   web/                    Factory FastAPI, dependensi, template, dan aset statis
 tests/
   unit/                   Utilitas dan planner
   integration/            API, SQLite, dan alur worker dengan fixture
 ```
 
-Router fitur memakai dependensi FastAPI melalui `Annotated`. Factory di `app/web/factory.py` mendaftarkan router dan lifecycle. Repository akun dan jurnal tetap memakai SQLite serta format data yang sudah ada. [FastAPI Best Practices](https://github.com/zhanymkanov/fastapi-best-practices) · [Architecture Patterns with Python](https://www.cosmicpython.com/book/preface.html)
+Router fitur memakai dependensi FastAPI melalui `Annotated` dan memvalidasi payload mutasi dengan skema Pydantic per fitur. Form login dan impor cookie tetap menerima URL-encoded. Error validasi kredensial hanya mengembalikan nama field dan pesan. Factory di `app/web/factory.py` mendaftarkan router dan lifecycle. Repository akun dan jurnal tetap memakai SQLite serta format data yang sudah ada. [FastAPI Best Practices](https://github.com/zhanymkanov/fastapi-best-practices) · [Architecture Patterns with Python](https://www.cosmicpython.com/book/preface.html)
 
 Perintah container `ojol.control`, `ojol.worker_service`, dan `ojol.session_transfer` memakai modul kompatibilitas di `ojol/`. Kode implementasi berada di `app/`. Pemindahan tersebut mempertahankan perintah operasi dan route web yang berlaku. [Martin Fowler – Refactoring](https://refactoring.com/)
 
@@ -53,7 +55,7 @@ Default3worker adalah pembatas operasional awal, bukan hasil pengukuran. Contain
 
 ## HTTP dan transaksi
 
-Lima aksi adapter: snapshot, katalog toko tetap, beli satu item, aksi Ojol dan aktivitas pendukung. Adapter hanya mengizinkan origin/path/metode game yang diperiksa. Snapshot membaca wallet/Ojol/kebutuhan/waktu server; milli-koin memakai Decimal, arrival memakai waktu server. Daftar toko berasal dari `app/integrations/kampung/shop_locations.py` berdasarkan desa dan resource. Planner menyaring rencana isi ulang yang layak berdasarkan katalog terkini. Rotasi menurut jurnal akun berlaku antar toko Akademis.ai satu tipe. Toko cadangan dipilih berdasarkan biaya jika tak ada rencana Akademis.ai yang layak. Pembelian memeriksa ulang desa, fase, saldo, resource, dan katalog sebelum POST. Efek item berasal dari data bundle client tanpa mengeksekusi JavaScript, cache mengikuti `configVersion`.
+`OjolHttpApi` mengelola sesi HTTP dan snapshot. `ShopWorkflows` menangani katalog dan validasi sebelum pembelian. `FacilityWorkflows` menangani operasi fasilitas. `TripOrders` membaca trip aktif dan memilih order. Adapter hanya mengizinkan origin/path/metode game yang diperiksa. Snapshot membaca wallet/Ojol/kebutuhan/waktu server; milli-koin memakai Decimal, arrival memakai waktu server. Daftar toko berasal dari `app/integrations/kampung/shop_locations.py` berdasarkan desa dan resource. Planner menyaring rencana isi ulang yang layak berdasarkan katalog terkini. Rotasi menurut jurnal akun berlaku antar toko Akademis.ai satu tipe. Toko cadangan dipilih berdasarkan biaya jika tak ada rencana Akademis.ai yang layak. Pembelian memeriksa ulang desa, fase, saldo, resource, dan katalog sebelum POST. Efek item berasal dari data bundle client tanpa mengeksekusi JavaScript, cache mengikuti `configVersion`.
 
 GET sementara gagal dicoba3kali dengan backoff1/2detik. Auth/redirect ditolak. POST satu percobaan; timeout write tidak menyebabkan retry. Batas request API30detik dan tunggu worker40detik. Stop diperiksa selama menunggu aksi dan countdown.
 
@@ -61,7 +63,7 @@ Journal menulis aksi pending sebelum write, memverifikasi saldo/resource/receipt
 
 Snapshot menyimpan receipt terstruktur dari game, ID trip aktif, penghitung harian, waktu tiba, serta rumah/desa. `game-sync.json` menyimpan snapshot terakhir dan hasil pemeriksaan, terpisah dari cashflows. Menyalin riwayat game tidak membukukan pendapatan baru. Status dashboard memakai snapshot terbaru dari worker atau sinkronisasi, menandai waktu data, dan memisahkan penghitung game dari sesi bot. Data cookie yang ditampilkan hanya metadata kedaluwarsa.
 
-Error terminal menulis STOP/outbox akun dan tampil di dashboard pemilik; kegagalan control global menghentikan semua worker. Cloudflared exit menghentikan semua worker dan memberi tahu admin. Shutdown mencoba membersihkan seluruh worker dan tunnel sekalipun salah satu gagal. Antrean auto-start berupa flag per ControlService yang dibuat sekali saat boot dari env `OJOL_AUTO_START` (defaulttrue). Tidak memerlukan marker dari versi lama atau start manual pertama. Saat boot envtrue sengaja membersihkan STOP lama untuk kandidat akun; pending/uncertain diselesaikan worker sebelum sesi baru. Stop manual/Import Cookie/shutdown membatalkan flag antrean untuk sesi aplikasi saat ini. Error startup menghapus flag sebelum melaporkan kegagalan sehingga tidak ada restart loop. Boot berikutnya kembali mencoba semua akun eligible, termasuk akun yang sebelumnya berhenti/error.
+`FleetSupervisor` mengelola antrean, pemantauan akun, dan respons saat konektor berhenti. `CloudflaredTunnel` memiliki handle proses dan mengunci startup dan shutdown per instance. Error terminal menulis STOP/outbox akun dan tampil di dashboard pemilik; kegagalan control global menghentikan semua worker. Cloudflared exit menghentikan semua worker dan memberi tahu admin. Shutdown mencoba membersihkan seluruh worker dan tunnel sekalipun salah satu gagal. Antrean auto-start berupa flag per ControlService yang dibuat sekali saat boot dari env `OJOL_AUTO_START` (defaulttrue). Tidak memerlukan marker dari versi lama atau start manual pertama. Saat boot envtrue sengaja membersihkan STOP lama untuk kandidat akun; pending/uncertain diselesaikan worker sebelum sesi baru. Stop manual/Import Cookie/shutdown membatalkan flag antrean untuk sesi aplikasi saat ini. Error startup menghapus flag sebelum melaporkan kegagalan sehingga tidak ada restart loop. Boot berikutnya kembali mencoba semua akun eligible, termasuk akun yang sebelumnya berhenti/error.
 
 Startup memeriksa izin operator, cookie, whitelist dan kapasitas. Akun lain tetap bisa dimulai bila satu akun diblokir. Kandidat yang tertahan kapasitas menunggu slot di supervisor. Tiap start memakai file lock akun dan lock management sehingga startup/poll tidak menggandakan worker. HTTP membaca state game terbaru; pembelian/order/klaim lama tidak diputar ulang. Setelah rekonsiliasi, setiap boot membuka sesi baru dengan batas belanja/trip/durasi per sesi dari env; saldo minimum production20 tetap wajib. `OJOL_AUTO_START=false` mencegah auto-start meskipun ada marker resume lama.
 

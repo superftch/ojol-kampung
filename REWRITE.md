@@ -129,9 +129,15 @@ Feature-based modular monolith inside `ojol/` with the existing container and CL
 - Added the requested Ruff, pytest and strict mypy settings. Ruff passed for the application and test scope. The CI type checker `ty` passed. The separate strict mypy audit returned 1,234 diagnostics across 54 files.
 - The isolated Python suite passed 690 tests, the extension suite passed 62 tests, and the Docker test target passed 176 tests. See [the architecture guide](docs/architecture.md#struktur-kode) for the folder map.
 
+### Workflow and request boundaries
+
+- Extracted catalog lookup, purchase validation, and facility operations into dedicated Kampung modules. `TripOrders` owns current-trip reads and order selection. The existing driver verification and trip completion path stays in the adapter.
+- `FleetSupervisor` owns account scheduling and monitoring. `CloudflaredTunnel` owns the connector process and serializes start and shutdown for each instance.
+- Mutating web endpoints validate payloads against feature schemas. Login and registration still accept JSON or URL-encoded forms. Validation errors for credentials and cookies omit submitted values.
+- Verified all 54 route method/path pairs. Ruff and `ty` passed. The isolated Python suite passed 692 tests, the extension suite passed 62 tests, and the Docker test target passed 178 tests.
+
 ## Known Risks
 
-- `OjolHttpApi` still owns shop, trip, and facility workflows. Fleet supervision and tunnel lifecycle remain in the existing control services. The web routers retain existing form and JSON parsing contracts.
 - Verification used isolated runtime data. Game integration against real accounts and production deployment remain outside the verified scope.
 
 ## Current Blockers

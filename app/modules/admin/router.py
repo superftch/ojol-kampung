@@ -1,19 +1,21 @@
 """Admin user approval, fleet notifications, limits, and server settings routes."""
 
 from contextlib import nullcontext
-from typing import Annotated, Literal
+from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
 from app.core.models import Settings
 from app.core.storage import write_private
+from app.modules.admin.schemas import AccountLimit, FleetLimit, MaintenanceChange, ReviewUser
 from app.modules.notifications.repository import (
     list_all_admin_notifications,
     mark_all_admin_notifications_read,
 )
 from app.modules.worker.maintenance import SCHEDULE_FILE, MaintenanceWindow, read_window
 from app.web.deps import WebContext, get_ctx, public_user, require_admin
+from app.web.payloads import read_json
 
 router = APIRouter()
 
@@ -54,11 +56,6 @@ async def admin_users(
     return [public_user(row) for row in ctx.registry.web.list_users()]
 
 
-class ReviewUser(BaseModel):
-    user_id: int = Field(gt=0)
-    approve: bool
-
-
 @router.post("/api/admin/review")
 async def admin_review(
     body: ReviewUser,
@@ -75,11 +72,6 @@ async def admin_review(
         raise HTTPException(400, str(exc)) from None
 
 
-class AccountLimit(BaseModel):
-    user_id: int = Field(gt=0)
-    maximum: int = Field(ge=1, le=100)
-
-
 @router.post("/api/admin/account-limit")
 async def admin_account_limit(
     body: AccountLimit,
@@ -91,13 +83,6 @@ async def admin_account_limit(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     return {"success": True}
-
-
-class MaintenanceChange(BaseModel):
-    mode: Literal["off", "manual", "scheduled"]
-    target: Literal["ojol", "all"] = "ojol"
-    start: str = ""
-    end: str = ""
 
 
 @router.get("/api/admin/maintenance")
@@ -137,11 +122,9 @@ async def admin_set_limit(
     user: Annotated[dict, Depends(require_admin)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    body = await request.json()
-    name = body.get("name")
-    value = body.get("value")
+    body = await read_json(request, FleetLimit)
     try:
-        ctx.registry.set_limit(name, value)
+        ctx.registry.set_limit(body.name, body.value)
         return {"success": True}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None

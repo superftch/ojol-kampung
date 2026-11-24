@@ -11,8 +11,15 @@ from app.integrations.kampung import session_transfer
 from app.modules.gameplay.study import set_subject
 from app.modules.ledger.finance import report_date
 from app.modules.worker.maintenance import held_window
+from app.modules.worker.schemas import (
+    AutoFlagChange,
+    DirectCookieImport,
+    OjolModeChange,
+    StudySubjectChange,
+)
 from app.modules.worker.settings import set_auto_flag
 from app.web.deps import WebContext, get_ctx, require_user, resolve_account_service
+from app.web.payloads import read_json
 
 router = APIRouter()
 
@@ -118,9 +125,9 @@ async def toggle_auto_api(
     user: Annotated[dict, Depends(require_user)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    body = await request.json()
-    flag = body.get("flag")
-    enabled = bool(body.get("enabled", False))
+    body = await read_json(request, AutoFlagChange)
+    flag = body.flag
+    enabled = body.enabled
     if not flag:
         raise HTTPException(400, "Nama flag diperlukan")
     cur_service = _require_account_service(ctx, user, request)
@@ -149,10 +156,8 @@ async def set_mode_ojol(
     user: Annotated[dict, Depends(require_user)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    body = await request.json()
-    mode = body.get("mode")
-    if mode not in {"kendara", "otomatis"}:
-        raise HTTPException(400, "Mode harus 'kendara' atau 'otomatis'")
+    body = await read_json(request, OjolModeChange)
+    mode = body.mode
     cur_service = _require_account_service(ctx, user, request)
     cur_service.settings.ojol_mode = mode
     return {"success": True, "mode": mode}
@@ -164,9 +169,9 @@ async def set_study_subject_api(
     user: Annotated[dict, Depends(require_user)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    body = await request.json()
-    subject = body.get("subject")
-    mode = body.get("mode")
+    body = await read_json(request, StudySubjectChange)
+    subject = body.subject
+    mode = body.mode
     if not subject:
         raise HTTPException(400, "Bidang belajar diperlukan")
     cur_service = _require_account_service(ctx, user, request)
@@ -193,8 +198,8 @@ async def import_cookie_direct(
     user: Annotated[dict, Depends(require_user)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    body = await request.json()
-    cookie_raw = body.get("cookie", "")
+    body = await read_json(request, DirectCookieImport)
+    cookie_raw = body.cookie
     if not cookie_raw.strip():
         raise HTTPException(400, "Cookie tidak boleh kosong")
 
@@ -205,9 +210,9 @@ async def import_cookie_direct(
 
     registry = ctx.registry
     owner = registry.owner_for_user(user) if registry else 0
-    custom_name = (body.get("name") or "").strip()
+    custom_name = (body.name or "").strip()
     account_name = custom_name or "Akun Utama"
-    account_id = (body.get("account_id") or "").strip()
+    account_id = (body.account_id or "").strip()
 
     async with ctx.manager.lock if ctx.manager else nullcontext():
         try:

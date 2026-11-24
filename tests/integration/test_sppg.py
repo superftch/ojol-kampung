@@ -318,7 +318,9 @@ async def test_buy_sppg_executes_use_and_nampan_minigame(monkeypatch, tmp_path):
     # Mock validate_purchase
     monkeypatch.setattr(api, "validate_purchase", AsyncMock())
     # Mock auto_flags
-    monkeypatch.setattr("app.integrations.kampung.http_api.auto_flags", lambda _: {"makan": True})
+    monkeypatch.setattr(
+        "app.integrations.kampung.shop_workflows.auto_flags", lambda _: {"makan": True}
+    )
 
     requests_made = []
 
