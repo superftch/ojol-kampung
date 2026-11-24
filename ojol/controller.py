@@ -17,7 +17,7 @@ from .journal import load_journal_snapshot
 from .maintenance import SCHEDULE_FILE, held_window
 from .models import NEEDS, Step, now
 from .planner import is_sleeping, next_step, select_need, select_shop
-from .reconciliation import wait_until_resolved
+from .reconciliation import reconcile, wait_until_resolved
 from .study import run_learning
 from .telegram import queue_error, queue_notice
 
@@ -54,6 +54,8 @@ class Controller:
         self.garden_retry_at = 0
         self.gym_retry_at = 0
         self.spbu_reminded_vehicle = None
+        self.claim_failures = {}
+        self.claim_errors = {}
         self.maintenance_file = Path(
             os.environ.get("OJOL_MAINTENANCE_FILE", str(settings.runtime_dir / SCHEDULE_FILE))
         )
@@ -82,7 +84,7 @@ class Controller:
             pass
         self.check_cancel()
 
-    def handle_ojol_failure(self, exc_or_reason):
+    def handle_ojol_failure(self, exc_or_reason, stage=None, tindakan=None):
         flags = auto_flags(self.settings.runtime_dir)
         has_kebutuhan = any(flags[k] for k in flags if k != "ojol")
         reason = str(exc_or_reason)
@@ -95,14 +97,54 @@ class Controller:
             queue_error(
                 self.settings,
                 exc,
-                self.stage,
+                stage or self.stage,
                 {
-                    "tindakan": "Auto Ojol dinonaktifkan karena gagal. Fitur auto kebutuhan tetap berjalan normal. Tekan Jalankan Ojol jika ingin mencoba lagi."
+                    "tindakan": tindakan
+                    or "Auto Ojol dinonaktifkan karena gagal. Fitur auto kebutuhan tetap berjalan normal. Tekan Jalankan Ojol jika ingin mencoba lagi."
                 },
                 stop_worker=False,
             )
             return True
         return False
+
+    def _format_claim_error(self, exc):
+        text = str(exc)
+        low = text.lower()
+        if "409" in text or "turun" in low:
+            return "409 penumpang belum turun"
+        if "captcha" in low or "bank angka" in low or "glyph" in low or "angka" in low:
+            return "verifikasi captcha angka gagal"
+        if isinstance(exc, VerificationPending) or "receipt" in low or "bukti" in low:
+            return "bukti pembayaran belum muncul di game"
+        return text[:45]
+
+    def _diagnose_claim_failure(self, exc, state):
+        text = str(exc)
+        low = text.lower()
+        if "captcha" in low or "bank angka" in low or "glyph" in low or "angka" in low:
+            return {
+                "alasan": "Verifikasi kode captcha angka gagal dipecahkan atau tidak cocok.",
+                "solusi": "Periksa atau kontribusikan angka verifikasi di menu Bank Angka lalu tekan Jalankan Ojol.",
+            }
+        if "409" in text or "turun" in low or "conflict" in low:
+            return {
+                "alasan": "Server game merespons status 409 (penumpang sedang turun atau transit order belum tuntas).",
+                "solusi": "Tunggu beberapa detik di game agar status penumpang selesai turun, lalu tekan Jalankan Ojol.",
+            }
+        if isinstance(exc, VerificationPending) or "receipt" in low or "bukti" in low or "history" in low:
+            return {
+                "alasan": "Server game tidak memunculkan bukti payout/receipt order di riwayat transaksi game setelah 3x percobaan klaim.",
+                "solusi": "Periksa saldo atau riwayat order langsung di game Kampung Sebelah. Jika order sudah selesai, tekan Jalankan Ojol.",
+            }
+        if "transport" in low or "connection" in low or "timeout" in low or "50" in text:
+            return {
+                "alasan": f"Koneksi ke server game bermasalah saat mengirim klaim ({text}).",
+                "solusi": "Periksa koneksi jaringan atau server game Kampung Sebelah, lalu tekan Jalankan Ojol.",
+            }
+        return {
+            "alasan": f"Klaim ongkos ditolak atau gagal diverifikasi: {text}",
+            "solusi": "Periksa status akun dan order langsung di game Kampung Sebelah, lalu tekan Jalankan Ojol.",
+        }
 
     def report(self, event, **data):
         self.last_event = event
@@ -536,6 +578,9 @@ class Controller:
                     )
                 )
                 self.completed += 1
+                trip_key = before.trip_id or before.trip or "active_trip"
+                self.claim_failures.pop(trip_key, None)
+                self.claim_errors.pop(trip_key, None)
             elif kind == "take":
                 after = await self.verify(
                     lambda state: (
@@ -565,16 +610,59 @@ class Controller:
                     await self.wait_for_wake()
                 return
             self.journal.settle(action, False)
+            if kind == "complete":
+                trip_key = before.trip_id or before.trip or "active_trip"
+                is_verified = False
+                if isinstance(exc, (VerificationPending, HttpCoreError)):
+                    try:
+                        self.state = await reconcile(self.ui, self.journal)
+                        self.snapshot_received_at = now().isoformat()
+                        resolved = self.journal.db.execute(
+                            "SELECT status FROM actions WHERE id=?", (action,)
+                        ).fetchone()
+                        if resolved and resolved["status"] == "verified":
+                            is_verified = True
+                            self.completed += 1
+                            self.claim_failures.pop(trip_key, None)
+                            self.claim_errors.pop(trip_key, None)
+                            self.report("rekonsiliasi_selesai", action=kind)
+                            return
+                    except Exception:
+                        pass
+                if not is_verified:
+                    try:
+                        self.journal.skip(action)
+                    except Exception:
+                        pass
+                    fail_count = self.claim_failures.get(trip_key, 0) + 1
+                    self.claim_failures[trip_key] = fail_count
+                    self.claim_errors[trip_key] = exc
+                    if fail_count < 3:
+                        queue_notice(
+                            self.settings,
+                            f"⏳ Percobaan klaim ongkos ({fail_count}/3) belum berhasil ({self._format_claim_error(exc)}). Aksi dilewati di rekonsiliasi dan akan dicoba lagi otomatis.",
+                        )
+                        self.report("klaim_ongkos_dicoba_lagi", trip=trip_key, attempt=fail_count)
+                        await self.human_pause(2.0, 4.0)
+                        return
+                    else:
+                        diag = self._diagnose_claim_failure(exc, self.state)
+                        defined_reason = (
+                            f"Gagal klaim ongkos trip {trip_key} setelah 3 percobaan: {diag['alasan']}"
+                        )
+                        self.claim_failures.pop(trip_key, None)
+                        self.claim_errors.pop(trip_key, None)
+                        claim_exc = RuntimeError(defined_reason)
+                        if self.handle_ojol_failure(
+                            claim_exc, stage="job.complete", tindakan=diag["solusi"]
+                        ):
+                            return
+                        raise claim_exc
             if isinstance(exc, VerificationPending) or (
                 isinstance(exc, HttpCoreError) and exc.category in {"uncertain", "transport"}
             ):
                 self.state = await wait_until_resolved(self.ui, self.journal, self.settings)
                 self.snapshot_received_at = now().isoformat()
-                resolved = self.journal.db.execute(
-                    "SELECT status FROM actions WHERE id=?", (action,)
-                ).fetchone()
-                if kind == "complete" and resolved["status"] == "verified":
-                    self.completed += 1
                 self.report("rekonsiliasi_selesai", action=kind)
                 return
             raise

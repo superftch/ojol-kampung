@@ -710,3 +710,57 @@ async def test_purchase_stops_after_reconciliation_limit_without_replaying_or_bo
         assert not any(
             "Bot melanjutkan" in text or "berhasil diperbarui" in text for text in notices
         )
+
+
+async def test_claim_failure_retries_and_defines_error_after_three_strikes(settings, state, monkeypatch):
+    before, _ = claim_states(state)
+    # Set auto flag ojol dan kebutuhan agar handle_ojol_failure menguji nonaktifkan ojol
+    from ojol.auto_settings import set_auto_flag
+
+    set_auto_flag(settings.runtime_dir, "ojol", True)
+    set_auto_flag(settings.runtime_dir, "makan", True)
+
+    ui = SimpleNamespace(
+        job_click=AsyncMock(),
+        snapshot=AsyncMock(return_value=before),
+        check_cancel=lambda: None,
+    )
+    monkeypatch.setattr("ojol.controller.asyncio.sleep", AsyncMock())
+    monkeypatch.setattr("ojol.reconciliation.asyncio.sleep", AsyncMock())
+
+    with closing(Journal(settings.runtime_dir)) as journal:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.human_pause = AsyncMock()
+        controller.verify = AsyncMock(side_effect=VerificationPending("fixture receipt missing"))
+
+        # Percobaan 1: Gagal verifikasi -> diskip di rekonsiliasi, retry count = 1
+        await controller.job_action(before, "complete")
+        assert controller.completed == 0
+        assert controller.claim_failures[before.trip_id] == 1
+        assert len(journal.unresolved()) == 0  # Action diskip, tidak tertahan
+
+        # Percobaan 2: Masih gagal -> diskip di rekonsiliasi, retry count = 2
+        await controller.job_action(before, "complete")
+        assert controller.completed == 0
+        assert controller.claim_failures[before.trip_id] == 2
+        assert len(journal.unresolved()) == 0
+
+        # Percobaan 3: Gagal ke-3 kali berturut-turut -> definisikan error dan matikan Auto Ojol
+        await controller.job_action(before, "complete")
+        assert before.trip_id not in controller.claim_failures
+        assert len(journal.unresolved()) == 0
+
+        # Verifikasi Auto Ojol dinonaktifkan
+        from ojol.auto_settings import auto_flags
+        flags = auto_flags(settings.runtime_dir)
+        assert flags["ojol"] is False
+        assert flags["makan"] is True
+
+        # Verifikasi file last-error.json terisi diagnosis yang jelas
+        last_error_path = settings.runtime_dir / "last-error.json"
+        assert last_error_path.exists()
+        last_error = json.loads(last_error_path.read_text())
+        assert "setelah 3 percobaan" in last_error["message"]
+        assert "payout/receipt" in last_error["message"]
+        assert "solusi" in last_error["tindakan"].lower() or "periksa" in last_error["tindakan"].lower()
+

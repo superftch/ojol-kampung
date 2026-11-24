@@ -84,7 +84,19 @@ async def run_worker(ui, settings, live, cancel):
                     "time": now().isoformat(),
                 },
             )
-            reconciled = await wait_until_resolved(ui, journal, settings)
+            try:
+                reconciled = await wait_until_resolved(ui, journal, settings)
+            except HttpCoreError as exc:
+                if exc.category == "reconciliation_failed":
+                    for act in journal.unresolved():
+                        try:
+                            journal.skip(act["id"])
+                        except Exception:
+                            pass
+                    reconciled = await ui.snapshot()
+                    (settings.runtime_dir / "STOP").unlink(missing_ok=True)
+                else:
+                    raise
         else:
             reconciled = await ui.snapshot()
         run_id = journal.start(settings)
