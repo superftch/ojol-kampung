@@ -553,13 +553,13 @@
 
   const DEFAULT_SHOPS = {
     condition: [
-      { id: "b2400595-7b5b-4571-aa2e-bcff27a04d9f", name: "Bengke spesialis motor", item: "servis-motor" },
       { id: "4f1f6929-8ea1-4209-ab30-523b314efe11", name: "Akademis.ai Motor", item: "servis-motor" },
+      { id: "b2400595-7b5b-4571-aa2e-bcff27a04d9f", name: "Bengke spesialis motor", item: "servis-motor" },
       { id: "78545bac-51dd-4898-bedc-33e33cc5820c", name: "Bengkel motor Gotei", item: "servis-motor" }
     ],
     data: [
-      { id: "bdda0310-4488-418f-a479-9710a10e2d96", name: "Somadun Cell", item: "pulsa" },
       { id: "a162273d-6832-4223-a2b9-409d6c291291", name: "Akademis.ai Konter", item: "pulsa" },
+      { id: "bdda0310-4488-418f-a479-9710a10e2d96", name: "Somadun Cell", item: "pulsa" },
       { id: "dffbbddb-37f7-4e2d-9d22-f91af809c2ab", name: "TOPUP CELL", item: "pulsa" }
     ]
   };
@@ -722,7 +722,15 @@
     if (resource === "fuel") {
       return await refillSpbuViaApi(activeVehicle);
     }
-    const candidates = shopList[resource] || [];
+    const rawCandidates = shopList[resource] || [];
+    // Prioritaskan Akademis.ai terlebih dahulu, sisanya toko terdekat/cadangan
+    const candidates = [...rawCandidates].sort((a, b) => {
+      const aAkademis = (a.name || "").toLowerCase().includes("akademis.ai");
+      const bAkademis = (b.name || "").toLowerCase().includes("akademis.ai");
+      if (aAkademis && !bAkademis) return -1;
+      if (!aAkademis && bAkademis) return 1;
+      return 0;
+    });
     for (const shop of candidates) {
       try {
         const res = await fetch(`/api/shops/${shop.id}/buy`, {

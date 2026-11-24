@@ -333,14 +333,16 @@ def select_need(
                 )
             )
         )
+        is_preferred = shop.preferred
         return (
             not is_minigame,
             not is_health_fasum,
             not is_sppg_fasum,
             not is_rec_fasum,
-            not shop.preferred,
-            last_purchases.get(shop.id, 0) if shop.preferred else 0,
+            not is_preferred,
+            last_purchases.get(shop.id, 0) if is_preferred else 0,
             is_streak_exhausted,
+            0 if is_preferred else shop.distance_squared,
             plan.total_cost / points,
             plan.projected_percent < thresh,
             plan.total_cost,

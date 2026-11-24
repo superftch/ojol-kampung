@@ -1347,3 +1347,105 @@ def test_select_need_strictly_prioritizes_akademis_ai_and_picks_most_worth_it(se
     shop_rot, plan_rot = selection_rotated
     assert shop_rot.id == "akademis-pecel"
     assert plan_rot.product.name == "Paket Pecel Lele Komplit"
+
+    # 3. Dynamic nearest shop when Akademis.ai is not reachable / not available:
+    fallback_near = ShopPreview(
+        id="warung-dekat",
+        plot_id="J23-U02",
+        name="Warung Dekat",
+        category="restoran",
+        distance_squared=4,
+        products=[
+            Product(
+                name="Nasi Biasa",
+                price=Decimal("1.5"),
+                effects={"makan": 30},
+                row_text=json.dumps({"shop": "warung-dekat", "item": "nasi"}),
+                enabled=True,
+            )
+        ],
+    )
+    fallback_far = ShopPreview(
+        id="warung-jauh",
+        plot_id="J23-U99",
+        name="Warung Jauh Sangat Murah",
+        category="restoran",
+        distance_squared=64,
+        products=[
+            Product(
+                name="Nasi Super Hemat",
+                price=Decimal("0.5"),
+                effects={"makan": 50},
+                row_text=json.dumps({"shop": "warung-jauh", "item": "nasi-hemat"}),
+                enabled=True,
+            )
+        ],
+    )
+    selection_fallback = select_need(
+        test_state,
+        "makan",
+        [fallback_far, fallback_near],
+        settings,
+        spent=Decimal(0),
+        last_purchases={},
+        allow_fallback=True,
+    )
+    assert selection_fallback is not None
+    shop_fb, plan_fb = selection_fallback
+    assert shop_fb.id == "warung-dekat"
+    assert plan_fb.product.name == "Nasi Biasa"
+
+
+async def test_observation_transport_failure_auto_reconnects_and_recovers(settings, state, monkeypatch):
+    from ojol.auto_settings import set_auto_flag
+
+    set_auto_flag(settings.runtime_dir, "ojol", True)
+    local_settings = settings.model_copy(update={"env": "local"})
+    failure = HttpCoreError("Pembacaan HTTP timeout", category="transport", recoverable=True)
+    stop_event = StopRequested("test finished")
+
+    # Snapshot sequence: 1 failure -> 1 successful recovery state -> stop
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[failure, state, stop_event]),
+        check_cancel=lambda: None,
+        preview_shops=AsyncMock(return_value=[]),
+        job_click=AsyncMock(),
+    )
+    journal = Journal(local_settings.runtime_dir)
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    try:
+        controller = Controller(ui, local_settings, journal, journal.start(local_settings))
+        # controller.wait should also not actually sleep during test
+        controller.wait = AsyncMock()
+        with pytest.raises(StopRequested):
+            await controller.run()
+        # Verify it recovered and did not drop STOP file
+        assert not (local_settings.runtime_dir / "STOP").exists()
+        assert controller.observation_failures == 0
+        assert ui.snapshot.await_count == 3
+    finally:
+        journal.close()
+
+
+async def test_observation_transport_failure_exceeding_limit_raises(settings, state, monkeypatch):
+    from ojol.auto_settings import set_auto_flag
+
+    set_auto_flag(settings.runtime_dir, "ojol", True)
+    local_settings = settings.model_copy(update={"env": "local"})
+    failure = HttpCoreError("Pembacaan HTTP timeout", category="transport", recoverable=True)
+
+    # 4 consecutive failures exceeds the 3 retry limit
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[failure, failure, failure, failure]),
+        check_cancel=lambda: None,
+    )
+    journal = Journal(local_settings.runtime_dir)
+    try:
+        controller = Controller(ui, local_settings, journal, journal.start(local_settings))
+        controller.wait = AsyncMock()
+        with pytest.raises(HttpCoreError):
+            await controller.run()
+        assert controller.observation_failures == 4
+    finally:
+        journal.close()
+

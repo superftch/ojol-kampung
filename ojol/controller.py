@@ -56,6 +56,7 @@ class Controller:
         self.spbu_reminded_vehicle = None
         self.claim_failures = {}
         self.claim_errors = {}
+        self.observation_failures = 0
         self.maintenance_file = Path(
             os.environ.get("OJOL_MAINTENANCE_FILE", str(settings.runtime_dir / SCHEDULE_FILE))
         )
@@ -228,6 +229,7 @@ class Controller:
         self.snapshot_received_at = now().isoformat()
         self.snapshot_read_at = time.monotonic()
         self.journal.sync_game(self.state)
+        self.observation_failures = 0
         return self.state
 
     async def wait_for_wake(self):
@@ -240,7 +242,15 @@ class Controller:
                 await self.wait(self.settings.idle_poll_seconds)
                 await self.wait_for_maintenance()
                 self.check_cancel()
-                await self.read_snapshot()
+                try:
+                    await self.read_snapshot()
+                except HttpCoreError as exc:
+                    if (
+                        self.settings.env != "testing"
+                        and (exc.category == "transport" or getattr(exc, "recoverable", False))
+                    ):
+                        continue
+                    raise
         finally:
             paused = time.monotonic() - self.sleep_started
             for field in ("started", "trip_due", "busy_since"):
@@ -727,6 +737,25 @@ class Controller:
                     and self.handle_ojol_failure(exc)
                 ):
                     continue
+                if (
+                    self.settings.env != "testing"
+                    and (exc.category == "transport" or getattr(exc, "recoverable", False))
+                ):
+                    self.observation_failures += 1
+                    if self.observation_failures <= 3:
+                        queue_error(
+                            self.settings,
+                            exc,
+                            self.stage,
+                            {
+                                "tindakan": f"Koneksi game sempat terganggu (percobaan {self.observation_failures}/3). "
+                                "Bot mencoba menghubungkan kembali secara otomatis..."
+                            },
+                            stop_worker=False,
+                        )
+                        delay = min(15, self.observation_failures * 5)
+                        await self.wait(delay)
+                        continue
                 raise
             ojol_err = getattr(self.ui, "ojol_failure_error", None) or getattr(
                 getattr(self.ui, "api", None), "ojol_failure_error", None

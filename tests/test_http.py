@@ -1113,17 +1113,25 @@ async def test_need_fallback_requires_akademis_unavailable(api, world, status):
         catalog["menu"] = []
     elif status == "unknown":
         catalog["menu"][0]["habis"] = {"missing": "bahan"}
-    if status == "unknown":
-        with pytest.raises(HttpCoreError, match="stok"):
-            await api.preview("makan")
-    else:
-        preview = await api.preview("makan")
-        assert preview["navigation"]["akademis_unavailable"] is (status != "in_stock")
-        assert [shop["id"] for shop in preview["shops"]] == (
-            [other] if status == "in_stock" else [fallback]
-        )
-    if status in {"in_stock", "unknown"}:
+    preview = await api.preview("makan")
+    assert preview["navigation"]["akademis_unavailable"] is (status != "in_stock")
+    assert [shop["id"] for shop in preview["shops"]] == (
+        [other] if status == "in_stock" else [fallback]
+    )
+    if status == "in_stock":
         assert not any("/api/world/plots/" in request.url.path for request in api.calls)
+
+
+async def test_need_fallback_when_akademis_unreachable_by_network(api, world):
+    setup_food_catalog(world)
+    other = add_food_supplier(world, "Akademis.ai Cabang", 1200)
+    fallback = add_food_supplier(world, "Warung cadangan", 100, fallback=True)
+    # Both registered Akademis shop and directory Akademis shop are unreachable (e.g. 404/503)
+    world["failed_paths"].add(f"/api/shops/{SHOP}")
+    world["failed_paths"].add(f"/api/shops/{other}")
+    preview = await api.preview("makan")
+    assert preview["navigation"]["akademis_unavailable"] is True
+    assert [shop["id"] for shop in preview["shops"]] == [fallback]
 
 
 async def test_need_fallback_rechecks_akademis_stock_before_purchase(api, world, settings):

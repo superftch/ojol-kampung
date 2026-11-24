@@ -519,6 +519,10 @@ test("Auto-Ojol Engine (Khusus Mode Kendarai) - Unit & Integration Tests", async
     assert.ok(DEFAULT_SHOPS.condition.length >= 2, "Must contain condition/bengkel shop locations");
     assert.ok(DEFAULT_SHOPS.data.length >= 2, "Must contain kuota/konter shop locations");
 
+    // Akademis.ai prioritized first
+    assert.ok(DEFAULT_SHOPS.condition[0].name.toLowerCase().includes("akademis.ai"), "Akademis.ai Motor must be priority 1");
+    assert.ok(DEFAULT_SHOPS.data[0].name.toLowerCase().includes("akademis.ai"), "Akademis.ai Konter must be priority 1");
+
     // Kampung Sebelah shop locations
     const bengkelKs = DEFAULT_SHOPS.condition.find(s => s.name.includes("spesialis motor"));
     assert.equal(bengkelKs.id, "b2400595-7b5b-4571-aa2e-bcff27a04d9f");

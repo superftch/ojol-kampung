@@ -612,7 +612,7 @@ class OjolHttpApi:
                 cookies=cookies,
                 trust_env=False,
                 follow_redirects=False,
-                timeout=5,
+                timeout=10,
                 headers={
                     "User-Agent": self.browser_identity["user_agent"],
                     "Origin": ORIGIN,
@@ -740,7 +740,7 @@ class OjolHttpApi:
                     )
             if attempt < 2:
                 self.retries += 1
-                await asyncio.sleep(attempt + 1)
+                await asyncio.sleep((attempt + 1) * 1.5)
         raise HttpCoreError(
             "Pembacaan HTTP gagal setelah 3 percobaan", category="transport", recoverable=True
         )
@@ -1217,7 +1217,7 @@ class OjolHttpApi:
             ],
             return_exceptions=True,
         )
-        available = available_shops(shops, require_certain=True)
+        available = available_shops(shops, require_certain=False)
         if available or preferred_only:
             return available, False
         candidates = sorted(nearby, key=lambda candidate: (candidate[0], candidate[1]["plotId"]))
