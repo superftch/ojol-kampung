@@ -514,23 +514,55 @@ test("Auto-Ojol Engine (Khusus Mode Kendarai) - Unit & Integration Tests", async
     assert.equal(multiDecision.resource, "data", "Should prioritize kuota topup because without kuota orders cannot be received");
   });
 
-  await t.test("Auto-Kebutuhan Shop Database - Verified shop IDs and items", () => {
+  await t.test("Auto-Kebutuhan Shop Database - Verified priority Akademis and dynamic selection", async () => {
     assert.equal(DEFAULT_SHOPS.fuel, undefined, "Fuel uses the official SPBU pump");
-    assert.ok(DEFAULT_SHOPS.condition.length >= 2, "Must contain condition/bengkel shop locations");
-    assert.ok(DEFAULT_SHOPS.data.length >= 2, "Must contain kuota/konter shop locations");
+    assert.ok(DEFAULT_SHOPS.condition.length >= 1, "Must contain condition/bengkel priority shop");
+    assert.ok(DEFAULT_SHOPS.data.length >= 1, "Must contain kuota/konter priority shop");
 
-    // Akademis.ai prioritized first
+    // Akademis.ai prioritized first, non-akademis removed from static list to allow dynamic selection
     assert.ok(DEFAULT_SHOPS.condition[0].name.toLowerCase().includes("akademis.ai"), "Akademis.ai Motor must be priority 1");
     assert.ok(DEFAULT_SHOPS.data[0].name.toLowerCase().includes("akademis.ai"), "Akademis.ai Konter must be priority 1");
+    assert.equal(DEFAULT_SHOPS.condition.length, 1, "Non-akademis list removed so shops are chosen dynamically");
+    assert.equal(DEFAULT_SHOPS.data.length, 1, "Non-akademis list removed so shops are chosen dynamically");
 
-    // Kampung Sebelah shop locations
-    const bengkelKs = DEFAULT_SHOPS.condition.find(s => s.name.includes("spesialis motor"));
-    assert.equal(bengkelKs.id, "b2400595-7b5b-4571-aa2e-bcff27a04d9f");
-    assert.equal(bengkelKs.item, "servis-motor");
+    // Dynamic fallback when priority shop fails
+    const { buyShopItem } = ojol;
+    const origFetch = globalThis.fetch;
+    const boughtCalls = [];
+    globalThis.fetch = async (url, opts = {}) => {
+      if (url === "/api/shops/4f1f6929-8ea1-4209-ab30-523b314efe11/buy") {
+        return { ok: false, status: 404, json: async () => ({ error: "Toko tutup" }) };
+      }
+      if (url === "/api/tujuan") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            usaha: [
+              { plotId: "A07-U06", businessId: "bengkel-dekat", name: "Bengkel Terdekat", item: "bengkel-motor", x: 10, y: 10 }
+            ]
+          })
+        };
+      }
+      if (url === "/api/game/me") {
+        return { ok: true, status: 200, json: async () => ({ home: { x: 0, y: 0 } }) };
+      }
+      if (url === "/api/shops/bengkel-dekat/buy") {
+        boughtCalls.push({ url, body: JSON.parse(opts.body || "{}") });
+        return { ok: true, status: 200, json: async () => ({ ok: true }) };
+      }
+      return origFetch(url, opts);
+    };
 
-    const konterKs = DEFAULT_SHOPS.data.find(s => s.name.includes("Somadun"));
-    assert.equal(konterKs.id, "bdda0310-4488-418f-a479-9710a10e2d96");
-    assert.equal(konterKs.item, "pulsa");
+    try {
+      const res = await buyShopItem("condition");
+      assert.ok(res.success, "Dynamic fallback should succeed");
+      assert.equal(res.shop, "Bengkel Terdekat");
+      assert.equal(res.item, "servis-motor");
+      assert.equal(boughtCalls.length, 1);
+    } finally {
+      globalThis.fetch = origFetch;
+    }
   });
 
   await t.test("Auto-Kebutuhan SPBU API Flow - Verified direct refill via API", async () => {

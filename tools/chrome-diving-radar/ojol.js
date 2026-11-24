@@ -553,14 +553,10 @@
 
   const DEFAULT_SHOPS = {
     condition: [
-      { id: "4f1f6929-8ea1-4209-ab30-523b314efe11", name: "Akademis.ai Motor", item: "servis-motor" },
-      { id: "b2400595-7b5b-4571-aa2e-bcff27a04d9f", name: "Bengke spesialis motor", item: "servis-motor" },
-      { id: "78545bac-51dd-4898-bedc-33e33cc5820c", name: "Bengkel motor Gotei", item: "servis-motor" }
+      { id: "4f1f6929-8ea1-4209-ab30-523b314efe11", name: "Akademis.ai Motor", item: "servis-motor" }
     ],
     data: [
-      { id: "a162273d-6832-4223-a2b9-409d6c291291", name: "Akademis.ai Konter", item: "pulsa" },
-      { id: "bdda0310-4488-418f-a479-9710a10e2d96", name: "Somadun Cell", item: "pulsa" },
-      { id: "dffbbddb-37f7-4e2d-9d22-f91af809c2ab", name: "TOPUP CELL", item: "pulsa" }
+      { id: "a162273d-6832-4223-a2b9-409d6c291291", name: "Akademis.ai Konter", item: "pulsa" }
     ]
   };
 
@@ -752,6 +748,48 @@
         // Abaikan error jaringan antar toko, coba kandidat selanjutnya
       }
     }
+    // Toko prioritas tidak tersedia / gagal: cari toko alternatif terdekat secara dinamis via /api/tujuan
+    try {
+      const destRes = await fetch("/api/tujuan", { credentials: "same-origin" });
+      if (destRes.ok) {
+        const destData = await destRes.json();
+        const categoryItem = resource === "condition" ? "bengkel-motor" : (resource === "data" ? "konter-pulsa" : null);
+        const buyItem = resource === "condition" ? "servis-motor" : (resource === "data" ? "pulsa" : null);
+        if (categoryItem && buyItem) {
+          const matching = (destData?.usaha || []).filter(u => u.item === categoryItem);
+          let refX = 0, refY = 0;
+          try {
+            const meRes = await fetch("/api/game/me", { credentials: "same-origin" });
+            if (meRes.ok) {
+              const meData = await meRes.json();
+              refX = meData?.home?.x ?? 0;
+              refY = meData?.home?.y ?? 0;
+            }
+          } catch {}
+          matching.sort((a, b) => ((a.x - refX) ** 2 + (a.y - refY) ** 2) - ((b.x - refX) ** 2 + (b.y - refY) ** 2));
+          for (const shop of matching) {
+            const shopId = shop.businessId || shop.plotId;
+            try {
+              const res = await fetch(`/api/shops/${shopId}/buy`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                credentials: "same-origin",
+                body: JSON.stringify({
+                  item: buyItem,
+                  requestId: (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `req_${Date.now()}`
+                })
+              });
+              if (res.ok) {
+                return { success: true, shop: shop.name || shopId, item: buyItem };
+              }
+              const data = await res.json().catch(() => ({}));
+              if (res.status === 400 || res.status === 404) continue;
+              return { success: false, error: data?.error || res.statusText };
+            } catch {}
+          }
+        }
+      }
+    } catch {}
     return { success: false, error: "Tidak ada toko yang tersedia" };
   }
 

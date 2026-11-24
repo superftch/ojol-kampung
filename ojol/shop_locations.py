@@ -30,16 +30,10 @@ SHOPS_BY_VILLAGE = {
             ShopLocation(
                 "4f1f6929-8ea1-4209-ab30-523b314efe11", "K40-U03", "Akademis.ai Motor", -16, -143
             ),
-            ShopLocation(
-                "78545bac-51dd-4898-bedc-33e33cc5820c", "L35-U01", "Bengkel motor Gotei", -64, -135
-            ),
         ),
         "data": (
             ShopLocation(
                 "a162273d-6832-4223-a2b9-409d6c291291", "O38-U06", "Akademis.ai Konter", -32, -106
-            ),
-            ShopLocation(
-                "dffbbddb-37f7-4e2d-9d22-f91af809c2ab", "K36-U06", "TOPUP CELL", -46, -138
             ),
         ),
     },
@@ -49,14 +43,8 @@ SHOPS_BY_VILLAGE = {
                 "914b6bb0-6684-4037-93bc-423810875eae", "A05-U06", "SPBU Kampung Sebelah", 33, 6
             ),
         ),
-        "condition": (
-            ShopLocation(
-                "b2400595-7b5b-4571-aa2e-bcff27a04d9f", "A07-U06", "Bengke spesialis motor", 47, 6
-            ),
-        ),
-        "data": (
-            ShopLocation("bdda0310-4488-418f-a479-9710a10e2d96", "B09-U06", "Somadun Cell", 64, 14),
-        ),
+        "condition": (),
+        "data": (),
     },
     "pulau-seberang": {
         "fuel": (
@@ -64,14 +52,8 @@ SHOPS_BY_VILLAGE = {
                 "669fe6fc-6800-4731-a357-ef38d1a8f4fc", "F43-U01", "SPBU Pulau Seberang 2", 1026, 73
             ),
         ),
-        "condition": (
-            ShopLocation(
-                "2191e03b-fa92-48f3-ad82-b74796b2096a", "A43-U06", "Ketok Magic Hihu", 1026, 17
-            ),
-        ),
-        "data": (
-            ShopLocation("9f5f66e8-7792-49f9-9349-67a9a27c3cca", "D43-U08", "abel cell", 1028, 41),
-        ),
+        "condition": (),
+        "data": (),
     },
 }
 

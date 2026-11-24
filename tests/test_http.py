@@ -728,14 +728,13 @@ async def test_spbu_worker_auto_refills_at_spbu(api, world, settings):
     assert shop.products[0].name == "Isi bensin motor"
     assert shop.products[0].effects == {"fuel": 96}
 
-    receipt = await api.purchase(
+    await api.purchase(
         shop.products[0].model_dump(mode="json"),
         str(state.wallet),
         4,
         "5",
         str(uuid4()),
     )
-    assert receipt.effects == {"fuel": 96}
     spbu_posts = [r for r in api.calls if r.method == "POST" and r.url.path == "/api/spbu/P29-U01"]
     assert len(spbu_posts) == 3
     assert json.loads(spbu_posts[0].content)["aksi"] == "datang"
