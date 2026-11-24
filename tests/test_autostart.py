@@ -336,3 +336,47 @@ async def test_app_shutdown_leaves_isolated_dummy_worker_running(settings):
         if child.returncode is None:
             child.terminate()
             await child.wait()
+
+
+async def test_auto_start_preserves_needs_only_state_and_does_not_enable_ojol(settings, monkeypatch):
+    from ojol.auto_settings import auto_flags, set_auto_flag
+
+    manager = manager_with_accounts(settings)
+    service = next(iter(manager.services.values()))
+    set_auto_flag(service.settings.runtime_dir, "ojol", False)
+    set_auto_flag(service.settings.runtime_dir, "makan", True)
+
+    spawn = AsyncMock(side_effect=lambda *a, **kw: worker())
+    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+
+    try:
+        await manager.start()
+        await manager.resume_workers()
+
+        flags = auto_flags(service.settings.runtime_dir)
+        assert flags["ojol"] is False
+        assert flags["makan"] is True
+        assert spawn.await_count >= 1
+    finally:
+        await manager.close()
+
+
+async def test_auto_start_skips_account_when_all_auto_flags_disabled(settings, monkeypatch):
+    from ojol.auto_settings import AUTO_LABELS, auto_flags, set_auto_flag
+
+    manager = manager_with_accounts(settings)
+    # Turn off all flags for all accounts
+    for s in manager.services.values():
+        for k in AUTO_LABELS:
+            set_auto_flag(s.settings.runtime_dir, k, False)
+
+    spawn = AsyncMock(side_effect=lambda *a, **kw: worker())
+    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+
+    try:
+        await manager.start()
+        await manager.resume_workers()
+        spawn.assert_not_awaited()
+    finally:
+        await manager.close()
+

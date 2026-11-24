@@ -1207,5 +1207,46 @@ def test_web_dashboard_study_history(admin_web):
     assert "Riwayat Belajar Lengkap" in html_res.text
 
 
+def test_accounts_and_dashboard_include_auto_ojol_state_and_toggle(admin_web):
+    client, manager = admin_web
+    create_res = client.post("/api/accounts/create", json={"name": "Akun State Ojol"})
+    assert create_res.status_code == 200
+    acc_id = create_res.json()["account"]["id"]
+
+    # 1. Check list_accounts
+    accounts_res = client.get("/api/accounts")
+    assert accounts_res.status_code == 200
+    acc_data = next(a for a in accounts_res.json()["accounts"] if a["id"] == acc_id)
+    assert "auto_ojol" in acc_data
+    assert acc_data["auto_ojol"] is True
+
+    # 2. Toggle Auto Ojol off
+    toggle_res = client.post(
+        f"/api/control/toggle-auto?account_id={acc_id}",
+        json={"flag": "ojol", "enabled": False},
+    )
+    assert toggle_res.status_code == 200
+    assert toggle_res.json()["enabled"] is False
+
+    # 3. Check list_accounts again
+    accounts_res2 = client.get("/api/accounts")
+    acc_data2 = next(a for a in accounts_res2.json()["accounts"] if a["id"] == acc_id)
+    assert acc_data2["auto_ojol"] is False
+
+    # 4. Check dashboard data
+    dash_res = client.get(f"/api/dashboard?account_id={acc_id}")
+    assert dash_res.status_code == 200
+    dash_json = dash_res.json()
+    assert dash_json["auto_flags"]["ojol"] is False
+    dash_acc = next(a for a in dash_json["accounts"] if a["id"] == acc_id)
+    assert dash_acc["auto_ojol"] is False
+
+    # 5. Check web UI contains autoOjolToggle
+    html_res = client.get("/")
+    assert html_res.status_code == 200
+    assert "autoOjolToggle" in html_res.text
+
+
+
 
 

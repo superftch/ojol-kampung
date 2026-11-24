@@ -1127,13 +1127,21 @@ class ControlService:
             async with self.lock:
                 if self.closing:
                     raise RuntimeError("Akun tidak tersedia. Pilih akun lain.")
-                set_auto_flag(self.settings.runtime_dir, "ojol", True)
+                if not auto_start:
+                    set_auto_flag(self.settings.runtime_dir, "ojol", True)
+                flags = auto_flags(self.settings.runtime_dir)
+                is_ojol = bool(flags.get("ojol"))
                 label = (
                     "Berkendara" if mode == "kendara" else "Otomatis" if mode == "otomatis" else ""
                 )
                 if (self.worker and self.worker.returncode is None) or running(
                     self.settings.runtime_dir
                 ):
+                    if not is_ojol:
+                        return (
+                            "🟢 Auto kebutuhan aktif. Bot sedang memantau dan mengisi kebutuhan karakter.\n\n"
+                            "Tekan Status untuk melihat perkembangannya."
+                        )
                     return (
                         "🟢 Bot sudah aktif untuk akun ini. Auto Ojol diaktifkan"
                         + (f" (mode {label}).\n\n" if label else ".\n\n")
@@ -1145,9 +1153,10 @@ class ControlService:
                 await self.ensure_backend(require_session=True)
                 await self.start_tunnel()
                 if maintenance := held_window(self.maintenance_file):
-                    if auto_start:
-                        self.auto_start_pending = True
-                    return maintenance.message()
+                    if is_ojol or getattr(maintenance, "target", "all") == "all":
+                        if auto_start:
+                            self.auto_start_pending = True
+                        return maintenance.message()
 
                 from .worker_service import send_worker_command
 
@@ -1156,14 +1165,21 @@ class ControlService:
                     {
                         "action": "start",
                         "account_id": self.account_id,
-                        "mode": mode,
+                        "mode": mode if is_ojol else None,
                         "auto_start": auto_start,
+                        "needs_only": not is_ojol,
                     },
                 )
                 if worker_resp is not None:
                     if not worker_resp.get("ok"):
                         raise RuntimeError(worker_resp.get("error") or worker_resp["message"])
                     self.expected_stop = False
+                    if not is_ojol:
+                        return (
+                            "▶️ Bot sedang memulai (Auto Kebutuhan)\n\n"
+                            "Bot akan memantau dan mengisi kebutuhan karakter secara otomatis. "
+                            "Tekan Status untuk melihat perkembangannya."
+                        )
                     label = (
                         "Berkendara"
                         if mode == "kendara"
@@ -1196,9 +1212,15 @@ class ControlService:
                         "OJOL_ACCOUNT_ID": self.account_id or "",
                         "OJOL_WORKER_AUTO_START": "1" if auto_start else "0",
                         "OJOL_MAINTENANCE_FILE": str(self.maintenance_file),
-                        **({"OJOL_OJOL_MODE": mode} if mode in {"kendara", "otomatis"} else {}),
+                        **({"OJOL_OJOL_MODE": mode} if (is_ojol and mode in {"kendara", "otomatis"}) else {}),
                     },
                 )
+                if not is_ojol:
+                    return (
+                        "▶️ Bot sedang memulai (Auto Kebutuhan)\n\n"
+                        "Bot akan memantau dan mengisi kebutuhan karakter secara otomatis. "
+                        "Tekan Status untuk melihat perkembangannya."
+                    )
                 label = (
                     "Berkendara" if mode == "kendara" else "Otomatis" if mode == "otomatis" else ""
                 )

@@ -1205,8 +1205,15 @@ class OjolHttpApi:
                 for shop in results
                 if isinstance(shop, ShopPreview) and any(p.enabled for p in shop.products)
             ]
-            if require_certain and not available and errors:
-                raise errors[0]
+            fatal_errors = [
+                exc
+                for exc in errors
+                if isinstance(exc, HttpCoreError)
+                and exc.category not in {"transport", "blocked"}
+                and not getattr(exc, "recoverable", False)
+            ]
+            if require_certain and not available and fatal_errors:
+                raise fatal_errors[0]
             return available
 
         shops = await self.read_previews(
@@ -1217,7 +1224,7 @@ class OjolHttpApi:
             ],
             return_exceptions=True,
         )
-        available = available_shops(shops, require_certain=False)
+        available = available_shops(shops, require_certain=True)
         if available or preferred_only:
             return available, False
         candidates = sorted(nearby, key=lambda candidate: (candidate[0], candidate[1]["plotId"]))

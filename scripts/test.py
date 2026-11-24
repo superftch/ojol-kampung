@@ -13,6 +13,50 @@ from dotenv import dotenv_values
 from ojol.models import Settings
 
 
+# Cakupan pengujian fitur web (UI dashboard, API, autentikasi, kontrol, supervisor worker, bank angka)
+WEB_TEST_FILES = [
+    "tests/test_web.py",
+    "tests/test_control.py",
+    "tests/test_accounts.py",
+    "tests/test_worker_service.py",
+    "tests/test_autostart.py",
+    "tests/test_thresholds.py",
+    "tests/test_captcha.py",
+    "tests/test_study.py",
+    "tests/test_browser_headers.py",
+    "tests/test_telegram_login_bot.py",
+]
+
+
+def resolve_pytest_args(raw_args: list[str]) -> tuple[list[str], str]:
+    if "--all" in raw_args or "--full" in raw_args:
+        filtered = [arg for arg in raw_args if arg not in {"--all", "--full"}]
+        has_target = any(
+            not arg.startswith("-") and (arg.startswith("tests") or Path(arg).exists())
+            for arg in filtered
+        )
+        banner = "Test: .env.testing eksplisit, seluruh rangkaian test (full suite), tanpa game live."
+        return (filtered if has_target else [*filtered, "tests"]), banner
+
+    if "--web" in raw_args:
+        filtered = [arg for arg in raw_args if arg != "--web"]
+        banner = "Test: .env.testing eksplisit, cakupan fitur web cepat, tanpa game live."
+        return [*filtered, *WEB_TEST_FILES], banner
+
+    # Cek apakah ada file/target test eksplisit yang diberikan pemanggil
+    has_target = any(
+        not arg.startswith("-") and (arg.startswith("tests") or Path(arg).exists())
+        for arg in raw_args
+    )
+    if has_target:
+        banner = "Test: .env.testing eksplisit, target spesifik, tanpa game live."
+        return raw_args, banner
+
+    # Default optimasi cepat: hanya uji modul yang meng-cover fitur web dashboard
+    banner = "Test: .env.testing eksplisit, cakupan fitur web cepat, tanpa game live."
+    return [*raw_args, *WEB_TEST_FILES], banner
+
+
 def main():
     file = ROOT / ".env.testing"
     if sys.argv[1:] == ["--prepare"]:
@@ -53,12 +97,10 @@ def main():
                 "UV_OFFLINE": "1",
             }
         )
-        print(
-            "Test: .env.testing eksplisit, env shell dibuang, HOME/tmp/cache/SQLite terisolasi, tanpa game/model live.",
-            flush=True,
-        )
+        pytest_args, banner = resolve_pytest_args(sys.argv[1:])
+        print(banner, flush=True)
         return subprocess.call(
-            [sys.executable, "-m", "pytest", "-p", "pytest_asyncio.plugin", *sys.argv[1:]],
+            [sys.executable, "-m", "pytest", "-p", "pytest_asyncio.plugin", *pytest_args],
             cwd=ROOT,
             env=env,
         )

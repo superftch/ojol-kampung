@@ -1497,7 +1497,14 @@ class MultiAccountService:
                     parse_cookie_input(
                         (service.settings.runtime_dir / "http-session.json").read_text()
                     )
-                    action = "Minta admin memeriksa izin operator dan status server, lalu tekan Jalankan Ojol."
+                    flags = auto_flags(service.settings.runtime_dir)
+                    if not any(flags.values()):
+                        continue
+                    action = (
+                        "Minta admin memeriksa izin operator dan status server, lalu tekan Jalankan Ojol."
+                        if flags.get("ojol")
+                        else "Minta admin memeriksa izin operator dan status server, lalu tekan Jalankan Kebutuhan."
+                    )
                     await service.command("run", auto_start=True)
                 except Exception as exc:
                     queue_error(

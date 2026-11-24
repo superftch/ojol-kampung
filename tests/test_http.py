@@ -1113,12 +1113,16 @@ async def test_need_fallback_requires_akademis_unavailable(api, world, status):
         catalog["menu"] = []
     elif status == "unknown":
         catalog["menu"][0]["habis"] = {"missing": "bahan"}
-    preview = await api.preview("makan")
-    assert preview["navigation"]["akademis_unavailable"] is (status != "in_stock")
-    assert [shop["id"] for shop in preview["shops"]] == (
-        [other] if status == "in_stock" else [fallback]
-    )
-    if status == "in_stock":
+    if status == "unknown":
+        with pytest.raises(HttpCoreError, match="stok"):
+            await api.preview("makan")
+    else:
+        preview = await api.preview("makan")
+        assert preview["navigation"]["akademis_unavailable"] is (status != "in_stock")
+        assert [shop["id"] for shop in preview["shops"]] == (
+            [other] if status == "in_stock" else [fallback]
+        )
+    if status in {"in_stock", "unknown"}:
         assert not any("/api/world/plots/" in request.url.path for request in api.calls)
 
 

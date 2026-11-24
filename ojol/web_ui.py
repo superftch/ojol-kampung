@@ -749,10 +749,20 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             <div class="grid-2">
                 <div class="card">
                     <div class="card-header">
-                        <h2 class="card-title">Mode berkendara</h2>
+                        <h2 class="card-title">Auto Ojol & Berkendara</h2>
+                    </div>
+                    <div class="toggle-item" style="margin-bottom: 12px;">
+                        <div class="toggle-info">
+                            <span class="toggle-title">🛵 Auto Ojol</span>
+                            <span class="toggle-desc">Mengambil dan mengantar order ojol otomatis sesuai kuota akun</span>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="autoOjolToggle" aria-label="Auto Ojol" onchange="toggleAuto('ojol', this.checked)">
+                            <span class="slider"></span>
+                        </label>
                     </div>
                     <p style="font-size: 13px; color: var(--text-muted); line-height: 1.5; margin-bottom: 12px;">
-                        Kelola Auto Ojol dari Ringkasan. Kuota narik mengikuti aturan game.
+                        Kelola status Auto Ojol akun dari switch di atas atau tombol Jalankan/Hentikan di Ringkasan. Kuota narik mengikuti aturan game.
                     </p>
                     <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 8px; padding: 10px 12px; font-size: 12px; color: var(--text-muted);">
                         <strong>Ekstensi Chrome</strong><br>
@@ -910,12 +920,13 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                                 <th>Nama Akun</th>
                                 <th>Status Cookie</th>
                                 <th>Worker</th>
+                                <th>Auto Ojol</th>
                                 <th>Status Arsip</th>
                                 <th>Aksi</th>
                             </tr>
                         </thead>
                         <tbody id="accountsTableBody">
-                            <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Memuat daftar akun...</td></tr>
+                            <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Memuat daftar akun...</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -1834,6 +1845,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
             // Auto toggles
             const flags = data.auto_flags || {{}};
+            if (document.getElementById('autoOjolToggle')) document.getElementById('autoOjolToggle').checked = !!flags.ojol;
             if (document.getElementById('modeOjolToggle')) document.getElementById('modeOjolToggle').checked = (data.ojol_mode === 'kendara');
             if (document.getElementById('autoPerpusToggle')) document.getElementById('autoPerpusToggle').checked = !!flags.perpus;
             if (document.getElementById('autoKuliahToggle')) document.getElementById('autoKuliahToggle').checked = !!flags.kuliah;
@@ -2277,7 +2289,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 const tbody = document.getElementById('accountsTableBody');
                 tbody.innerHTML = '';
                 if (!data.accounts || !data.accounts.length) {{
-                    tbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Belum ada akun. Klik + Tambah Akun di atas.</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Belum ada akun. Klik + Tambah Akun di atas.</td></tr>';
                     return;
                 }}
                 data.accounts.forEach(acc => {{
@@ -2286,6 +2298,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                         <td><strong>${{escapeHtml(acc.name)}}</strong> ${{acc.is_selected ? '<span style="color: var(--primary); font-size: 11px;">(Aktif)</span>' : ''}}</td>
                         <td data-label="Cookie">${{acc.has_cookie ? '<span style="color: var(--success);">Terhubung</span>' : '<span style="color: var(--warning);">Belum ada</span>'}}</td>
                         <td data-label="Worker">${{acc.is_running ? '<span style="color: var(--success);">Berjalan</span>' : '<span style="color: var(--text-muted);">Berhenti</span>'}}</td>
+                        <td data-label="Auto Ojol">${{acc.auto_ojol ? '<span style="color: var(--success); font-weight: 600;">ON</span>' : '<span style="color: var(--text-muted);">OFF</span>'}}</td>
                         <td data-label="Arsip">${{acc.archived ? '<span style="color: var(--warning);">Diarsipkan</span>' : 'Aktif'}}</td>
                         <td style="display: flex; gap: 4px; flex-wrap: wrap;">
                             ${{!acc.archived && !acc.is_selected ? `<button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="switchAccount('${{acc.id}}')">Pilih</button>` : ''}}

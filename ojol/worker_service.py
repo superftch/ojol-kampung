@@ -16,6 +16,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .accounts import Accounts
+from .auto_settings import auto_flags
 from .cli import running
 from .config import load_settings
 from .maintenance import SCHEDULE_FILE, held_window
@@ -341,9 +342,15 @@ class WorkerService:
                     if (directory / "http-session.json").is_file():
                         proc = self.workers.get(acc_key)
                         if not ((proc and proc.returncode is None) or running(directory)):
+                            flags = auto_flags(directory)
+                            if not any(flags.values()):
+                                continue
                             mode = getattr(scoped, "ojol_mode", "otomatis")
                             await self.start_account_worker(
-                                account_id=acc_key, mode=mode, auto_start=True
+                                account_id=acc_key,
+                                mode=mode if flags.get("ojol") else None,
+                                auto_start=True,
+                                needs_only=not flags.get("ojol"),
                             )
 
             await asyncio.sleep(2.0)

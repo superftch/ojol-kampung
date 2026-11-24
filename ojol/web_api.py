@@ -783,6 +783,7 @@ def register_web_routes(app, settings, manager=None, service=None):
             active_workers += int(is_active)
             online_accounts += int(is_online or is_active)
 
+            acc_flags = auto_flags(r_dir) if r_dir else {}
             acc_dict = {
                 "id": acc["id"],
                 "name": acc["name"],
@@ -792,6 +793,8 @@ def register_web_routes(app, settings, manager=None, service=None):
                 "has_cookie": sum_info.get("has_cookie", False),
                 "is_running": is_active,
                 "is_online": is_online,
+                "auto_ojol": bool(acc_flags.get("ojol")),
+                "auto_flags": acc_flags,
                 "icon": sum_info.get("icon", "⚪"),
                 "phase": sum_info.get("phase", "idle"),
                 "status_text": sum_info.get("status_text", "Standby"),
@@ -1127,9 +1130,11 @@ def register_web_routes(app, settings, manager=None, service=None):
             if acc["archived"]:
                 scoped = registry.scoped_settings(acc)
                 sum_info = {"has_cookie": (scoped.runtime_dir / "http-session.json").is_file()}
+                acc_flags = auto_flags(scoped.runtime_dir) if scoped.runtime_dir.exists() else {}
             else:
                 acc_service = resolve_account_service(request, acc["id"])
                 sum_info = acc_service.summary() if acc_service else {}
+                acc_flags = auto_flags(acc_service.settings.runtime_dir) if acc_service else {}
             payload.append(
                 {
                     "id": acc["id"],
@@ -1139,6 +1144,8 @@ def register_web_routes(app, settings, manager=None, service=None):
                     "is_selected": bool(selected and acc["id"] == selected["id"]),
                     "has_cookie": sum_info.get("has_cookie", False),
                     "is_running": sum_info.get("active", False),
+                    "auto_ojol": bool(acc_flags.get("ojol")),
+                    "auto_flags": acc_flags,
                 }
             )
         return {"accounts": payload, "quota": registry.quota(owner)}

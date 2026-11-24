@@ -17,6 +17,9 @@ testpaths = ["tests"]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
 addopts = "-q"
+filterwarnings = [
+    "ignore:.*starlette.testclient.*",
+]
 
 [tool.ruff]
 extend-exclude = [".local"]
