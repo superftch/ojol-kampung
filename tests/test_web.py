@@ -922,3 +922,51 @@ def test_web_dashboard_logs_formatting(admin_web):
     assert skip_res.status_code == 200
     assert skip_res.json()["success"] is True
 
+
+def test_shared_bank_angka_and_crowdsourced_contribution(admin_web):
+    client, manager = admin_web
+    create_res = client.post("/api/accounts/create", json={"name": "Akun Eskobar"})
+    account = create_res.json()["account"]
+    scoped = manager.registry.scoped_settings(account)
+    r_dir = scoped.runtime_dir
+    r_dir.mkdir(parents=True, exist_ok=True)
+
+    # 1. Simulate an unknown glyph error in Akun Eskobar
+    err_dir = r_dir / "errors"
+    err_dir.mkdir(parents=True, exist_ok=True)
+    import json
+
+    dummy_glyph = [[[0.86, 1.0], [0.86, 0.0], [0.0, 0.74]]]
+    sample_error = {
+        "error_id": "OJL-998877665544",
+        "category": "SvgCaptchaSolverError",
+        "message": f"Gagal memecahkan gambar cek: Glyph cek belum dikenali: {json.dumps(dummy_glyph)}",
+        "time": "2026-11-24T10:00:00Z",
+    }
+    (err_dir / "OJL-998877665544.json").write_text(json.dumps(sample_error))
+
+    # 2. Bank Angka API shows pending review with account_name 'Akun Eskobar'
+    bank_res = client.get("/api/bank-angka")
+    assert bank_res.status_code == 200
+    bank_data = bank_res.json()
+    assert any(p.get("error_id") == "OJL-998877665544" for p in bank_data["pending"])
+    eskobar_pending = next(p for p in bank_data["pending"] if p.get("error_id") == "OJL-998877665544")
+    assert eskobar_pending["account_name"] == "Akun Eskobar"
+
+    # 3. User contributes / saves digit to Bank Angka
+    save_res = client.post(
+        "/api/bank-angka/save",
+        json={"digit": "7", "glyph": dummy_glyph, "error_id": "OJL-998877665544"},
+    )
+    assert save_res.status_code == 200
+    assert save_res.json()["ok"] is True
+    assert save_res.json()["by"] is not None
+
+    # 4. Bank Angka now has the new variant marked with contributor and pending is cleared
+    bank_after = client.get("/api/bank-angka").json()
+    assert any(p.get("error_id") == "OJL-998877665544" for p in bank_after["pending"]) is False
+    variants_7 = bank_after["templates"]["7"]
+    assert any(v.get("by") == save_res.json()["by"] for v in variants_7)
+    assert bank_after["total_contributions"] >= 1
+
+

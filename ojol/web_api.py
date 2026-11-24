@@ -69,6 +69,17 @@ def register_web_routes(app, settings, manager=None, service=None):
             raise HTTPException(403, "Akses ditolak: Hanya admin yang diizinkan")
         return user
 
+    def get_all_fleet_directories():
+        dirs = [settings.runtime_dir]
+        acc_names = {}
+        if registry:
+            for acc in registry.list() + registry.list(archived=True):
+                sc = registry.scoped_settings(acc)
+                dirs.append(sc.runtime_dir)
+                acc_names[str(sc.runtime_dir)] = acc.get("name", "Akun")
+                acc_names[acc["id"]] = acc.get("name", "Akun")
+        return dirs, acc_names
+
     def resolve_account_service(request: Request, account_id: str | None = None):
         if manager is None:
             return service
@@ -458,9 +469,10 @@ def register_web_routes(app, settings, manager=None, service=None):
             "total_trips": total_trips,
         }
 
-        if not selected:
-            from .svg_captcha_solver import get_pending_reviews
+        fleet_dirs, _ = get_all_fleet_directories()
+        from .svg_captcha_solver import get_all_pending_reviews
 
+        if not selected:
             return {
                 "account": None,
                 "accounts": accounts_payload,
@@ -474,7 +486,7 @@ def register_web_routes(app, settings, manager=None, service=None):
                 "hours_left": None,
                 "logs": [],
                 "notifications": [],
-                "pending_bank_reviews_count": len(get_pending_reviews(settings.runtime_dir)),
+                "pending_bank_reviews_count": len(get_all_pending_reviews(fleet_dirs)),
             }
 
         cur_service = resolve_account_service(request, selected["id"])
@@ -597,20 +609,11 @@ def register_web_routes(app, settings, manager=None, service=None):
             logs.append(f"Status saat ini: {summary.get('status_text')}")
 
         from .notifications import list_notifications
-        from .svg_captcha_solver import get_pending_reviews
+        from .svg_captcha_solver import get_all_pending_reviews
 
         notices = list_notifications(cur_service.settings, limit=10)
-        pending_reviews = get_pending_reviews(directory)
-        if settings.runtime_dir != directory:
-            pending_reviews.extend(get_pending_reviews(settings.runtime_dir))
-        seen_p_ids = set()
-        unique_pending = []
-        for pr in pending_reviews:
-            pid = pr.get("id") or pr.get("error_id")
-            if pid and pid not in seen_p_ids:
-                seen_p_ids.add(pid)
-                unique_pending.append(pr)
-        pending_bank_count = len(unique_pending)
+        fleet_dirs, _ = get_all_fleet_directories()
+        pending_bank_count = len(get_all_pending_reviews(fleet_dirs))
 
         limit_reached = bool(
             summary.get("shift_done")
@@ -1113,35 +1116,41 @@ def register_web_routes(app, settings, manager=None, service=None):
 
     @app.get("/api/bank-angka")
     async def get_bank_angka(request: Request, user: dict = Depends(require_user)):
-        owner = registry.owner_for_user(user)
-        selected = registry.selected(owner)
-        if selected:
-            acc_service = resolve_account_service(request, selected["id"])
-            directory = acc_service.settings.runtime_dir if acc_service else settings.runtime_dir
-        else:
-            directory = settings.runtime_dir
+        fleet_dirs, acc_names = get_all_fleet_directories()
+        from .svg_captcha_solver import get_bank_templates, get_all_pending_reviews
 
-        from .svg_captcha_solver import get_bank_templates, get_pending_reviews
+        raw_templates = get_bank_templates(settings.runtime_dir)
+        formatted_templates = {}
+        total_variants = 0
+        total_contributions = 0
 
-        templates = get_bank_templates(directory)
-        pending = get_pending_reviews(directory)
-        if settings.runtime_dir != directory:
-            pending.extend(get_pending_reviews(settings.runtime_dir))
+        for digit, variants in raw_templates.items():
+            formatted_templates[digit] = []
+            for v in variants:
+                total_variants += 1
+                if isinstance(v, dict):
+                    if v.get("by"):
+                        total_contributions += 1
+                    formatted_templates[digit].append({
+                        "glyph": v.get("glyph", []),
+                        "by": v.get("by"),
+                        "at": v.get("at"),
+                    })
+                else:
+                    formatted_templates[digit].append({
+                        "glyph": v,
+                        "by": None,
+                        "at": None,
+                    })
 
-        seen = set()
-        unique_pending = []
-        for p in pending:
-            pid = p.get("id") or p.get("error_id")
-            if pid and pid not in seen:
-                seen.add(pid)
-                unique_pending.append(p)
+        pending = get_all_pending_reviews(fleet_dirs, acc_names)
 
-        total_variants = sum(len(v) for v in templates.values())
         return {
-            "templates": templates,
-            "pending": unique_pending,
+            "templates": formatted_templates,
+            "pending": pending,
             "total_templates": total_variants,
-            "pending_count": len(unique_pending),
+            "pending_count": len(pending),
+            "total_contributions": total_contributions,
         }
 
     @app.post("/api/bank-angka/save")
@@ -1157,27 +1166,19 @@ def register_web_routes(app, settings, manager=None, service=None):
         if not glyph or not isinstance(glyph, list):
             raise HTTPException(400, "Data glyph tidak valid")
 
-        owner = registry.owner_for_user(user)
-        selected = registry.selected(owner)
-        acc_service = resolve_account_service(request, selected["id"]) if selected else None
-        directory = acc_service.settings.runtime_dir if acc_service else settings.runtime_dir
+        fleet_dirs, _ = get_all_fleet_directories()
+        user_name = user.get("name") or user.get("username") or "Pengguna"
 
         from .svg_captcha_solver import resolve_review, save_template_to_bank
 
-        save_template_to_bank(directory, digit, glyph)
-        if settings.runtime_dir != directory:
-            save_template_to_bank(settings.runtime_dir, digit, glyph)
+        save_template_to_bank(fleet_dirs, digit, glyph, contributed_by=user_name)
 
         if review_id:
-            resolve_review(directory, review_id, digit=digit, glyph=glyph)
-            if settings.runtime_dir != directory:
-                resolve_review(settings.runtime_dir, review_id, digit=digit, glyph=glyph)
+            resolve_review(fleet_dirs, review_id, digit=digit, glyph=glyph, resolved_by=user_name)
         if error_id:
-            resolve_review(directory, error_id, digit=digit, glyph=glyph)
-            if settings.runtime_dir != directory:
-                resolve_review(settings.runtime_dir, error_id, digit=digit, glyph=glyph)
+            resolve_review(fleet_dirs, error_id, digit=digit, glyph=glyph, resolved_by=user_name)
 
-        return {"ok": True, "digit": digit}
+        return {"ok": True, "digit": digit, "by": user_name}
 
     @app.post("/api/bank-angka/delete")
     async def delete_bank_angka(request: Request, user: dict = Depends(require_user)):
@@ -1190,17 +1191,10 @@ def register_web_routes(app, settings, manager=None, service=None):
         if index is None or not isinstance(index, int):
             raise HTTPException(400, "Index varian tidak valid")
 
-        owner = registry.owner_for_user(user)
-        selected = registry.selected(owner)
-        acc_service = resolve_account_service(request, selected["id"]) if selected else None
-        directory = acc_service.settings.runtime_dir if acc_service else settings.runtime_dir
-
+        fleet_dirs, _ = get_all_fleet_directories()
         from .svg_captcha_solver import delete_template_from_bank
 
-        delete_template_from_bank(directory, digit, index)
-        if settings.runtime_dir != directory:
-            delete_template_from_bank(settings.runtime_dir, digit, index)
-
+        delete_template_from_bank(fleet_dirs, digit, index)
         return {"ok": True, "digit": digit, "deleted_index": index}
 
     @app.post("/api/bank-angka/dismiss")
@@ -1211,20 +1205,12 @@ def register_web_routes(app, settings, manager=None, service=None):
         if not review_id and not error_id:
             raise HTTPException(400, "Review ID atau Error ID diperlukan")
 
-        owner = registry.owner_for_user(user)
-        selected = registry.selected(owner)
-        acc_service = resolve_account_service(request, selected["id"]) if selected else None
-        directory = acc_service.settings.runtime_dir if acc_service else settings.runtime_dir
-
+        fleet_dirs, _ = get_all_fleet_directories()
         from .svg_captcha_solver import dismiss_review
 
         if review_id:
-            dismiss_review(directory, review_id)
-            if settings.runtime_dir != directory:
-                dismiss_review(settings.runtime_dir, review_id)
+            dismiss_review(fleet_dirs, review_id)
         if error_id:
-            dismiss_review(directory, error_id)
-            if settings.runtime_dir != directory:
-                dismiss_review(settings.runtime_dir, error_id)
+            dismiss_review(fleet_dirs, error_id)
 
         return {"ok": True}

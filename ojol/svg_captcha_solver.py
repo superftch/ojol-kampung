@@ -1,5 +1,6 @@
 import base64
 import json
+import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -146,6 +147,12 @@ def _bank_path(directory):
     return Path(directory) / "cek-templates.json"
 
 
+def _extract_glyph(shape):
+    if isinstance(shape, dict):
+        return shape.get("glyph", [])
+    return shape
+
+
 def load_bank(directory=None):
     seeds = {
         digit: [list([list(p) for p in stroke] for stroke in variant) for variant in variants]
@@ -173,34 +180,39 @@ def load_bank(directory=None):
 
 
 def save_bank(directory, bank):
-    try:
-        if directory:
-            path = Path(directory) / "cek-templates.json"
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(bank))
-    except OSError:
-        pass
-    try:
-        repo_bank = Path(__file__).resolve().parent.parent / "assets" / "cek-templates.json"
-        repo_bank.parent.mkdir(parents=True, exist_ok=True)
-        repo_bank.write_text(json.dumps(bank))
-    except OSError:
-        pass
+    dirs = [directory] if isinstance(directory, (str, Path)) else list(directory or [])
+    for d in dirs:
+        try:
+            if d:
+                path = Path(d) / "cek-templates.json"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(bank))
+        except OSError:
+            pass
+    if os.environ.get("OJOL_ENV") != "testing":
+        try:
+            repo_bank = Path(__file__).resolve().parent.parent / "assets" / "cek-templates.json"
+            repo_bank.parent.mkdir(parents=True, exist_ok=True)
+            repo_bank.write_text(json.dumps(bank))
+        except OSError:
+            pass
 
 
 def get_bank_templates(directory=None):
     return load_bank(directory)
 
 
-def save_template_to_bank(directory, digit: str, glyph: list):
-    """Menyimpan varian bentuk glyph baru ke bank digit tertentu."""
+def save_template_to_bank(directory, digit: str, glyph: list, contributed_by: str = None):
+    """Menyimpan varian bentuk glyph baru ke bank digit tertentu (bisa untuk satu atau multi-direktori)."""
     digit = str(digit).strip()
     if len(digit) != 1 or not digit.isdigit():
         raise ValueError("Digit harus berupa karakter angka 0-9")
     if not isinstance(glyph, list) or not glyph:
         raise ValueError("Data glyph tidak valid")
 
-    bank = load_bank(directory)
+    dirs = [directory] if isinstance(directory, (str, Path)) else list(directory or [])
+    primary_dir = dirs[0] if dirs else None
+    bank = load_bank(primary_dir)
     cleaned_glyph = [[list(p) for p in stroke] for stroke in glyph if isinstance(stroke, list)]
     if not cleaned_glyph:
         raise ValueError("Data stroke glyph kosong")
@@ -209,22 +221,33 @@ def save_template_to_bank(directory, digit: str, glyph: list):
     shapes = bank.get(digit, [])
     # Hindari duplikat jika bentuknya sangat mirip (< 0.08)
     is_dup = any(
-        _shape_distance(norm_new, _normalize([[tuple(p) for p in s] for s in shape])) < (_SWITCH * 0.5)
+        _shape_distance(norm_new, _normalize([[tuple(p) for p in s] for s in _extract_glyph(shape)])) < (_SWITCH * 0.5)
         for shape in shapes
     )
     if not is_dup:
-        bank.setdefault(digit, []).append(cleaned_glyph)
-        save_bank(directory, bank)
+        entry = (
+            {
+                "glyph": cleaned_glyph,
+                "by": str(contributed_by).strip(),
+                "at": datetime.now(timezone.utc).isoformat(),
+            }
+            if contributed_by
+            else cleaned_glyph
+        )
+        bank.setdefault(digit, []).append(entry)
+        save_bank(dirs, bank)
     return bank
 
 
 def delete_template_from_bank(directory, digit: str, index: int):
     """Menghapus varian bentuk dari bank digit tertentu."""
     digit = str(digit).strip()
-    bank = load_bank(directory)
+    dirs = [directory] if isinstance(directory, (str, Path)) else list(directory or [])
+    primary_dir = dirs[0] if dirs else None
+    bank = load_bank(primary_dir)
     if digit in bank and 0 <= index < len(bank[digit]):
         bank[digit].pop(index)
-        save_bank(directory, bank)
+        save_bank(dirs, bank)
     return bank
 
 
@@ -252,7 +275,7 @@ def record_unknown_glyph(directory, glyph, normalized, trip_id=None, svg_text=No
         return None
 
 
-def get_pending_reviews(directory):
+def get_pending_reviews(directory, account_name=None):
     """Mengambil semua glyph yang belum dikenali untuk direview user."""
     if not directory:
         return []
@@ -315,6 +338,7 @@ def get_pending_reviews(directory):
                             "time": data.get("time"),
                             "glyph": glyph,
                             "svg_text": svg_text,
+                            "account_name": account_name or data.get("account_name"),
                         })
                         seen_ids.add(rid)
             except (ValueError, OSError):
@@ -343,6 +367,7 @@ def get_pending_reviews(directory):
                             "time": data.get("time"),
                             "glyph": glyph,
                             "svg_text": svg_text,
+                            "account_name": account_name or data.get("account_name"),
                         })
                         seen_ids.add(err_id)
                         seen_ids.add(rev_err_id)
@@ -352,42 +377,71 @@ def get_pending_reviews(directory):
     return reviews
 
 
-def resolve_review(directory, review_id: str, digit: str = None, glyph: list = None):
-    """Menandai review selesai dan menambahkan ke bank angka bila digit & glyph diberikan."""
+def get_all_pending_reviews(directories, account_names=None):
+    """Mengumpulkan antrean review captcha gagal dari semua akun armada yang terdaftar."""
+    dirs = [directories] if isinstance(directories, (str, Path)) else list(directories or [])
+    account_names = account_names or {}
+    all_reviews = []
+    seen_ids = set()
+
+    for d in dirs:
+        if not d:
+            continue
+        p = Path(d)
+        acc_name = account_names.get(str(p)) or account_names.get(p.name) or account_names.get(p.stem)
+        reviews = get_pending_reviews(p, account_name=acc_name)
+        for r in reviews:
+            rid = r.get("id") or r.get("error_id")
+            if rid and rid not in seen_ids:
+                seen_ids.add(rid)
+                all_reviews.append(r)
+
+    all_reviews.sort(key=lambda x: str(x.get("time") or ""), reverse=True)
+    return all_reviews
+
+
+def resolve_review(directory, review_id: str, digit: str = None, glyph: list = None, resolved_by: str = None):
+    """Menandai review selesai dan menambahkan ke bank angka bila digit & glyph diberikan (bisa multi-direktori)."""
     if not directory:
         return
-    path = Path(directory)
+    dirs = [directory] if isinstance(directory, (str, Path)) else list(directory or [])
     if digit and glyph:
-        save_template_to_bank(directory, digit, glyph)
+        save_template_to_bank(dirs, digit, glyph, contributed_by=resolved_by)
 
-    resolved_file = path / "cek-reviews-resolved.json"
-    resolved_ids = set()
-    if resolved_file.is_file():
+    for d in dirs:
+        if not d:
+            continue
+        path = Path(d)
+        resolved_file = path / "cek-reviews-resolved.json"
+        resolved_ids = set()
+        if resolved_file.is_file():
+            try:
+                resolved_ids = set(json.loads(resolved_file.read_text()))
+            except (ValueError, OSError):
+                resolved_ids = set()
+
+        resolved_ids.add(review_id)
+        if "OJL-" in review_id:
+            match = re.search(r"OJL-[0-9A-F]{12}", review_id)
+            if match:
+                resolved_ids.add(match.group(0))
+
         try:
-            resolved_ids = set(json.loads(resolved_file.read_text()))
-        except (ValueError, OSError):
-            resolved_ids = set()
-
-    resolved_ids.add(review_id)
-    if "OJL-" in review_id:
-        match = re.search(r"OJL-[0-9A-F]{12}", review_id)
-        if match:
-            resolved_ids.add(match.group(0))
-
-    try:
-        resolved_file.write_text(json.dumps(list(resolved_ids), indent=2))
-    except OSError:
-        pass
-
-    rev_file = path / "cek-reviews" / f"{review_id}.json"
-    if rev_file.is_file():
-        try:
-            data = json.loads(rev_file.read_text())
-            data["status"] = "resolved"
-            data["resolved_digit"] = digit
-            rev_file.write_text(json.dumps(data, indent=2))
-        except (OSError, ValueError):
+            resolved_file.write_text(json.dumps(list(resolved_ids), indent=2))
+        except OSError:
             pass
+
+        rev_file = path / "cek-reviews" / f"{review_id}.json"
+        if rev_file.is_file():
+            try:
+                data = json.loads(rev_file.read_text())
+                data["status"] = "resolved"
+                data["resolved_digit"] = digit
+                if resolved_by:
+                    data["resolved_by"] = resolved_by
+                rev_file.write_text(json.dumps(data, indent=2))
+            except (OSError, ValueError):
+                pass
 
 
 def dismiss_review(directory, review_id: str):
@@ -395,25 +449,33 @@ def dismiss_review(directory, review_id: str):
     resolve_review(directory, review_id, digit=None, glyph=None)
 
 
-def learn_polyline(directory, svg_text, code):
+def learn_polyline(directory, svg_text, code, contributed_by=None):
     """Simpan bentuk glyph yang baru saja dikonfirmasi server untuk digit yang sesuai."""
     glyphs = _glyphs(svg_text)
     if len(glyphs) != len(code):
         return
-    bank = load_bank(directory)
+    dirs = [directory] if isinstance(directory, (str, Path)) else list(directory or [])
+    primary_dir = dirs[0] if dirs else None
+    bank = load_bank(primary_dir)
     changed = False
     for digit, glyph in zip(code, glyphs):
         shapes = bank.get(digit, [])
         normalized = _normalize(glyph)
         if all(
-            _shape_distance(normalized, _normalize([[tuple(p) for p in s] for s in shape]))
+            _shape_distance(normalized, _normalize([[tuple(p) for p in s] for s in _extract_glyph(shape)]))
             > _SWITCH * 0.9
             for shape in shapes
         ):
-            bank.setdefault(digit, []).append([[list(p) for p in stroke] for stroke in glyph])
+            cleaned = [[list(p) for p in stroke] for stroke in glyph]
+            entry = (
+                {"glyph": cleaned, "by": contributed_by, "at": datetime.now(timezone.utc).isoformat()}
+                if contributed_by
+                else cleaned
+            )
+            bank.setdefault(digit, []).append(entry)
             changed = True
     if changed:
-        save_bank(directory, bank)
+        save_bank(dirs, bank)
 
 
 def _glyphs(svg_text):
@@ -461,8 +523,9 @@ def solve_polyline_captcha(svg_text, directory=None, trip_id=None):
             if digit == "0" and not closed:
                 continue
             for shape in variants:
+                raw_shape = _extract_glyph(shape)
                 cost = _shape_distance(
-                    normalized, _normalize([[tuple(p) for p in s] for s in shape])
+                    normalized, _normalize([[tuple(p) for p in s] for s in raw_shape])
                 )
                 if cost < best_cost:
                     best_digit, best_cost = digit, cost

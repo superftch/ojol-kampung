@@ -1163,8 +1163,8 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         <div id="tab-bank-angka" class="tab-panel">
             <div class="page-title">
                 <div>
-                    <h1>Bank Angka Cek</h1>
-                    <p>Kelola dan latih bentuk angka (glyph) verifikasi order Ojol agar captcha selalu berhasil dipecahkan.</p>
+                    <h1>Bank Angka Bersama (Crowdsourced)</h1>
+                    <p>Bank angka dibagikan ke seluruh pengguna armada. Setiap angka yang Anda review atau tambahkan otomatis tersinkron dan membantu semua akun mengenali captcha game.</p>
                 </div>
                 <div class="page-title-actions">
                     <button class="btn btn-utility" type="button" onclick="loadBankAngka()">Segarkan Bank</button>
@@ -1176,10 +1176,10 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             <div class="card" style="margin-bottom: 24px;">
                 <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                     <div style="display: flex; align-items: center; gap: 8px;">
-                        <h2 class="card-title">🔍 Antrean Review Angka (Cek Gagal)</h2>
+                        <h2 class="card-title">🔍 Antrean Review Angka (Cek Gagal Seluruh Armada)</h2>
                         <span id="bankPendingCountBadge" class="nav-count" style="display: none; background: var(--danger, #ef4444); color: white;">0</span>
                     </div>
-                    <span style="font-size: 12px; color: var(--text-muted);">Jika bot gagal mengenali angka pada order Ojol, bentuknya akan muncul di sini untuk Anda konfirmasi.</span>
+                    <span style="font-size: 12px; color: var(--text-muted);">Jika ada akun di armada yang gagal memecahkan captcha angka, tangkapan layarnya muncul di sini agar bisa dikontribusikan.</span>
                 </div>
                 <div id="bankPendingList" style="padding: 16px 0;">
                     <div style="text-align: center; color: var(--text-muted); padding: 32px 0;">
@@ -1193,7 +1193,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
                     <div>
                         <h2 class="card-title">📚 Koleksi Angka Terdaftar (Digit 0 – 9)</h2>
-                        <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Total <span id="bankTotalTemplatesCount">0</span> varian bentuk tersimpan di server.</div>
+                        <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Total <span id="bankTotalTemplatesCount">0</span> varian tersimpan (<span id="bankTotalContribCount">0</span> dari kontribusi pengguna armada).</div>
                     </div>
                 </div>
                 <div id="bankTemplatesGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-top: 16px;">
@@ -2411,6 +2411,8 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 updateBankBadge(pending.length);
                 const countEl = document.getElementById('bankTotalTemplatesCount');
                 if (countEl) countEl.innerText = totalTemplates;
+                const contribEl = document.getElementById('bankTotalContribCount');
+                if (contribEl) contribEl.innerText = res.total_contributions || 0;
 
                 // 1. Render Pending Reviews
                 if (pending.length === 0) {{
@@ -2418,13 +2420,14 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                         <div style="text-align: center; color: var(--success); padding: 36px 16px; background: rgba(16, 185, 129, 0.08); border-radius: 8px; border: 1px dashed rgba(16, 185, 129, 0.3);">
                             <div style="font-size: 28px; margin-bottom: 6px;">✅</div>
                             <div style="font-weight: 700; font-size: 15px;">Semua angka cek saat ini dikenali!</div>
-                            <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Tidak ada antrean review gagal cek polyline.</div>
+                            <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Tidak ada antrean review gagal cek polyline di seluruh armada.</div>
                         </div>
                     `;
                 }} else {{
                     listEl.innerHTML = pending.map((item, idx) => {{
                         const glyphJsonStr = escapeHtml(JSON.stringify(item.glyph));
                         const errIdStr = item.error_id ? `<span style="background: rgba(239, 68, 68, 0.18); color: var(--danger); border-radius: 4px; padding: 2px 8px; font-weight: 700; font-size: 12px;">🚨 ${{escapeHtml(item.error_id)}}</span>` : '';
+                        const accStr = item.account_name ? `<span style="background: rgba(167, 139, 250, 0.18); color: #a78bfa; border-radius: 4px; padding: 2px 8px; font-weight: 700; font-size: 12px;">👤 Akun: ${{escapeHtml(item.account_name)}}</span>` : '';
                         const timeStr = item.time ? new Date(item.time).toLocaleTimeString('id-ID', {{ hour: '2-digit', minute: '2-digit', second: '2-digit' }}) : 'Baru saja';
                         const rid = escapeHtml(item.id);
 
@@ -2459,8 +2462,9 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                         return `
                             <div style="background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 16px; margin-bottom: 16px;">
                                 <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; border-bottom: 1px solid var(--border); padding-bottom: 8px;">
-                                    <div style="display: flex; align-items: center; gap: 8px;">
+                                    <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
                                         ${{errIdStr}}
+                                        ${{accStr}}
                                         <span style="font-size: 12px; color: var(--text-muted);">Waktu kejadian: ${{timeStr}}</span>
                                         ${{item.trip_id ? `<span style="font-size: 11px; color: var(--text-muted); background: var(--bg); padding: 2px 6px; border-radius: 4px;">Trip: ${{escapeHtml(item.trip_id)}}</span>` : ''}}
                                     </div>
@@ -2487,7 +2491,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                                     </div>
                                     <div style="display: flex; gap: 8px; align-items: center;">
                                         <button class="btn btn-secondary" type="button" onclick="dismissReview('${{rid}}', '${{escapeHtml(item.error_id || '')}}')" style="padding: 8px 14px; font-size: 12px;">Abaikan</button>
-                                        <button class="btn btn-primary" type="button" onclick="saveReviewToBank('${{rid}}', '${{escapeHtml(item.error_id || '')}}', '${{glyphJsonStr}}')" style="padding: 8px 18px; font-size: 13px; font-weight: 700;">💾 Simpan ke Bank Angka</button>
+                                        <button class="btn btn-primary" type="button" onclick="saveReviewToBank('${{rid}}', '${{escapeHtml(item.error_id || '')}}', '${{glyphJsonStr}}')" style="padding: 8px 18px; font-size: 13px; font-weight: 700;">💾 Simpan & Kontribusi ke Bank Angka</button>
                                     </div>
                                 </div>
                             </div>
@@ -2500,12 +2504,23 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 gridEl.innerHTML = digits.map(d => {{
                     const variants = templates[d] || [];
                     const varCount = variants.length;
-                    const previews = variants.map((v, vIdx) => `
-                        <div style="position: relative; display: inline-block;">
-                            ${{renderGlyphSvg(v, 68, 68, '#38bdf8')}}
-                            <button type="button" onclick="deleteBankVariant('${{d}}', ${{vIdx}})" title="Hapus varian ini" style="position: absolute; top: -6px; right: -6px; background: rgba(239,68,68,0.9); color: white; border: none; border-radius: 50%; width: 18px; height: 18px; font-size: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1;">&times;</button>
-                        </div>
-                    `).join('');
+                    const previews = variants.map((v, vIdx) => {{
+                        const glyphData = v.glyph || v;
+                        const contributor = v.by ? escapeHtml(v.by) : null;
+                        const contribBadge = contributor
+                            ? `<div style="font-size: 9px; color: #a78bfa; text-align: center; margin-top: 3px; max-width: 68px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="Dikontribusi oleh ${{contributor}}">👤 ${{contributor}}</div>`
+                            : `<div style="font-size: 9px; color: var(--text-muted); text-align: center; margin-top: 3px;">🌱 Sistem</div>`;
+
+                        return `
+                            <div style="position: relative; display: flex; flex-direction: column; align-items: center;">
+                                <div style="position: relative; display: inline-block;">
+                                    ${{renderGlyphSvg(glyphData, 68, 68, '#38bdf8')}}
+                                    <button type="button" onclick="deleteBankVariant('${{d}}', ${{vIdx}})" title="Hapus varian ini" style="position: absolute; top: -6px; right: -6px; background: rgba(239,68,68,0.9); color: white; border: none; border-radius: 50%; width: 18px; height: 18px; font-size: 10px; cursor: pointer; display: flex; align-items: center; justify-content: center; line-height: 1;">&times;</button>
+                                </div>
+                                ${{contribBadge}}
+                            </div>
+                        `;
+                    }}).join('');
 
                     return `
                         <div style="background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 14px;">
