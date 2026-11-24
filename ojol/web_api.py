@@ -1,8 +1,11 @@
 """Web API endpoints for dashboard, account management, control, and auth."""
 
 import json
-from contextlib import nullcontext
+import sqlite3
+from contextlib import closing, nullcontext
+from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from urllib.parse import quote_plus, urlsplit
 
 from fastapi import Depends, HTTPException, Request
@@ -11,6 +14,8 @@ from pydantic import ValidationError
 
 from .auto_settings import auto_flags, set_auto_flag
 from .control import status_record, status_timestamp
+from .finance import WIB, report_date
+from .journal import Journal
 from .maintenance import held_window
 from .models import Settings
 from .study import set_subject, subjects
@@ -392,6 +397,76 @@ def register_web_routes(app, settings, manager=None, service=None):
             return sync["snapshot"]
         return snapshot
 
+    def calculate_growth(today_val: Decimal, yesterday_val: Decimal) -> dict:
+        if yesterday_val != Decimal(0):
+            diff = today_val - yesterday_val
+            percent = (diff / abs(yesterday_val)) * Decimal(100)
+            direction = "up" if percent > 0 else ("down" if percent < 0 else "neutral")
+            sign = "+" if percent > 0 else ""
+            return {
+                "percent": float(round(percent, 1)),
+                "text": f"{sign}{percent:.1f}%",
+                "direction": direction,
+            }
+        else:
+            if today_val > Decimal(0):
+                return {"percent": 100.0, "text": "+100%", "direction": "up"}
+            elif today_val < Decimal(0):
+                return {"percent": -100.0, "text": "-100%", "direction": "down"}
+            else:
+                return {"percent": 0.0, "text": "0.0%", "direction": "neutral"}
+
+    def get_account_expense_history(directory, limit: int = 50) -> list:
+        if not directory:
+            return []
+        db_file = directory / "history.sqlite3"
+        if not db_file.is_file():
+            return []
+        try:
+            with closing(sqlite3.connect(db_file)) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT id, created, category, amount, detail FROM cashflows WHERE kind='expense' ORDER BY id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+                results = []
+                for row in rows:
+                    detail = {}
+                    try:
+                        if row["detail"]:
+                            detail = json.loads(row["detail"])
+                    except Exception:
+                        pass
+
+                    created_raw = row["created"]
+                    time_display = "Terkini"
+                    if created_raw:
+                        try:
+                            dt = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00")).astimezone(WIB)
+                            time_display = dt.strftime("%d/%m %H:%M WIB")
+                        except Exception:
+                            time_display = str(created_raw)
+
+                    product = detail.get("product") or detail.get("action") or row["category"]
+                    shop = detail.get("shop")
+                    item_name = f"{product} • {shop}" if shop else str(product)
+                    amount_num = parse_coins(row["amount"])
+
+                    results.append({
+                        "id": row["id"],
+                        "created": row["created"],
+                        "time_display": time_display,
+                        "category": row["category"] or "pengeluaran",
+                        "item_name": item_name,
+                        "shop": shop,
+                        "product": product,
+                        "amount": format_coins(amount_num),
+                        "amount_num": float(amount_num),
+                    })
+                return results
+        except Exception:
+            return []
+
     async def build_dashboard_payload(request: Request, user: dict) -> dict:
         owner = registry.owner_for_user(user)
         accounts_list = registry.list(owner)
@@ -400,12 +475,21 @@ def register_web_routes(app, settings, manager=None, service=None):
             selected = accounts_list[0]
             registry.select(owner, selected["id"])
 
+        today_report = report_date()
+        yesterday_report = today_report - timedelta(days=1)
+
         accounts_payload = []
         total_wallet = Decimal(0)
         total_income = Decimal(0)
+        total_expenses = Decimal(0)
+        total_net_profit = Decimal(0)
+        total_yesterday_net = Decimal(0)
+        total_yesterday_income = Decimal(0)
         total_trips = 0
         active_workers = 0
         online_accounts = 0
+
+        selected_finance_info = None
 
         for acc in accounts_list:
             acc_service = resolve_account_service(request, acc["id"]) if manager else service
@@ -426,37 +510,85 @@ def register_web_routes(app, settings, manager=None, service=None):
             except (ValueError, TypeError):
                 acc_trips = 0
 
+            # Hitung statistik keuangan jurnal untuk hari ini dan kemarin
+            acc_journal_income = Decimal(0)
+            acc_expenses = Decimal(0)
+            acc_yest_income = Decimal(0)
+            acc_yest_net = Decimal(0)
+
+            if r_dir and (r_dir / "history.sqlite3").is_file():
+                try:
+                    with closing(Journal(r_dir)) as j:
+                        j_today = j.profit(day=today_report)
+                        acc_journal_income = Decimal(str(j_today.get("pendapatan_ojol") or 0))
+                        acc_expenses = Decimal(str(j_today.get("pengeluaran") or 0))
+                        j_yest = j.profit(day=yesterday_report)
+                        acc_yest_income = Decimal(str(j_yest.get("pendapatan_ojol") or 0))
+                        acc_yest_exp = Decimal(str(j_yest.get("pengeluaran") or 0))
+                        acc_yest_net = acc_yest_income - acc_yest_exp
+                except Exception:
+                    pass
+
+            effective_income = max(acc_income_num, acc_journal_income)
+            effective_net = effective_income - acc_expenses
+            acc_growth_net = calculate_growth(effective_net, acc_yest_net)
+            acc_growth_inc = calculate_growth(effective_income, acc_yest_income)
+
             is_active = bool(sum_info.get("active", False))
             is_online = bool(sum_info.get("online", False))
             total_wallet += acc_wallet_num
-            total_income += acc_income_num
+            total_income += effective_income
+            total_expenses += acc_expenses
+            total_net_profit += effective_net
+            total_yesterday_net += acc_yest_net
+            total_yesterday_income += acc_yest_income
             total_trips += acc_trips
             active_workers += int(is_active)
             online_accounts += int(is_online or is_active)
 
-            accounts_payload.append(
-                {
-                    "id": acc["id"],
-                    "name": acc["name"],
-                    "archived": bool(acc["archived"]),
-                    "legacy": bool(acc["legacy"]),
-                    "is_selected": bool(selected and acc["id"] == selected["id"]),
-                    "has_cookie": sum_info.get("has_cookie", False),
-                    "is_running": is_active,
-                    "is_online": is_online,
-                    "icon": sum_info.get("icon", "⚪"),
-                    "phase": sum_info.get("phase", "idle"),
-                    "status_text": sum_info.get("status_text", "Standby"),
-                    "wallet": format_coins(acc_wallet_num) if wallet is not None else None,
-                    "wallet_num": float(acc_wallet_num),
-                    "today_income": format_coins(acc_income_num),
-                    "today_income_num": float(acc_income_num),
-                    "trips": acc_trips,
-                    "fuel": acc_snap.get("fuel", sum_info.get("fuel")),
-                    "condition": acc_snap.get("condition", sum_info.get("condition")),
-                    "data": acc_snap.get("data", sum_info.get("data")),
+            acc_dict = {
+                "id": acc["id"],
+                "name": acc["name"],
+                "archived": bool(acc["archived"]),
+                "legacy": bool(acc["legacy"]),
+                "is_selected": bool(selected and acc["id"] == selected["id"]),
+                "has_cookie": sum_info.get("has_cookie", False),
+                "is_running": is_active,
+                "is_online": is_online,
+                "icon": sum_info.get("icon", "⚪"),
+                "phase": sum_info.get("phase", "idle"),
+                "status_text": sum_info.get("status_text", "Standby"),
+                "wallet": format_coins(acc_wallet_num) if wallet is not None else None,
+                "wallet_num": float(acc_wallet_num),
+                "today_income": format_coins(effective_income),
+                "today_income_num": float(effective_income),
+                "today_expenses": format_coins(acc_expenses),
+                "today_expenses_num": float(acc_expenses),
+                "today_net_profit": format_coins(effective_net),
+                "today_net_profit_num": float(effective_net),
+                "profit_growth": acc_growth_net,
+                "income_growth": acc_growth_inc,
+                "trips": acc_trips,
+                "fuel": acc_snap.get("fuel", sum_info.get("fuel")),
+                "condition": acc_snap.get("condition", sum_info.get("condition")),
+                "data": acc_snap.get("data", sum_info.get("data")),
+            }
+            accounts_payload.append(acc_dict)
+
+            if selected and acc["id"] == selected["id"]:
+                selected_finance_info = {
+                    "today_income": format_coins(effective_income),
+                    "today_income_num": float(effective_income),
+                    "today_expenses": format_coins(acc_expenses),
+                    "today_expenses_num": float(acc_expenses),
+                    "today_net_profit": format_coins(effective_net),
+                    "today_net_profit_num": float(effective_net),
+                    "profit_growth": acc_growth_net,
+                    "income_growth": acc_growth_inc,
                 }
-            )
+
+        fleet_profit_growth = calculate_growth(total_net_profit, total_yesterday_net)
+        fleet_income_growth = calculate_growth(total_income, total_yesterday_income)
 
         all_accounts_summary = {
             "total_accounts": len(accounts_payload),
@@ -466,17 +598,36 @@ def register_web_routes(app, settings, manager=None, service=None):
             "total_wallet_num": float(total_wallet),
             "total_income": format_coins(total_income),
             "total_income_num": float(total_income),
+            "total_expenses": format_coins(total_expenses),
+            "total_expenses_num": float(total_expenses),
+            "total_net_profit": format_coins(total_net_profit),
+            "total_net_profit_num": float(total_net_profit),
+            "profit_growth": fleet_profit_growth,
+            "income_growth": fleet_income_growth,
             "total_trips": total_trips,
         }
 
         fleet_dirs, _ = get_all_fleet_directories()
         from .svg_captcha_solver import get_all_pending_reviews
 
+        empty_finance = {
+            "today_income": "0",
+            "today_income_num": 0.0,
+            "today_expenses": "0",
+            "today_expenses_num": 0.0,
+            "today_net_profit": "0",
+            "today_net_profit_num": 0.0,
+            "profit_growth": {"percent": 0.0, "text": "0.0%", "direction": "neutral"},
+            "income_growth": {"percent": 0.0, "text": "0.0%", "direction": "neutral"},
+            "expense_history": [],
+        }
+
         if not selected:
             return {
                 "account": None,
                 "accounts": accounts_payload,
                 "all_accounts_summary": all_accounts_summary,
+                "finance": empty_finance,
                 "summary": {},
                 "snapshot": {},
                 "auto_flags": {},
@@ -622,6 +773,12 @@ def register_web_routes(app, settings, manager=None, service=None):
             or "Batas narik" in str(summary.get("status_text") or "")
         )
 
+        selected_expense_history = get_account_expense_history(directory, limit=50)
+        finance_payload = {
+            **(selected_finance_info or empty_finance),
+            "expense_history": selected_expense_history,
+        }
+
         return {
             "account": {
                 "id": selected["id"],
@@ -630,6 +787,7 @@ def register_web_routes(app, settings, manager=None, service=None):
             },
             "accounts": accounts_payload,
             "all_accounts_summary": all_accounts_summary,
+            "finance": finance_payload,
             "summary": summary,
             "snapshot": state,
             "auto_flags": flags_payload,

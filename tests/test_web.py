@@ -998,3 +998,90 @@ def test_dashboard_html_javascript_syntax_valid():
             assert res.returncode == 0, f"Script {idx} has JS syntax error: {res.stderr}"
 
 
+def test_web_dashboard_finance_and_expense_history(admin_web):
+    import sqlite3
+    from datetime import UTC, datetime, timedelta
+    from ojol.finance import WIB, report_date
+
+    client, manager = admin_web
+    create_res = client.post("/api/accounts/create", json={"name": "Akun Finansial"})
+    assert create_res.status_code == 200
+    account = create_res.json()["account"]
+
+    r_dir = manager.registry.scoped_settings(account).runtime_dir
+    r_dir.mkdir(parents=True, exist_ok=True)
+
+    today = report_date()
+    yesterday = today - timedelta(days=1)
+    today_dt = datetime.combine(today, datetime.min.time(), WIB).astimezone(sqlite3.sqlite_version and UTC)
+    yest_dt = datetime.combine(yesterday, datetime.min.time(), WIB).astimezone(UTC)
+
+    # Inisialisasi history.sqlite3 via Journal
+    from ojol.journal import Journal
+    j = Journal(r_dir)
+    with j.db:
+        j.db.execute("INSERT INTO runs(id,started,outcome,settings) VALUES (1, ?, 'ok', '{}')", (yest_dt.isoformat(),))
+        j.db.execute("INSERT INTO runs(id,started,outcome,settings) VALUES (2, ?, 'ok', '{}')", (today_dt.isoformat(),))
+        # Kemarin: income 10000, expense 2000 (net 8000)
+        j.db.execute(
+            "INSERT INTO cashflows(run_id,source_key,created,kind,category,amount,detail) VALUES (?,?,?,?,?,?,?)",
+            (1, "yest_inc", (yest_dt + timedelta(hours=2)).isoformat(), "income", "ojol", "10000", "{}"),
+        )
+        j.db.execute(
+            "INSERT INTO cashflows(run_id,source_key,created,kind,category,amount,detail) VALUES (?,?,?,?,?,?,?)",
+            (1, "yest_exp", (yest_dt + timedelta(hours=3)).isoformat(), "expense", "bensin", "2000", json.dumps({"product": "Pertalite", "shop": "SPBU"})),
+        )
+        # Hari ini: income 15000, expense 3000 (net 12000)
+        j.db.execute(
+            "INSERT INTO cashflows(run_id,source_key,created,kind,category,amount,detail) VALUES (?,?,?,?,?,?,?)",
+            (2, "today_inc", (today_dt + timedelta(hours=2)).isoformat(), "income", "ojol", "15000", "{}"),
+        )
+        j.db.execute(
+            "INSERT INTO cashflows(run_id,source_key,created,kind,category,amount,detail) VALUES (?,?,?,?,?,?,?)",
+            (2, "today_exp", (today_dt + timedelta(hours=3)).isoformat(), "expense", "bensin", "3000", json.dumps({"product": "Pertamax 2 Liter", "shop": "SPBU Pertamina"})),
+        )
+    j.close()
+
+    dash_res = client.get("/api/dashboard")
+    assert dash_res.status_code == 200
+    data = dash_res.json()
+
+    # Periksa fleet totals
+    totals = data["all_accounts_summary"]
+    assert totals["total_income"] == "15.000"
+    assert totals["total_expenses"] == "3.000"
+    assert totals["total_net_profit"] == "12.000"
+    assert totals["income_growth"]["percent"] == 50.0
+    assert totals["income_growth"]["direction"] == "up"
+    assert totals["income_growth"]["text"] == "+50.0%"
+    assert totals["profit_growth"]["percent"] == 50.0
+    assert totals["profit_growth"]["direction"] == "up"
+    assert totals["profit_growth"]["text"] == "+50.0%"
+
+    # Periksa selected account finance
+    fin = data["finance"]
+    assert fin["today_income"] == "15.000"
+    assert fin["today_expenses"] == "3.000"
+    assert fin["today_net_profit"] == "12.000"
+    assert fin["profit_growth"]["direction"] == "up"
+    assert len(fin["expense_history"]) == 2
+    latest_exp = fin["expense_history"][0]
+    assert latest_exp["category"] == "bensin"
+    assert "Pertamax 2 Liter • SPBU Pertamina" in latest_exp["item_name"]
+    assert latest_exp["amount"] == "3.000"
+
+    # Periksa HTML root menyertakan elemen UI finansial
+    html_res = client.get("/")
+    assert html_res.status_code == 200
+    assert "fleetTotalExpenses" in html_res.text
+    assert "fleetTotalNetProfit" in html_res.text
+    assert "fleetIncomeGrowth" in html_res.text
+    assert "fleetNetGrowth" in html_res.text
+    assert "accProfitVal" in html_res.text
+    assert "accExpenseVal" in html_res.text
+    assert "accNetProfitVal" in html_res.text
+    assert "expenseList" in html_res.text
+    assert "Riwayat Pengeluaran" in html_res.text
+
+
+

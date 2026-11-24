@@ -623,10 +623,20 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             </section>
             <div id="activeDashboardSection" hidden>
                 <dl class="card fleet-stats" aria-label="Ringkasan seluruh akun">
-                    <div><dt>Worker berjalan</dt><dd id="fleetCountWorkers">—</dd></div>
                     <div><dt>Saldo armada</dt><dd id="fleetTotalWallet">—</dd></div>
-                    <div><dt>Penghasilan hari ini</dt><dd id="fleetTotalIncome">—</dd></div>
+                    <div>
+                        <dt>Profit kotor</dt>
+                        <dd id="fleetTotalIncome">—</dd>
+                        <span id="fleetIncomeGrowth" class="growth-badge" style="display: none;"></span>
+                    </div>
+                    <div><dt>Pengeluaran</dt><dd id="fleetTotalExpenses">—</dd></div>
+                    <div>
+                        <dt>Laba bersih</dt>
+                        <dd id="fleetTotalNetProfit">—</dd>
+                        <span id="fleetNetGrowth" class="growth-badge" style="display: none;"></span>
+                    </div>
                     <div><dt>Trip hari ini</dt><dd id="fleetTotalTrips">—</dd></div>
+                    <div><dt>Worker berjalan</dt><dd id="fleetCountWorkers">—</dd></div>
                 </dl>
 
                 <div class="ops-grid">
@@ -641,6 +651,17 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                             </div>
                             <dl class="account-metrics">
                                 <div><dt>Saldo akun</dt><dd id="walletVal">—</dd></div>
+                                <div>
+                                    <dt>Profit hari ini</dt>
+                                    <dd id="accProfitVal">—</dd>
+                                    <span id="accProfitGrowth" class="growth-badge" style="display: none;"></span>
+                                </div>
+                                <div><dt>Pengeluaran</dt><dd id="accExpenseVal">—</dd></div>
+                                <div>
+                                    <dt>Laba bersih</dt>
+                                    <dd id="accNetProfitVal">—</dd>
+                                    <span id="accNetGrowth" class="growth-badge" style="display: none;"></span>
+                                </div>
                                 <div><dt>Trip akun</dt><dd id="tripsVal">—</dd></div>
                                 <div><dt>Aktivitas game</dt><dd id="countdownVal">—</dd><span id="presenceVal" class="meta"></span></div>
                             </dl>
@@ -701,6 +722,15 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                                     <button id="btnSkipActions" class="btn btn-utility" type="button" style="display: none; padding: 4px 10px; font-size: 12px; color: var(--warning, #f59e0b); border-color: rgba(245, 158, 11, 0.4); font-weight: 700;" onclick="skipStuckActions()">⏩ Lewati Aksi Tertahan</button>
                                 </div>
                                 <div id="logConsole" class="log-box">Memuat aktivitas…</div>
+                            </section>
+                            <section class="card expense-card" aria-labelledby="expenseTitle">
+                                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                                    <h2 id="expenseTitle" class="card-title">Riwayat Pengeluaran</h2>
+                                    <span id="expenseTodayTotal" class="meta" style="font-weight: 600; color: #ef4444;"></span>
+                                </div>
+                                <div id="expenseList" class="expense-list-box" style="max-height: 280px; overflow-y: auto;">
+                                    <div class="empty-state" style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 13px;">Belum ada riwayat pengeluaran.</div>
+                                </div>
                             </section>
                         </div>
                     </div>
@@ -1639,6 +1669,21 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         const formatCoin = value => value == null ? '—'
             : new Intl.NumberFormat('id-ID', {{ maximumFractionDigits: 3 }}).format(Number(value)) + ' koin';
 
+        function renderGrowthBadge(elemId, growth) {{
+            const el = document.getElementById(elemId);
+            if (!el) return;
+            if (!growth || !growth.text) {{
+                el.textContent = '';
+                el.className = 'growth-badge';
+                el.style.display = 'none';
+                return;
+            }}
+            const icon = growth.direction === 'up' ? '▲' : (growth.direction === 'down' ? '▼' : '•');
+            el.textContent = `${{icon}} ${{growth.text}}`;
+            el.className = `growth-badge ${{growth.direction}}`;
+            el.style.display = 'inline-flex';
+        }}
+
         function renderDashboard(data) {{
             const accounts = data.accounts || [];
             const selected = data.account;
@@ -1659,6 +1704,10 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             const totals = data.all_accounts_summary || {{}};
             document.getElementById('fleetTotalWallet').textContent = (totals.total_wallet ?? '0') + ' koin';
             document.getElementById('fleetTotalIncome').textContent = (totals.total_income ?? '0') + ' koin';
+            renderGrowthBadge('fleetIncomeGrowth', totals.income_growth);
+            document.getElementById('fleetTotalExpenses').textContent = (totals.total_expenses ?? '0') + ' koin';
+            document.getElementById('fleetTotalNetProfit').textContent = (totals.total_net_profit ?? '0') + ' koin';
+            renderGrowthBadge('fleetNetGrowth', totals.profit_growth);
             document.getElementById('fleetTotalTrips').textContent = totals.total_trips ?? 0;
             document.getElementById('fleetCountAccounts').textContent = accounts.length + ' akun';
             document.getElementById('fleetCountWorkers').textContent = (totals.active_workers ?? 0) + ' dari ' + accounts.length;
@@ -1689,8 +1738,14 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
             const sum = data.summary || {{}};
             const snap = data.snapshot || {{}};
+            const fin = data.finance || {{}};
             document.getElementById('statusTitle').textContent = sum.status_text || 'Status belum tersedia';
             document.getElementById('walletVal').textContent = formatCoin(sum.wallet);
+            document.getElementById('accProfitVal').textContent = (fin.today_income ?? '0') + ' koin';
+            renderGrowthBadge('accProfitGrowth', fin.income_growth);
+            document.getElementById('accExpenseVal').textContent = (fin.today_expenses ?? '0') + ' koin';
+            document.getElementById('accNetProfitVal').textContent = (fin.today_net_profit ?? '0') + ' koin';
+            renderGrowthBadge('accNetGrowth', fin.profit_growth);
             document.getElementById('tripsVal').textContent = sum.trips ?? '—';
             document.getElementById('presenceVal').textContent = sum.online ? 'Online di game' : 'Offline di game';
 
@@ -1808,6 +1863,49 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             if (stuckBanner) stuckBanner.style.display = hasStuck ? 'flex' : 'none';
             const btnSkip = document.getElementById('btnSkipActions');
             if (btnSkip) btnSkip.style.display = hasStuck ? 'inline-block' : 'none';
+
+            // Riwayat Pengeluaran
+            const expenseList = document.getElementById('expenseList');
+            const expenseBadge = document.getElementById('expenseTodayTotal');
+            if (expenseBadge) {{
+                expenseBadge.textContent = fin.today_expenses && fin.today_expenses !== '0' ? `Total hari ini: -${{fin.today_expenses}} koin` : '';
+            }}
+            if (expenseList) {{
+                const history = fin.expense_history || [];
+                if (!history.length) {{
+                    expenseList.innerHTML = '<div class="empty-state" style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 13px;">Belum ada riwayat pengeluaran.</div>';
+                }} else {{
+                    const catIcons = {{
+                        bensin: '⛽',
+                        bengkel: '🔧',
+                        makan: '🍲',
+                        pulsa: '📱',
+                        kuota: '📱',
+                        kebun: '🌱',
+                        kuliah: '🎓',
+                        perpus: '📚',
+                    }};
+                    expenseList.innerHTML = history.map(item => {{
+                        const icon = catIcons[item.category] || '💸';
+                        const catName = escapeHtml(item.category || 'Biaya');
+                        const itemName = escapeHtml(item.item_name || 'Pengeluaran');
+                        const timeStr = escapeHtml(item.time_display || '');
+                        const amountStr = escapeHtml(item.amount || '0');
+                        return `<div class="expense-item" style="display: flex; justify-content: space-between; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--border); font-size: 13px;">
+                            <div style="display: flex; align-items: center; gap: 10px; min-width: 0;">
+                                <span style="font-size: 18px; flex-shrink: 0;">${{icon}}</span>
+                                <div style="min-width: 0;">
+                                    <div style="font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${{itemName}}</div>
+                                    <div style="font-size: 11px; color: var(--text-muted);">${{catName}} • ${{timeStr}}</div>
+                                </div>
+                            </div>
+                            <div style="font-weight: 700; color: #ef4444; white-space: nowrap; margin-left: 12px; font-variant-numeric: tabular-nums;">
+                                -${{amountStr}} koin
+                            </div>
+                        </div>`;
+                    }}).join('');
+                }}
+            }}
         }}
 
         async function skipStuckActions() {{
