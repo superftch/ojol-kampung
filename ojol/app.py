@@ -7,6 +7,7 @@ import signal
 
 from .controller import Controller, StopRequested
 from .healing import write_private
+from .http_api import HttpCoreError
 from .journal import Journal
 from .models import now
 from .planner import next_step

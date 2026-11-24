@@ -764,3 +764,38 @@ async def test_claim_failure_retries_and_defines_error_after_three_strikes(setti
         assert "payout/receipt" in last_error["message"]
         assert "solusi" in last_error["tindakan"].lower() or "periksa" in last_error["tindakan"].lower()
 
+
+async def test_run_worker_skips_unresolved_on_reconciliation_failed(settings, state, monkeypatch):
+    import ojol.app as app
+
+    settings = settings.model_copy(update={"env": "local"})
+    before, after = claim_states(state)
+    with closing(Journal(settings.runtime_dir)) as journal:
+        old_run = journal.start(settings)
+        action = journal.begin(old_run, "complete", before, {})
+        journal.settle(action, False)
+        assert len(journal.unresolved()) == 1
+
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(return_value=after),
+        check_cancel=lambda: None,
+    )
+    monkeypatch.setattr(
+        app,
+        "wait_until_resolved",
+        AsyncMock(side_effect=HttpCoreError("Reconciliation failed", category="reconciliation_failed")),
+    )
+    monkeypatch.setattr(app.Controller, "run", AsyncMock())
+
+    stop_file = settings.runtime_dir / "STOP"
+    stop_file.touch()
+
+    cancel = asyncio.Event()
+    await app.run_worker(ui, settings, live=True, cancel=cancel)
+
+    assert not stop_file.exists()
+    with closing(Journal(settings.runtime_dir)) as journal:
+        assert len(journal.unresolved()) == 0
+        assert journal.history()["actions"][0]["status"] == "skipped"
+
+

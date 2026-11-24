@@ -27,6 +27,7 @@ from .cleanup import find_unvisited, scan
 from .cli import exclusive_lock, running
 from .config import load_settings
 from .finance import WIB, report_date
+from .healing import write_private
 from .http_api import HttpCoreError, OjolHttpApi
 from .identity import cached_profile
 from .journal import Journal, unresolved_action

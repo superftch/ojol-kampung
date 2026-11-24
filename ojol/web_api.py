@@ -905,7 +905,6 @@ def register_web_routes(app, settings, manager=None, service=None):
 
         # Read last logs from history or journal or status
         logs = []
-        from datetime import datetime
         from .finance import WIB
 
         def format_log_time(t_raw):
@@ -1048,7 +1047,6 @@ def register_web_routes(app, settings, manager=None, service=None):
     async def download_extension_zip():
         import io
         import zipfile
-        from pathlib import Path
 
         from fastapi.responses import Response
 
@@ -1518,7 +1516,7 @@ def register_web_routes(app, settings, manager=None, service=None):
     @app.get("/api/bank-angka")
     async def get_bank_angka(request: Request, user: dict = Depends(require_user)):
         fleet_dirs, acc_names = get_all_fleet_directories()
-        from .svg_captcha_solver import get_bank_templates, get_all_pending_reviews
+        from .svg_captcha_solver import get_all_pending_reviews, get_bank_templates
 
         raw_templates = get_bank_templates(fleet_dirs)
         formatted_templates = {}
@@ -1582,6 +1580,7 @@ def register_web_routes(app, settings, manager=None, service=None):
         retried_accounts = []
         try:
             from pathlib import Path
+
             from .auto_settings import set_auto_flag
             from .management import running
 
