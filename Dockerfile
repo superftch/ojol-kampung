@@ -27,4 +27,4 @@ ENV UV_PYTHON_DOWNLOADS=never
 COPY tests ./tests
 COPY scripts/test.py ./scripts/test.py
 RUN pip install --no-cache-dir uv==0.11.6 && uv sync --frozen --no-cache && python scripts/test.py --prepare && chmod -R a+rX tests scripts && mkdir -p .local/testing && chown -R app:app .local .env.testing
-RUN uv run ruff check . && uv run ruff format --check . && gosu app python scripts/test.py -o cache_dir=/app/.local/testing/pytest-cache
+RUN uv run ruff check . && uv run ruff format --check . && uv run ty check --python /app/.venv/bin/python ojol main.py scripts tests && gosu app python scripts/test.py -o cache_dir=/app/.local/testing/pytest-cache

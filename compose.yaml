@@ -92,35 +92,7 @@ services:
         max-size: "10m"
         max-file: "3"
     stop_grace_period: 60s
-  telegram-bot:
-    profiles: ["disabled"]
-    build:
-      context: .
-      target: runtime
-    image: kampung-ojol:local
-    init: true
-    restart: unless-stopped
-    network_mode: service:warp
-    depends_on:
-      app:
-        condition: service_healthy
-    command: ["python", "-m", "ojol.telegram_login_bot"]
-    volumes:
-      - state:/data
-    secrets:
-      - ojol_env
-    mem_limit: 512m
-    cpus: 0.5
-    cap_drop: [ALL]
-    cap_add: [CHOWN, FOWNER, SETUID, SETGID, DAC_OVERRIDE]
-    security_opt:
-      - no-new-privileges:true
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-    stop_grace_period: 15s
+
 volumes:
   state:
   warp-state:

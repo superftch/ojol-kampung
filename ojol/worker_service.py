@@ -17,10 +17,11 @@ from uuid import uuid4
 
 from .accounts import Accounts
 from .auto_settings import auto_flags
-from .cli import running
 from .config import load_settings
+from .locks import running
 from .maintenance import SCHEDULE_FILE, held_window
 from .models import ROOT, Settings
+from .storage import write_private
 
 logger = logging.getLogger("ojol.worker")
 SOCKET_NAME = "worker.sock"
@@ -86,7 +87,7 @@ async def send_worker_command(
         req_file = cmds_dir / f"{cmd_id}.json"
         res_file = cmds_dir / f"{cmd_id}.done"
         try:
-            req_file.write_text(json.dumps(command))
+            write_private(req_file, command)
             for _ in range(int(timeout * 10)):
                 if res_file.is_file():
                     try:
@@ -294,14 +295,14 @@ class WorkerService:
                 err_resp = {"ok": False, "error": str(exc)}
                 writer.write((json.dumps(err_resp) + "\n").encode())
                 await writer.drain()
-            except Exception:
-                pass
+            except OSError as write_error:
+                logger.debug("Could not send worker IPC error (%s)", type(write_error).__name__)
         finally:
             writer.close()
             try:
                 await writer.wait_closed()
-            except Exception:
-                pass
+            except OSError as close_error:
+                logger.debug("Could not close worker IPC socket (%s)", type(close_error).__name__)
 
     async def _supervise_loop(self):
         commands_dir = get_commands_dir(self.runtime_dir)
@@ -311,15 +312,25 @@ class WorkerService:
             # 1. Process file-based commands if any
             for path in sorted(commands_dir.glob("*.json")):
                 try:
-                    data = json.loads(path.read_text())
-                    resp = await self.handle_request(data)
-                    done_file = path.with_suffix(".done")
-                    done_file.write_text(json.dumps(resp))
+                    raw = path.read_text()
+                    path.unlink()
+                except FileNotFoundError:
+                    continue
+                except OSError as exc:
+                    logger.warning(
+                        "Could not consume file-based worker command (%s)", type(exc).__name__
+                    )
+                    continue
+                try:
+                    response = await self.handle_request(json.loads(raw))
                 except Exception as exc:
-                    err_file = path.with_suffix(".done")
-                    err_file.write_text(json.dumps({"ok": False, "error": str(exc)}))
-                finally:
-                    path.unlink(missing_ok=True)
+                    response = {"ok": False, "error": str(exc)}
+                try:
+                    write_private(path.with_suffix(".done"), response)
+                except OSError as exc:
+                    logger.warning(
+                        "Could not finish file-based worker command (%s)", type(exc).__name__
+                    )
 
             # 2. Clean finished worker references
             for acc_key, proc in list(self.workers.items()):

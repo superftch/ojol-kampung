@@ -1,6 +1,6 @@
 # Ojol KampungSebelah
 
-Automation Ojol multi-account dengan **adapter HTTP langsung (tanpa ADK/MCP)** dan **Fully Web Dashboard**. Antarmuka dikendalikan penuh melalui browser di port `6080` (`/` dan `/login`), dengan sistem autentikasi mandiri, feed notifikasi in-app, kontrol worker, serta manajemen user multi-akun. Bot Telegram dinonaktifkan.
+Automation Ojol multi-account dengan **adapter HTTP langsung (tanpa ADK/MCP)** dan **Fully Web Dashboard**. Antarmuka dikendalikan penuh melalui browser di port `6080` (`/` dan `/login`), dengan sistem autentikasi mandiri, feed notifikasi in-app, kontrol worker, serta manajemen user multi-akun.
 
 - Default **3 akun per user**, **3 worker aktif global**; admin dapat mengubahnya melalui panel web tanpa restart.
 - **1 akun = 1 subprocess worker** di container `worker` terpisah dari web app. Keduanya berbagi volume state; update app tidak me-restart container worker.
@@ -56,7 +56,7 @@ Contoh jadwal maintenance `2026-11-12 00:30 / 2026-11-12 01:30`. Jadwal berlaku 
 
 Tambah Akun langsung menyiapkan link impor cookie, tanpa meminta nama. Slot yang belum selesai diimpor dipakai ulang saat menekan Tambah Akun lagi. Setelah cookie terverifikasi, nama diambil dari `profile.nickname` pada GET profil yang sama dengan pemeriksaan saldo. Akun lama diperbarui dari cache profil worker atau GET ulang saat membuka Akun Saya. Jika game tidak bisa dibaca, nama terakhir terverifikasi dipertahankan. Nama manual tidak lagi ditawarkan; perubahan nickname di game mengikuti profil terbaru yang terverifikasi. Cookie tetap privat dan tidak masuk registry.
 
-Pesan Telegram memakai judul singkat, baris terpisah untuk angka penting, dan petunjuk tindakan berikutnya. Notifikasi ON mengirim hasil trip, pembelian yang sudah terverifikasi, serta jeda maintenance. Bot tetap mengirim pesan jika perlu tindakan saat notifikasi rutin OFF. Antrean lama juga disesuaikan saat dikirim ulang. Rujukan penulisan memakai [Telegram Bot Guidelines](https://core.telegram.org/bots/guidelines) dan [Material Communication Principles](https://codelabs.developers.google.com/codelabs/material-communication-guidance).
+Tab **Notifikasi** menampilkan pembelian terverifikasi, hasil trip, maintenance, dan error per akun. Admin dapat membuka feed seluruh akun.
 
 **Status** menampilkan snapshot terbaru yang dibaca worker atau rekonsiliasi, lengkap dengan waktu update WIB. Ringkasan trip dan pendapatan mengikuti penghitung game pada hari snapshot; lima receipt terbaru berasal dari riwayat yang disediakan game. Angka sesi bot ditampilkan terpisah. Menu juga menampilkan rumah/desa, trip dan perkiraan tiba, seluruh kebutuhan, ON/OFF tiap fitur, batas sesi, jadwal maintenance, serta metadata kedaluwarsa cookie bila tersedia. Membuka menu tidak mengirim transaksi ke game atau menampilkan nilai cookie.
 
@@ -72,17 +72,21 @@ Kunjungan belajar mempunyai cooldown lokal minimal satu hari, ditambah `nextAt` 
 
 **Cari Rumah Mampir** membaca rumah warga di blok rumah akun dan delapan blok tetangga yang tersedia. Rumah sendiri, plot kosong dan rumah yang tidak aktif dikecualikan. Kandidat diacak, lalu harus lolos dua pemeriksaan API: `visitedToday: false` dan akses lihat rumah diterima server saat ini. Rumah tutup atau yang menolak akses tamu dilewati. Jam menerima tamu mengikuti keputusan server untuk rumah tersebut, tanpa mengasumsikan semua rumah buka 06.00–21.00 WIB. Hasil menampilkan nama warga, ID rumah, koordinat, dan status menerima tamu saat diperiksa. Kriteria belum dikunjungi mengikuti hari game, bukan seluruh riwayat akun. Pencarian tidak mengirim kunjungan, tidak memulai worker atau tunnel, dan diblokir saat maintenance. Jika belum selesai dalam 12 detik, bot meminta pencarian diulang tanpa menganggap semua rumah sudah dikunjungi atau tutup.
 
-Import hanya menerima cookie sesi `__Secure-better-auth.session_token` milik `www.kampungsebelah.com`, sebagai nilai atau JSON cookie. Cookie tidak dikirim melalui Telegram/argv/log. Link HTTPS sekali pakai berlaku 15 menit, memakai cookie HttpOnly dengan path akun dan CSRF terikat sesi. Kandidat sesi diverifikasi lewat adapter HTTP lalu dipasang atomik; kegagalan tidak mengganti sesi lama. Nama akun ditampilkan pada form supaya tujuan import jelas.
+Import hanya menerima cookie sesi `__Secure-better-auth.session_token` milik `www.kampungsebelah.com`, sebagai nilai atau JSON cookie. Cookie hanya disimpan di runtime akun dan disamarkan di log. Link HTTPS sekali pakai berlaku 15 menit, memakai cookie HttpOnly dengan path akun dan CSRF terikat sesi. Kandidat sesi diverifikasi lewat adapter HTTP lalu dipasang atomik; kegagalan tidak mengganti sesi lama. Nama akun ditampilkan pada form supaya tujuan import jelas.
 
-Jika JSON cookie menyertakan waktu kedaluwarsa, bot memeriksanya sebelum mulai dan sebelum request berikutnya. Nilai cookie tanpa metadata diperiksa lewat respons server. Jika sesi ditolak atau kedaluwarsa, akun berhenti dan Telegram meminta login ulang, dengan tombol **Login ulang ke game** dan **Import Cookie** untuk akun yang bermasalah. Login di game, impor cookie baru lewat formulir, lalu tekan **Jalankan Ojol**.
+Jika JSON cookie menyertakan waktu kedaluwarsa, bot memeriksanya sebelum mulai dan sebelum request berikutnya. Nilai cookie tanpa metadata diperiksa lewat respons server. Jika sesi ditolak atau kedaluwarsa, worker berhenti dan dashboard menampilkan petunjuk login ulang dan impor cookie untuk akun yang bermasalah. Login di game, impor cookie baru lewat formulir, lalu tekan **Jalankan Ojol**.
+
+Pengguna masuk dengan username dan password. Akun web pertama menjadi admin pada instalasi kosong. Admin dapat meninjau pendaftaran, mencabut akses, mengatur batas akun, dan menjadwalkan maintenance dari tab **Admin**. Laporan per tanggal dan pencarian rumah tersedia pada akun yang dipilih.
+
+Untuk user lama yang sebelumnya hanya masuk lewat bot, operator server dapat memulihkan password web dengan `python -m ojol.control set-web-password USERNAME`. Perintah meminta password lewat prompt dan mencabut sesi sebelumnya. ID kepemilikan lama tetap dipakai untuk akun yang sudah tertaut ke pengguna web.
 
 ## Development lokal
 
-Gunakan [panduan Docker lokal dan bot Telegram development](docs/local-development.md) untuk pengujian sebelum deploy. Compose lokal memakai port 6081 dan volume development sendiri.
+Gunakan [panduan Docker lokal](docs/local-development.md) untuk pengujian sebelum deploy. Compose lokal memakai port 6081 dan volume development sendiri.
 
 ## Deploy dan upgrade
 
-Prasyarat: Linux amd64/arm64, Docker Engine + Compose, `/dev/net/tun`, Cloudflare Zero Trust, koneksi game/Telegram, dan domain Cloudflare. Production memakai Cloudflare Mesh pada Free plan untuk merutekan egress container melalui Cloudflare. Host dengan sedikitnya 4 vCPU dan 4 GiB RAM direkomendasikan Cloudflare untuk Mesh; container app tetap dibatasi 2 CPU / 2 GiB RAM.
+Prasyarat: Linux amd64/arm64, Docker Engine + Compose, `/dev/net/tun`, Cloudflare Zero Trust, koneksi game, dan domain Cloudflare. Production memakai Cloudflare Mesh pada Free plan untuk merutekan egress container melalui Cloudflare. Host dengan sedikitnya 4 vCPU dan 4 GiB RAM direkomendasikan Cloudflare untuk Mesh; container app tetap dibatasi 2 CPU / 2 GiB RAM.
 
 ```sh
 git clone git@github.com:superftch/ojol-kampung.git
@@ -93,7 +97,7 @@ mkdir -p .secrets
 chmod 700 .secrets
 ```
 
-Di Cloudflare Zero Trust → **Networking → Mesh → Add node**, buat node Docker Compose dan simpan token-nya sebagai `.secrets/cloudflare-mesh-token` dengan mode `0600`. Cloudflare Mesh tersedia di Free plan (beta). Container app berbagi network namespace dengan node WARP; semua egress dari app, termasuk API game, Telegram, dan cloudflared, lewat Cloudflare. Egress default berbagi pool IP Cloudflare; ini **tidak memberi IP publik unik per akun**. [Panduan Mesh Docker](https://developers.cloudflare.com/mesh/guides/run-mesh-in-containers/) · [Free plan](https://developers.cloudflare.com/mesh/platform/).
+Di Cloudflare Zero Trust → **Networking → Mesh → Add node**, buat node Docker Compose dan simpan token-nya sebagai `.secrets/cloudflare-mesh-token` dengan mode `0600`. Cloudflare Mesh tersedia di Free plan (beta). Container app berbagi network namespace dengan node WARP; semua egress dari app, termasuk API game dan cloudflared, lewat Cloudflare. Egress default berbagi pool IP Cloudflare; ini **tidak memberi IP publik unik per akun**. [Panduan Mesh Docker](https://developers.cloudflare.com/mesh/guides/run-mesh-in-containers/) · [Free plan](https://developers.cloudflare.com/mesh/platform/).
 
 Isi `.env` di server; jangan commit:
 
@@ -134,7 +138,7 @@ Set `OJOL_AUTO_START=false` di `.env` lalu recreate untuk mematikan seluruh auto
 
 Startup tetap memeriksa izin operator, whitelist, cookie dan kapasitas. Worker mencocokkan riwayat game dan menyelesaikan ledger pending/uncertain otomatis sebelum membuka sesi baru. Hasil yang belum pasti diperiksa otomatis maksimal 3 kali per proses rekonsiliasi, dengan jeda 10 detik dan tanpa mengirim ulang transaksi. Jika percobaan ketiga belum berhasil, worker dihentikan sebagai gagal dan pemilik akun menerima notifikasi, termasuk saat notifikasi rutin OFF. Hasil transaksi tetap tersimpan sebagai belum pasti, tanpa pembukuan biaya/pendapatan yang belum terbukti. **Setiap boot membuka sesi baru setelah rekonsiliasi:** batas belanja/trip/durasi dari env dihitung ulang per sesi, sedangkan saldo minimum production20 tetap berlaku. Marker `worker-restart.json` dari versi lama tidak lagi dipakai.
 
-Telegram memberi tahu pemilik akun saat worker aktif dihentikan oleh shutdown normal, termasuk saat container worker di-rebuild. Update app tidak menghentikan worker. Jika pengiriman tertunda, antrean lokal dilanjutkan setelah boot worker. Notifikasi auto-start berhasil dikirim setelah worker membaca status game dan bisa lanjut. Bot memberi kabar saat perlu menunggu rekonsiliasi dan saat sudah bisa melanjutkan. Jika perlu tindakan karena sesi habis atau bot dihentikan, pesan menyebut **Import Cookie** atau **Jalankan Ojol**. Notifikasi ini tetap aktif saat notifikasi rutin OFF.
+Dashboard mencatat startup worker, jeda rekonsiliasi, hasil pemulihan, dan sesi game yang perlu diperbarui di tab **Notifikasi**.
 
 Jika connector keluar, seluruh worker dihentikan dan admin diberi laporan `tunnel.process_exit`; tombol Import Cookie/Jalankan Ojol mencoba memulai connector lagi. `/health` membuktikan control service hidup, bukan keberhasilan game atau koneksi edge. Readiness connector:
 
@@ -146,7 +150,7 @@ docker compose exec -u app app python -c "import urllib.request; print(urllib.re
 
 Volume `state`: `runtime/accounts.sqlite3` menyimpan whitelist/kuota/ownership; akun baru berada di `runtime/accounts/<ID>/`; **Utama** memakai `runtime/`. Setiap direktori akun memiliki cookie0600, ledger SQLite WAL, status, lock worker dan outbox notifikasi. Delivery `.sent`/`.muted` kedaluwarsa setelah7hari; event/ledger dan notifikasi pending tetap tersimpan.
 
-Notifikasi error selalu aktif, termasuk saat notifikasi rutin OFF. Pesan memuat detail penyebab (cookie/token/password disamarkan), aktivitas yang gagal, langkah pemulihan, dan ID unik `OJL-...`; ID yang sama tersimpan pada log JSON `event: error`, `last-error.json`, dan outbox akun. Pengiriman ulang mempertahankan ID. Status menampilkan ID error terbaru saat worker berhenti. Error pencarian rumah juga dilaporkan dengan ID, tanpa menghentikan worker Ojol. Gangguan sementara Telegram (koneksi/timeout, respons rusak, HTTP 429 atau 5xx) dicoba ulang setiap 15 detik tanpa menghentikan worker; pesan tetap diantrekan untuk dikirim setelah koneksi pulih. Log mencatat metode API, jenis exception, dan status HTTP bila tersedia, tanpa token. Penolakan permanen seperti HTTP 401/403/409 tetap menghentikan worker dan perlu diperiksa operator.
+Notifikasi error memuat penyebab yang disamarkan, langkah pemulihan, dan ID `OJL-...`. ID yang sama tersedia di log JSON, `last-error.json`, dan feed notifikasi akun.
 
 **Notifikasi OFF hanya mematikan kabar rutin trip dan pembelian.** Maintenance mulai/selesai, aplikasi ditutup/kembali aktif saat startup atau restart Docker, serta karakter tidur/bangun tetap dikirim. Kabar tidur dikirim sekali saat memasuki tidur, bukan pada setiap pemeriksaan berkala. Notifikasi aplikasi kembali aktif menandai proses persiapan; bot baru mengabarkan siap kembali setelah sesi dan status game terverifikasi.
 
@@ -222,7 +226,7 @@ Konfigurasi `OJOL_MIN_BALANCE=5` (default 5 koin) menerapkan mekanisme proteksi 
 
 
 
-Gunakan `list-accounts` untuk melihat nama dan ID akun yang belum diarsipkan. Salin ID ke `--account` untuk memilih akun di CLI. Hentikan worker akun dahulu sebelum inspect/reconcile. Shell server adalah akses operator tepercaya; gunakan Telegram untuk start dengan pengawasan kuota global.
+Gunakan `list-accounts` untuk melihat nama dan ID akun yang belum diarsipkan. Salin ID ke `--account` untuk memilih akun di CLI. Hentikan worker akun dahulu sebelum inspect/reconcile. Shell server adalah akses operator tepercaya; mulai worker dari dashboard supaya batas worker global diterapkan.
 
 Penolakan lock atau kegagalan perintah CLI di luar sesi `run --live` tidak memasang `STOP`. Notifikasi tetap memuat ID error dan akun dari `--account`; konteks aksi hanya diambil dari status milik proses CLI yang sama, agar tidak mengaitkan error inspeksi ke transaksi worker lain.
 
@@ -277,4 +281,4 @@ docker build --target test -t ojol-kampung:test .
 
 `.env.testing` wajib lokal dan diabaikan Git, termasuk dummy. Runner memuatnya eksplisit, membuang override shell, mengisolasi HOME/tmp/cache/SQLite, dan memblokir jaringan; tidak membaca `.env`. Test stage Docker menyiapkan file testing sendiri tanpa secret/volume akun.
 
-[Arsitektur dan keputusan worker](docs/architecture.md) · [Endpoint HTTP](docs/http-endpoints.md) · [Telegram Bot API](https://core.telegram.org/bots/api)
+[Arsitektur dan keputusan worker](docs/architecture.md) · [Endpoint HTTP](docs/http-endpoints.md)

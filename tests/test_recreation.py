@@ -16,7 +16,7 @@ from ojol.shop_locations import RECREATION_FACILITIES_BY_VILLAGE
 
 
 def test_solve_foto_shots_centers_object_precisely():
-    periods = [1800, 2100, 2400]
+    periods = [1800.0, 2100.0, 2400.0]
     lead_ms = 600
     shots = solve_foto_shots(periods, lead_ms=lead_ms)
     assert len(shots) == 3

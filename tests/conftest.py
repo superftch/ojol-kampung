@@ -75,3 +75,11 @@ def shop_preview():
         )
 
     return make
+
+
+def seed_legacy_account(registry, owner: int = 111):
+    registry.set_owner_access(owner)
+    account = registry.create(owner, "Utama")
+    with registry.db() as db:
+        db.execute("UPDATE accounts SET legacy=1 WHERE id=?", (account["id"],))
+    return registry.get(account["id"])

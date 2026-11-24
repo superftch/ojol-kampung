@@ -229,7 +229,7 @@ async def test_garden_runs_in_controller_loop_harvest_then_care_then_cooldown(se
     set_auto_flag(settings.runtime_dir, "ojol", False)
     now_dt = datetime.now(timezone.utc)
     future_ready = (now_dt + timedelta(hours=6)).isoformat()
-    garden_obj = {
+    garden_obj: dict[str, str | int | None] = {
         "id": "garden-1",
         "kind": "kebun-sayur",
         "label": "Kebun sayur",

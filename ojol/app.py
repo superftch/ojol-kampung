@@ -6,12 +6,12 @@ import os
 import signal
 
 from .controller import Controller, StopRequested
-from .healing import write_private
 from .http_api import HttpCoreError
 from .journal import Journal
 from .models import now
 from .planner import next_step
 from .reconciliation import reconcile, wait_until_resolved
+from .storage import write_private
 from .ui import HttpUI
 
 
@@ -126,12 +126,12 @@ async def run_worker(ui, settings, live, cancel):
         controller.report("berhenti", reason=str(exc))
         journal.finish(run_id, "stopped")
     except BaseException as exc:
-        from .telegram import redact
+        from .notices import redact
 
         controller.report(
             "gagal",
             category=type(exc).__name__,
-            reason=redact(exc, settings),
+            reason=redact(exc),
             stage=controller.stage,
             last_action=controller.last_action,
         )

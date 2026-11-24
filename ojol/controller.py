@@ -1,8 +1,10 @@
 import asyncio
 import json
+import logging
 import os
 import random
 import re
+import sqlite3
 import time
 from datetime import timedelta
 from decimal import Decimal
@@ -12,18 +14,15 @@ from .auto_settings import auto_flags, set_auto_flag
 from .finance import completion_evidence
 from .garden import run_garden
 from .gym import run_gym
-from .http_api import HttpCoreError
 from .journal import load_journal_snapshot
 from .maintenance import SCHEDULE_FILE, held_window
-from .models import NEEDS, Step, now
+from .models import NEEDS, HttpCoreError, Resource, Snapshot, Step, StopRequested, now
+from .notices import event_text, queue_error, queue_notice, redact
 from .planner import is_sleeping, next_step, select_need, select_shop
 from .reconciliation import reconcile, wait_until_resolved
 from .study import run_learning
-from .telegram import queue_error, queue_notice
 
-
-class StopRequested(Exception):
-    pass
+logger = logging.getLogger(__name__)
 
 
 class VerificationPending(RuntimeError):
@@ -39,7 +38,7 @@ class Controller:
         self.started = time.monotonic()
         self.sleep_started = None
         self.started_at = now()
-        self.state = None
+        self.state: Snapshot | None = None
         self.snapshot_received_at = None
         self.snapshot_read_at = None
         self.last_event = None
@@ -176,26 +175,9 @@ class Controller:
         temporary.write_text(json.dumps(status, ensure_ascii=False, default=str, indent=2))
         temporary.chmod(0o600)
         temporary.replace(output)
-        from .telegram import (
-            MANDATORY_EVENTS,
-            event_text,
-            notifications_enabled,
-            queue_notice,
-            redact,
-        )
-
-        if event in MANDATORY_EVENTS or notifications_enabled(self.settings):
-            text = event_text(event, data)
-            if text:
-                queue_notice(
-                    self.settings,
-                    redact(text, self.settings),
-                    {
-                        "routine_event": event not in MANDATORY_EVENTS,
-                        "event": event,
-                        "run_id": self.run_id,
-                    },
-                )
+        text = event_text(event, data)
+        if text:
+            queue_notice(self.settings, redact(text), {"event": event, "run_id": self.run_id})
 
     async def wait(self, seconds):
         if self.state and self.state.sleep_schedule and self.snapshot_read_at is not None:
@@ -224,26 +206,34 @@ class Controller:
                 if hasattr(self.ui, "fetch_online_status"):
                     try:
                         await self.ui.fetch_online_status()
-                    except Exception:
-                        pass
+                    except (HttpCoreError, OSError, ValueError) as exc:
+                        logger.debug(
+                            "Could not refresh presence during wait (%s)", type(exc).__name__
+                        )
                 last_presence = time.monotonic()
         self.wait_until = None
 
-    async def read_snapshot(self):
+    @property
+    def observed_state(self) -> Snapshot:
+        if self.state is None:
+            raise HttpCoreError("Status game belum terbaca")
+        return self.state
+
+    async def read_snapshot(self) -> Snapshot:
         self.state = await self.ui.snapshot()
         self.snapshot_received_at = now().isoformat()
         self.snapshot_read_at = time.monotonic()
         self.journal.sync_game(self.state)
         self.observation_failures = 0
-        return self.state
+        return self.observed_state
 
     async def wait_for_wake(self):
-        if not is_sleeping(self.state):
+        if not is_sleeping(self.observed_state):
             return 0
         self.sleep_started = time.monotonic()
         try:
             self.report("tidur_mulai")
-            while is_sleeping(self.state):
+            while is_sleeping(self.observed_state):
                 await self.wait(self.settings.idle_poll_seconds)
                 await self.wait_for_maintenance()
                 self.check_cancel()
@@ -265,7 +255,7 @@ class Controller:
             if hasattr(self, "gym_retry_at") and self.gym_retry_at > 0:
                 self.gym_retry_at += paused
             self.sleep_started = None
-        self.report("bangun", phase=self.state.phase)
+        self.report("bangun", phase=self.observed_state.phase)
         return paused
 
     async def verify(self, predicate, timeout=12):
@@ -275,7 +265,7 @@ class Controller:
             state = await self.read_snapshot()
             if is_sleeping(state):
                 deadline += await self.wait_for_wake()
-                state = self.state
+                state = self.observed_state
             if predicate(state):
                 return state
             await asyncio.sleep(0.75)
@@ -641,13 +631,21 @@ class Controller:
                             self.claim_errors.pop(trip_key, None)
                             self.report("rekonsiliasi_selesai", action=kind)
                             return
-                    except Exception:
-                        pass
+                    except (
+                        HttpCoreError,
+                        sqlite3.Error,
+                        OSError,
+                        ValueError,
+                        VerificationPending,
+                    ) as error:
+                        logger.warning(
+                            "Could not reconcile claim %s (%s)", action, type(error).__name__
+                        )
                 if not is_verified:
                     try:
                         self.journal.skip(action)
-                    except Exception:
-                        pass
+                    except (sqlite3.Error, RuntimeError, ValueError) as error:
+                        logger.warning("Could not skip claim %s (%s)", action, type(error).__name__)
                     fail_count = self.claim_failures.get(trip_key, 0) + 1
                     self.claim_failures[trip_key] = fail_count
                     self.claim_errors[trip_key] = exc
@@ -717,8 +715,8 @@ class Controller:
                 if hasattr(self.ui, "fetch_online_status"):
                     try:
                         await self.ui.fetch_online_status()
-                    except Exception:
-                        pass
+                    except (HttpCoreError, OSError, ValueError) as exc:
+                        logger.debug("Could not refresh idle presence (%s)", type(exc).__name__)
                 await self.wait(self.settings.idle_poll_seconds)
                 continue
             self.stage = "observe.ojol"
@@ -775,26 +773,26 @@ class Controller:
             if (
                 previous
                 and previous.phase == "delivering"
-                and self.state.phase in {"idle", "sleeping"}
-                and self.state.history != previous.history
+                and self.observed_state.phase in {"idle", "sleeping"}
+                and self.observed_state.history != previous.history
             ):
                 self.completed += 1
-                amount = self.journal.observed_income(self.run_id, previous, self.state)
+                amount = self.journal.observed_income(self.run_id, previous, self.observed_state)
                 self.report(
                     "trip_selesai_otomatis_teramati",
                     income=amount,
-                    today_income=str(self.state.today_income),
-                    wallet=str(self.state.wallet),
+                    today_income=str(self.observed_state.today_income),
+                    wallet=str(self.observed_state.wallet),
                 )
                 continue
             is_ojol_maint = (
-                getattr(self.state, "ojol_maintenance", False)
+                getattr(self.observed_state, "ojol_maintenance", False)
                 or flags.get("ojol") == "maintenance"
                 or bool(window)
             )
             if (
                 not flags["ojol"] or flags.get("ojol") == "maintenance" or is_ojol_maint
-            ) and self.state.phase in {"idle", "sleeping"}:
+            ) and self.observed_state.phase in {"idle", "sleeping"}:
                 step = Step(
                     action="wait",
                     reason="Fitur Auto Ojol sedang maintenance."
@@ -803,36 +801,38 @@ class Controller:
                     wait_seconds=self.settings.idle_poll_seconds,
                 )
             else:
-                step = next_step(self.state, self.settings)
-            if self.state.phase != "searching":
+                step = next_step(self.observed_state, self.settings)
+            if self.observed_state.phase != "searching":
                 self.busy_since = None
             self.report(
                 "observasi",
-                phase=self.state.phase,
-                fuel=self.state.fuel,
-                condition=self.state.condition,
-                data=self.state.data,
-                needs=self.state.needs,
-                wallet=str(self.state.wallet),
+                phase=self.observed_state.phase,
+                fuel=self.observed_state.fuel,
+                condition=self.observed_state.condition,
+                data=self.observed_state.data,
+                needs=self.observed_state.needs,
+                wallet=str(self.observed_state.wallet),
                 next=step.action,
             )
             if dry_run:
                 self.report("dry_run", plan=step.model_dump(mode="json"))
                 return
-            if is_sleeping(self.state):
+            if is_sleeping(self.observed_state):
                 await self.wait_for_wake()
                 continue
             if (
                 flags["ojol"] is True
-                and self.state.phase == "idle"
-                and self.state.ojol_min_fuel is not None
-                and self.state.fuel < self.settings.threshold_for("fuel")
+                and self.observed_state.phase == "idle"
+                and self.observed_state.ojol_min_fuel is not None
+                and self.observed_state.fuel < self.settings.threshold_for("fuel")
             ):
-                vehicle = self.state.ojol_vehicle
+                vehicle = self.observed_state.ojol_vehicle
                 if vehicle and self.spbu_reminded_vehicle != vehicle:
                     self.spbu_reminded_vehicle = vehicle
-                    self.report("spbu_perlu_isi", vehicle=vehicle, fuel=self.state.fuel)
-            elif self.state.fuel >= self.settings.threshold_for("fuel") or not flags["ojol"]:
+                    self.report("spbu_perlu_isi", vehicle=vehicle, fuel=self.observed_state.fuel)
+            elif (
+                self.observed_state.fuel >= self.settings.threshold_for("fuel") or not flags["ojol"]
+            ):
                 self.spbu_reminded_vehicle = None
             if auto_start and step.action != "stop":
                 queue_notice(
@@ -855,76 +855,79 @@ class Controller:
                         wait_seconds=self.settings.idle_poll_seconds,
                     )
                 else:
-                    deferred = set()
+                    deferred: set[Resource] = set()
                     while step.action == "maintain":
+                        resource = step.resource
+                        if resource is None:
+                            raise ValueError("Resource pemeliharaan belum ditentukan")
                         try:
-                            if await self.purchase(self.state, step.resource):
+                            if await self.purchase(self.observed_state, resource):
                                 break
                         except RuntimeError as exc:
                             if flags.get("ojol") and self.handle_ojol_failure(exc):
                                 break
                             raise
-                        deferred.add(step.resource)
-                        step = next_step(self.state, self.settings, deferred=deferred)
+                        deferred.add(resource)
+                        step = next_step(self.observed_state, self.settings, deferred=deferred)
                     if step.action == "maintain":
                         continue
             if step.action == "stop":
                 if flags.get("ojol") and self.handle_ojol_failure(step.reason):
                     continue
                 raise RuntimeError(step.reason)
-            if self.state.phase == "idle" and (
+            if self.observed_state.phase == "idle" and (
                 step.action in {"search", "take"}
                 or (step.action == "wait" and step.resource == "fuel")
                 or not flags["ojol"]
                 or flags.get("ojol") == "maintenance"
                 or is_ojol_maint
-                or getattr(self.state, "ojol_resting", False)
-                or getattr(self.state, "ojol_shift_done", False)
-                or getattr(self.state, "ojol_maintenance", False)
+                or getattr(self.observed_state, "ojol_resting", False)
+                or getattr(self.observed_state, "ojol_shift_done", False)
+                or getattr(self.observed_state, "ojol_maintenance", False)
             ):
                 if flags.get("kesehatan") and hasattr(self.ui, "ensure_bpjs"):
                     try:
                         await self.ui.ensure_bpjs()
-                    except Exception:
-                        pass
+                    except (HttpCoreError, OSError, ValueError) as exc:
+                        logger.debug("Could not verify BPJS (%s)", type(exc).__name__)
                 if await run_gym(self):
                     continue
                 need = min(
                     (
                         need
-                        for need, value in self.state.needs.items()
+                        for need, value in self.observed_state.needs.items()
                         if flags[need]
                         and value < self.settings.threshold_for(need)
                         and time.monotonic() >= self.need_retry_at.get(need, 0)
                         and (
                             not flags["ojol"]
-                            or self.state.wallet >= Decimal(20)
+                            or self.observed_state.wallet >= Decimal(20)
                             or need
                             in {"fisik", "kesehatan", "makan", "kebersihan", "wc", "penampilan"}
                         )
                     ),
-                    key=self.state.needs.__getitem__,
+                    key=self.observed_state.needs.__getitem__,
                     default=None,
                 )
                 if need is not None:
                     try:
-                        purchased = await self.purchase(self.state, need)
+                        purchased = await self.purchase(self.observed_state, need)
                     except RuntimeError:
                         purchased = False
                     if not purchased and auto_flags(self.settings.runtime_dir)[need]:
                         self.need_retry_at[need] = time.monotonic() + 300
                     continue
-            if self.state.phase == "idle" and await run_gym(self):
+            if self.observed_state.phase == "idle" and await run_gym(self):
                 continue
-            if self.state.phase == "idle" and await run_learning(self):
+            if self.observed_state.phase == "idle" and await run_learning(self):
                 continue
-            if self.state.phase == "idle" and await run_garden(self):
+            if self.observed_state.phase == "idle" and await run_garden(self):
                 continue
             if step.action == "wait":
-                if self.state.phase in {"idle", "sleeping"}:
+                if self.observed_state.phase in {"idle", "sleeping"}:
                     await self.wait(step.wait_seconds)
                     continue
-                if self.state.phase == "searching":
+                if self.observed_state.phase == "searching":
                     if self.busy_since is None:
                         self.busy_since = time.monotonic()
                     if time.monotonic() - self.busy_since > 30:
@@ -936,8 +939,8 @@ class Controller:
                         raise exc
                     await self.wait(step.wait_seconds)
                     continue
-                if self.active_trip != self.state.trip:
-                    self.active_trip = self.state.trip
+                if self.trip_due is None or self.active_trip != self.observed_state.trip:
+                    self.active_trip = self.observed_state.trip
                     self.trip_due = time.monotonic() + step.wait_seconds
                 if time.monotonic() > self.trip_due + 90:
                     exc = RuntimeError(
@@ -952,7 +955,7 @@ class Controller:
             else:
                 self.active_trip = None
                 try:
-                    await self.job_action(self.state, step.action)
+                    await self.job_action(self.observed_state, step.action)
                 except Exception as exc:
                     if isinstance(exc, StopRequested):
                         raise

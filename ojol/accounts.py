@@ -4,8 +4,9 @@ import hashlib
 import json
 import re
 import sqlite3
-import time
 from contextlib import closing, contextmanager
+from decimal import Decimal
+from functools import cached_property
 from uuid import uuid4
 
 from .identity import cached_profile
@@ -16,7 +17,6 @@ DRAFT_NAME = "Menunggu cookie"
 class Accounts:
     def __init__(self, settings):
         self.settings = settings
-        self.admin = settings.telegram_chat_id
         settings.runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = settings.runtime_dir / "accounts.sqlite3"
         with self.db() as db:
@@ -32,31 +32,15 @@ class Accounts:
                     legacy INTEGER NOT NULL DEFAULT 0, cookie_hash TEXT UNIQUE
                 );
                 CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
-                CREATE TABLE IF NOT EXISTS access_requests (
-                    id TEXT PRIMARY KEY, telegram_id INTEGER NOT NULL UNIQUE,
-                    name TEXT NOT NULL, username TEXT NOT NULL, status TEXT NOT NULL,
-                    created REAL NOT NULL, decided_by INTEGER, decided_at REAL
-                );
             """)
             for col in ("name TEXT", "username TEXT"):
                 try:
                     db.execute(f"ALTER TABLE users ADD COLUMN {col}")
                 except sqlite3.OperationalError:
                     pass
-            if self.admin:
-                db.execute("INSERT OR IGNORE INTO users(telegram_id) VALUES(?)", (self.admin,))
-                if not db.execute("SELECT 1 FROM accounts WHERE legacy=1").fetchone():
-                    identifier = uuid4().hex
-                    db.execute(
-                        "INSERT INTO accounts(id,owner,name,legacy) VALUES(?,?,?,1)",
-                        (identifier, self.admin, "Utama"),
-                    )
-                    db.execute(
-                        "UPDATE users SET selected=? WHERE telegram_id=?", (identifier, self.admin)
-                    )
         self.path.chmod(0o600)
         self.apply_db_settings()
-        from .session_transfer import parse_cookie_input
+        from .cookies import parse_cookie_input
 
         for account in self.list() + self.list(archived=True):
             path = self.scoped_settings(account).runtime_dir / "http-session.json"
@@ -68,9 +52,12 @@ class Accounts:
                     raise ValueError(
                         "Sesi akun lama ambigu/duplikat; periksa sebelum startup"
                     ) from None
+
+    @cached_property
+    def web(self):
         from .web_auth import WebAuth
 
-        self.web = WebAuth(self)
+        return WebAuth(self)
 
     @contextmanager
     def db(self):
@@ -82,8 +69,6 @@ class Accounts:
     def allowed(self, owner):
         if type(owner) is not int or owner <= 0:
             return False
-        if owner == self.admin:
-            return True
         with self.db() as db:
             row = db.execute("SELECT enabled FROM users WHERE telegram_id=?", (owner,)).fetchone()
         return bool(row and row[0])
@@ -118,11 +103,7 @@ class Accounts:
                 val = raw_val
             if hasattr(self.settings, name):
                 try:
-                    if name == "telegram_bot_token":
-                        from pydantic import SecretStr
-
-                        setattr(self.settings, name, SecretStr(str(val or "")))
-                    elif name in {
+                    if name in {
                         "threshold",
                         "resource_reserve_percent",
                         "idle_poll_seconds",
@@ -138,9 +119,11 @@ class Accounts:
                         setattr(
                             self.settings,
                             name,
-                            float(val) if val is not None and str(val).strip() != "" else None,
+                            Decimal(str(val))
+                            if val is not None and str(val).strip() != ""
+                            else None,
                         )
-                    elif name in {"max_jobs", "max_minutes", "telegram_chat_id"}:
+                    elif name in {"max_jobs", "max_minutes"}:
                         setattr(
                             self.settings,
                             name,
@@ -150,26 +133,15 @@ class Accounts:
                         "smart_thresholds",
                         "auto_start",
                         "tunnel_enabled",
-                        "telegram_enabled",
                     }:
                         setattr(self.settings, name, bool(val))
                     elif name in {"ojol_mode", "login_public_url"}:
                         setattr(self.settings, name, str(val))
                 except Exception:
                     pass
-        if hasattr(self.settings, "telegram_chat_id"):
-            self.admin = self.settings.telegram_chat_id
 
     def get_all_settings(self) -> dict:
         self.apply_db_settings()
-        raw_token = ""
-        token_obj = getattr(self.settings, "telegram_bot_token", None)
-        if token_obj:
-            raw_token = (
-                token_obj.get_secret_value()
-                if hasattr(token_obj, "get_secret_value")
-                else str(token_obj)
-            )
         return {
             "threshold": getattr(self.settings, "threshold", 60),
             "smart_thresholds": getattr(self.settings, "smart_thresholds", True),
@@ -187,9 +159,6 @@ class Accounts:
             "auto_start": getattr(self.settings, "auto_start", True),
             "login_public_url": getattr(self.settings, "login_public_url", "http://localhost:6080"),
             "tunnel_enabled": getattr(self.settings, "tunnel_enabled", False),
-            "telegram_enabled": getattr(self.settings, "telegram_enabled", False),
-            "telegram_bot_token": raw_token,
-            "telegram_chat_id": getattr(self.settings, "telegram_chat_id", None),
         }
 
     def update_settings(self, updates: dict) -> dict:
@@ -208,19 +177,14 @@ class Accounts:
             "auto_start",
             "login_public_url",
             "tunnel_enabled",
-            "telegram_enabled",
-            "telegram_bot_token",
-            "telegram_chat_id",
         }
         with self.db() as db:
             for k, v in updates.items():
                 if k not in allowed:
                     continue
                 if v is None or (isinstance(v, str) and v.strip() == ""):
-                    if k in {"max_spend", "max_jobs", "max_minutes", "telegram_chat_id"}:
+                    if k in {"max_spend", "max_jobs", "max_minutes"}:
                         val = None
-                    elif k in {"telegram_bot_token"}:
-                        val = ""
                     else:
                         val = v
                 elif k in {
@@ -233,11 +197,11 @@ class Accounts:
                     val = int(v)
                 elif k in {"min_balance", "max_spend"}:
                     val = float(v)
-                elif k in {"max_jobs", "max_minutes", "telegram_chat_id"}:
+                elif k in {"max_jobs", "max_minutes"}:
                     val = int(v)
-                elif k in {"smart_thresholds", "auto_start", "tunnel_enabled", "telegram_enabled"}:
+                elif k in {"smart_thresholds", "auto_start", "tunnel_enabled"}:
                     val = bool(v)
-                elif k in {"ojol_mode", "login_public_url", "telegram_bot_token"}:
+                elif k in {"ojol_mode", "login_public_url"}:
                     val = str(v).strip()
                 else:
                     val = v
@@ -257,7 +221,7 @@ class Accounts:
     @staticmethod
     def owner_id(value):
         if not re.fullmatch(r"[0-9]{1,16}", str(value)) or int(value) <= 0:
-            raise ValueError("Kirim ID Telegram berupa angka positif.")
+            raise ValueError("ID pemilik harus berupa angka positif.")
         return int(value)
 
     def quota(self, owner, db=None):
@@ -267,23 +231,16 @@ class Accounts:
         row = db.execute("SELECT max_accounts FROM users WHERE telegram_id=?", (owner,)).fetchone()
         return row[0] if row and row[0] is not None else self.value("max_accounts_per_user", db)
 
-    def whitelist(self, owner, enabled=True, maximum=None, name=None, username=None, db=None):
+    def set_owner_access(
+        self, owner, enabled=True, maximum=None, name=None, username=None, db=None
+    ):
         owner = self.owner_id(owner)
-        if owner == self.admin and not enabled:
-            raise ValueError("Admin utama tidak bisa dicabut lewat bot.")
         maximum = self.limit(maximum) if maximum is not None else None
         if db is None:
             with self.db() as connection:
-                return self.whitelist(owner, enabled, maximum, name, username, connection)
+                return self.set_owner_access(owner, enabled, maximum, name, username, connection)
         name = name.strip() if isinstance(name, str) and name.strip() else None
         username = username.strip() if isinstance(username, str) and username.strip() else None
-        if not name and not username:
-            req = db.execute(
-                "SELECT name, username FROM access_requests WHERE telegram_id=?", (owner,)
-            ).fetchone()
-            if req:
-                name = req["name"] if req["name"] else None
-                username = req["username"] if req["username"] else None
         db.execute(
             "INSERT INTO users(telegram_id,enabled,max_accounts,name,username) VALUES(?,?,?,?,?) "
             "ON CONFLICT(telegram_id) DO UPDATE SET enabled=excluded.enabled, "
@@ -292,93 +249,6 @@ class Accounts:
             "username=COALESCE(excluded.username, users.username)",
             (owner, int(enabled), maximum, name, username),
         )
-        db.execute(
-            "UPDATE access_requests SET status=?,decided_by=?,decided_at=? WHERE telegram_id=?",
-            ("approved" if enabled else "rejected", self.admin, time.time(), owner),
-        )
-
-    def update_user_profile(self, owner, name=None, username=None):
-        owner = self.owner_id(owner)
-        name = name.strip() if isinstance(name, str) and name.strip() else None
-        username = username.strip() if isinstance(username, str) and username.strip() else None
-        if not name and not username:
-            return
-        with self.db() as db:
-            db.execute(
-                "UPDATE users SET "
-                "name = COALESCE(?, name), "
-                "username = COALESCE(?, username) "
-                "WHERE telegram_id = ?",
-                (name, username, owner),
-            )
-
-    def access_request(self, owner):
-        with self.db() as db:
-            row = db.execute(
-                "SELECT * FROM access_requests WHERE telegram_id=?", (owner,)
-            ).fetchone()
-        return dict(row) if row else None
-
-    def request_access(self, owner, name, username):
-        owner = self.owner_id(owner)
-        if self.allowed(owner):
-            raise ValueError("Akses pengguna ini sudah aktif.")
-        name = (
-            " ".join("".join(c for c in name if c.isprintable() or c.isspace()).split())[:128]
-            or "Tanpa nama"
-        )
-        username = username if re.fullmatch(r"[A-Za-z0-9_]{1,64}", username) else ""
-        with self.db() as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute(
-                "SELECT * FROM access_requests WHERE telegram_id=?", (owner,)
-            ).fetchone()
-            if row:
-                return dict(row), False
-            identifier = uuid4().hex
-            db.execute(
-                "INSERT INTO access_requests(id,telegram_id,name,username,status,created) VALUES(?,?,?,?,?,?)",
-                (identifier, owner, name, username, "pending", time.time()),
-            )
-            row = db.execute("SELECT * FROM access_requests WHERE id=?", (identifier,)).fetchone()
-        return dict(row), True
-
-    def access_requests(self):
-        with self.db() as db:
-            return [
-                dict(row)
-                for row in db.execute(
-                    "SELECT * FROM access_requests WHERE status='pending' ORDER BY created,id"
-                )
-            ]
-
-    def request_by_id(self, identifier):
-        with self.db() as db:
-            row = db.execute("SELECT * FROM access_requests WHERE id=?", (identifier,)).fetchone()
-        if not row:
-            raise ValueError("Pengajuan belum ditemukan. Buka daftar pengajuan kembali.")
-        return dict(row)
-
-    def review_request(self, identifier, admin, approve):
-        if not self.admin or admin != self.admin:
-            raise ValueError("Hanya admin yang bisa meninjau pengajuan.")
-        with self.db() as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute("SELECT * FROM access_requests WHERE id=?", (identifier,)).fetchone()
-            if not row or row["status"] != "pending":
-                raise ValueError(
-                    "Pengajuan sudah diproses atau belum tersedia. Buka daftar pengajuan kembali."
-                )
-            self.whitelist(
-                row["telegram_id"],
-                enabled=approve,
-                name=row["name"],
-                username=row["username"],
-                db=db,
-            )
-            return dict(
-                db.execute("SELECT * FROM access_requests WHERE id=?", (identifier,)).fetchone()
-            )
 
     def set_limit(self, name, value):
         if name not in {"max_accounts_per_user", "max_active_workers"}:
@@ -496,7 +366,6 @@ class Accounts:
         return self.settings.model_copy(
             update={
                 "runtime_dir": directory,
-                "telegram_chat_id": account["owner"],
                 "account_name": account["name"],
                 "tunnel_enabled": False,
             }
@@ -526,11 +395,7 @@ class Accounts:
             return [
                 dict(row)
                 for row in db.execute(
-                    "SELECT u.telegram_id, u.enabled, u.max_accounts, u.selected, "
-                    "COALESCE(NULLIF(u.name, ''), NULLIF(ar.name, ''), '') AS name, "
-                    "COALESCE(NULLIF(u.username, ''), NULLIF(ar.username, ''), '') AS username "
-                    "FROM users u "
-                    "LEFT JOIN access_requests ar ON u.telegram_id = ar.telegram_id "
-                    "ORDER BY u.telegram_id"
+                    "SELECT telegram_id AS owner, enabled, max_accounts, selected, name, username "
+                    "FROM users ORDER BY telegram_id"
                 )
             ]

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login · Kampung Ojol Automation</title>
+    <link rel="stylesheet" href="/ui/auth.css">
+    <link rel="stylesheet" href="/ui/console.css">
+</head>
+<body class="auth-page">
+    <div class="card">
+        <div class="logo">
+            __BRAND_MARK__
+            <h1>Kampung Ojol Automation</h1>
+            <p>Kelola akun dan aktivitas Ojol.</p>
+        </div>
+
+        __ERROR_ALERT__
+        __SUCCESS_ALERT__
+
+        <div>
+            <form action="/api/auth/login" method="POST">
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input type="text" id="username" name="username" required autocomplete="username" placeholder="Masukkan username">
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" name="password" required autocomplete="current-password" placeholder="Masukkan password">
+                </div>
+                <button type="submit" class="btn">Masuk</button>
+            </form>
+            <div class="footer-links">
+                Belum punya akun? <a href="/register">Daftar sekarang</a>
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>

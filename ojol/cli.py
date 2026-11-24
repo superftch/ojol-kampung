@@ -1,46 +1,23 @@
 import argparse
 import asyncio
-import fcntl
 import json
 import os
 import sqlite3
 import subprocess
 import sys
 import time
-from contextlib import closing, contextmanager
+from contextlib import closing
 from datetime import datetime
 from math import ceil
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from .config import load_settings
 from .finance import report_date
 from .journal import Journal
+from .locks import exclusive_lock, running
 from .models import ROOT, Settings, now
-
-
-@contextmanager
-def exclusive_lock(directory):
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with (directory / "run.lock").open("a") as handle:
-        try:
-            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError:
-            raise RuntimeError(
-                "Automation sudah berjalan. Gunakan status/stop; tidak membuka controller kedua."
-            ) from None
-        try:
-            yield
-        finally:
-            fcntl.flock(handle, fcntl.LOCK_UN)
-
-
-def running(directory):
-    try:
-        with exclusive_lock(directory):
-            return False
-    except RuntimeError:
-        return True
 
 
 def parser():
@@ -151,7 +128,9 @@ def main(argv=None):
             print(json.dumps(asyncio.run(read_cleanup()), ensure_ascii=False, indent=2))
         elif args.command == "status":
             path = directory / "status.json"
-            data = json.loads(path.read_text()) if path.is_file() else {"event": "belum dijalankan"}
+            data: dict[str, Any] = (
+                json.loads(path.read_text()) if path.is_file() else {"event": "belum dijalankan"}
+            )
             data["running"] = running(directory)
             journal = Journal(directory)
             try:
@@ -289,7 +268,7 @@ def main(argv=None):
 
         message = "Konfigurasi/state tidak valid" if isinstance(exc, ValidationError) else str(exc)
         if "settings" in locals() and settings.env != "testing":
-            from .telegram import flush_notices, queue_error, redact
+            from .notices import queue_error, redact
 
             status_path = settings.runtime_dir / "status.json"
             try:
@@ -323,10 +302,6 @@ def main(argv=None):
                 context,
                 stop_worker=owns_live_run,
             )
-            try:
-                asyncio.run(flush_notices(settings))
-            except Exception:
-                pass
-            message = redact(message, settings)
+            message = redact(message)
         print(f"Gagal: {message}", file=sys.stderr)
         return 2

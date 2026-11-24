@@ -8,17 +8,14 @@ from decimal import Decimal
 from pathlib import Path
 
 from .finance import completion_evidence
-from .healing import write_private
-from .http_api import HttpCoreError
-from .journal import load_journal_snapshot
-
-RESUME_BUTTON = {"inline_keyboard": [[{"text": "▶️ Lanjutkan", "callback_data": "resume"}]]}
+from .journal import Journal, load_journal_snapshot
 from .maintenance import SCHEDULE_FILE, held_window
-from .models import now
-from .telegram import queue_error, queue_notice
+from .models import HttpCoreError, Settings, Snapshot, now
+from .notices import queue_error, queue_notice
+from .storage import write_private
 
 
-def error_actions(journal, error_id):
+def error_actions(journal: Journal, error_id: str):
     error_id = error_id.upper()
     if not re.fullmatch(r"OJL-[0-9A-F]{12}", error_id):
         raise ValueError("ID error harus berformat OJL- diikuti 12 digit heksadesimal")
@@ -134,7 +131,9 @@ def report_action(journal, action, state, evidence, reason, error_id):
     return detail
 
 
-async def reconcile(ui, journal, error_id=None, action_id=None):
+async def reconcile(
+    ui, journal: Journal, error_id: str | None = None, action_id: int | None = None
+) -> Snapshot | None:
     if error_id and action_id is not None:
         raise ValueError("Pilih salah satu --error-id atau --action-id")
     error_id = error_id.upper() if error_id else None
@@ -411,6 +410,8 @@ async def reconcile(ui, journal, error_id=None, action_id=None):
             first = observed.model_dump(exclude=excluded)
             second = state.model_dump(exclude=excluded)
             changed = [key for key in first if first[key] != second[key]]
+            if evidence is None:
+                evidence = {}
             evidence["handoff_checks"] = {
                 "changed_fields": changed,
                 "observation_times": [
@@ -443,7 +444,7 @@ async def reconcile(ui, journal, error_id=None, action_id=None):
     return state
 
 
-async def wait_until_resolved(ui, journal, settings):
+async def wait_until_resolved(ui, journal: Journal, settings: Settings) -> Snapshot:
     waiting = False
     transport_outage = False
     limit = 6
@@ -481,7 +482,6 @@ async def wait_until_resolved(ui, journal, settings):
                 settings,
                 "🔒 Game sedang terbuka di tempat lain, jadi bot tidak bisa mencocokkan hasil.\n\n"
                 "Keluar dari game, lalu tekan tombol Lanjutkan untuk melanjutkan bot.",
-                reply_markup=RESUME_BUTTON,
             )
         path = settings.runtime_dir / "status.json"
         try:
@@ -537,3 +537,4 @@ async def wait_until_resolved(ui, journal, settings):
         for _ in range(60):
             ui.check_cancel()
             await asyncio.sleep(0.25)
+    raise RuntimeError("Rekonsiliasi berakhir tanpa snapshot")

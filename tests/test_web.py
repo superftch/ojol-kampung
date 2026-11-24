@@ -1,7 +1,4 @@
-import hashlib
-import hmac
 import json
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -14,32 +11,8 @@ from ojol.identity import save_profile
 from ojol.maintenance import MaintenanceWindow
 from ojol.management import MultiAccountService
 from ojol.session_transfer import parse_cookie_input
-from ojol.web_auth import hash_password, verify_password, verify_telegram_widget
+from ojol.web_auth import hash_password, verify_password
 from ojol.worker_service import WorkerService
-
-
-def make_tg_auth_data(
-    bot_token: str,
-    telegram_id: int,
-    username: str = "testuser",
-    first_name: str = "Test",
-    auth_date: int | None = None,
-) -> dict:
-    if auth_date is None:
-        auth_date = int(time.time())
-    data = {
-        "id": str(telegram_id),
-        "first_name": first_name,
-        "username": username,
-        "auth_date": str(auth_date),
-    }
-    data_check = sorted(f"{k}={v}" for k, v in data.items())
-    data_check_string = "\n".join(data_check)
-    secret_key = hashlib.sha256(bot_token.encode("utf-8")).digest()
-    data["hash"] = hmac.new(
-        secret_key, data_check_string.encode("utf-8"), hashlib.sha256
-    ).hexdigest()
-    return data
 
 
 def test_password_hashing():
@@ -49,24 +22,9 @@ def test_password_hashing():
     assert verify_password("wrongpass", salt, hashed) is False
 
 
-def test_telegram_widget_verification():
-    bot_token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
-    data = make_tg_auth_data(bot_token, 987654321)
-    assert verify_telegram_widget(data, bot_token) is True
-
-    # Tampered data
-    bad_data = dict(data, first_name="Hacker")
-    assert verify_telegram_widget(bad_data, bot_token) is False
-
-    # Expired data
-    old_data = make_tg_auth_data(bot_token, 987654321, auth_date=int(time.time()) - 90000)
-    assert verify_telegram_widget(old_data, bot_token) is False
-
-
 def test_web_auth_registration_approval_flow(settings):
-    # Setting with admin chat id and telegram enabled
-    admin_settings = settings.model_copy(update={"telegram_chat_id": 999, "telegram_enabled": True})
-    registry = Accounts(admin_settings)
+    registry = Accounts(settings)
+    admin = registry.web.register("web_admin", "admin-password")
 
     # 1. Register new user -> status pending
     user = registry.web.register("driver_budi", "password123", "Budi Santoso")
@@ -83,7 +41,7 @@ def test_web_auth_registration_approval_flow(settings):
         registry.web.authenticate_password("driver_budi", "wrongpass")
 
     # 4. Admin reviews and approves user
-    approved = registry.web.review_user(user["id"], 999, approve=True)
+    approved = registry.web.review_user(user["id"], admin["id"], approve=True)
     assert approved["status"] == "approved"
 
     # 5. Now can login
@@ -102,64 +60,13 @@ def test_web_auth_registration_approval_flow(settings):
     assert registry.web.get_user_by_session(token) is None
 
 
-def test_telegram_code_login_and_connect_flow(settings):
-    admin_settings = settings.model_copy(update={"telegram_chat_id": 111})
-    registry = Accounts(admin_settings)
-
-    # Allow a telegram user first in bot
-    registry.whitelist(222, enabled=True, name="Siti", username="siti_tg")
-
-    # 1. Telegram login code
-    code = registry.web.issue_telegram_login_code(222)
-    user = registry.web.authenticate_telegram_code(code)
-    assert user["telegram_id"] == 222
-    assert user["status"] == "approved"
-
-    # Re-using code fails
-    with pytest.raises(ValueError, match="Kode login tidak valid"):
-        registry.web.authenticate_telegram_code(code)
-
-    # 2. Register a web user, approve them, then connect Telegram
-    web_user = registry.web.register("joko_web", "passjoko123", "Joko")
-    registry.web.review_user(web_user["id"], 111, approve=True)
-
-    # Joko creates game accounts while still web-only
-    owner = registry.web.get_owner_for_user(web_user)
-    acc = registry.create(owner, "Akun Ojol Joko")
-    assert acc["owner"] == owner
-
-    # Joko issues a connect code to link with his Telegram (say ID 333)
-    link_code = registry.web.issue_telegram_link_code(web_user["id"])
-    linked_user = registry.web.consume_telegram_link_code(
-        link_code, 333, name="Joko Anwar", username="joko_tg"
-    )
-    assert linked_user["telegram_id"] == 333
-
-    # Verify accounts are now owned by 333
-    joko_accounts = registry.list(333)
-    assert len(joko_accounts) == 1
-    assert joko_accounts[0]["name"] == "Akun Ojol Joko"
-
-    # Disconnect Telegram
-    disconnected = registry.web.disconnect_telegram(web_user["id"])
-    assert disconnected["telegram_id"] is None
-    new_owner = registry.web.get_owner_for_user(disconnected)
-    assert len(registry.list(new_owner)) == 1
-
-
 def test_web_routes_and_dashboard_api(settings, monkeypatch):
-    admin_settings = settings.model_copy(
-        update={
-            "telegram_chat_id": 111,
-            "telegram_bot_token": "mock-token",
-            "telegram_enabled": True,
-        }
-    )
-    manager = MultiAccountService(admin_settings)
+    manager = MultiAccountService(settings)
+    admin = manager.registry.web.register("web_admin", "admin-password")
     manager.start = AsyncMock()
     manager.close = AsyncMock()
 
-    app = create_app(admin_settings, service=None)
+    app = create_app(settings, service=manager)
     with TestClient(app, base_url="http://localhost:6080") as client:
         # 1. Unauthenticated root redirects to /login
         res = client.get("/", follow_redirects=False)
@@ -195,7 +102,7 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
 
         # 6. Admin approves user
         user_id = reg_res.json()["user"]["id"]
-        manager.registry.web.review_user(user_id, 111, approve=True)
+        manager.registry.web.review_user(user_id, admin["id"], approve=True)
 
         # 7. Login after approval -> success with cookie
         login_ok = client.post(
@@ -331,11 +238,6 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
         assert mode_res.status_code == 200
         study_res = client.post("/api/control/study-subject", json={"subject": "teknik"})
         assert study_res.status_code == 200
-
-        # 14. Issue telegram connect code
-        conn_res = client.post("/api/auth/connect-telegram/issue-code")
-        assert conn_res.status_code == 200
-        assert "code" in conn_res.json()
 
         # Non-admin cannot access admin endpoints
         assert client.get("/api/admin/pending").status_code == 403
@@ -487,127 +389,9 @@ def test_web_run_respects_account_target_and_worker_capacity(admin_web, monkeypa
     spawn.assert_awaited_once()
 
 
-def test_telegram_widget_login_and_existing_accounts_merge(settings):
-    bot_token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
-    admin_settings = settings.model_copy(
-        update={"telegram_chat_id": 999, "telegram_bot_token": bot_token}
-    )
-    manager = MultiAccountService(admin_settings)
-    manager.start = AsyncMock()
-    manager.close = AsyncMock()
-
-    # Pre-existing Telegram user with game accounts
-    manager.registry.whitelist(555, enabled=True, name="Bambang TG", username="bambang555")
-    manager.registry.create(555, "Akun Motor Bambang")
-    manager.registry.create(555, "Akun Mobil Bambang")
-    assert len(manager.registry.list(555)) == 2
-
-    app = create_app(admin_settings, service=None)
-    with TestClient(app, base_url="http://localhost:6080") as client:
-        # A. Login directly via Telegram Widget
-        tg_data = make_tg_auth_data(bot_token, 555, username="bambang555", first_name="Bambang")
-        query_str = "&".join(f"{k}={v}" for k, v in tg_data.items())
-        res = client.get(f"/api/auth/telegram/callback?{query_str}", follow_redirects=False)
-        assert res.status_code == 303
-        assert "ojol_web_session" in client.cookies
-
-        # Dashboard now lists both pre-existing game accounts
-        dash_res = client.get("/api/dashboard")
-        assert dash_res.status_code == 200
-        accounts = dash_res.json()["accounts"]
-        account_names = [a["name"] for a in accounts]
-        assert "Akun Motor Bambang" in account_names
-        assert "Akun Mobil Bambang" in account_names
-
-        # Logout
-        client.post("/api/auth/logout")
-
-        # B. User created with username/password, then links existing Telegram account
-        reg_res = client.post(
-            "/api/auth/register",
-            json={"username": "bambang_web", "password": "bambangpass", "name": "Bambang Web"},
-        )
-        assert reg_res.status_code == 200
-        web_user_id = reg_res.json()["user"]["id"]
-        # Admin approves
-        manager.registry.web.review_user(web_user_id, 999, approve=True)
-
-        # Login with username/password
-        login_res = client.post(
-            "/api/auth/login",
-            json={"username": "bambang_web", "password": "bambangpass"},
-        )
-        assert login_res.status_code == 200
-
-        # Bambang generates link code from web
-        code_res = client.post("/api/auth/connect-telegram/issue-code")
-        assert code_res.status_code == 200
-        link_code = code_res.json()["code"]
-
-        # In bot, /connect <code_res>
-        manager.registry.web.consume_telegram_link_code(
-            link_code, 555, name="Bambang", username="bambang555"
-        )
-
-        # Now Web user bambang_web has access to his existing Telegram accounts!
-        dash_merged = client.get("/api/dashboard")
-        assert dash_merged.status_code == 200
-        merged_names = [a["name"] for a in dash_merged.json()["accounts"]]
-        assert "Akun Motor Bambang" in merged_names
-        assert "Akun Mobil Bambang" in merged_names
-
-
-def test_telegram_bot_commands_for_web_login_and_connect(settings):
-    bot_token = "123456:mock"
-    admin_settings = settings.model_copy(
-        update={"telegram_chat_id": 999, "telegram_bot_token": bot_token}
-    )
-    manager = MultiAccountService(admin_settings)
-    manager.reply = AsyncMock()
-
-    # Allow a user
-    manager.registry.whitelist(777, enabled=True, name="Dewi", username="dewi777")
-
-    # 1. Dewi types /web in bot
-    import asyncio
-
-    asyncio.run(manager.dispatch(777, "/web"))
-    assert manager.reply.called
-    reply_text = manager.reply.call_args.args[1]
-    assert "Kode login Anda:" in reply_text
-
-    # Extract code
-    import re
-
-    m = re.search(r"`(\d{6})`", reply_text)
-    assert m is not None
-    code = m.group(1)
-
-    # Dewi uses code on web
-    app = create_app(admin_settings, service=None)
-    with TestClient(app, base_url="http://localhost:6080") as client:
-        code_login = client.post("/api/auth/telegram-code", json={"code": code})
-        assert code_login.status_code == 200
-        assert code_login.json()["user"]["telegram_id"] == 777
-        assert "ojol_web_session" in client.cookies
-
-    # 2. Web user connects via /connect command in bot
-    web_user = manager.registry.web.register("dewi_portal", "dewipassword", "Dewi Portal")
-    manager.registry.web.review_user(web_user["id"], 999, approve=True)
-    link_code = manager.registry.web.issue_telegram_link_code(web_user["id"])
-
-    # Disconnect 777 first so it can link to dewi_portal
-    manager.registry.web.disconnect_telegram(code_login.json()["user"]["id"])
-
-    # Dewi sends /connect <link_code> to bot
-    asyncio.run(manager.dispatch(777, f"/connect {link_code}"))
-    connect_reply = manager.reply.call_args.args[1]
-    assert "berhasil dihubungkan" in connect_reply
-
-
 def test_web_first_user_is_admin_and_notifications_flow(settings):
     from ojol.control import create_app
-    from ojol.telegram import queue_notice
+    from ojol.notices import queue_notice
 
     app = create_app(settings, service=None)
     with TestClient(app, base_url="http://localhost:6080") as client:
@@ -664,83 +448,15 @@ def test_web_first_user_is_admin_and_notifications_flow(settings):
         assert target_notif2["read"] is True
 
 
-def test_telegram_login_prompts_setup_password_flow(settings):
-    from ojol.accounts import Accounts
-    from ojol.control import create_app
-
-    admin_settings = settings.model_copy(update={"telegram_chat_id": 999})
-    registry = Accounts(admin_settings)
-    registry.whitelist(888, enabled=True, name="Budi", username="budi_tg")
-    app = create_app(admin_settings, service=None)
-
-    with TestClient(app, base_url="http://localhost:6080") as client:
-        # 1. User arrives via telegram code
-        code = registry.web.issue_telegram_login_code(888)
-        login_res = client.post("/api/auth/telegram-code", json={"code": code})
-        assert login_res.status_code == 200
-        data = login_res.json()
-        assert data["setup_required"] is True
-        assert data["redirect"] == "/setup-password"
-        assert "ojol_web_session" in client.cookies
-
-        # 2. Accessing "/" should redirect to "/setup-password"
-        dash_res = client.get("/", follow_redirects=False)
-        assert dash_res.status_code == 303
-        assert dash_res.headers["location"] == "/setup-password"
-
-        # 3. Accessing "/setup-password" renders HTML form
-        setup_page = client.get("/setup-password")
-        assert setup_page.status_code == 200
-        assert "Buat Akun Web Anda" in setup_page.text
-
-        # 4. Submit setup password with mismatch confirm password
-        bad_sub = client.post(
-            "/api/auth/setup-password",
-            json={
-                "username": "driver_hebat",
-                "password": "mypassword123",
-                "confirm_password": "differentpassword",
-            },
-        )
-        assert bad_sub.status_code == 400
-
-        # 5. Submit valid credentials
-        good_sub = client.post(
-            "/api/auth/setup-password",
-            json={
-                "username": "driver_hebat",
-                "password": "mypassword123",
-                "confirm_password": "mypassword123",
-            },
-        )
-        assert good_sub.status_code == 200
-        assert good_sub.json()["user"]["username"] == "driver_hebat"
-        assert good_sub.json()["user"]["has_password"] == 1
-
-        # 6. Now accessing "/" succeeds and shows dashboard
-        dash_res2 = client.get("/", follow_redirects=False)
-        assert dash_res2.status_code == 200
-        assert "Kampung Ojol" in dash_res2.text
-
-        # 7. Logout and login using new username and password directly
-        client.post("/api/auth/logout")
-        pw_login = client.post(
-            "/api/auth/login",
-            json={"username": "driver_hebat", "password": "mypassword123"},
-        )
-        assert pw_login.status_code == 200
-        assert pw_login.json()["user"]["username"] == "driver_hebat"
-
-
 def test_admin_notifications_panel_and_api(settings):
     from unittest.mock import AsyncMock
 
     from ojol.control import create_app
     from ojol.management import MultiAccountService
+    from ojol.notices import queue_notice
     from ojol.notifications import list_all_admin_notifications
-    from ojol.telegram import queue_notice
 
-    admin_settings = settings.model_copy(update={"telegram_chat_id": 999})
+    admin_settings = settings
     manager = MultiAccountService(admin_settings)
     manager.start = AsyncMock()
     manager.close = AsyncMock()
@@ -792,6 +508,18 @@ def test_admin_notifications_panel_and_api(settings):
         notice_system = queue_notice(
             admin_settings,
             "Pemberitahuan pemeliharaan server pusat",
+        )
+        notice_control = queue_notice(
+            admin_settings.model_copy(
+                update={"runtime_dir": admin_settings.runtime_dir / "control" / "users" / "999"}
+            ),
+            "Notifikasi kontrol",
+        )
+        notice_on_disk = queue_notice(
+            admin_settings.model_copy(
+                update={"runtime_dir": admin_settings.runtime_dir / "accounts" / "legacy-account"}
+            ),
+            "Notifikasi akun lokal",
         )
 
         # Test direct notifications helper functions
@@ -864,20 +592,21 @@ def test_admin_notifications_panel_and_api(settings):
         assert notice_user.stem in admin_notif_ids
         assert notice_admin.stem in admin_notif_ids
         assert notice_system.stem in admin_notif_ids
+        assert notice_control.stem in admin_notif_ids
+        assert notice_on_disk.stem in admin_notif_ids
         assert not next(n for n in admin_notif_data if n["id"] == notice_system.stem)["read"]
 
         # Admin mark all read
         mark_res = client.post("/api/admin/notifications/read")
         assert mark_res.status_code == 200
         assert mark_res.json()["success"] is True
-        assert mark_res.json()["marked_count"] >= 3
+        assert mark_res.json()["marked_count"] == sum(not n["read"] for n in admin_notif_data)
+        assert client.post("/api/admin/notifications/read").json()["marked_count"] == 0
 
         # Verify all are marked read
         recheck = client.get("/api/admin/notifications")
         recheck_data = recheck.json()["notifications"]
-        for n in recheck_data:
-            if n["id"] in {notice_user.stem, notice_admin.stem, notice_system.stem}:
-                assert n["read"] is True
+        assert {n["id"] for n in recheck_data if n["read"]} == admin_notif_ids
 
 
 def test_web_dashboard_logs_formatting(admin_web):
@@ -1000,10 +729,48 @@ def test_dashboard_html_javascript_syntax_valid():
                 text=True,
             )
             assert res.returncode == 0, f"Script {idx} has JS syntax error: {res.stderr}"
+        from ojol.models import ROOT
+
+        js_res = subprocess.run(
+            [node_bin, "--check", str(ROOT / "ojol/ui_assets/dashboard.js")],
+            capture_output=True,
+            text=True,
+        )
+        assert js_res.returncode == 0, f"dashboard.js has JS syntax error: {js_res.stderr}"
+
+
+def test_web_startup_backfills_old_journal(settings, state):
+    import sqlite3
+    from contextlib import closing
+
+    from ojol.journal import Journal
+    from ojol.web.dashboard_queries import get_account_expense_history
+
+    with closing(Journal(settings.runtime_dir)) as journal:
+        run = journal.start(settings)
+        action = journal.begin(
+            run,
+            "purchase",
+            state,
+            {"resource": "data", "shop": "Fixture", "product": {"name": "Pulsa", "price": "0.5"}},
+        )
+        journal.settle(action, True, state)
+        with journal.db:
+            journal.db.execute("DROP TABLE cashflows")
+
+    service = SimpleNamespace(start=AsyncMock(), close=AsyncMock())
+    for _ in range(2):
+        with TestClient(create_app(settings, service=service)):
+            expenses = get_account_expense_history(settings.runtime_dir)
+            assert [(r["product"], r["amount_num"]) for r in expenses] == [("Pulsa", 0.5)]
+
+    with closing(sqlite3.connect(settings.runtime_dir / "history.sqlite3")) as conn:
+        assert conn.execute("SELECT status FROM actions WHERE id=?", (action,)).fetchone() == (
+            "verified",
+        )
 
 
 def test_web_dashboard_finance_and_expense_history(admin_web):
-    import sqlite3
     from datetime import UTC, datetime, timedelta
 
     from ojol.finance import WIB, report_date
@@ -1018,9 +785,7 @@ def test_web_dashboard_finance_and_expense_history(admin_web):
 
     today = report_date()
     yesterday = today - timedelta(days=1)
-    today_dt = datetime.combine(today, datetime.min.time(), WIB).astimezone(
-        sqlite3.sqlite_version and UTC
-    )
+    today_dt = datetime.combine(today, datetime.min.time(), WIB).astimezone(UTC)
     yest_dt = datetime.combine(yesterday, datetime.min.time(), WIB).astimezone(UTC)
 
     # Inisialisasi history.sqlite3 via Journal
@@ -1336,3 +1101,75 @@ def test_accounts_and_dashboard_include_auto_ojol_state_and_toggle(admin_web):
     html_res = client.get("/")
     assert html_res.status_code == 200
     assert "autoOjolToggle" in html_res.text
+
+
+def test_web_only_legacy_owner_and_password_recovery(settings):
+    from conftest import seed_legacy_account
+
+    registry = Accounts(settings)
+    account = seed_legacy_account(registry)
+    admin = registry.web.register("legacy_admin", "old-fixture-password")
+    with registry.db() as db:
+        db.execute(
+            "UPDATE web_users SET telegram_id=?, has_password=0 WHERE id=?",
+            (111, admin["id"]),
+        )
+    session = registry.web.issue_session(admin["id"])
+    registry.web.recover_password("legacy_admin", "new-fixture-password")
+    assert registry.web.get_user_by_session(session) is None
+    restored = registry.web.authenticate_password("legacy_admin", "new-fixture-password")
+    assert registry.selected(registry.owner_for_user(restored))["id"] == account["id"]
+    with TestClient(create_app(settings), base_url="http://localhost:6080") as client:
+        assert client.get("/api/auth/telegram/callback").status_code == 404
+        assert client.post("/api/auth/telegram-code", json={"code": "000000"}).status_code == 404
+        response = client.post(
+            "/api/auth/login",
+            json={
+                "username": "legacy_admin",
+                "password": "new-fixture-password",
+            },
+        )
+        assert response.status_code == 200
+        assert "telegram_id" not in response.json()["user"]
+        assert "Telegram" not in client.get("/").text
+
+
+def test_web_admin_sets_maintenance_and_revokes_access(admin_web):
+    client, manager = admin_web
+    manual = client.post("/api/admin/maintenance", json={"mode": "manual", "target": "all"})
+    assert manual.status_code == 200 and manual.json()["description"]
+    assert client.get("/api/admin/maintenance").json() == manual.json()
+    assert client.post("/api/admin/maintenance", json={"mode": "off"}).json() == {
+        "description": None,
+    }
+
+    driver = manager.registry.web.register("driver", "driver-fixture-password")
+    me = client.get("/api/auth/me").json()["user"]
+    body = {"user_id": driver["id"], "approve": True}
+    assert client.post("/api/admin/review", json=body).status_code == 200
+    owner = manager.registry.owner_for_user(driver)
+    account = manager.registry.create(owner, "Driver fixture")
+    service = manager.service(account["id"])
+    service.stop_worker = AsyncMock()
+    ticket = service.access.issue("ticket")
+    token = manager.registry.web.issue_session(driver["id"])
+    assert (
+        client.post(
+            "/api/admin/account-limit",
+            json={
+                "user_id": driver["id"],
+                "maximum": 2,
+            },
+        ).status_code
+        == 200
+    )
+    assert manager.registry.quota(owner) == 2
+    assert client.post("/api/admin/review", json={**body, "approve": False}).status_code == 200
+    assert not manager.registry.allowed(owner)
+    assert manager.registry.web.get_user_by_session(token) is None
+    assert client.get(f"/a/{account['id']}/access/{ticket}").status_code == 403
+    service.stop_worker.assert_awaited_once()
+    assert (
+        client.post("/api/admin/review", json={"user_id": me["id"], "approve": False}).status_code
+        == 400
+    )

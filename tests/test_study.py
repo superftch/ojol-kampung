@@ -299,7 +299,7 @@ async def test_learning_can_start_next_day_after_persisted_cooldown(settings, st
 
 
 def test_pick_auto_track_selection_logic():
-    tracks = [
+    tracks: list[dict[str, str | int | dict[str, int] | None]] = [
         {"id": "administrasi", "level": 5, "next": None},
         {"id": "boga", "level": 2, "next": {"level": 3, "library": True}},
         {"id": "mengajar", "level": 1, "next": {"level": 2, "library": True}},

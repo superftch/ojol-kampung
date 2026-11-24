@@ -183,20 +183,17 @@ async def test_visit_search_only_allows_valid_house_get(settings, path, payload)
         (HttpCoreError("fixture"), "Respons game belum bisa dibaca"),
     ],
 )
-async def test_telegram_visit_search_messages_do_not_start_worker(
-    settings, monkeypatch, outcome, expected
-):
+async def test_visit_search_messages_do_not_start_worker(settings, monkeypatch, outcome, expected):
     service = ControlService(settings.model_copy(update={"env": "local"}))
     service.stop_worker = AsyncMock()
     context = AsyncMock()
-    monkeypatch.setattr("ojol.control.OjolHttpApi", lambda *args: context)
+    monkeypatch.setattr("ojol.control_service.OjolHttpApi", lambda *args: context)
     find = (
         AsyncMock(side_effect=outcome)
         if isinstance(outcome, Exception)
         else AsyncMock(return_value=outcome)
     )
-    monkeypatch.setattr("ojol.control.find_unvisited", find)
-    monkeypatch.setattr("ojol.control.flush_notices", AsyncMock())
+    monkeypatch.setattr("ojol.control_service.find_unvisited", find)
     await service.execute("visit_scan")
     notice = next((settings.runtime_dir / "notifications").glob("*.json"))
     data = json.loads(notice.read_text())
@@ -210,6 +207,6 @@ async def test_telegram_visit_search_messages_do_not_start_worker(
 
 async def test_visit_search_is_blocked_in_testing(settings, monkeypatch):
     api = AsyncMock()
-    monkeypatch.setattr("ojol.control.OjolHttpApi", api)
+    monkeypatch.setattr("ojol.control_service.OjolHttpApi", api)
     assert "diblokir" in await ControlService(settings).command("visit_scan")
     api.assert_not_called()

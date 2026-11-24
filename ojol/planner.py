@@ -1,5 +1,6 @@
 import json
 import re
+from collections.abc import Collection
 from datetime import timedelta
 from decimal import ROUND_CEILING, Decimal
 from zoneinfo import ZoneInfo
@@ -43,7 +44,13 @@ def parse_snapshot(data: dict) -> Snapshot:
         phase, remaining = "idle", None
     else:
         phase, remaining = "unknown", None
-    percent = lambda label: int(re.fullmatch(r"(\d{1,3})%", tiles[label].strip())[1])
+
+    def percent(label: str) -> int:
+        match = re.fullmatch(r"(\d{1,3})%", tiles[label].strip())
+        if match is None:
+            raise ValueError(f"Persentase {label} belum terbaca")
+        return int(match[1])
+
     wallet = re.search(r"([\d.,]+)\s*koin", data["wallet"], re.IGNORECASE)
     if not wallet:
         raise ValueError("Dompet cash belum terbaca")
@@ -83,7 +90,7 @@ def parse_snapshot(data: dict) -> Snapshot:
 
 
 def next_step(
-    state: Snapshot, settings: Settings, *, deferred: set[Resource] | None = None
+    state: Snapshot, settings: Settings, *, deferred: Collection[Resource] | None = None
 ) -> Step:
     if is_sleeping(state):
         return Step(
@@ -138,7 +145,8 @@ def next_step(
             reason="Fitur Auto Ojol sedang maintenance.",
             wait_seconds=settings.idle_poll_seconds,
         )
-    resources = sorted((getattr(state, key), key) for key in ("fuel", "condition", "data"))
+    keys: tuple[Resource, ...] = ("fuel", "condition", "data")
+    resources = sorted((getattr(state, key), key) for key in keys)
     for value, resource in resources:
         thresh = settings.threshold_for(resource)
         if value < thresh and resource not in (deferred or ()):

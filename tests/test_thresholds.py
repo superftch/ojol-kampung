@@ -248,6 +248,7 @@ def test_food_rotation_after_3_purchases_falls_back_to_next_worth_it(settings, s
         streak_product="Mi instan",
         streak_count=0,
     )
+    assert choice_0 is not None
     assert choice_0[1].product.name == "Mi instan"
 
     choice_2 = select_need(
@@ -260,6 +261,7 @@ def test_food_rotation_after_3_purchases_falls_back_to_next_worth_it(settings, s
         streak_product="Mi instan",
         streak_count=2,
     )
+    assert choice_2 is not None
     assert choice_2[1].product.name == "Mi instan"
 
     # 2. Streak 3 (max 3 reached): Mi instan is rotated out, falls back to next worth-it food (Nasi goreng/Soto)
@@ -273,6 +275,7 @@ def test_food_rotation_after_3_purchases_falls_back_to_next_worth_it(settings, s
         streak_product="Mi instan",
         streak_count=3,
     )
+    assert choice_3 is not None
     assert choice_3[1].product.name in {"Nasi goreng", "Soto"}
 
     # 3. Direct game "bosan" flag also rotates to fallback
@@ -292,6 +295,7 @@ def test_food_rotation_after_3_purchases_falls_back_to_next_worth_it(settings, s
         products=[bored_mi, nasi_goreng, soto],
     )
     choice_bored = select_need(state_hungry, "makan", [bored_shop], settings, Decimal(0), {})
+    assert choice_bored is not None
     assert choice_bored[1].product.name in {"Nasi goreng", "Soto"}
 
 

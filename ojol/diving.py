@@ -16,7 +16,18 @@ from .http_api import OjolHttpApi
 LOGGER = logging.getLogger(__name__)
 
 # Batas dan konfigurasi diving KampungSebelah
-LAUT_BOUNDS = {
+from typing import TypedDict
+
+
+class _SeaBounds(TypedDict):
+    x0: float
+    x1: float
+    z0: float
+    z1: float
+    masuk: dict[str, float]
+
+
+LAUT_BOUNDS: _SeaBounds = {
     "x0": -320.0,
     "x1": 320.0,
     "z0": -640.0,

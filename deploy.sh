@@ -18,25 +18,6 @@ git pull --ff-only origin main || {
     git pull origin main || echo "⚠️ Git pull diabaikan jika tidak ada remote."
 }
 
-# 3. PASTIKAN SEMUA BOT TELEGRAM DIMATIKAN
-echo "🛑 Memastikan bot Telegram dimatikan..."
-if command -v docker >/dev/null 2>&1; then
-    docker compose stop telegram-bot 2>/dev/null || true
-    docker compose rm -f telegram-bot 2>/dev/null || true
-    docker stop kampung-ojol-telegram-bot-1 2>/dev/null || true
-    docker rm -f kampung-ojol-telegram-bot-1 2>/dev/null || true
-fi
-
-# Stop proses python telegram bot lokal jika ada
-pkill -f "ojol.telegram_login_bot" 2>/dev/null || true
-pkill -f "python -m ojol.telegram" 2>/dev/null || true
-
-# Stop & disable service systemd telegram jika ada
-if command -v systemctl >/dev/null 2>&1; then
-    sudo systemctl stop kampung-ojol-telegram 2>/dev/null || true
-    sudo systemctl disable kampung-ojol-telegram 2>/dev/null || true
-fi
-echo "✅ Bot Telegram dipastikan MATI (Semua kontrol pindah ke Website)."
 
 # 4. Konfigurasi Binding Domain & URL
 export OJOL_BIND_IP="${OJOL_BIND_IP:-0.0.0.0}"

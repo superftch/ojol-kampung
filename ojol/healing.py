@@ -1,13 +1,5 @@
-"""Atomic private runtime files."""
+"""Compatibility re-export for atomic private runtime file writes."""
 
-import json
-import os
+from .storage import write_private
 
-
-def write_private(path, data):
-    temporary = path.with_suffix(".tmp")
-    descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(descriptor, "w") as handle:
-        os.fchmod(handle.fileno(), 0o600)
-        json.dump(data, handle, ensure_ascii=False)
-    temporary.replace(path)
+__all__ = ["write_private"]

@@ -1,6 +1,5 @@
-"""Private-chat Bot API integration; secrets never enter journal or error text."""
+"""Write in-app events and error records for the web dashboard."""
 
-import asyncio
 import json
 import logging
 import os
@@ -11,127 +10,15 @@ from contextlib import closing
 from datetime import datetime
 from uuid import uuid4
 
-import httpx
-
 from .auto_settings import AUTO_LABELS
 from .finance import WIB
-from .healing import write_private
-from .identity import cached_profile
+from .formatting import format_koin as koin
 from .models import now
-
-BUTTON_COMMANDS = {
-    "Dashboard": "dashboard",
-    "Import Cookie": "import_cookie",
-    "Jalankan Ojol": "choose_mode",
-    "Hentikan Ojol": "stop_ojol",
-    "Jalankan Kebutuhan": "run_kebutuhan",
-    "Hentikan Kebutuhan": "stop_kebutuhan",
-    "Lanjutkan": "resume",
-    "Status": "status",
-    "Status Ojol": "status",
-    "Status Kebutuhan": "status_kebutuhan",
-    "Auto": "auto",
-    "Auto Ojol": "auto_ojol",
-    "Auto Kebutuhan": "auto_kebutuhan",
-    "Laba Bersih": "profit",
-    "Cari Rumah Kotor": "cleanup_scan",
-    "Cari Rumah Mampir": "visit_scan",
-    "Notifikasi ON": "notifications_on",
-    "Notifikasi OFF": "notifications_off",
-}
+from .storage import write_private
 
 
-def _kb(rows):
-    return {"keyboard": rows, "resize_keyboard": True, "is_persistent": True}
-
-
-def keyboard_main():
-    """Menu utama: navigasi dan aksi umum."""
-    return _kb(
-        [
-            [{"text": "Dashboard"}, {"text": "Status"}],
-            [{"text": "Status Ojol"}, {"text": "Status Kebutuhan"}],
-            [{"text": "Akun Saya"}, {"text": "Auto Kebutuhan"}],
-            [{"text": "Jalankan Ojol"}, {"text": "Hentikan Ojol"}],
-            [{"text": "Jalankan Kebutuhan"}, {"text": "Hentikan Kebutuhan"}],
-            [{"text": "Import Cookie"}],
-            [{"text": "Cari Rumah Kotor"}, {"text": "Cari Rumah Mampir"}],
-            [{"text": "Pengaturan"}, {"text": "Bantuan"}],
-        ]
-    )
-
-
-def keyboard_accounts():
-    """Menu Akun Saya: kelola akun."""
-    return _kb(
-        [
-            [{"text": "Dashboard"}, {"text": "Tambah Akun"}],
-            [{"text": "Menu Utama"}, {"text": "Bantuan"}],
-        ]
-    )
-
-
-def keyboard_status():
-    """Setelah lihat status: opsi lanjutan."""
-    return _kb(
-        [
-            [{"text": "Dashboard"}, {"text": "Laba Bersih"}],
-            [{"text": "Status Ojol"}, {"text": "Status Kebutuhan"}],
-            [{"text": "Jalankan Ojol"}, {"text": "Hentikan Ojol"}],
-            [{"text": "Jalankan Kebutuhan"}, {"text": "Hentikan Kebutuhan"}],
-            [{"text": "Auto Kebutuhan"}, {"text": "Menu Utama"}],
-        ]
-    )
-
-
-def keyboard_settings():
-    """Menu pengaturan terpusat."""
-    return _kb(
-        [
-            [{"text": "Notifikasi ON"}, {"text": "Notifikasi OFF"}],
-            [{"text": "Management"}],
-            [{"text": "Menu Utama"}],
-        ]
-    )
-
-
-# Legacy alias – used as default reply_markup when no context-specific
-# keyboard is passed.  Points to the main keyboard so callers that relied
-# on the old constant keep working.
-KEYBOARD = keyboard_main()
-MANDATORY_EVENTS = {
-    "maintenance",
-    "maintenance_selesai",
-    "tidur_mulai",
-    "bangun",
-    "ojol_gagal",
-}
-
-
-def notifications_enabled(settings):
-    path = settings.runtime_dir / "event-notifications.json"
-    return path.exists() and json.loads(path.read_text()).get("enabled") is True
-
-
-def set_notifications(settings, enabled):
-    path = settings.runtime_dir / "event-notifications.json"
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"enabled": bool(enabled)}))
-    temporary.chmod(0o600)
-    temporary.replace(path)
-
-
-class TelegramError(RuntimeError):
-    def __init__(self, message, *, retryable=False):
-        super().__init__(message)
-        self.retryable = retryable
-
-
-def redact(text, settings):
+def redact(text):
     value = str(text)
-    secret = settings.telegram_bot_token.get_secret_value()
-    if secret:
-        value = value.replace(secret, "[REDACTED]")
     value = re.sub(r"https?://api\.telegram\.org/bot[^\s/]+", "[TELEGRAM_API]", value)
     value = re.sub(r"/login/[A-Za-z0-9_-]+", "/login/[REDACTED]", value)
     value = re.sub(r"/access/[A-Za-z0-9_-]+", "/access/[REDACTED]", value)
@@ -148,110 +35,6 @@ def redact(text, settings):
         value,
     )
     return value[:1000]
-
-
-class TelegramClient:
-    def __init__(self, settings, client=None):
-        self.settings = settings
-        self.client = client
-        self.owns_client = client is None
-        logging.getLogger("httpx").setLevel(logging.WARNING)
-        logging.getLogger("httpcore").setLevel(logging.WARNING)
-
-    async def __aenter__(self):
-        if not self.client:
-            self.client = httpx.AsyncClient(timeout=30, trust_env=False)
-        return self
-
-    async def __aexit__(self, *args):
-        if self.owns_client and self.client:
-            await self.client.aclose()
-
-    async def call(self, method, **data):
-        if method not in {
-            "sendMessage",
-            "getUpdates",
-            "getMe",
-            "getChat",
-            "getWebhookInfo",
-            "answerCallbackQuery",
-        }:
-            raise TelegramError("Metode Telegram tidak diizinkan")
-        key = self.settings.telegram_bot_token.get_secret_value()
-        if not key or not self.settings.telegram_chat_id:
-            raise TelegramError("Token/Chat ID Telegram belum lengkap")
-        response = None
-        try:
-            response = await self.client.post(
-                f"https://api.telegram.org/bot{key}/{method}",
-                json=data,
-                timeout=25 if method == "getUpdates" else 5,
-            )
-            payload = response.json()
-            if not isinstance(payload, dict):
-                raise ValueError("Respons Telegram bukan objek JSON")
-        except (httpx.HTTPError, ValueError) as exc:
-            status = f", HTTP {response.status_code}" if response is not None else ""
-            raise TelegramError(
-                "Telegram tidak dapat dihubungi; notifikasi disimpan lokal "
-                f"({method}: {type(exc).__name__}{status})",
-                retryable=(
-                    response is None
-                    or response.status_code < 400
-                    or response.status_code == 429
-                    or response.status_code >= 500
-                ),
-            ) from None
-        if response.status_code != 200 or not payload.get("ok"):
-            description = redact(
-                payload.get("description", "Telegram API menolak request"), self.settings
-            )
-            raise TelegramError(
-                f"Telegram API {response.status_code} ({method}): {description}",
-                retryable=response.status_code == 429 or response.status_code >= 500,
-            )
-        return payload["result"]
-
-    async def send(self, message, reply_markup=None):
-        profile = cached_profile(self.settings.runtime_dir)
-        account_name = profile["nickname"] if profile else self.settings.account_name
-        return await self.call(
-            "sendMessage",
-            chat_id=self.settings.telegram_chat_id,
-            text=((f"👤 {account_name}\n\n" if account_name else "") + message)[:4000],
-            link_preview_options={"is_disabled": True},
-            protect_content=True,
-            reply_markup=reply_markup or KEYBOARD,
-        )
-
-
-async def acknowledge_callback(api, callback_id):
-    try:
-        await api.call("answerCallbackQuery", callback_query_id=callback_id)
-    except TelegramError as error:
-        # An expired callback cannot be acknowledged again. Let the poller consume its update.
-        if str(error).lower().startswith("telegram api 400: bad request: query is too old"):
-            return False
-        raise
-    return True
-
-
-def authorized_message(update, settings):
-    callback = update.get("callback_query")
-    message = (
-        {**callback.get("message", {}), "from": callback.get("from", {})}
-        if callback
-        else update.get("message", {})
-    )
-    return (
-        message.get("chat", {}).get("type") == "private"
-        and message.get("chat", {}).get("id") == settings.telegram_chat_id
-        and message.get("from", {}).get("id") == settings.telegram_chat_id
-    )
-
-
-def koin(value):
-    return f"{str(value).replace('.', ',')} koin"
 
 
 def event_text(event, data):
@@ -380,7 +163,7 @@ def _error_guidance(details):
         reason = "Akun game terhubung, tetapi Ojol Desa belum aktif untuk akun ini."
         action = (
             "Di game, buka Kerja → Ojol desa dan pilih Daftar jadi mitra. "
-            "Setelah terdaftar, tekan Jalankan Ojol lagi di Telegram."
+            "Setelah terdaftar, tekan Jalankan Ojol lagi di dashboard."
         )
     elif "sedang tidur" in diagnostic:
         reason = "Karakter sedang tidur."
@@ -410,13 +193,6 @@ def _error_guidance(details):
     elif stage.startswith(("tunnel.", "control.startup.tunnel")):
         reason = "Koneksi untuk membuka halaman Import Cookie sedang bermasalah."
         action = "Hubungi admin untuk memeriksa koneksi server."
-    elif stage.startswith("telegram."):
-        if details.get("fatal") is False:
-            return (
-                "⚠️ Koneksi Telegram sempat terganggu. Bot mencoba terhubung kembali otomatis; "
-                "worker akun tetap berjalan."
-            )
-        return "⚠️ Bot sempat kehilangan koneksi ke Telegram. Cek Status akun sebelum melanjutkan."
     elif details.get("http_category") == "transport" or details.get("category") in {
         "TimeoutError",
         "ConnectError",
@@ -455,7 +231,6 @@ def error_text(details):
                 ("session.import", "menghubungkan cookie game"),
                 ("worker.reconcile", "memeriksa hasil transaksi sebelumnya"),
                 ("worker.", "menjalankan worker akun"),
-                ("telegram.", "menghubungkan Telegram"),
                 ("tunnel.", "menghubungkan halaman Import Cookie"),
                 ("control.command.cleanup_scan", "mencari rumah kotor"),
                 ("control.command.visit_scan", "mencari rumah untuk mampir"),
@@ -481,120 +256,21 @@ def error_text(details):
     )
 
 
-def queued_text(data):
-    context = data.get("context") or {}
-    if context.get("stage"):
-        return error_text(context)
-    message = data["text"]
-    event = context.get("event")
-    if context.get("routine_event") and event not in MANDATORY_EVENTS | {
-        "mulai",
-        "berhenti",
-        "pembelian_terverifikasi",
-        "pendapatan_ojol_tercatat",
-        "trip_selesai_otomatis_teramati",
-        "maintenance",
-        "aksi_job_terverifikasi",
-    }:
-        return None
-    if context.get("routine_event") and message.startswith(f"📣 {event} · "):
-        try:
-            return event_text(event, json.loads(message.split("\n", 2)[2]))
-        except (IndexError, KeyError, TypeError, ValueError):
-            return None
-    return message
-
-
-def queue_notice(settings, message, context=None, reply_markup=None):
+def queue_notice(settings, message, context=None):
     directory = settings.runtime_dir / "notifications"
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     priority = "0-error-" if (context or {}).get("stage") else ""
     path = directory / f"{priority}{time.time_ns()}-{uuid4().hex}.json"
-    path.write_text(
-        json.dumps(
-            {
-                "text": message,
-                "context": context or {},
-                "reply_markup": reply_markup,
-                "attempts": 0,
-                "next_attempt": 0,
-                "created_at": now().isoformat(),
-                "read": False,
-            },
-            ensure_ascii=False,
-        )
+    write_private(
+        path,
+        {
+            "text": message,
+            "context": context or {},
+            "created_at": now().isoformat(),
+            "read": False,
+        },
     )
-    path.chmod(0o600)
     return path
-
-
-async def flush_notices(settings, client=None):
-    if not settings.telegram_bot_token.get_secret_value() or not settings.telegram_chat_id:
-        return 0
-    count = 0
-    directory = settings.runtime_dir / "notifications"
-    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    marker = directory / ".pruned"
-    if not marker.exists() or time.time() - marker.stat().st_mtime >= 3600:
-        # Delivery copies expire after a week; authoritative events and finances stay in SQLite.
-        for pattern in ("*.sent", "*.muted"):
-            for archived in directory.glob(pattern):
-                try:
-                    if time.time() - archived.stat().st_mtime > 7 * 86400:
-                        archived.unlink()
-                except FileNotFoundError:
-                    pass
-        marker.touch()
-    # Recover interrupted deliveries; Telegram has no idempotency key, so retries may duplicate a notice.
-    for claimed in (settings.runtime_dir / "notifications").glob("*.sending"):
-        try:
-            if time.time() - claimed.stat().st_mtime > 60:
-                claimed.rename(claimed.with_suffix(".json"))
-        except FileNotFoundError:
-            pass
-    async with TelegramClient(settings, client) as api:
-        for path in sorted((settings.runtime_dir / "notifications").glob("*.json"))[:5]:
-            try:
-                data = json.loads(path.read_text())
-            except FileNotFoundError:
-                continue
-            if data.get("next_attempt", 0) > time.time():
-                continue
-            message = queued_text(data)
-            context = data.get("context", {})
-            if message is None or (
-                context.get("routine_event")
-                and not context.get("stage")
-                and context.get("event") not in MANDATORY_EVENTS
-                and not notifications_enabled(settings)
-            ):
-                path.rename(path.with_suffix(".muted"))
-                continue
-            claimed = path.with_suffix(".sending")
-            try:
-                path.rename(claimed)
-            except FileNotFoundError:
-                continue
-            try:
-                if count:
-                    await asyncio.sleep(1.05)
-                await api.send(
-                    redact(message, settings) if message != data["text"] else message,
-                    data.get("reply_markup"),
-                )
-            except TelegramError:
-                data["attempts"] += 1
-                if data.get("context", {}).get("stage") == "telegram.poll":
-                    claimed.rename(path.with_suffix(".muted"))
-                    break
-                data["next_attempt"] = time.time() + min(300, 2 ** min(data["attempts"], 8))
-                claimed.write_text(json.dumps(data, ensure_ascii=False))
-                claimed.rename(path)
-                break
-            else:
-                claimed.rename(path.with_suffix(".sent"))
-                count += 1
-    return count
 
 
 def record_error(settings, error, stage, context=None):
@@ -603,7 +279,7 @@ def record_error(settings, error, stage, context=None):
         "stage": stage,
         "category": type(error).__name__,
         "http_category": getattr(error, "category", None),
-        "message": redact(error, settings),
+        "message": redact(error),
         "pid": os.getpid(),
         **(context or {}),
         "error_id": "OJL-" + uuid4().hex[:12].upper(),
@@ -637,17 +313,6 @@ def queue_error(settings, error, stage, context=None, *, stop_worker=True):
         settings.runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         (settings.runtime_dir / "STOP").touch(mode=0o600)
     details = record_error(settings, error, stage, {**(context or {}), "fatal": stop_worker})
-    markup = None
-    if login_required(details):
-        buttons = [
-            [{"text": "Login ulang ke game", "url": "https://www.kampungsebelah.com/kampung"}]
-        ]
-        account_id = details.get("account_id")
-        if isinstance(account_id, str) and re.fullmatch(r"[a-f0-9]{32}", account_id):
-            buttons.append(
-                [{"text": "Import Cookie", "callback_data": f"acct:{account_id}:import_cookie"}]
-            )
-        markup = {"inline_keyboard": buttons}
-    path = queue_notice(settings, error_text(details), details, reply_markup=markup)
+    path = queue_notice(settings, error_text(details), details)
     write_private(settings.runtime_dir / "last-error.json", {"notice_id": path.stem, **details})
     return path

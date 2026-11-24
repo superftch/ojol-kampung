@@ -268,7 +268,9 @@ def test_need_value_saves_coins_counts_capacity_and_handles_free_facilities(
         }
     )
     snapshot = state.model_copy(update={"needs": {need: value}})
-    _, plan = select_need(snapshot, need, [shop], settings, Decimal(0), {})
+    selected = select_need(snapshot, need, [shop], settings, Decimal(0), {})
+    assert selected is not None
+    _, plan = selected
     assert plan.product.name == expected
     assert (
         select_need(

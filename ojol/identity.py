@@ -1,10 +1,10 @@
-"""Verified game identity shared by import, workers and Telegram account names."""
+"""Verified game identity shared by import, workers and the web dashboard."""
 
 import json
 from uuid import uuid4
 
-from .healing import write_private
 from .models import now
+from .storage import write_private
 
 
 def verified_profile(account):

@@ -7,8 +7,8 @@ from decimal import Decimal
 from pathlib import Path
 
 from .finance import WIB, day_bounds, received_income, report_date
-from .healing import write_private
 from .models import Snapshot, now
+from .storage import write_private
 
 UNRESOLVED_ACTION = (
     "SELECT id,kind FROM actions WHERE status IN ('pending','uncertain') ORDER BY id DESC LIMIT 1"

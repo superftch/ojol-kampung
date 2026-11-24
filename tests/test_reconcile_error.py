@@ -8,8 +8,8 @@ import pytest
 
 from ojol.healing import write_private
 from ojol.journal import Journal
+from ojol.notices import record_error
 from ojol.reconciliation import reconcile
-from ojol.telegram import record_error
 
 
 @pytest.fixture
@@ -153,9 +153,11 @@ def test_cli_passes_error_id_and_scoped_account(settings, monkeypatch):
     from ojol.accounts import Accounts
     from ojol.models import ROOT
 
-    local = settings.model_copy(update={"env": "local", "telegram_chat_id": 111})
+    local = settings.model_copy(update={"env": "local"})
     registry = Accounts(local)
-    account = registry.selected(111)
+    from conftest import seed_legacy_account
+
+    account = seed_legacy_account(registry)
     monkeypatch.setattr(cli, "load_settings", lambda path: local)
     run_app = AsyncMock()
     monkeypatch.setattr(app, "run_app", run_app)

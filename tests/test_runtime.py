@@ -432,7 +432,8 @@ async def test_sleeping_worker_pauses_all_auto_then_resumes(settings, state, ojo
     journal = Journal(settings.runtime_dir)
     try:
         controller = Controller(ui, settings, journal, journal.start(settings))
-        controller.purchase = AsyncMock(side_effect=StopRequested("lanjut setelah bangun"))
+        purchase = AsyncMock(side_effect=StopRequested("lanjut setelah bangun"))
+        controller.purchase = purchase
 
         async def sleeping_wait(seconds):
             assert seconds == settings.idle_poll_seconds
@@ -440,7 +441,7 @@ async def test_sleeping_worker_pauses_all_auto_then_resumes(settings, state, ojo
             ui.preview_shops.assert_not_awaited()
             ui.buy.assert_not_awaited()
             ui.job_click.assert_not_awaited()
-            controller.purchase.assert_not_awaited()
+            purchase.assert_not_awaited()
             notices = [
                 json.loads(path.read_text())
                 for path in (settings.runtime_dir / "notifications").glob("*.json")
@@ -563,7 +564,7 @@ async def test_search_accepts_in_progress_once_without_repeating_click(settings,
         ui.job_click.assert_awaited_once_with("📲 Cari order")
         ui.snapshot.assert_awaited_once()
         assert journal.history()["actions"][0]["status"] == "verified"
-        assert controller.state.phase == "searching"
+        assert controller.observed_state.phase == "searching"
     finally:
         journal.close()
 
@@ -885,7 +886,6 @@ def test_start_error_does_not_inherit_previous_process_verification_stage(settin
     monkeypatch.setattr(
         app, "run_app", AsyncMock(side_effect=RuntimeError("Aksi belum terverifikasi"))
     )
-    monkeypatch.setattr("ojol.telegram.flush_notices", AsyncMock())
     assert cli.main(["--env-file", str(ROOT / ".env.testing"), "run"]) == 2
     error = json.loads((settings.runtime_dir / "last-error.json").read_text())
     assert error["stage"] == "cli.run"
@@ -899,11 +899,11 @@ def test_cli_lock_conflict_notifies_without_stopping_existing_worker(
     import ojol.cli as cli
     from ojol.accounts import Accounts
 
-    local = settings.model_copy(
-        update={"env": "local", "operator_authorized": True, "telegram_chat_id": 111}
-    )
+    local = settings.model_copy(update={"env": "local", "operator_authorized": True})
     registry = Accounts(local)
-    account = registry.selected(111)
+    from conftest import seed_legacy_account
+
+    account = seed_legacy_account(registry)
     directory = registry.scoped_settings(account).runtime_dir
     original_status = json.dumps(
         {"pid": -1, "run_id": 31, "event": "observasi", "last_action": {"action_id": 1946}}
@@ -912,7 +912,6 @@ def test_cli_lock_conflict_notifies_without_stopping_existing_worker(
     monkeypatch.setattr(cli, "load_settings", lambda path: local)
     run_app = AsyncMock()
     monkeypatch.setattr(app, "run_app", run_app)
-    monkeypatch.setattr("ojol.telegram.flush_notices", AsyncMock())
     args = ["--env-file", str(ROOT / ".env.testing"), "--account", account["id"], command]
     if command in {"run", "start"}:
         args.append("--live")
@@ -939,7 +938,6 @@ def test_cli_failure_only_stops_its_own_live_run(settings, monkeypatch, live):
     local = settings.model_copy(update={"env": "local", "operator_authorized": True})
     monkeypatch.setattr(cli, "load_settings", lambda path: local)
     monkeypatch.setattr(app, "run_app", AsyncMock(side_effect=RuntimeError("fixture failure")))
-    monkeypatch.setattr("ojol.telegram.flush_notices", AsyncMock())
     args = ["--env-file", str(ROOT / ".env.testing"), "run"]
     if live:
         args.append("--live")

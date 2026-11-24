@@ -62,7 +62,7 @@ async def test_gym_executes_3_times_directly(settings, state):
         c.state = state
         purchase_calls = []
 
-        async def fake_purchase(st, resource):
+        async def fake_purchase(before, resource):
             purchase_calls.append(resource)
             return True
 

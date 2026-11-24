@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Annotated, Any, Literal, get_args
 from zoneinfo import ZoneInfo
 
-from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ROOT = Path(__file__).resolve().parent.parent
 Coin = Annotated[Decimal, Field(ge=0, allow_inf_nan=False)]
@@ -13,6 +13,38 @@ Resource = Literal["fuel", "condition", "data"]
 OjolVehicle = Literal["motor", "mobil"]
 Need = Literal["makan", "kesehatan", "fisik", "rekreasi", "penampilan", "rumah", "kebersihan", "wc"]
 NEEDS = get_args(Need)
+
+STUDY_LABELS: dict[str, str] = {
+    "perpus": "Auto Perpus (gratis)",
+    "kuliah": "Auto Kuliah (bayar)",
+}
+AUTO_SUBJECT = "auto"
+SUBJECTS: dict[str, str] = {
+    "kesehatan": "Kesehatan",
+    "mengajar": "Mengajar",
+    "dagang": "Dagang",
+    "administrasi": "Administrasi",
+    "rawat": "Rawat desa",
+    "konveksi": "Konveksi",
+    "keamanan": "Keamanan",
+    "teknik": "Teknik",
+    "boga": "Tata boga",
+    "penerbangan": "Penerbangan",
+}
+
+
+class StopRequested(Exception):
+    """Raised when an operator or session limit requests worker shutdown."""
+
+
+class HttpCoreError(RuntimeError):
+    """Domain-categorized error raised by the KampungSebelah HTTP adapter."""
+
+    def __init__(self, message, category="schema", recoverable=False, path=None):
+        super().__init__(message)
+        self.category, self.recoverable = category, recoverable
+        self.stage = "http." + category
+        self.path = path
 
 
 def now():
@@ -47,13 +79,10 @@ class Settings(Model):
     need_thresholds: dict[str, Percent] = Field(default_factory=dict)
     resource_reserve_percent: Percent = 20
     max_spend: Coin | None = None
-    min_balance: Coin = 5
+    min_balance: Coin = Decimal(5)
     max_jobs: int | None = Field(default=None, gt=0)
     max_minutes: int | None = Field(default=None, gt=0)
     idle_poll_seconds: int = Field(default=10, ge=3, le=60)
-    telegram_enabled: bool = False
-    telegram_bot_token: SecretStr = Field(default=SecretStr(""), exclude=True, repr=False)
-    telegram_chat_id: int | None = Field(default=None, gt=0)
     login_public_url: str = "http://localhost:6080"
     core: Literal["http"] = "http"
     account_name: str = ""
@@ -62,11 +91,6 @@ class Settings(Model):
     tunnel_enabled: bool = False
     auto_start: bool = True
     ojol_mode: Literal["kendara", "otomatis"] = "otomatis"
-
-    @field_validator("telegram_chat_id", mode="before")
-    @classmethod
-    def optional_chat_id(cls, value):
-        return None if value == "" else value
 
     @field_validator("login_public_url")
     @classmethod
@@ -137,12 +161,8 @@ class Settings(Model):
             self.operator_authorized or not self.runtime_dir.is_relative_to(ROOT / ".local/testing")
         ):
             raise ValueError("Testing wajib resource lokal khusus dan tidak boleh authorized live")
-        if self.env == "testing" and (
-            self.tunnel_enabled
-            or self.telegram_bot_token.get_secret_value()
-            or self.telegram_chat_id
-        ):
-            raise ValueError("Testing tidak boleh memakai tunnel/Telegram live")
+        if self.env == "testing" and self.tunnel_enabled:
+            raise ValueError("Testing tidak boleh membuka tunnel")
         return self
 
 

@@ -23,7 +23,6 @@ WEB_TEST_FILES = [
     "tests/test_captcha.py",
     "tests/test_study.py",
     "tests/test_browser_headers.py",
-    "tests/test_telegram_login_bot.py",
 ]
 
 

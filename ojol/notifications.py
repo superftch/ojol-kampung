@@ -2,10 +2,14 @@
 
 import json
 import logging
+import sqlite3
 import time
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .accounts import Accounts
 from .models import Settings
 
 logger = logging.getLogger(__name__)
@@ -43,7 +47,7 @@ def list_notifications(settings: Settings, limit: int = 50) -> list[dict[str, An
                     "read": data.get("read", False),
                 }
             )
-        except Exception:
+        except (OSError, ValueError, AttributeError):
             continue
 
     return results
@@ -51,7 +55,10 @@ def list_notifications(settings: Settings, limit: int = 50) -> list[dict[str, An
 
 def mark_notifications_read(settings: Settings, notice_ids: list[str] | None = None) -> int:
     """Mark notifications as read or move them to .read status."""
-    directory = notifications_dir(settings)
+    return _mark_read(notifications_dir(settings), notice_ids)
+
+
+def _mark_read(directory: Path, notice_ids: list[str] | None = None) -> int:
     count = 0
 
     target_ids = set(notice_ids) if notice_ids else None
@@ -64,7 +71,7 @@ def mark_notifications_read(settings: Settings, notice_ids: list[str] | None = N
                 data["read"] = True
                 path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
                 count += 1
-        except Exception:
+        except (OSError, ValueError, AttributeError):
             continue
 
     return count
@@ -79,197 +86,173 @@ def get_unread_count(settings: Settings) -> int:
             data = json.loads(path.read_text(encoding="utf-8"))
             if not data.get("read"):
                 unread += 1
-        except Exception:
+        except (OSError, ValueError, AttributeError):
             continue
     return unread
 
 
+@dataclass(frozen=True)
+class _NotificationScope:
+    directory: Path
+    account_id: str
+    account_name: str
+    owner: int | None = None
+    archived: bool = False
+
+
+def _notification_scopes(
+    settings: Settings, registry: Accounts | None
+) -> Iterator[_NotificationScope]:
+    if registry is not None:
+        try:
+            accounts = registry.list(archived=False) + registry.list(archived=True)
+        except sqlite3.Error as exc:
+            logger.warning("Could not list notification accounts (%s)", type(exc).__name__)
+            accounts = []
+        for account in accounts:
+            try:
+                scoped = registry.scoped_settings(account)
+            except (sqlite3.Error, OSError, ValueError) as exc:
+                logger.warning("Could not resolve account notifications (%s)", type(exc).__name__)
+                continue
+            yield _NotificationScope(
+                scoped.runtime_dir / "notifications",
+                account["id"],
+                account["name"],
+                account["owner"],
+                bool(account["archived"]),
+            )
+
+    accounts_dir = settings.runtime_dir / "accounts"
+    if accounts_dir.is_dir():
+        for directory in accounts_dir.iterdir():
+            if directory.is_dir():
+                yield _NotificationScope(
+                    directory / "notifications",
+                    directory.name,
+                    f"Akun {directory.name[:8]}",
+                )
+    users_dir = settings.runtime_dir / "control" / "users"
+    if users_dir.is_dir():
+        for directory in users_dir.iterdir():
+            if not directory.is_dir():
+                continue
+            try:
+                owner = int(directory.name)
+            except ValueError:
+                owner = None
+            yield _NotificationScope(
+                directory / "notifications",
+                f"ctrl_{directory.name}",
+                "Kontrol User / Bot",
+                owner,
+            )
+    yield _NotificationScope(
+        settings.runtime_dir / "notifications",
+        "system",
+        "Sistem / Default",
+    )
+
+
+def _fleet_notification_dirs(
+    settings: Settings, registry: Accounts | None
+) -> Iterator[_NotificationScope]:
+    scanned: set[Path] = set()
+    for scope in _notification_scopes(settings, registry):
+        if not scope.directory.is_dir():
+            continue
+        resolved = scope.directory.resolve()
+        if resolved not in scanned:
+            scanned.add(resolved)
+            yield scope
+
+
+def _notification_users(registry: Accounts | None) -> dict[int, dict[str, Any]]:
+    users: dict[int, dict[str, Any]] = {}
+    if registry is None:
+        return users
+    try:
+        for user in registry.users():
+            if tg_id := user.get("owner"):
+                users[int(tg_id)] = {
+                    "user_id": tg_id,
+                    "username": user.get("username") or "",
+                    "name": user.get("name") or "",
+                }
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        logger.warning("Could not read legacy notification users (%s)", type(exc).__name__)
+
+    try:
+        if hasattr(registry, "web"):
+            for user in registry.web.list_users():
+                entry = {
+                    "user_id": user["id"],
+                    "username": user.get("username") or "",
+                    "name": user.get("name") or "",
+                    "role": user.get("role", "user"),
+                }
+                users[10_000_000_000 + int(user["id"])] = entry
+                if tg_id := user.get("telegram_id"):
+                    users[int(tg_id)] = entry
+    except (sqlite3.Error, TypeError, ValueError) as exc:
+        logger.warning("Could not read web notification users (%s)", type(exc).__name__)
+    return users
+
+
+def _notification_user(
+    scope: _NotificationScope, users: dict[int, dict[str, Any]]
+) -> dict[str, Any]:
+    owner = scope.owner
+    if scope.account_id == "system":
+        return {
+            "user_id": 0,
+            "username": "system",
+            "name": "Sistem Utama",
+        }
+    if owner is not None and owner in users:
+        return users[owner]
+    return {
+        "user_id": owner,
+        "username": f"user_{owner}" if owner else "system",
+        "name": f"User #{owner}" if owner else "System",
+    }
+
+
 def list_all_admin_notifications(
     settings: Settings,
-    registry: Any = None,
+    registry: Accounts | None = None,
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """List recent notifications across all users, accounts, and system runtime directories."""
-    user_map: dict[int, dict[str, Any]] = {}
-    if registry is not None:
-        try:
-            for u in registry.users():
-                tg_id = u.get("telegram_id")
-                if tg_id:
-                    user_map[int(tg_id)] = {
-                        "user_id": tg_id,
-                        "username": u.get("username") or "",
-                        "name": u.get("name") or "",
-                        "telegram_id": tg_id,
-                    }
-        except Exception:
-            pass
-
-        try:
-            if hasattr(registry, "web"):
-                for wu in registry.web.list_users():
-                    w_id = wu["id"]
-                    synthetic_owner = 10_000_000_000 + int(w_id)
-                    user_entry = {
-                        "user_id": w_id,
-                        "username": wu.get("username") or "",
-                        "name": wu.get("name") or "",
-                        "telegram_id": wu.get("telegram_id"),
-                        "role": wu.get("role", "user"),
-                    }
-                    user_map[synthetic_owner] = user_entry
-                    if wu.get("telegram_id"):
-                        user_map[int(wu["telegram_id"])] = user_entry
-        except Exception:
-            pass
-
-    def parse_notice(
-        path: Path,
-        account_id: str | None = None,
-        account_name: str | None = None,
-        account_archived: bool = False,
-        owner: int | None = None,
-        u_info: dict[str, Any] | None = None,
-    ) -> dict[str, Any] | None:
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-            context = data.get("context") or {}
-            mtime = path.stat().st_mtime
-            created_at = data.get("created_at") or time.strftime(
-                "%Y-%m-%d %H:%M:%S", time.localtime(mtime)
-            )
-            resolved_user = (
-                u_info
-                or user_map.get(owner)
-                or {
-                    "user_id": owner,
-                    "username": f"user_{owner}" if owner else "system",
-                    "name": f"User #{owner}" if owner else "System",
-                    "telegram_id": owner if (owner and owner < 10_000_000_000) else None,
-                }
-            )
-            return {
-                "id": path.stem,
-                "text": data.get("text", ""),
-                "time": created_at,
-                "timestamp": mtime,
-                "is_error": bool(context.get("stage") or context.get("error_id")),
-                "error_id": context.get("error_id"),
-                "event": context.get("event"),
-                "read": bool(data.get("read", False)),
-                "account_id": account_id or "system",
-                "account_name": account_name or "Sistem",
-                "account_archived": account_archived,
-                "owner": owner,
-                "user": resolved_user,
-            }
-        except Exception:
-            return None
-
+    users = _notification_users(registry)
     results: list[dict[str, Any]] = []
-    scanned_dirs: set[Path] = set()
-
-    # 1. Accounts in registry
-    if registry is not None:
-        try:
-            all_accounts = registry.list(archived=False) + registry.list(archived=True)
-            for acc in all_accounts:
-                try:
-                    scoped = registry.scoped_settings(acc)
-                    d = notifications_dir(scoped)
-                    resolved = d.resolve()
-                    if resolved in scanned_dirs:
-                        continue
-                    scanned_dirs.add(resolved)
-                    owner = acc.get("owner")
-                    u_info = user_map.get(owner)
-                    for p in d.glob("*.json"):
-                        item = parse_notice(
-                            p,
-                            account_id=acc.get("id"),
-                            account_name=acc.get("name"),
-                            account_archived=bool(acc.get("archived")),
-                            owner=owner,
-                            u_info=u_info,
-                        )
-                        if item:
-                            results.append(item)
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-    # 2. Subdirectories in runtime_dir / accounts (on disk)
-    accounts_disk = settings.runtime_dir / "accounts"
-    if accounts_disk.is_dir():
-        for acc_dir in accounts_disk.iterdir():
-            if not acc_dir.is_dir():
-                continue
-            d = acc_dir / "notifications"
-            resolved = d.resolve()
-            if resolved in scanned_dirs or not d.is_dir():
-                continue
-            scanned_dirs.add(resolved)
-            for p in d.glob("*.json"):
-                item = parse_notice(
-                    p,
-                    account_id=acc_dir.name,
-                    account_name=f"Akun {acc_dir.name[:8]}",
-                    account_archived=False,
-                    owner=None,
-                )
-                if item:
-                    results.append(item)
-
-    # 3. Control / users runtime directories
-    control_users = settings.runtime_dir / "control" / "users"
-    if control_users.is_dir():
-        for u_dir in control_users.iterdir():
-            if not u_dir.is_dir():
-                continue
-            d = u_dir / "notifications"
-            resolved = d.resolve()
-            if resolved in scanned_dirs or not d.is_dir():
-                continue
-            scanned_dirs.add(resolved)
+    for scope in _fleet_notification_dirs(settings, registry):
+        user = _notification_user(scope, users)
+        for path in scope.directory.glob("*.json"):
             try:
-                owner_val = int(u_dir.name)
-            except ValueError:
-                owner_val = None
-            u_info = user_map.get(owner_val)
-            for p in d.glob("*.json"):
-                item = parse_notice(
-                    p,
-                    account_id=f"ctrl_{u_dir.name}",
-                    account_name="Kontrol User / Bot",
-                    account_archived=False,
-                    owner=owner_val,
-                    u_info=u_info,
+                data = json.loads(path.read_text(encoding="utf-8"))
+                context = data.get("context") or {}
+                mtime = path.stat().st_mtime
+                results.append(
+                    {
+                        "id": path.stem,
+                        "text": data.get("text", ""),
+                        "time": data.get("created_at")
+                        or time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime)),
+                        "timestamp": mtime,
+                        "is_error": bool(context.get("stage") or context.get("error_id")),
+                        "error_id": context.get("error_id"),
+                        "event": context.get("event"),
+                        "read": bool(data.get("read", False)),
+                        "account_id": scope.account_id,
+                        "account_name": scope.account_name,
+                        "account_archived": scope.archived,
+                        "owner": scope.owner,
+                        "user": user,
+                    }
                 )
-                if item:
-                    results.append(item)
-
-    # 4. Root / default notifications
-    root_d = settings.runtime_dir / "notifications"
-    resolved_root = root_d.resolve()
-    if resolved_root not in scanned_dirs and root_d.is_dir():
-        scanned_dirs.add(resolved_root)
-        for p in root_d.glob("*.json"):
-            item = parse_notice(
-                p,
-                account_id="system",
-                account_name="Sistem / Default",
-                account_archived=False,
-                owner=getattr(settings, "telegram_chat_id", None),
-                u_info={
-                    "user_id": 0,
-                    "username": "system",
-                    "name": "Sistem Utama",
-                    "telegram_id": getattr(settings, "telegram_chat_id", None),
-                },
-            )
-            if item:
-                results.append(item)
+            except (OSError, ValueError, AttributeError):
+                continue
 
     # Deduplicate by (account_id, id)
     seen_keys = set()
@@ -286,57 +269,9 @@ def list_all_admin_notifications(
 
 def mark_all_admin_notifications_read(
     settings: Settings,
-    registry: Any = None,
+    registry: Accounts | None = None,
 ) -> int:
     """Mark all notifications across all accounts and runtime directories as read."""
-    scanned_dirs: set[Path] = set()
-    total_marked = 0
-
-    if registry is not None:
-        try:
-            all_accounts = registry.list(archived=False) + registry.list(archived=True)
-            for acc in all_accounts:
-                try:
-                    scoped = registry.scoped_settings(acc)
-                    d = notifications_dir(scoped)
-                    resolved = d.resolve()
-                    if resolved in scanned_dirs:
-                        continue
-                    scanned_dirs.add(resolved)
-                    total_marked += mark_notifications_read(scoped)
-                except Exception:
-                    continue
-        except Exception:
-            pass
-
-    # Root notifications
-    root_d = notifications_dir(settings)
-    if root_d.resolve() not in scanned_dirs:
-        scanned_dirs.add(root_d.resolve())
-        total_marked += mark_notifications_read(settings)
-
-    # Accounts on disk
-    accounts_disk = settings.runtime_dir / "accounts"
-    if accounts_disk.is_dir():
-        for acc_dir in accounts_disk.iterdir():
-            d = acc_dir / "notifications"
-            resolved = d.resolve()
-            if resolved in scanned_dirs or not d.is_dir():
-                continue
-            scanned_dirs.add(resolved)
-            dummy_settings = settings.model_copy(update={"runtime_dir": acc_dir})
-            total_marked += mark_notifications_read(dummy_settings)
-
-    # Control users
-    control_users = settings.runtime_dir / "control" / "users"
-    if control_users.is_dir():
-        for u_dir in control_users.iterdir():
-            d = u_dir / "notifications"
-            resolved = d.resolve()
-            if resolved in scanned_dirs or not d.is_dir():
-                continue
-            scanned_dirs.add(resolved)
-            dummy_settings = settings.model_copy(update={"runtime_dir": u_dir})
-            total_marked += mark_notifications_read(dummy_settings)
-
-    return total_marked
+    return sum(
+        _mark_read(scope.directory) for scope in _fleet_notification_dirs(settings, registry)
+    )

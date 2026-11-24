@@ -58,32 +58,17 @@ async def test_worker_service_ping_and_ipc(settings):
 
 @pytest.mark.asyncio
 async def test_worker_service_file_fallback(settings):
-    # When socket does not exist, send_worker_command should fall back to file queue
+    service = WorkerService(settings)
     cmds_dir = get_commands_dir(settings.runtime_dir)
     cmds_dir.mkdir(parents=True, exist_ok=True)
-
-    # Simulate worker service processing file queue
-    async def mock_worker():
-        for _ in range(50):
-            for f in sorted(cmds_dir.glob("*.json")):
-                data = json.loads(f.read_text())
-                f.with_suffix(".done").write_text(
-                    json.dumps({"ok": True, "action": data.get("action")})
-                )
-                f.unlink(missing_ok=True)
-                return
-            await asyncio.sleep(0.05)
-
-    task = asyncio.create_task(mock_worker())
+    task = asyncio.create_task(service._supervise_loop())
     try:
-        resp = await send_worker_command(
-            settings.runtime_dir, {"action": "test_file_queue"}, timeout=2.0
-        )
-        assert resp is not None
-        assert resp["ok"] is True
-        assert resp["action"] == "test_file_queue"
+        resp = await send_worker_command(settings.runtime_dir, {"action": "ping"}, timeout=2.0)
+        assert resp == {"ok": True, "pong": True, "active_workers": 0}
+        assert list(cmds_dir.iterdir()) == []
     finally:
         task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -97,11 +82,10 @@ async def test_worker_service_start_validations(settings):
 
 @pytest.mark.asyncio
 async def test_worker_starts_additional_account_from_root_registry(settings, monkeypatch):
-    settings = settings.model_copy(update={"operator_authorized": True, "telegram_chat_id": 1001})
-    monkeypatch.setenv("OJOL_TELEGRAM_CHAT_ID", "1001")
+    settings = settings.model_copy(update={"operator_authorized": True})
     service = WorkerService(settings)
     owner = 1002
-    service.registry.whitelist(owner)
+    service.registry.set_owner_access(owner)
     account_id = service.registry.create(owner, "Akun tambahan")["id"]
     scoped, _ = service.scoped_account_settings(account_id)
     scoped.runtime_dir.mkdir(parents=True)
@@ -112,7 +96,8 @@ async def test_worker_starts_additional_account_from_root_registry(settings, mon
     monkeypatch.setattr("ojol.worker_service.asyncio.create_subprocess_exec", spawn)
 
     assert (await service.start_account_worker(account_id))["ok"]
+    assert spawn.await_args is not None
     args, kwargs = spawn.await_args
     assert args[-4:] == ("--account", account_id, "run", "--live")
     assert kwargs["env"]["OJOL_RUNTIME_DIR"] == str(settings.runtime_dir)
-    assert kwargs["env"]["OJOL_TELEGRAM_CHAT_ID"] == "1001"
+    assert kwargs["env"].get("OJOL_ACCOUNT_ID") == account_id

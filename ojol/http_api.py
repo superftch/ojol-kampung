@@ -8,22 +8,56 @@ import random
 import re
 import secrets
 import time
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
-from math import ceil, floor
 from pathlib import Path
 from uuid import NAMESPACE_DNS, UUID, uuid4, uuid5
 
 import httpx
 
 from .auto_settings import auto_flags
-from .finance import WIB, day_bounds, report_date
-from .healing import write_private
+from .cookies import DOMAIN, parse_cookie_input, session_expired
+from .formatting import display_coin as display
+from .formatting import parse_api_timestamp as timestamp
+from .game_parsers import (
+    CAR_SERVICE,
+    CATEGORIES,
+    EV_CHARGE,
+    ITEMS,
+    KAMAR_MANDI_ID,
+    KINDS,
+    ORIGIN,
+    RESOURCES,
+    VEHICLE_ICONS,
+    WALLET_PRODUCT_CATEGORIES,
+    HouseUnavailable,
+    ShopClosed,
+    coin,
+    extract_effects,
+    extract_need_effects,
+    integer,
+    is_closed_shop_response,
+    is_unavailable_house_response,
+    need_rows,
+    ojol_vehicle,
+    snapshot_from_api,
+)
+from .game_wallet import WalletReport, read_daily_wallet, valid_cursor
 from .identity import save_profile, verified_profile
-from .models import NEEDS, GameReceipt, Product, ShopPreview, SleepSchedule, Snapshot, now
-from .planner import ALLOWED_ITEMS
+from .models import (
+    AUTO_SUBJECT,
+    NEEDS,
+    STUDY_LABELS,
+    SUBJECTS,
+    HttpCoreError,
+    Need,
+    Product,
+    Resource,
+    ShopPreview,
+    Snapshot,
+    now,
+)
 from .recreation import solve_foto_shots
-from .session_transfer import DOMAIN, parse_cookie_input, session_expired
 from .shop_locations import (
     BPJS_KANTOR_BY_VILLAGE,
     GYM_FACILITIES_BY_VILLAGE,
@@ -37,10 +71,8 @@ from .shop_locations import (
     NeedShop,
 )
 from .sppg import solve_nampan_picks
+from .storage import write_private
 from .study import (
-    AUTO_SUBJECT,
-    STUDY_LABELS,
-    SUBJECTS,
     extract_quiz_bank,
     is_track_max,
     quiz_answers,
@@ -48,422 +80,40 @@ from .study import (
     subjects,
 )
 
-ORIGIN = "https://www.kampungsebelah.com"
-KAMAR_MANDI_ID = "00000000-0000-0000-0000-000000000001"
-ITEMS = {
-    "fuel": {"isi-pertalite", "isi-pertamax"},
-    "condition": {"servis-motor", "ganti-oli", "tambal-ban", "isi-angin", "cuci-motor"},
-    "data": {"pulsa", "paket-data", "servis-hp", "casing-hp"},
-}
-CAR_SERVICE = "servis-mobil"
-EV_CHARGE = "isi-daya"
-VEHICLE_ICONS = {"motor": "🛵", "mobil": "🚗"}
-WALLET_PRODUCT_CATEGORIES = {
-    " ".join(name.casefold().split()): resource
-    for resource, names in ALLOWED_ITEMS.items()
-    for name in names
-}
-CATEGORIES = {"fuel": "spbu-pertamina", "condition": "bengkel-motor", "data": "konter-pulsa"}
-RESOURCES = {"bensin": "fuel", "kendaraan": "condition", "kuota": "data"}
-KINDS = {
-    "PENUMPANG": ("🧍", "Antar penumpang"),
-    "MAKANAN": ("🍱", "Antar makanan"),
-    "BELANJA": ("🛍️", "Antar belanjaan"),
-}
-
-
-class HttpCoreError(RuntimeError):
-    def __init__(self, message, category="schema", recoverable=False, path=None):
-        super().__init__(message)
-        self.category, self.recoverable = category, recoverable
-        self.stage = "http." + category
-        self.path = path
-
-
-class ShopClosed(HttpCoreError):
-    pass
-
-
-class HouseUnavailable(HttpCoreError):
-    pass
-
-
-def is_unavailable_house_response(response):
-    try:
-        return response.status_code == 403 and response.json()["error"]["code"] == "FORBIDDEN"
-    except (KeyError, TypeError, ValueError):
-        return False
-
-
-def is_closed_shop_response(response):
-    try:
-        error = response.json()["error"]
-        return (
-            error["code"] == "REQUIREMENT_NOT_MET" and error["message"] == "Usaha ini belum buka."
-        )
-    except (KeyError, TypeError, ValueError):
-        return False
-
-
-def integer(value):
-    if type(value) is not int or value < 0:
-        raise HttpCoreError("Format angka API berubah", recoverable=True)
-    return value
-
-
-def coin(milli):
-    return Decimal(integer(milli)) / 1000
-
-
-def display(value):
-    return (
-        format(value, "f").rstrip("0").rstrip(".").replace(".", ",")
-        if value % 1
-        else str(int(value))
-    )
-
-
-def timestamp(value):
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        raise ValueError("Missing timezone")
-    return parsed
-
-
-def need_rows(payload):
-    rows = payload.get("needs")
-    if payload.get("enabled") is not True or not isinstance(rows, list):
-        return {}
-    return {
-        row["id"]: row
-        for row in rows
-        if isinstance(row, dict)
-        and row.get("id") in NEEDS
-        and type(row.get("value")) is int
-        and 0 <= row["value"] <= 100
-    }
-
-
-def ojol_vehicle(payload, trip):
-    if trip:
-        vehicle = trip.get("vehicle", payload.get("vehicle"))
-        return vehicle if vehicle in ("motor", "mobil") else None
-    available = payload.get("vehicles", [payload.get("vehicle")])
-    if not isinstance(available, list):
-        raise HttpCoreError("Daftar kendaraan Ojol belum dapat dibaca", recoverable=True)
-    selected = payload.get("vehicle")
-    if (
-        "bensinMin" in (payload.get("pakai") or {})
-        and selected in ("motor", "mobil")
-        and selected in available
-    ):
-        return selected
-    return next((vehicle for vehicle in ("mobil", "motor") if vehicle in available), None)
-
-
-def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
-    problem_text = str(ojol.get("problem") or "")
-    is_ojol_maintenance = bool(
-        ojol.get("maintenance") is True
-        or re.search(
-            r"maintenance|pemeliharaan|perbaikan",
-            problem_text or str(ojol.get("text") or ""),
-            re.IGNORECASE,
-        )
-        or (ojol.get("enabled") is False and ojol.get("mitra") is True)
-    )
-    if (
-        require_ojol
-        and not is_ojol_maintenance
-        and (ojol["enabled"] is not True or ojol["mitra"] is not True)
-    ):
-        raise HttpCoreError("Akun belum menjadi mitra Ojol", category="blocked")
-    if type(needs["asleep"]) is not bool:
-        raise HttpCoreError("Status tidur API berubah", recoverable=True)
-    profile = me.get("profile") or {}
-    resting = profile.get("resting", False)
-    if type(resting) is not bool:
-        raise HttpCoreError("Status istirahat API berubah", recoverable=True)
-    schedule = profile.get("sleep")
-    sleep_schedule = (
-        SleepSchedule(
-            auto=schedule["auto"],
-            start=schedule["from"],
-            end=schedule["to"],
-            in_schedule=schedule["inSchedule"],
-        )
-        if schedule is not None
-        else None
-    )
-    trip = ojol.get("trip") if not require_ojol and ojol.get("mitra") is False else ojol["trip"]
-    vehicle = ojol_vehicle(ojol, trip) if require_ojol else None
-    vehicle_icon = VEHICLE_ICONS.get(vehicle, "📍")
-    phase, remaining, description = "idle", None, None
-    buttons = ["📲 Cari order", "Berhenti jadi mitra ojol"]
-    text = f"Narik pakai {vehicle}" if vehicle else ""
-
-    is_ojol_resting = False
-    ojol_rest_until = None
-    problem_text = str(ojol.get("problem") or "")
-    if ojol.get("istirahatSampai"):
-        try:
-            until = timestamp(ojol["istirahatSampai"])
-            if until > server_now:
-                is_ojol_resting = True
-                ojol_rest_until = until
-        except Exception:
-            pass
-    if not is_ojol_resting and (
-        ojol.get("resting") is True
-        or ojol.get("restUntil") is not None
-        or bool(re.search(r"istirahat|rehat|3 jam", problem_text, re.IGNORECASE))
-    ):
-        is_ojol_resting = True
-        if ojol.get("restUntil"):
-            try:
-                ojol_rest_until = timestamp(ojol["restUntil"])
-            except Exception:
-                pass
-
-    is_shift_done = False
-    hours_left = None
-    if "narikMenit" in ojol and "narikMaksMenit" in ojol:
-        try:
-            narik_menit = float(ojol["narikMenit"])
-            narik_maks_menit = float(ojol["narikMaksMenit"])
-            hours_left = max(0.0, (narik_maks_menit - narik_menit) / 60.0)
-            if narik_menit >= narik_maks_menit:
-                is_shift_done = True
-        except Exception:
-            pass
-    if hours_left is None:
-        for key in (
-            "sisaJam",
-            "sisaJamNarik",
-            "sisaNarik",
-            "jamNarikSisa",
-            "hoursLeft",
-            "sisaWaktu",
-            "dailyHoursLeft",
-        ):
-            if key in ojol and isinstance(ojol[key], (int, float)):
-                hours_left = float(ojol[key])
-                break
-    if hours_left is None:
-        match = re.search(
-            r"(?:sisa\s*(?:jam\s*narik|waktu)?|tersisa)\s*[:]?\s*(\d+(?:[.,]\d+)?)\s*jam",
-            problem_text or str(ojol.get("text") or ""),
-            re.IGNORECASE,
-        )
-        if match:
-            hours_left = float(match[1].replace(",", "."))
-
-    if (
-        bool(
-            re.search(
-                r"(?:8|12)\s*jam|maksimal.*(?:hari|00[.:]00)|batas.*(?:harian|narik)|lanjut\s*besok|paling\s*lama\s*(?:8|12)\s*jam",
-                problem_text,
-                re.IGNORECASE,
-            )
-        )
-        or ojol.get("shiftDone") is True
-        or ojol.get("dailyLimitReached") is True
-        or (hours_left is not None and hours_left <= 0)
-    ):
-        is_shift_done = True
-
-    order_code = None
-    if trip:
-        # cek false/true = flag verifikasi aktif; string = kode langsung dari bundle lama.
-        raw_cek = trip.get("cek")
-        if isinstance(raw_cek, str):
-            order_code = raw_cek
-        elif raw_cek is not None and not isinstance(raw_cek, (bool, int)):
-            raise HttpCoreError("Kode cek trip Ojol tidak valid", recoverable=True)
-        icon, label = KINDS[trip["kind"]]
-        is_kendara = trip.get("mode") == "kendara"
-        is_arrived = trip.get("arrived") is True
-        jemput_done = trip.get("jemput") is True if is_kendara else True
-        if trip.get("arriveAt"):
-            remaining = max(0, ceil((timestamp(trip["arriveAt"]) - server_now).total_seconds()))
-        else:
-            remaining = 0
-        if is_kendara:
-            phase = "complete" if (is_arrived or (jemput_done and remaining == 0)) else "delivering"
-        else:
-            phase = "complete" if remaining == 0 else "delivering"
-        from_label = (
-            trip["from"]["label"]
-            if isinstance(trip.get("from"), dict) and "label" in trip["from"]
-            else "Titik jemput"
-        )
-        to_label = (
-            trip["to"]["label"]
-            if isinstance(trip.get("to"), dict) and "label" in trip["to"]
-            else "Tujuan"
-        )
-        description = f"{icon} {label} · {vehicle_icon} {integer(trip['distance'])} petak · ongkos {display(coin(trip['fareMilli']))} koin | 📍 {from_label}🏁 {to_label}"
-        buttons = [
-            "✅ Sampai! Terima ongkos"
-            if phase == "complete"
-            else f"{vehicle_icon} Mengantar… {remaining // 60}:{remaining % 60:02}",
-            "📍 Lihat di peta",
-        ]
-        text = description
-    if needs["asleep"] or resting:
-        phase, text = "sleeping", "Karakter sedang tidur. Semua Auto dijeda sampai bangun di game."
-    elif is_ojol_resting:
-        buttons = ["Berhenti jadi mitra ojol"]
-        text = (
-            problem_text or "Mitra ojol wajib istirahat 30 menit setelah 3 jam narik tanpa henti."
-        )
-    elif is_shift_done:
-        buttons = ["Berhenti jadi mitra ojol"]
-        text = (
-            problem_text
-            or "Mitra ojol bisa narik paling lama 8 jam per hari, lanjut besok mulai jam 00.00."
-        )
-    elif is_ojol_maintenance:
-        buttons = ["Berhenti jadi mitra ojol"]
-        text = problem_text or "Fitur Auto Ojol sedang dalam pemeliharaan (maintenance)."
-    elif require_ojol and ojol.get("problem") and not trip:
-        if ojol.get("fix") not in RESOURCES:
-            raise HttpCoreError(
-                "Game menolak Ojol: periksa kondisi akun di game", category="blocked"
-            )
-        buttons = ["Berhenti jadi mitra ojol"]
-    if require_ojol and not is_ojol_maintenance and phase == "idle" and vehicle is None:
-        raise HttpCoreError(
-            "Tidak ada motor atau mobil yang tersedia untuk Ojol", category="blocked"
-        )
-    history = []
-    game_history = {}
-    for receipt in ojol["history"] if require_ojol else ojol.get("history", []):
-        record = GameReceipt(
-            id=receipt["id"],
-            done_at=timestamp(receipt["doneAt"]),
-            kind=receipt["kind"],
-            origin=receipt["from"]["label"],
-            destination=receipt["to"]["label"],
-            amount=coin(receipt["netMilli"]),
-        )
-        if record.id in game_history:
-            if game_history[record.id] != record:
-                raise HttpCoreError("Receipt Ojol memiliki ID sama dengan data berbeda")
-            continue
-        game_history[record.id] = record
-        done = timestamp(receipt["doneAt"]).astimezone(WIB)
-        icon, _ = KINDS[receipt["kind"]]
-        history.append(
-            f"{done:%H.%M} {icon} {receipt['from']['label']} → {receipt['to']['label']} · +{display(coin(receipt['netMilli']))}"
-        )
-    bars = ojol["bars"] if require_ojol else (ojol.get("bars") or {})
-    minimum = (ojol.get("pakai") or {}).get("bensinMin")
-    min_fuel = minimum if type(minimum) is int and 1 <= minimum <= 100 else None
-    fuel = bars["bensin"] if require_ojol else bars.get("bensin", 0)
-    if vehicle and min_fuel is not None:
-        tank = "bensinMobil" if vehicle == "mobil" else "bensin"
-        rows = needs.get("needs")
-        tank_value = (
-            next(
-                (
-                    row.get("value")
-                    for row in rows
-                    if isinstance(row, dict) and row.get("id") == tank
-                ),
-                None,
-            )
-            if isinstance(rows, list)
-            else None
-        )
-        if type(tank_value) in (int, float) and 0 <= tank_value <= 100:
-            fuel = floor(tank_value)
-        elif vehicle != ojol.get("vehicle"):
-            raise HttpCoreError("Tangki kendaraan Ojol belum dapat dibedakan", recoverable=True)
-        elif type(fuel) in (int, float) and 0 <= fuel <= 100:
-            fuel = floor(fuel)
-    income = ojol["earnedTodayMilli"] if require_ojol else ojol.get("earnedTodayMilli", 0)
-    return Snapshot(
-        observed_at=server_now,
-        wallet=coin(me["balanceMilli"]),
-        fuel=integer(fuel),
-        condition=integer(bars["kendaraan"] if require_ojol else bars.get("kendaraan", 0)),
-        data=integer(bars["kuota"] if require_ojol else bars.get("kuota", 0)),
-        phase=phase,
-        remaining_seconds=remaining,
-        trip=description,
-        today_income=coin(income),
-        history=history,
-        buttons=buttons,
-        raw_text=text,
-        needs={key: row["value"] for key, row in need_rows(needs).items()},
-        game_history=list(game_history.values()),
-        today_count=integer(ojol["todayCount"]) if "todayCount" in ojol else None,
-        trip_id=trip["id"] if trip else None,
-        order_code=order_code if trip else None,
-        order_verify=bool(order_code) or bool(trip and trip.get("cek") is True),
-        arrive_at=timestamp(trip["arriveAt"]) if trip and trip.get("arriveAt") else None,
-        home_plot=(me.get("home") or {}).get("plotId"),
-        village=(me.get("home") or {}).get("desa"),
-        sleep_schedule=sleep_schedule,
-        ojol_vehicle=vehicle,
-        ojol_min_fuel=min_fuel,
-        ojol_fuel_blocked=bool(ojol.get("problem") and ojol.get("fix") == "bensin"),
-        ojol_resting=is_ojol_resting,
-        ojol_rest_until=ojol_rest_until,
-        ojol_shift_done=is_shift_done,
-        ojol_hours_left=hours_left,
-        ojol_maintenance=is_ojol_maintenance,
-        ojol_mode=trip.get("mode") if trip else None,
-        trip_jemput=trip.get("jemput") if trip else None,
-        kondisi=needs.get("kondisi") or {},
-        bersih=needs.get("bersih") or {},
-    )
-
-
-def extract_effects(source):
-    allowed = set.union(*ITEMS.values()) | {CAR_SERVICE, EV_CHARGE}
-    result = {}
-    for match in re.finditer(r'"([a-z-]+)":(\{[^{}]{1,220}\})', source):
-        if match[1] not in allowed:
-            continue
-        effect = json.loads(match[2])
-        if not any(key in effect for key in RESOURCES):
-            continue
-        selected = {
-            RESOURCES[key]: integer(value) for key, value in effect.items() if key in RESOURCES
-        }
-        if not selected or any(value > 100 for value in selected.values()):
-            raise HttpCoreError("Konfigurasi efek produk tidak valid", recoverable=True)
-        if match[1] in result and result[match[1]] != selected:
-            raise HttpCoreError("Konfigurasi efek produk ambigu", recoverable=True)
-        result[match[1]] = selected
-    return result
-
-
-def extract_need_effects(source, group="barang"):
-    for match in re.finditer(r'"' + group + r'"\s*:\s*\{', source):
-        try:
-            items, _ = json.JSONDecoder().raw_decode(source, match.end() - 1)
-        except ValueError:
-            continue
-        required = (
-            {"nasi-goreng", "tambal-ban", "pulsa"}
-            if group == "barang"
-            else {"gym-desa", "kolam-renang"}
-        )
-        if not required <= items.keys():
-            continue
-        return {
-            item: {key: value for key, value in effects.items() if key in NEEDS}
-            for item, effects in items.items()
-            if isinstance(effects, dict)
-            and re.fullmatch(r"[a-z0-9-]+", item)
-            and any(key in NEEDS for key in effects)
-            and all(type(value) is int and 0 <= value <= 100 for value in effects.values())
-        }
-    return {}
-
+__all__ = [
+    "AUTO_SUBJECT",
+    "CAR_SERVICE",
+    "CATEGORIES",
+    "DOMAIN",
+    "EV_CHARGE",
+    "ITEMS",
+    "KAMAR_MANDI_ID",
+    "KINDS",
+    "ORIGIN",
+    "RESOURCES",
+    "STUDY_LABELS",
+    "SUBJECTS",
+    "VEHICLE_ICONS",
+    "WALLET_PRODUCT_CATEGORIES",
+    "HouseUnavailable",
+    "HttpCoreError",
+    "OjolHttpApi",
+    "ShopClosed",
+    "coin",
+    "display",
+    "ensure_browser_identity",
+    "extract_effects",
+    "extract_need_effects",
+    "integer",
+    "is_closed_shop_response",
+    "is_unavailable_house_response",
+    "need_rows",
+    "ojol_vehicle",
+    "parse_cookie_input",
+    "session_expired",
+    "snapshot_from_api",
+    "timestamp",
+]
 
 BROWSER_PROFILES = [
     {
@@ -563,6 +213,11 @@ class OjolHttpApi:
         self.retries = 0
         self.expires_at = None
         self.browser_identity = ensure_browser_identity(self.directory)
+
+    def _session_client(self) -> httpx.AsyncClient:
+        if self.client is None:
+            raise HttpCoreError("Sesi game belum dibuka. Gunakan Import Cookie.", category="auth")
+        return self.client
 
     def browser_headers(self, path: str, method: str = "GET") -> dict:
         is_html = path == "/kampung"
@@ -693,12 +348,12 @@ class OjolHttpApi:
         for attempt in range(3 if payload is None else 1):
             headers = self.browser_headers(path, "GET" if payload is None else "POST")
             try:
-                response = await self.client.request(
+                response = await self._session_client().request(
                     "GET" if payload is None else "POST",
                     path,
                     json=payload,
                     headers=headers,
-                    **({"params": {"after": after}} if after is not None else {}),
+                    params={"after": after} if after is not None else None,
                 )
             except httpx.TransportError:
                 if payload is not None:
@@ -745,112 +400,10 @@ class OjolHttpApi:
             "Pembacaan HTTP gagal setelah 3 percobaan", category="transport", recoverable=True
         )
 
-    @staticmethod
-    def valid_cursor(value):
-        return isinstance(value, str) and 0 < len(value) <= 2048
+    valid_cursor = staticmethod(valid_cursor)
 
-    async def daily_wallet(self, day):
-        day = report_date(day)
-        start, end = map(datetime.fromisoformat, day_bounds(day))
-        read_at = now()
-        result = {
-            "income_milli": 0,
-            "payout_count": 0,
-            "expenses_milli": {},
-            "expense_issue": None,
-            "complete": False,
-            "today_income_milli": None,
-            "issue": "Riwayat belum mencapai awal hari",
-        }
-        if start > read_at:
-            result["issue"] = "Tanggal tersebut belum tiba"
-            return result
-
-        cursor = None
-        seen_cursors = set()
-        seen_entries = {}
-        previous = None
-        try:
-            async with asyncio.timeout(12):
-                if day == read_at.astimezone(WIB).date():
-                    try:
-                        ojol = await self.request("/api/ojol")
-                        result["today_income_milli"] = integer(ojol["earnedTodayMilli"])
-                    except (HttpCoreError, KeyError, TypeError):
-                        pass
-
-                for _ in range(10):
-                    page = await self.request("/api/me/koin", after=cursor)
-                    items, next_cursor = page["items"], page["next"]
-                    if not isinstance(items, list) or (
-                        next_cursor is not None and not self.valid_cursor(next_cursor)
-                    ):
-                        raise ValueError("Invalid wallet page")
-
-                    for row in items:
-                        identifier, kind = row["id"], row["type"]
-                        at, amount = timestamp(row["at"]), row["amountMilli"]
-                        if (
-                            not isinstance(identifier, str)
-                            or not identifier
-                            or not isinstance(kind, str)
-                            or not kind
-                            or type(amount) is not int
-                            or (kind == "OJOL_ONGKOS" and amount < 0)
-                        ):
-                            raise ValueError("Invalid wallet entry")
-
-                        in_day = start <= at < end and at <= read_at
-                        purchase = in_day and kind == "SHOP_PURCHASE" and amount < 0
-                        detail = row.get("detail") if purchase else None
-                        product = (
-                            " ".join(detail.casefold().split()) if isinstance(detail, str) else None
-                        )
-                        entry = (at, kind, amount, product)
-                        if identifier in seen_entries:
-                            if seen_entries[identifier] != entry:
-                                raise ValueError("Conflicting wallet entry")
-                            continue
-                        if previous is not None and at > previous:
-                            raise ValueError("Wallet entries out of order")
-                        previous = at
-                        seen_entries[identifier] = entry
-                        if in_day and kind == "OJOL_ONGKOS":
-                            result["income_milli"] += amount
-                            result["payout_count"] += 1
-                        if purchase:
-                            if not product:
-                                result["expense_issue"] = (
-                                    "Ada belanja tanpa nama produk yang dapat dibaca"
-                                )
-                            elif product in WALLET_PRODUCT_CATEGORIES:
-                                resource = WALLET_PRODUCT_CATEGORIES[product]
-                                expenses = result["expenses_milli"]
-                                expenses[resource] = expenses.get(resource, 0) - amount
-
-                    if next_cursor is not None and next_cursor in seen_cursors:
-                        result["issue"] = "Cursor riwayat berulang"
-                        break
-                    if previous is not None and previous < start:
-                        result.update(complete=True, issue=None)
-                        break
-                    if next_cursor is None:
-                        break
-                    seen_cursors.add(next_cursor)
-                    cursor = next_cursor
-                else:
-                    result["issue"] = "Batas 10 halaman tercapai"
-        except TimeoutError:
-            result["issue"] = "Batas waktu pembacaan riwayat tercapai"
-        except HttpCoreError as exc:
-            result["issue"] = (
-                "Sesi game ditolak atau kedaluwarsa"
-                if exc.category == "auth"
-                else "Riwayat koin tidak dapat dibaca"
-            )
-        except (KeyError, ValueError, TypeError, AttributeError, OverflowError):
-            result["issue"] = "Format atau urutan riwayat koin belum dapat diverifikasi"
-        return result
+    async def daily_wallet(self, day: date | str) -> WalletReport:
+        return await read_daily_wallet(self.request, day, now())
 
     async def snapshot(self):
         flags = auto_flags(self.directory)
@@ -1148,7 +701,11 @@ class OjolHttpApi:
         if business.get("desa") != self.home["desa"]:
             return None
         name = business.get("name")
-        if business.get("catalogId") != category or name != row["name"]:
+        if (
+            business.get("catalogId") != category
+            or not isinstance(name, str)
+            or name != row["name"]
+        ):
             raise HttpCoreError("Identitas usaha kebutuhan berubah", category="schema")
         try:
             identifier = str(UUID(business["id"]))
@@ -1455,7 +1012,7 @@ class OjolHttpApi:
             and type(service.get("priceMilli")) is int
             and service["priceMilli"] == place["priceMilli"]
         ):
-            effect = (effects or {}).get(item, {})
+            effect: dict[Need | Resource, int] = (effects or {}).get(item, {})
             if effect.get("fisik") != gain:
                 effect = {"fisik": gain}
             products.append(
@@ -1694,6 +1251,261 @@ class OjolHttpApi:
             )
         return None
 
+    async def _preview_spbu_fuel(self, current: Snapshot) -> dict:
+        try:
+            dest = await self.request("/api/tujuan")
+            spbus = [
+                u
+                for u in dest.get("usaha", [])
+                if isinstance(u, dict) and u.get("item") == "spbu-pertamina"
+            ]
+        except Exception:
+            spbus = []
+        if not spbus:
+            return {
+                "shops": [],
+                "navigation": {"method": "spbu_visit", "travel_request_sent": False},
+            }
+
+        ref_x = (self.home or {}).get("x", 0)
+        ref_y = (self.home or {}).get("y", 0)
+        spbus.sort(key=lambda s: (s.get("x", 0) - ref_x) ** 2 + (s.get("y", 0) - ref_y) ** 2)
+        spbu = spbus[0]
+        plot_id = spbu["plotId"]
+        v_type = current.ojol_vehicle or "motor"
+        is_electric = False
+        if v_type == "mobil":
+            try:
+                kd = await self.request("/api/kendaraan")
+                items = kd.get("items", []) if isinstance(kd, dict) else []
+                car = next((c for c in items if c.get("family") == "mobil"), None)
+                is_electric = bool(car and car.get("listrik"))
+            except Exception:
+                pass
+
+        if is_electric:
+            item_name, prod_name = "isi-daya-spklu", "Isi daya SPKLU (mobil listrik)"
+        elif v_type == "mobil":
+            item_name, prod_name = "isi-bensin-mobil", "Isi bensin mobil"
+        else:
+            item_name, prod_name = "isi-bensin-motor", "Isi bensin motor"
+
+        missing = max(1, 100 - current.fuel)
+        price = (Decimal(missing) * Decimal(20)) / Decimal(1000)
+        biz_id = spbu.get("businessId")
+        try:
+            shop_id = str(UUID(biz_id)) if biz_id else str(uuid5(NAMESPACE_DNS, plot_id))
+        except (ValueError, TypeError):
+            shop_id = str(uuid5(NAMESPACE_DNS, plot_id))
+        identity = json.dumps(
+            {
+                "shop": shop_id,
+                "resource": "fuel",
+                "plotId": plot_id,
+                "x": spbu.get("x", 0),
+                "y": spbu.get("y", 0),
+                "item": item_name,
+                "vehicle": v_type,
+            }
+        )
+        dist_sq = (spbu.get("x", 0) - ref_x) ** 2 + (spbu.get("y", 0) - ref_y) ** 2
+        spbu_shop = ShopPreview(
+            id=shop_id,
+            plot_id=plot_id,
+            name=spbu.get("name") or "SPBU",
+            category="spbu",
+            distance_squared=dist_sq,
+            products=[
+                Product(
+                    name=prod_name,
+                    price=price,
+                    effects={"fuel": missing},
+                    row_text=identity,
+                    enabled=True,
+                )
+            ],
+        )
+        self.catalog.setdefault("fuel", {})[shop_id] = spbu_shop
+        return {
+            "shops": [spbu_shop.model_dump()],
+            "navigation": {"method": "spbu_refill", "travel_request_sent": False},
+        }
+
+    async def _preview_fisik_shops(self) -> list[ShopPreview]:
+        if not self.physical_places:
+            try:
+                tempat = await self.request("/api/kebutuhan?tempat=fisik")
+                if isinstance(tempat, dict) and isinstance(tempat.get("places"), list):
+                    self.physical_places = [p for p in tempat["places"] if isinstance(p, dict)]
+            except HttpCoreError:
+                pass
+        try:
+            effects = await self.effects(for_needs=True)
+        except HttpCoreError:
+            effects = {}
+        village = (self.home or {}).get("desa")
+        gym_ids = list(GYM_FACILITIES_BY_VILLAGE.get(village, ()))
+        gym_previews = await self.read_previews(self.gym_facility(fid, effects) for fid in gym_ids)
+        place_previews = await self.read_previews(
+            self.physical_facility(place, effects)
+            for place in self.physical_places
+            if place.get("id") not in set(gym_ids)
+        )
+        return gym_previews + place_previews
+
+    async def _preview_kesehatan_shops(self) -> list[ShopPreview]:
+        try:
+            bpjs = await self.ensure_bpjs()
+        except HttpCoreError:
+            bpjs = {}
+        kartu = bpjs.get("kartu") or {}
+        gratis_sisa = bpjs.get("gratisSisa", 0)
+        village = (self.home or {}).get("desa")
+        facility_ids = HEALTH_FACILITIES_BY_VILLAGE.get(village, ())
+        if not (kartu.get("aktif") and gratis_sisa > 0 and facility_ids):
+            return []
+        for fid in facility_ids:
+            try:
+                details = await self.request(f"/api/facilities/{fid}")
+            except HttpCoreError:
+                continue
+            service = details.get("service") or {}
+            if (
+                details.get("state") == "DONE"
+                and not details.get("nextAt")
+                and not details.get("myVisitUntil")
+                and service.get("open") is not False
+            ):
+                identity = json.dumps({"shop": fid, "item": "use", "resource": "kesehatan"})
+                return [
+                    ShopPreview(
+                        id=fid,
+                        plot_id=fid,
+                        name=details.get("title", "Puskesmas"),
+                        category="fasum",
+                        distance_squared=0,
+                        products=[
+                            Product(
+                                name=service.get("label", "Periksa kesehatan"),
+                                price=Decimal(0),
+                                effects={"kesehatan": 15},
+                                row_text=identity,
+                                enabled=True,
+                            )
+                        ],
+                    )
+                ]
+        return []
+
+    async def _preview_cooldown_facility(
+        self,
+        resource: str,
+        facility_ids: tuple[str, ...],
+        *,
+        default_title: str,
+        default_label: str,
+        effects_resolver,
+    ) -> list[ShopPreview]:
+        now_utc = datetime.now(timezone.utc)
+        for fid in facility_ids:
+            try:
+                details = await self.request(f"/api/facilities/{fid}")
+            except HttpCoreError:
+                continue
+            service = details.get("service") or {}
+            is_cooldown = False
+            for time_key in ("nextAt", "myVisitUntil"):
+                val = details.get(time_key)
+                if val:
+                    try:
+                        dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
+                        if now_utc < dt:
+                            is_cooldown = True
+                    except (ValueError, TypeError):
+                        is_cooldown = True
+            if (
+                details.get("state") == "DONE"
+                and not is_cooldown
+                and service.get("open") is not False
+            ):
+                title = details.get("title", default_title)
+                label = service.get("label", default_label)
+                identity = json.dumps({"shop": fid, "item": "use", "resource": resource})
+                return [
+                    ShopPreview(
+                        id=fid,
+                        plot_id=fid,
+                        name=title,
+                        category="fasum",
+                        distance_squared=0,
+                        products=[
+                            Product(
+                                name=label,
+                                price=Decimal(0),
+                                effects=effects_resolver(details, title),
+                                row_text=identity,
+                                enabled=True,
+                            )
+                        ],
+                    )
+                ]
+        return []
+
+    async def _preview_kebersihan_shops(self) -> list[ShopPreview]:
+        plot_id = (self.home or {}).get("plotId", "home")
+        keb_status = await self.request("/api/kebutuhan")
+        bersih = keb_status.get("bersih") or {}
+        products = []
+        if bersih.get("mandi", 0) < bersih.get("mandiMaks", 2):
+            products.append(
+                Product(
+                    name="Mandi di kamar mandi",
+                    price=Decimal(0),
+                    effects={"kebersihan": 65},
+                    row_text=json.dumps(
+                        {"shop": KAMAR_MANDI_ID, "action": "mandi", "resource": "kebersihan"}
+                    ),
+                    enabled=True,
+                )
+            )
+        if bersih.get("sikat", 0) < bersih.get("sikatMaks", 3):
+            products.append(
+                Product(
+                    name="Sikat gigi",
+                    price=Decimal(0),
+                    effects={"kebersihan": 35},
+                    row_text=json.dumps(
+                        {"shop": KAMAR_MANDI_ID, "action": "sikat", "resource": "kebersihan"}
+                    ),
+                    enabled=True,
+                )
+            )
+        if not products or (
+            bersih.get("mandi", 0) >= bersih.get("mandiMaks", 2)
+            and bersih.get("sikat", 0) >= bersih.get("sikatMaks", 3)
+        ):
+            products.append(
+                Product(
+                    name="Cuci tangan",
+                    price=Decimal(0),
+                    effects={"kebersihan": 5},
+                    row_text=json.dumps(
+                        {"shop": KAMAR_MANDI_ID, "action": "cuci", "resource": "kebersihan"}
+                    ),
+                    enabled=True,
+                )
+            )
+        return [
+            ShopPreview(
+                id=KAMAR_MANDI_ID,
+                plot_id=plot_id,
+                name="Kamar mandi rumah",
+                category="kamar-mandi",
+                distance_squared=0,
+                products=products,
+            )
+        ]
+
     async def preview(self, resource):
         if resource not in CATEGORIES and resource not in NEEDS:
             raise HttpCoreError("Resource tidak didukung", category="blocked")
@@ -1704,286 +1516,39 @@ class OjolHttpApi:
                 if resource in {"fuel", "condition"} or not getattr(self, "home", None):
                     current = await self.snapshot()
                     if resource == "fuel" and current.ojol_min_fuel is not None:
-                        try:
-                            dest = await self.request("/api/tujuan")
-                            spbus = [
-                                u
-                                for u in dest.get("usaha", [])
-                                if isinstance(u, dict) and u.get("item") == "spbu-pertamina"
-                            ]
-                        except Exception:
-                            spbus = []
-                        if spbus:
-                            ref_x = (self.home or {}).get("x", 0)
-                            ref_y = (self.home or {}).get("y", 0)
-                            spbus.sort(
-                                key=lambda s: (
-                                    (s.get("x", 0) - ref_x) ** 2 + (s.get("y", 0) - ref_y) ** 2
-                                )
-                            )
-                            spbu = spbus[0]
-                            plot_id = spbu["plotId"]
-                            v_type = current.ojol_vehicle or "motor"
-                            is_electric = False
-                            if v_type == "mobil":
-                                try:
-                                    kd = await self.request("/api/kendaraan")
-                                    items = kd.get("items", []) if isinstance(kd, dict) else []
-                                    car = next(
-                                        (c for c in items if c.get("family") == "mobil"), None
-                                    )
-                                    is_electric = bool(car and car.get("listrik"))
-                                except Exception:
-                                    pass
-                            if is_electric:
-                                item_name = "isi-daya-spklu"
-                                prod_name = "Isi daya SPKLU (mobil listrik)"
-                            elif v_type == "mobil":
-                                item_name = "isi-bensin-mobil"
-                                prod_name = "Isi bensin mobil"
-                            else:
-                                item_name = "isi-bensin-motor"
-                                prod_name = "Isi bensin motor"
-                            missing = max(1, 100 - current.fuel)
-                            price = (Decimal(missing) * Decimal(20)) / Decimal(1000)
-                            biz_id = spbu.get("businessId")
-                            try:
-                                shop_id = (
-                                    str(UUID(biz_id))
-                                    if biz_id
-                                    else str(uuid5(NAMESPACE_DNS, plot_id))
-                                )
-                            except (ValueError, TypeError):
-                                shop_id = str(uuid5(NAMESPACE_DNS, plot_id))
-                            identity = json.dumps(
-                                {
-                                    "shop": shop_id,
-                                    "resource": "fuel",
-                                    "plotId": plot_id,
-                                    "x": spbu.get("x", 0),
-                                    "y": spbu.get("y", 0),
-                                    "item": item_name,
-                                    "vehicle": v_type,
-                                }
-                            )
-                            product = Product(
-                                name=prod_name,
-                                price=price,
-                                effects={"fuel": missing},
-                                row_text=identity,
-                                enabled=True,
-                            )
-                            dist_sq = (spbu.get("x", 0) - ref_x) ** 2 + (
-                                spbu.get("y", 0) - ref_y
-                            ) ** 2
-                            spbu_shop = ShopPreview(
-                                id=shop_id,
-                                plot_id=plot_id,
-                                name=spbu.get("name") or "SPBU",
-                                category="spbu",
-                                distance_squared=dist_sq,
-                                products=[product],
-                            )
-                            self.catalog.setdefault("fuel", {})[shop_id] = spbu_shop
-                            return {
-                                "shops": [spbu_shop.model_dump()],
-                                "navigation": {
-                                    "method": "spbu_refill",
-                                    "travel_request_sent": False,
-                                },
-                            }
-                        return {
-                            "shops": [],
-                            "navigation": {"method": "spbu_visit", "travel_request_sent": False},
-                        }
+                        return await self._preview_spbu_fuel(current)
                 if not self.home:
                     raise HttpCoreError("Rumah akun belum tersedia", category="blocked")
                 if resource == "fisik":
-                    if not self.physical_places:
-                        try:
-                            tempat = await self.request("/api/kebutuhan?tempat=fisik")
-                            if isinstance(tempat, dict) and isinstance(tempat.get("places"), list):
-                                self.physical_places = [
-                                    p for p in tempat["places"] if isinstance(p, dict)
-                                ]
-                        except HttpCoreError:
-                            pass
-                    effects = {}
-                    try:
-                        effects = await self.effects(for_needs=True)
-                    except HttpCoreError:
-                        effects = {}
-                    village = (self.home or {}).get("desa")
-                    gym_ids = list(GYM_FACILITIES_BY_VILLAGE.get(village, ()))
-                    gym_previews = await self.read_previews(
-                        self.gym_facility(fid, effects) for fid in gym_ids
-                    )
-                    place_previews = await self.read_previews(
-                        self.physical_facility(place, effects)
-                        for place in self.physical_places
-                        if place.get("id") not in set(gym_ids)
-                    )
-                    shops = gym_previews + place_previews
+                    shops = await self._preview_fisik_shops()
                 elif resource in NEEDS:
                     shops = []
+                    village = (self.home or {}).get("desa")
                     if resource == "kesehatan":
-                        try:
-                            bpjs = await self.ensure_bpjs()
-                        except HttpCoreError:
-                            bpjs = {}
-                        kartu = bpjs.get("kartu") or {}
-                        gratis_sisa = bpjs.get("gratisSisa", 0)
-                        village = (self.home or {}).get("desa")
-                        facility_ids = HEALTH_FACILITIES_BY_VILLAGE.get(village, ())
-                        if kartu.get("aktif") and gratis_sisa > 0 and facility_ids:
-                            for fid in facility_ids:
-                                try:
-                                    details = await self.request(f"/api/facilities/{fid}")
-                                except HttpCoreError:
-                                    continue
-                                service = details.get("service") or {}
-                                if (
-                                    details.get("state") == "DONE"
-                                    and not details.get("nextAt")
-                                    and not details.get("myVisitUntil")
-                                    and service.get("open") is not False
-                                ):
-                                    title = details.get("title", "Puskesmas")
-                                    label = service.get("label", "Periksa kesehatan")
-                                    identity = json.dumps(
-                                        {"shop": fid, "item": "use", "resource": "kesehatan"}
-                                    )
-                                    shops = [
-                                        ShopPreview(
-                                            id=fid,
-                                            plot_id=fid,
-                                            name=title,
-                                            category="fasum",
-                                            distance_squared=0,
-                                            products=[
-                                                Product(
-                                                    name=label,
-                                                    price=Decimal(0),
-                                                    effects={"kesehatan": 15},
-                                                    row_text=identity,
-                                                    enabled=True,
-                                                )
-                                            ],
-                                        )
-                                    ]
-                                    break
+                        shops = await self._preview_kesehatan_shops()
                     elif resource == "makan":
-                        village = (self.home or {}).get("desa")
-                        facility_ids = SPPG_FACILITIES_BY_VILLAGE.get(village, ())
-                        now_utc = datetime.now(timezone.utc)
-                        for fid in facility_ids:
-                            try:
-                                details = await self.request(f"/api/facilities/{fid}")
-                            except HttpCoreError:
-                                continue
-                            service = details.get("service") or {}
-                            is_cooldown = False
-                            for time_key in ("nextAt", "myVisitUntil"):
-                                val = details.get(time_key)
-                                if val:
-                                    try:
-                                        dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
-                                        if now_utc < dt:
-                                            is_cooldown = True
-                                    except Exception:
-                                        is_cooldown = True
-                            if (
-                                details.get("state") == "DONE"
-                                and not is_cooldown
-                                and service.get("open") is not False
-                            ):
-                                title = details.get("title", "SPPG (dapur Makan Bergizi Gratis)")
-                                label = service.get("label", "Makan bergizi")
-                                identity = json.dumps(
-                                    {"shop": fid, "item": "use", "resource": "makan"}
-                                )
-                                shops = [
-                                    ShopPreview(
-                                        id=fid,
-                                        plot_id=fid,
-                                        name=title,
-                                        category="fasum",
-                                        distance_squared=0,
-                                        products=[
-                                            Product(
-                                                name=label,
-                                                price=Decimal(0),
-                                                effects={"makan": 60, "kesehatan": 5},
-                                                row_text=identity,
-                                                enabled=True,
-                                            )
-                                        ],
-                                    )
-                                ]
-                                break
+                        shops = await self._preview_cooldown_facility(
+                            "makan",
+                            SPPG_FACILITIES_BY_VILLAGE.get(village, ()),
+                            default_title="SPPG (dapur Makan Bergizi Gratis)",
+                            default_label="Makan bergizi",
+                            effects_resolver=lambda _d, _t: {"makan": 60, "kesehatan": 5},
+                        )
                     elif resource == "rekreasi":
-                        village = (self.home or {}).get("desa")
-                        facility_ids = RECREATION_FACILITIES_BY_VILLAGE.get(village, ())
-                        now_utc = datetime.now(timezone.utc)
-                        for fid in facility_ids:
-                            try:
-                                details = await self.request(f"/api/facilities/{fid}")
-                            except HttpCoreError:
-                                continue
-                            service = details.get("service") or {}
-                            is_cooldown = False
-                            for time_key in ("nextAt", "myVisitUntil"):
-                                val = details.get(time_key)
-                                if val:
-                                    try:
-                                        dt = datetime.fromisoformat(val.replace("Z", "+00:00"))
-                                        if now_utc < dt:
-                                            is_cooldown = True
-                                    except Exception:
-                                        is_cooldown = True
-                            if (
-                                details.get("state") == "DONE"
-                                and not is_cooldown
-                                and service.get("open") is not False
-                            ):
-                                title = details.get("title", "Taman desa")
-                                item_name = details.get("item", "")
-                                label = service.get("label", "Bersantai di taman")
-                                is_alun_alun = (
-                                    "alun-alun" in item_name.lower() or "alun-alun" in title.lower()
-                                )
-                                effects = (
-                                    {"rekreasi": 30, "fisik": 10}
-                                    if is_alun_alun
-                                    else {"rekreasi": 20}
-                                )
-                                identity = json.dumps(
-                                    {"shop": fid, "item": "use", "resource": "rekreasi"}
-                                )
-                                shops = [
-                                    ShopPreview(
-                                        id=fid,
-                                        plot_id=fid,
-                                        name=title,
-                                        category="fasum",
-                                        distance_squared=0,
-                                        products=[
-                                            Product(
-                                                name=label,
-                                                price=Decimal(0),
-                                                effects=effects,
-                                                row_text=identity,
-                                                enabled=True,
-                                            )
-                                        ],
-                                    )
-                                ]
-                                break
+                        shops = await self._preview_cooldown_facility(
+                            "rekreasi",
+                            RECREATION_FACILITIES_BY_VILLAGE.get(village, ()),
+                            default_title="Taman desa",
+                            default_label="Bersantai di taman",
+                            effects_resolver=lambda d, title: (
+                                {"rekreasi": 30, "fisik": 10}
+                                if "alun-alun" in d.get("item", "").lower()
+                                or "alun-alun" in title.lower()
+                                else {"rekreasi": 20}
+                            ),
+                        )
                     elif resource == "wc":
                         plot_id = (self.home or {}).get("plotId", "home")
-                        identity = json.dumps(
-                            {"shop": KAMAR_MANDI_ID, "action": "wc", "resource": "wc"}
-                        )
                         shops = [
                             ShopPreview(
                                 id=KAMAR_MANDI_ID,
@@ -1996,81 +1561,20 @@ class OjolHttpApi:
                                         name="Buang air di kloset",
                                         price=Decimal(0),
                                         effects={"wc": 100},
-                                        row_text=identity,
+                                        row_text=json.dumps(
+                                            {
+                                                "shop": KAMAR_MANDI_ID,
+                                                "action": "wc",
+                                                "resource": "wc",
+                                            }
+                                        ),
                                         enabled=True,
                                     )
                                 ],
                             )
                         ]
                     elif resource == "kebersihan":
-                        plot_id = (self.home or {}).get("plotId", "home")
-                        keb_status = await self.request("/api/kebutuhan")
-                        bersih = keb_status.get("bersih") or {}
-                        products = []
-                        if bersih.get("mandi", 0) < bersih.get("mandiMaks", 2):
-                            identity = json.dumps(
-                                {
-                                    "shop": KAMAR_MANDI_ID,
-                                    "action": "mandi",
-                                    "resource": "kebersihan",
-                                }
-                            )
-                            products.append(
-                                Product(
-                                    name="Mandi di kamar mandi",
-                                    price=Decimal(0),
-                                    effects={"kebersihan": 65},
-                                    row_text=identity,
-                                    enabled=True,
-                                )
-                            )
-                        if bersih.get("sikat", 0) < bersih.get("sikatMaks", 3):
-                            identity = json.dumps(
-                                {
-                                    "shop": KAMAR_MANDI_ID,
-                                    "action": "sikat",
-                                    "resource": "kebersihan",
-                                }
-                            )
-                            products.append(
-                                Product(
-                                    name="Sikat gigi",
-                                    price=Decimal(0),
-                                    effects={"kebersihan": 35},
-                                    row_text=identity,
-                                    enabled=True,
-                                )
-                            )
-                        if not products or (
-                            bersih.get("mandi", 0) >= bersih.get("mandiMaks", 2)
-                            and bersih.get("sikat", 0) >= bersih.get("sikatMaks", 3)
-                        ):
-                            identity = json.dumps(
-                                {
-                                    "shop": KAMAR_MANDI_ID,
-                                    "action": "cuci",
-                                    "resource": "kebersihan",
-                                }
-                            )
-                            products.append(
-                                Product(
-                                    name="Cuci tangan",
-                                    price=Decimal(0),
-                                    effects={"kebersihan": 5},
-                                    row_text=identity,
-                                    enabled=True,
-                                )
-                            )
-                        shops = [
-                            ShopPreview(
-                                id=KAMAR_MANDI_ID,
-                                plot_id=plot_id,
-                                name="Kamar mandi rumah",
-                                category="kamar-mandi",
-                                distance_squared=0,
-                                products=products,
-                            )
-                        ]
+                        shops = await self._preview_kebersihan_shops()
                     if not shops and resource in NEED_SHOP_CATEGORIES:
                         effects = await self.effects(for_needs=True)
                         shops, fallback_allowed = await self.need_suppliers(resource, effects)
@@ -2503,7 +2007,7 @@ class OjolHttpApi:
                         continue
                     # 409 terakhir dengan jejak invalid: server minta batal; ikuti dan lanjut
                     # ke order baru agar worker tidak mati.
-                    raw = await self.client.request(
+                    raw = await self._session_client().request(
                         "POST",
                         "/api/ojol",
                         json={"action": "selesai"},

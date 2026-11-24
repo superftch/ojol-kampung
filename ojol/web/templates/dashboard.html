@@ -1,0 +1,761 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard · Kampung Ojol Automation</title>
+    <link rel="stylesheet" href="/ui/console.css">
+</head>
+<body class="app-shell">
+    <header class="app-header">
+        <div class="brand">
+            __BRAND_MARK__
+            <span>Kampung Ojol</span>
+        </div>
+        <div class="header-actions">
+            <div class="account-select-wrap">
+                <select id="accountDropdown" class="account-select" aria-label="Pilih akun game" onchange="switchAccount(this.value)">
+                    <option value="">Memuat akun...</option>
+                </select>
+            </div>
+            <div class="user-badge" title="Pengguna web">
+                <span id="navUsername">__USERNAME__</span>
+            </div>
+            <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="logout()">Keluar</button>
+        </div>
+    </header>
+
+    <nav class="nav-tabs" aria-label="Navigasi utama">
+        <button class="nav-btn active" aria-current="page" onclick="showTab('tab-dashboard')">Ringkasan</button>
+        <button class="nav-btn" onclick="showTab('tab-auto')"><span class="nav-label-wide">Pengaturan Auto</span><span class="nav-label-short">Auto</span></button>
+        <button class="nav-btn" onclick="showTab('tab-accounts')">Akun</button>
+        <button class="nav-btn" onclick="showTab('tab-notifications')">Notifikasi <span id="notifBadge" class="nav-count" style="display: none;">0</span></button>
+        <button class="nav-btn" onclick="showTab('tab-bank-angka')">Bank Angka <span id="bankReviewBadge" class="nav-count" style="display: none; background: var(--danger, #ef4444); color: white;">0</span></button>
+        <button id="adminTabBtn" class="nav-btn" style="display: __ADMIN_TAB_DISPLAY__;" onclick="showTab('tab-admin')">Admin</button>
+    </nav>
+
+    <main class="container">
+        <!-- TAB 1: DASHBOARD -->
+        <div id="tab-dashboard" class="tab-panel active">
+
+            <div class="page-title">
+                <div>
+                    <h1>Ringkasan armada</h1>
+                    <p>Pantau akun dan kelola aktivitas Ojol.</p>
+                </div>
+                <div class="page-title-actions">
+                    <span id="dashboardFreshness" class="freshness" role="status">Memuat dashboard…</span>
+                    <button id="btnRefreshDash" class="btn btn-utility" type="button" onclick="manualRefreshDashboard()">Segarkan</button>
+                </div>
+            </div>
+
+            <div id="bankReviewBanner" class="alert alert-warning" style="display: none; margin-bottom: 20px; background: rgba(239, 68, 68, 0.12); border: 1px solid rgba(239, 68, 68, 0.35); border-radius: 8px; padding: 14px 18px; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 20px;">🚨</span>
+                    <div>
+                        <div style="font-weight: 700; color: var(--danger, #ef4444); font-size: 14px;">Ada <span id="bankPendingHeaderCount">0</span> angka cek belum dikenali bot!</div>
+                        <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Order ojol gagal memecahkan captcha angka baru. Silakan tentukan angkanya agar bot dapat melanjutkan order.</div>
+                    </div>
+                </div>
+                <button class="btn btn-primary" type="button" onclick="showTab('tab-bank-angka')" style="padding: 6px 14px; font-size: 12px; font-weight: 700;">Review Angka Sekarang</button>
+            </div>
+            <div id="reconcileStuckBanner" class="alert alert-warning" style="display: none; margin-bottom: 20px; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 8px; padding: 14px 18px; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 20px;">⏳</span>
+                    <div>
+                        <div style="font-weight: 700; color: var(--warning, #f59e0b); font-size: 14px;">Ada transaksi game sebelumnya yang belum pasti!</div>
+                        <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Bot tertahan saat mencocokkan riwayat game. Lewati aksi jika transaksi sudah berlalu di game agar bot bisa lanjut narik.</div>
+                    </div>
+                </div>
+                <button class="btn btn-primary" type="button" onclick="skipStuckActions()" style="padding: 6px 14px; font-size: 12px; font-weight: 700;">⏩ Lewati Aksi Tertahan</button>
+            </div>
+            <section id="onboardingCard" class="card onboarding" hidden aria-labelledby="onboardingTitle">
+                <h2 id="onboardingTitle" class="card-title">Hubungkan akun game</h2>
+                <p class="meta">Impor cookie sesi KampungSebelah untuk mulai mengelola akun ini.</p>
+                <div class="onboarding-fields">
+                    <label for="onboardingAccountName">Nama akun <span class="meta">(opsional)</span></label>
+                    <input id="onboardingAccountName" type="text" placeholder="Gunakan nama karakter" maxlength="40">
+                    <label for="onboardingCookieInput">Cookie sesi game</label>
+                    <textarea id="onboardingCookieInput" class="cookie-box" rows="4" placeholder="Tempel nilai token atau JSON cookie" spellcheck="false" autocomplete="off"></textarea>
+                </div>
+                <div class="actions">
+                    <button id="btnOnboardingSubmit" class="btn btn-primary" type="button" onclick="submitOnboardingCookie()">Hubungkan akun</button>
+                    <span id="onboardingLoadingText" class="meta" role="status" style="display: none;">Memverifikasi sesi…</span>
+                </div>
+            </section>
+            <div id="activeDashboardSection" hidden>
+                <dl class="card fleet-stats" aria-label="Ringkasan seluruh akun">
+                    <div><dt>Saldo armada</dt><dd id="fleetTotalWallet">—</dd></div>
+                    <div>
+                        <dt>Profit kotor</dt>
+                        <dd id="fleetTotalIncome">—</dd>
+                        <span id="fleetIncomeGrowth" class="growth-badge" style="display: none;"></span>
+                    </div>
+                    <div><dt>Pengeluaran</dt><dd id="fleetTotalExpenses">—</dd></div>
+                    <div>
+                        <dt>Laba bersih</dt>
+                        <dd id="fleetTotalNetProfit">—</dd>
+                        <span id="fleetNetGrowth" class="growth-badge" style="display: none;"></span>
+                    </div>
+                    <div><dt>Trip hari ini</dt><dd id="fleetTotalTrips">—</dd></div>
+                    <div><dt>Worker berjalan</dt><dd id="fleetCountWorkers">—</dd></div>
+                </dl>
+
+                <div class="ops-grid">
+                    <div class="account-workbench">
+                        <section class="card account-card" aria-labelledby="activeAccountBannerName">
+                            <div class="account-header">
+                                <div>
+                                    <h2 id="activeAccountBannerName">Akun terpilih</h2>
+                                    <p id="statusTitle">Memuat status akun…</p>
+                                </div>
+                                <button id="btnCookieToolbar" class="btn btn-utility" type="button" onclick="openCookieModalFor()">Cookie akun</button>
+                            </div>
+                            <details>
+                                <summary>Laporan dan pencarian rumah</summary>
+                                <form onsubmit="loadAccountReport(event)">
+                                    <label for="reportDay">Tanggal laporan (WIB)</label>
+                                    <input type="date" id="reportDay">
+                                    <button type="submit" class="btn btn-secondary">Lihat laporan</button>
+                                </form>
+                                <button type="button" class="btn btn-secondary" onclick="scanHouse('cleanup')">Cari rumah kotor</button>
+                                <button type="button" class="btn btn-secondary" onclick="scanHouse('visit')">Cari rumah untuk mampir</button>
+                                <pre id="accountToolResult" aria-live="polite" style="white-space: pre-wrap"></pre>
+                            </details>
+                            <dl class="account-metrics">
+                                <div><dt>Saldo akun</dt><dd id="walletVal">—</dd></div>
+                                <div>
+                                    <dt>Profit hari ini</dt>
+                                    <dd id="accProfitVal">—</dd>
+                                    <span id="accProfitGrowth" class="growth-badge" style="display: none;"></span>
+                                </div>
+                                <div><dt>Pengeluaran</dt><dd id="accExpenseVal">—</dd></div>
+                                <div>
+                                    <dt>Laba bersih</dt>
+                                    <dd id="accNetProfitVal">—</dd>
+                                    <span id="accNetGrowth" class="growth-badge" style="display: none;"></span>
+                                </div>
+                                <div><dt>Trip akun</dt><dd id="tripsVal">—</dd></div>
+                                <div><dt>Aktivitas game</dt><dd id="countdownVal">—</dd><span id="presenceVal" class="meta"></span></div>
+                            </dl>
+                            <div class="control-toolbar" aria-label="Kontrol otomatisasi">
+                                <div class="control-group">
+                                    <div><span class="control-group-title">Auto Ojol</span><span id="toolbarOjolBadge" class="control-state">—</span></div>
+                                    <div class="btn-segment-group">
+                                        <button id="btnRunOjol" class="btn btn-primary" type="button" onclick="controlAction('run')" aria-label="Jalankan Auto Ojol">Jalankan</button>
+                                        <button id="btnStopOjol" class="btn btn-stop" type="button" onclick="controlAction('stop')" aria-label="Hentikan Auto Ojol">Hentikan</button>
+                                    </div>
+                                </div>
+                                <div class="control-group">
+                                    <div><span class="control-group-title">Auto Kebutuhan</span><span id="toolbarNeedsBadge" class="control-state">—</span></div>
+                                    <div class="btn-segment-group">
+                                        <button id="btnRunNeeds" class="btn btn-primary" type="button" onclick="controlAction('run-needs')" aria-label="Jalankan Auto Kebutuhan">Jalankan</button>
+                                        <button id="btnStopNeeds" class="btn btn-stop" type="button" onclick="controlAction('stop-needs')" aria-label="Hentikan Auto Kebutuhan">Hentikan</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+
+                        <div id="limitNoticeCard" class="notice notice-warning" hidden>
+                            <strong>Batas narik harian tercapai</strong>
+                            <p>Periksa sisa waktu di game sebelum mengambil order lagi.</p>
+                        </div>
+
+                        <div class="grid-2 resource-grid">
+                            <section class="card vehicle-card" aria-labelledby="vehicleTitle">
+                                <div class="card-header"><h2 id="vehicleTitle" class="card-title">Kendaraan & kuota</h2></div>
+                                __FUEL_METERS__
+                                <p id="spbuWaitHint" class="notice notice-warning" hidden></p>
+                            </section>
+                            <section class="card needs-card" aria-labelledby="needsTitle">
+                                <div class="card-header">
+                                    <h2 id="needsTitle" class="card-title">Kebutuhan karakter</h2>
+                                    <span id="needsCardBadge" class="meta"></span>
+                                </div>
+                                __NEEDS_METERS__
+                            </section>
+                            <section class="card activity-card" aria-labelledby="activityTitle">
+                                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                                    <h2 id="activityTitle" class="card-title">Aktivitas terbaru</h2>
+                                    <button id="btnSkipActions" class="btn btn-utility" type="button" style="display: none; padding: 4px 10px; font-size: 12px; color: var(--warning, #f59e0b); border-color: rgba(245, 158, 11, 0.4); font-weight: 700;" onclick="skipStuckActions()">⏩ Lewati Aksi Tertahan</button>
+                                </div>
+                                <div id="logConsole" class="log-box">Memuat aktivitas…</div>
+                            </section>
+                            <section class="card expense-card" aria-labelledby="expenseTitle">
+                                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                                    <h2 id="expenseTitle" class="card-title">Riwayat Pengeluaran</h2>
+                                    <span id="expenseTodayTotal" class="meta" style="font-weight: 600; color: #ef4444;"></span>
+                                </div>
+                                <div id="expenseList" class="expense-list-box" style="max-height: 280px; overflow-y: auto;">
+                                    <div class="empty-state" style="padding: 24px; text-align: center; color: var(--text-muted); font-size: 13px;">Belum ada riwayat pengeluaran.</div>
+                                </div>
+                            </section>
+                        </div>
+                    </div>
+                    <aside class="fleet-rail" aria-labelledby="fleetTitle">
+                        <div class="rail-header"><h2 id="fleetTitle">Akun armada</h2><span id="fleetCountAccounts">—</span></div>
+                        <div id="fleetAccountsGrid" class="card fleet-list"></div>
+                        <button class="btn btn-secondary" type="button" onclick="showTab('tab-accounts')">Kelola akun</button>
+                    </aside>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 2: AUTO & KEBUTUHAN -->
+        <div id="tab-auto" class="tab-panel">
+            <div class="page-title"><div><h1>Pengaturan Auto</h1><p>Pilih aktivitas untuk akun yang sedang ditampilkan.</p></div></div>
+            <div class="grid-2">
+                <div class="card">
+                    <div class="card-header">
+                        <h2 class="card-title">Auto Ojol & Berkendara</h2>
+                    </div>
+                    <div class="toggle-item" style="margin-bottom: 12px;">
+                        <div class="toggle-info">
+                            <span class="toggle-title">🛵 Auto Ojol</span>
+                            <span class="toggle-desc">Mengambil dan mengantar order ojol otomatis sesuai kuota akun</span>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="autoOjolToggle" aria-label="Auto Ojol" onchange="toggleAuto('ojol', this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <p style="font-size: 13px; color: var(--text-muted); line-height: 1.5; margin-bottom: 12px;">
+                        Kelola status Auto Ojol akun dari switch di atas atau tombol Jalankan/Hentikan di Ringkasan. Kuota narik mengikuti aturan game.
+                    </p>
+                    <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 8px; padding: 10px 12px; font-size: 12px; color: var(--text-muted);">
+                        <strong>Ekstensi Chrome</strong><br>
+                        Gunakan ekstensi untuk mode berkendara di browser.<br>
+                        <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
+                            <a href="/api/extension/download" class="btn btn-warning" style="font-size: 11px; padding: 5px 10px; background:#f59e0b; color:var(--bg); font-weight:700;">📦 Download Ekstensi (.ZIP)</a>
+                            <button class="btn btn-secondary" style="font-size: 11px; padding: 5px 10px;" onclick="openModal('extensionModal')">📖 Tutorial Pasang</button>
+                        </div>
+                    </div>
+                    <input type="checkbox" id="modeOjolToggle" style="display: none;">
+                </div>
+
+                <div class="card">
+                    <div class="card-header"><h2 class="card-title">Auto Belajar</h2></div>
+                    <div class="toggle-item">
+                        <div class="toggle-info">
+                            <span class="toggle-title">📖 Auto Perpustakaan (Gratis)</span>
+                            <span class="toggle-desc">Menjalankan kuis belajar gratis di perpustakaan secara otomatis</span>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="autoPerpusToggle" aria-label="Auto Perpustakaan" onchange="toggleAuto('perpus', this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="toggle-item">
+                        <div class="toggle-info">
+                            <span class="toggle-title">🎓 Auto Kuliah (Berbayar)</span>
+                            <span class="toggle-desc">Mengikuti kuliah otomatis di kampus (biaya koin) hingga level maksimal</span>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="autoKuliahToggle" aria-label="Auto Kuliah" onchange="toggleAuto('kuliah', this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="toggle-item">
+                        <div class="toggle-info">
+                            <span class="toggle-title">🔄 Rotasi Otomatis Saat Max</span>
+                            <span class="toggle-desc">Beralih ke bidang lain jika bidang saat ini sudah mencapai level maksimum</span>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" id="studyRotateToggle" aria-label="Rotasi bidang belajar" onchange="toggleAuto('auto_subject', this.checked)">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div style="margin-top: 14px;">
+                        <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 6px;">Pilih Bidang Belajar:</label>
+                        <select id="studySubjectSelect" aria-label="Bidang belajar" class="account-select" style="width: 100%;" onchange="setStudySubject(this.value)">
+                            <option value="auto">🔄 Auto (Pilih Otomatis yang Belum Maks)</option>
+                            <option value="dagang">🛒 Dagang</option>
+                            <option value="teknik">🔧 Teknik</option>
+                            <option value="administrasi">📋 Administrasi</option>
+                            <option value="kesehatan">🏥 Kesehatan</option>
+                            <option value="mengajar">👨‍🏫 Mengajar</option>
+                            <option value="rawat">🏡 Rawat Desa</option>
+                            <option value="konveksi">👕 Konveksi</option>
+                            <option value="keamanan">🛡️ Keamanan</option>
+                            <option value="boga">🍳 Tata Boga</option>
+                            <option value="penerbangan">✈️ Penerbangan</option>
+                        </select>
+                    </div>
+
+                    <!-- RIWAYAT BELAJAR LENGKAP -->
+                    <div class="study-history-section" style="margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px;">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                            <span style="font-weight: 700; font-size: 13px;">📚 Riwayat Belajar Lengkap</span>
+                            <span id="studyHistoryBadge" class="meta" style="font-size: 11px;"></span>
+                        </div>
+                        <div id="studyHistoryList" class="study-history-box" style="max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
+                            <div class="empty-state" style="padding: 16px; text-align: center; color: var(--text-muted); font-size: 12px;">Belum ada riwayat belajar tercatat.</div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header"><h2 class="card-title">Kebutuhan karakter</h2></div>
+                <div class="toggle-item">
+                    <div class="toggle-info">
+                        <span class="toggle-title">Auto Makan</span>
+                        <span class="toggle-desc">Membeli makanan paling bernilai saat lapar</span>
+                    </div>
+                    <label class="switch"><input type="checkbox" id="autoMakan" aria-label="Auto Makan" onchange="toggleAuto('makan', this.checked)"><span class="slider"></span></label>
+                </div>
+                <div class="toggle-item">
+                    <div class="toggle-info">
+                        <span class="toggle-title">Auto Kesehatan (BPJS)</span>
+                        <span class="toggle-desc">Periksa kesehatan & aktivasi BPJS jika kesehatan turun</span>
+                    </div>
+                    <label class="switch"><input type="checkbox" id="autoKesehatan" aria-label="Auto Kesehatan" onchange="toggleAuto('kesehatan', this.checked)"><span class="slider"></span></label>
+                </div>
+                <div class="toggle-item">
+                    <div class="toggle-info">
+                        <span class="toggle-title">Auto Fisik (Gym)</span>
+                        <span class="toggle-desc">Latihan fisik di gym saat stamina mencukupi</span>
+                    </div>
+                    <label class="switch"><input type="checkbox" id="autoFisik" aria-label="Auto Fisik" onchange="toggleAuto('fisik', this.checked)"><span class="slider"></span></label>
+                </div>
+                <div class="toggle-item">
+                    <div class="toggle-info">
+                        <span class="toggle-title">Auto Rekreasi</span>
+                        <span class="toggle-desc">Pulihkan rekreasi saat turun</span>
+                    </div>
+                    <label class="switch"><input type="checkbox" id="autoRekreasi" aria-label="Auto Rekreasi" onchange="toggleAuto('rekreasi', this.checked)"><span class="slider"></span></label>
+                </div>
+                <div class="toggle-item">
+                    <div class="toggle-info">
+                        <span class="toggle-title">Auto Kebersihan (Mandi / Laundry)</span>
+                        <span class="toggle-desc">Menjaga kebersihan tubuh dan pakaian</span>
+                    </div>
+                    <label class="switch"><input type="checkbox" id="autoKebersihan" aria-label="Auto Kebersihan" onchange="toggleAuto('kebersihan', this.checked)"><span class="slider"></span></label>
+                </div>
+                <div class="toggle-item">
+                    <div class="toggle-info">
+                        <span class="toggle-title">Auto Buang Air (WC)</span>
+                        <span class="toggle-desc">Gunakan kloset saat kebutuhan turun</span>
+                    </div>
+                    <label class="switch"><input type="checkbox" id="autoWc" aria-label="Auto Buang Air" onchange="toggleAuto('wc', this.checked)"><span class="slider"></span></label>
+                </div>
+                <div class="toggle-item">
+                    <div class="toggle-info">
+                        <span class="toggle-title">Auto Penampilan</span>
+                        <span class="toggle-desc">Pangkas rambut dan rapikan penampilan</span>
+                    </div>
+                    <label class="switch"><input type="checkbox" id="autoPenampilan" aria-label="Auto Penampilan" onchange="toggleAuto('penampilan', this.checked)"><span class="slider"></span></label>
+                </div>
+                <div class="toggle-item">
+                    <div class="toggle-info">
+                        <span class="toggle-title">Auto Kondisi Rumah</span>
+                        <span class="toggle-desc">Perbaiki dan rawat kondisi rumah</span>
+                    </div>
+                    <label class="switch"><input type="checkbox" id="autoRumah" aria-label="Auto Kondisi Rumah" onchange="toggleAuto('rumah', this.checked)"><span class="slider"></span></label>
+                </div>
+                <div class="toggle-item">
+                    <div class="toggle-info">
+                        <span class="toggle-title">Auto Kebun (Garden)</span>
+                        <span class="toggle-desc">Siram, pupuk, dan panen tanaman kebun secara otomatis</span>
+                    </div>
+                    <label class="switch"><input type="checkbox" id="autoGarden" aria-label="Auto Kebun" onchange="toggleAuto('kebun', this.checked)"><span class="slider"></span></label>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 3: AKUN SAYA -->
+        <div id="tab-accounts" class="tab-panel">
+            <div class="page-title"><div><h1>Akun game</h1><p>Hubungkan atau kelola akun armada.</p></div></div>
+            <div class="card" style="margin-bottom: 24px;">
+                <div class="card-header">
+                    <h2 class="card-title">Daftar akun</h2>
+                    <button class="btn btn-primary" onclick="openModal('addAccountModal')">+ Tambah Akun</button>
+                </div>
+                <div style="overflow-x: auto;">
+                    <table class="data-table accounts-table">
+                        <thead>
+                            <tr>
+                                <th>Nama Akun</th>
+                                <th>Status Cookie</th>
+                                <th>Worker</th>
+                                <th>Auto Ojol</th>
+                                <th>Status Arsip</th>
+                                <th>Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="accountsTableBody">
+                            <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Memuat daftar akun...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 4: NOTIFIKASI -->
+        <div id="tab-notifications" class="tab-panel">
+            <div class="page-title"><div><h1>Notifikasi</h1><p>Pantau pesan dan peringatan aktivitas.</p></div></div>
+            <div style="max-width: 900px; margin: 0 auto;">
+
+__ADMIN_NOTIF_SUBNAV__
+
+                <!-- Panel Notifikasi Akun Pribadi -->
+                <div id="panelNotifUser" class="card">
+                    <div class="card-header">
+                        <h2 class="card-title">Notifikasi akun terpilih</h2>
+                        <div style="display: flex; gap: 8px;">
+                            <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="loadNotifications()">Segarkan</button>
+                            <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="markAllNotificationsRead()">Tandai Semua Dibaca</button>
+                        </div>
+                    </div>
+                    <p style="color: var(--text-muted); font-size: 13px; margin-top: -6px; margin-bottom: 12px;">Riwayat notifikasi dan peringatan untuk akun ojol yang sedang aktif dipilih.</p>
+                    <div id="notificationsList" style="display: flex; flex-direction: column; gap: 10px; margin-top: 14px;">
+                        <div style="text-align: center; color: var(--text-muted); padding: 24px;">Memuat notifikasi...</div>
+                    </div>
+                </div>
+
+
+__ADMIN_NOTIF_PANEL__
+            </div>
+        </div>
+
+        <!-- TAB 5: ADMIN PANEL -->
+        <div id="tab-admin" class="tab-panel">
+            <div class="page-title"><div><h1>Administrasi</h1><p>Kelola pengguna dan pengaturan server.</p></div></div>
+            <div class="card" style="margin-bottom: 24px;">
+                <div class="card-header">
+                    <h2 class="card-title">Pengajuan tertunda</h2>
+                    <div style="display: flex; gap: 8px;">
+                        <button class="btn btn-utility" style="padding: 4px 10px; font-size: 11px;" onclick="showTab('tab-notifications'); switchNotifTab('admin');" title="Lihat notifikasi global semua akun dan user">🔔 Log Notifikasi Global</button>
+                        <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="loadAdminData()">Refresh</button>
+                    </div>
+                </div>
+                <div style="overflow-x: auto;">
+                    <table class="data-table admin-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Username</th>
+                                <th>Nama</th>
+                                <th>Waktu Daftar</th>
+                                <th>Persetujuan</th>
+                            </tr>
+                        </thead>
+                        <tbody id="pendingTableBody">
+                            <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Tidak ada pengajuan tertunda.</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Pengguna web</h2>
+                </div>
+                <div style="overflow-x: auto;">
+                    <table class="data-table admin-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Username</th>
+                                <th>Nama</th>
+                                <th>Role</th>
+                                <th>Status</th>
+                                <th>Aksi</th>
+                            </tr>
+                        </thead>
+                        <tbody id="usersTableBody">
+                            <tr><td colspan="6" style="text-align: center; color: var(--text-muted);">Memuat pengguna...</td></tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <section class="card" style="margin-top: 24px;">
+                <div class="card-header"><h2 class="card-title">Maintenance</h2></div>
+                <p id="maintenanceStatus" aria-live="polite">Memuat jadwal…</p>
+                <form onsubmit="saveMaintenance(event)">
+                    <label for="maintenanceMode">Mode</label>
+                    <select id="maintenanceMode" class="account-select">
+                        <option value="off">Nonaktif</option>
+                        <option value="manual">Jeda sekarang</option>
+                        <option value="scheduled">Jadwalkan</option>
+                    </select>
+                    <label for="maintenanceTarget">Aktivitas</label>
+                    <select id="maintenanceTarget" class="account-select">
+                        <option value="ojol">Auto Ojol</option>
+                        <option value="all">Semua aktivitas</option>
+                    </select>
+                    <label for="maintenanceStart">Mulai (WIB)</label>
+                    <input type="datetime-local" id="maintenanceStart">
+                    <label for="maintenanceEnd">Selesai (WIB)</label>
+                    <input type="datetime-local" id="maintenanceEnd">
+                    <button type="submit" class="btn btn-secondary">Terapkan</button>
+                </form>
+            </section>
+
+            <!-- CARD 3: PENGATURAN ADMIN & GLOBAL -->
+            <div class="card" style="margin-top: 24px;">
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
+                    <div>
+                        <h2 class="card-title">Pengaturan server</h2>
+                        <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
+                            Kelola semua konfigurasi server, batas akun, otomatisasi, dan integrasi tanpa edit .env
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" onclick="saveAdminSettings()" style="font-weight: 600;">💾 Simpan Pengaturan</button>
+                </div>
+
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 20px; margin-top: 16px;">
+                    <!-- Bagian 1: Otomatisasi & Game Play -->
+                    <div style="background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 18px;">
+                        <h4 style="font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+                            <span>🎮</span> Otomatisasi & Kebutuhan
+                        </h4>
+
+                        <div style="margin-bottom: 12px;">
+                            <label for="setting_threshold" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Ambang Batas Kebutuhan (% Default)</label>
+                            <input type="number" id="setting_threshold" min="10" max="100" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <span style="font-size: 11px; color: var(--text-muted);">Bot memulihkan kebutuhan saat nilai turun di bawah persentase ini.</span>
+                        </div>
+
+                        <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <div style="font-size: 13px; font-weight: 600;">Smart Thresholds</div>
+                                <div style="font-size: 11px; color: var(--text-muted);">Gunakan batas pintar per kebutuhan</div>
+                            </div>
+                            <label class="switch"><input type="checkbox" id="setting_smart_thresholds" aria-label="Ambang pintar kebutuhan"><span class="slider"></span></label>
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label for="setting_resource_reserve_percent" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Cadangan Sumber Daya (%)</label>
+                            <input type="number" id="setting_resource_reserve_percent" min="0" max="50" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label for="setting_min_balance" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Saldo Koin Minimal (Cadangan)</label>
+                            <input type="number" step="0.1" id="setting_min_balance" min="0" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <span style="font-size: 11px; color: var(--text-muted);">Koin minimal yang disisihkan sebelum belanja/kuliah.</span>
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label for="setting_idle_poll_seconds" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Interval Cek Polling Status (Detik)</label>
+                            <input type="number" id="setting_idle_poll_seconds" min="3" max="60" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label for="setting_ojol_mode" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Mode Ojol Default</label>
+                            <select id="setting_ojol_mode" class="account-select" style="width: 100%;">
+                                <option value="otomatis">Otomatis (HTTP Background Bot)</option>
+                                <option value="kendara">Kendara (Manual / Ekstensi Chrome)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <!-- Bagian 2: Batasan Shift & Kuota Akun -->
+                    <div style="background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 18px;">
+                        <h4 style="font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+                            <span>⏱️</span> Batasan Shift & Kuota Akun
+                        </h4>
+
+                        <div style="margin-bottom: 12px;">
+                            <label for="setting_max_spend" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Maksimal Pengeluaran Koin (Opsional)</label>
+                            <input type="number" step="0.1" id="setting_max_spend" placeholder="Kosong = Tanpa batas" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label for="setting_max_jobs" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Batas Jumlah Order per Shift (Opsional)</label>
+                            <input type="number" id="setting_max_jobs" placeholder="Kosong = Tanpa batas" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label for="setting_max_minutes" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Batas Durasi Shift (Menit, Opsional)</label>
+                            <input type="number" id="setting_max_minutes" placeholder="Kosong = Tanpa batas" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label for="setting_max_accounts_per_user" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Maksimal Akun Game per User</label>
+                            <input type="number" id="setting_max_accounts_per_user" min="1" max="100" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+
+                        <div style="margin-bottom: 12px;">
+                            <label for="setting_max_active_workers" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Maksimal Worker Aktif Bersamaan</label>
+                            <input type="number" id="setting_max_active_workers" min="1" max="100" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                        </div>
+
+                        <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <div style="font-size: 13px; font-weight: 600;">Auto-Start Worker</div>
+                                <div style="font-size: 11px; color: var(--text-muted);">Otomatis mulai akun saat server startup</div>
+                            </div>
+                            <label class="switch"><input type="checkbox" id="setting_auto_start" aria-label="Jalankan otomatis saat server mulai"><span class="slider"></span></label>
+                        </div>
+                    </div>
+
+                    <!-- Bagian 3: Domain, Jaringan & Integrasi -->
+                    <div style="background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 18px;">
+                        <h4 style="font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+                            <span>🌐</span> Domain & Integrasi
+                        </h4>
+
+                        <div style="margin-bottom: 12px;">
+                            <label for="setting_login_public_url" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Domain Publik Dashboard (URL)</label>
+                            <input type="text" id="setting_login_public_url" placeholder="https://ojol.jnck.pl" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <span style="font-size: 11px; color: var(--text-muted);">Alamat URL publik dashboard untuk akses dan redirect.</span>
+                        </div>
+
+                        <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
+                            <div>
+                                <div style="font-size: 13px; font-weight: 600;">Cloudflare Tunnel Bawaan</div>
+                                <div style="font-size: 11px; color: var(--text-muted);">Aktifkan jika tanpa reverse proxy Nginx/Caddy</div>
+                            </div>
+                            <label class="switch"><input type="checkbox" id="setting_tunnel_enabled" aria-label="Aktifkan tunnel"><span class="slider"></span></label>
+                        </div>
+
+                    </div>
+                </div>
+
+                <div style="margin-top: 20px; display: flex; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 16px;">
+                    <button class="btn btn-primary" onclick="saveAdminSettings()" style="padding: 10px 24px; font-size: 14px; font-weight: 700;">💾 Simpan & Terapkan Pengaturan</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 5: BANK ANGKA -->
+        <div id="tab-bank-angka" class="tab-panel">
+            <div class="page-title">
+                <div>
+                    <h1>Bank Angka Bersama (Crowdsourced)</h1>
+                    <p>Bank angka dibagikan ke seluruh pengguna armada. Setiap angka yang Anda review atau tambahkan otomatis tersinkron dan membantu semua akun mengenali captcha game.</p>
+                </div>
+                <div class="page-title-actions">
+                    <button class="btn btn-utility" type="button" onclick="loadBankAngka()">Segarkan Bank</button>
+                    <button class="btn btn-secondary" type="button" onclick="openManualGlyphModal()">+ Tambah Manual</button>
+                </div>
+            </div>
+
+            <!-- Antrean Review Glyph Gagal -->
+            <div class="card" style="margin-bottom: 24px;">
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <h2 class="card-title">🔍 Antrean Review Angka (Cek Gagal Seluruh Armada)</h2>
+                        <span id="bankPendingCountBadge" class="nav-count" style="display: none; background: var(--danger, #ef4444); color: white;">0</span>
+                    </div>
+                    <span style="font-size: 12px; color: var(--text-muted);">Jika ada akun di armada yang gagal memecahkan captcha angka, tangkapan layarnya muncul di sini agar bisa dikontribusikan.</span>
+                </div>
+                <div id="bankPendingList" style="padding: 16px 0;">
+                    <div style="text-align: center; color: var(--text-muted); padding: 32px 0;">
+                        Memuat antrean review...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Koleksi Bank Angka 0 - 9 -->
+            <div class="card">
+                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+                    <div>
+                        <h2 class="card-title">📚 Koleksi Angka Terdaftar (Digit 0 – 9)</h2>
+                        <div style="font-size: 12px; color: var(--text-muted); margin-top: 4px;">Total <span id="bankTotalTemplatesCount">0</span> varian tersimpan (<span id="bankTotalContribCount">0</span> dari kontribusi pengguna armada).</div>
+                    </div>
+                </div>
+                <div id="bankTemplatesGrid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 16px; margin-top: 16px;">
+                    <div style="text-align: center; color: var(--text-muted); padding: 32px 0; grid-column: 1 / -1;">
+                        Memuat data bank angka...
+                    </div>
+                </div>
+            </div>
+        </div>
+    </main>
+
+    <!-- MODAL: Import Cookie -->
+    <dialog id="cookieModal" class="modal" aria-labelledby="cookieModalTitle">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="cookieModalTitle">Hubungkan cookie game</h3>
+                <button class="close-btn" type="button" aria-label="Tutup dialog" onclick="closeModal('cookieModal')">&times;</button>
+            </div>
+            <div id="cookieTargetAccountLabel" style="display: none; padding: 7px 12px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 6px; font-size: 12px; font-weight: 600; color: var(--primary); margin-bottom: 12px;"></div>
+            <input type="hidden" id="cookieTargetAccountId" value="">
+            <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.5;">
+                Tempel cookie sesi KampungSebelah (format string cookie atau JSON sesi) di bawah ini:
+            </p>
+            <textarea id="cookieInput" class="cookie-box" placeholder="Tempel nilai token atau JSON cookie" aria-label="Cookie sesi game" aria-describedby="cookieError" spellcheck="false" autocomplete="off" autofocus></textarea>
+            <p id="cookieError" class="form-error" role="alert" hidden></p>
+            <div style="display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 14px;">
+                <span id="cookieLoadingText" style="display: none; font-size: 13px; color: var(--warning); margin-right: auto;">⏳ Memverifikasi cookie...</span>
+                <button class="btn btn-secondary" onclick="closeModal('cookieModal')">Batal</button>
+                <button id="btnSubmitCookie" class="btn btn-primary" onclick="submitCookie()">Impor Sekarang</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- MODAL: Tambah Akun -->
+    <dialog id="addAccountModal" class="modal" aria-labelledby="addAccountTitle">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="addAccountTitle">➕ Tambah Akun Game Baru</h3>
+                <button class="close-btn" type="button" aria-label="Tutup dialog" onclick="closeModal('addAccountModal')">&times;</button>
+            </div>
+            <div style="margin-bottom: 16px;">
+                <label style="font-size: 13px; color: var(--text-muted); display: block; margin-bottom: 6px;">Nama Akun (Opsional)</label>
+                <input type="text" id="newAccountName" aria-label="Nama akun" maxlength="40" autofocus placeholder="Contoh: Akun 2 (otomatis mengikuti game)" style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); outline: none;">
+            </div>
+            <div style="display: flex; justify-content: flex-end; gap: 10px;">
+                <button class="btn btn-secondary" onclick="closeModal('addAccountModal')">Batal</button>
+                <button class="btn btn-primary" onclick="submitCreateAccount()">Buat Akun</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- MODAL: Panduan Ekstensi Chrome & Mode Kendarai -->
+    <dialog id="extensionModal" class="modal" aria-labelledby="extensionTitle">
+        <div class="modal-content" style="max-width: 640px;">
+            <div class="modal-header">
+                <h3 id="extensionTitle">Pasang ekstensi Chrome</h3>
+                <button class="close-btn" type="button" aria-label="Tutup dialog" onclick="closeModal('extensionModal')">&times;</button>
+            </div>
+            <ol class="install-steps">
+                <li>Unduh ZIP dan ekstrak ke folder komputer.</li>
+                <li>Buka <code>chrome://extensions</code> di Chrome lalu aktifkan <strong>Developer mode</strong>.</li>
+                <li>Pilih <strong>Load unpacked</strong>, lalu pilih folder <code>kampungsebelah-extension</code> hasil ekstrak.</li>
+                <li>Buka KampungSebelah dan pilih tab <strong>Kendarai</strong> di panel ekstensi.</li>
+            </ol>
+            <div class="actions">
+                <a href="/api/extension/download" class="btn btn-primary">Unduh ZIP</a>
+                <button class="btn btn-utility" type="button" onclick="closeModal('extensionModal')">Tutup</button>
+            </div>
+        </div>
+    </dialog>
+
+    <!-- MODAL: Tambah Glyph Manual -->
+    <dialog id="manualGlyphModal" class="modal" aria-labelledby="manualGlyphModalTitle">
+        <div class="modal-content" style="max-width: 520px;">
+            <div class="modal-header">
+                <h3 id="manualGlyphModalTitle">Tambah Angka ke Bank Manual</h3>
+                <button class="close-btn" type="button" aria-label="Tutup dialog" onclick="closeModal('manualGlyphModal')">&times;</button>
+            </div>
+            <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 14px; line-height: 1.5;">
+                Pilih digit angka dan masukkan data koordinat titik stroke / JSON glyph dari log error bot.
+            </p>
+            <div style="margin-bottom: 14px;">
+                <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Pilih Digit Angka (0 – 9):</label>
+                <div id="manualDigitButtons" style="display: flex; gap: 6px; flex-wrap: wrap;"></div>
+            </div>
+            <div style="margin-bottom: 14px;">
+                <label for="manualGlyphJson" style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Data Glyph JSON / Titik:</label>
+                <textarea id="manualGlyphJson" class="cookie-box" rows="5" placeholder='Contoh: [[[0.86, 1.0], [0.86, 0.0], ...]]]' spellcheck="false" autocomplete="off" oninput="onManualGlyphInput()"></textarea>
+            </div>
+            <div id="manualGlyphPreview" style="margin-bottom: 14px; display: none;">
+                <label style="font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px;">Pratinjau Bentuk:</label>
+                <div id="manualGlyphSvgWrap" style="display: flex; justify-content: center; background: var(--bg); padding: 12px; border-radius: 8px;"></div>
+            </div>
+            <div class="actions" style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px;">
+                <button class="btn btn-secondary" type="button" onclick="closeModal('manualGlyphModal')">Batal</button>
+                <button class="btn btn-primary" type="button" onclick="submitManualGlyph()">Simpan ke Bank Angka</button>
+            </div>
+        </div>
+    </dialog>
+
+    <script>const currentUser = __USER_JSON__;</script>
+    <script src="/ui/dashboard.js"></script>
+</body>
+</html>

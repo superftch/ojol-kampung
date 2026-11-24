@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Daftar Akun · Kampung Ojol Automation</title>
+    <link rel="stylesheet" href="/ui/auth.css">
+    <link rel="stylesheet" href="/ui/console.css">
+</head>
+<body class="auth-page">
+    <div class="card">
+        <div class="logo">
+            __BRAND_MARK__
+            <h1>Daftar Akun Baru</h1>
+            <p>Pendaftaran memerlukan persetujuan admin</p>
+        </div>
+
+        __ERROR_ALERT__
+        __SUCCESS_ALERT__
+
+        <div class="alert alert-info">
+            🛡️ <strong>Catatan:</strong> Akun baru dibuat dengan status <em>pending</em> dan dapat digunakan setelah disetujui oleh admin.
+        </div>
+
+        <form action="/api/auth/register" method="POST">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" required autocomplete="username" placeholder="Huruf kecil, angka, underscore (3-32 kar)">
+            </div>
+            <div class="form-group">
+                <label for="name">Nama Lengkap / Panggilan</label>
+                <input type="text" id="name" name="name" required placeholder="Contoh: Budi Ojol">
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required autocomplete="new-password" placeholder="Minimal 6 karakter">
+            </div>
+            <div class="form-group">
+                <label for="confirm_password">Konfirmasi Password</label>
+                <input type="password" id="confirm_password" name="confirm_password" required autocomplete="new-password" placeholder="Ulangi password">
+            </div>
+            <button type="submit" class="btn">Daftar Akun</button>
+        </form>
+
+        <div class="footer-links">
+            Sudah punya akun? <a href="/login">Masuk di sini</a>
+        </div>
+    </div>
+</body>
+</html>

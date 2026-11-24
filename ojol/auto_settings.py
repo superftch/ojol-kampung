@@ -1,7 +1,7 @@
 import json
 
-from .healing import write_private
-from .study import STUDY_LABELS
+from .models import STUDY_LABELS
+from .storage import write_private
 
 AUTO_LABELS = {
     "ojol": "Auto Ojol",

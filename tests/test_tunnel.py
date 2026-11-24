@@ -34,10 +34,10 @@ async def test_tunnel_secret_file_and_single_owned_process(settings, monkeypatch
     token_file.chmod(0o600)
     is_file = Path.is_file
     monkeypatch.setattr(Path, "is_file", lambda path: path == Path("/.dockerenv") or is_file(path))
-    monkeypatch.setattr("ojol.control.shutil.which", lambda binary: "/bin/cloudflared")
+    monkeypatch.setattr("ojol.control_service.shutil.which", lambda binary: "/bin/cloudflared")
     child = SimpleNamespace(returncode=None, terminate=Mock(), wait=AsyncMock())
     spawn = AsyncMock(return_value=child)
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
     await service.start_tunnel()
     await service.start_tunnel()
     spawn.assert_awaited_once()
@@ -53,7 +53,7 @@ async def test_tunnel_secret_file_and_single_owned_process(settings, monkeypatch
 async def test_disabled_tunnel_never_spawns(settings, monkeypatch):
     service = ControlService(settings)
     spawn = AsyncMock()
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
     await service.start_tunnel()
     spawn.assert_not_awaited()
 
@@ -61,9 +61,9 @@ async def test_disabled_tunnel_never_spawns(settings, monkeypatch):
 async def test_missing_tunnel_secret_reports_error_without_spawn(settings, monkeypatch):
     service = tunnel_service(settings)
     monkeypatch.setattr(Path, "is_file", lambda path: path == Path("/.dockerenv"))
-    monkeypatch.setattr("ojol.control.shutil.which", lambda binary: "/bin/cloudflared")
+    monkeypatch.setattr("ojol.control_service.shutil.which", lambda binary: "/bin/cloudflared")
     spawn = AsyncMock()
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
     with pytest.raises(RuntimeError, match="secret cloudflared_token"):
         await service.start_tunnel()
     spawn.assert_not_awaited()
@@ -73,7 +73,6 @@ async def test_tunnel_exit_stops_worker_once_and_reports_stage(settings, monkeyp
     service = tunnel_service(settings)
     service.tunnel_process = SimpleNamespace(returncode=1)
     service.stop_worker = AsyncMock()
-    monkeypatch.setattr("ojol.control.flush_notices", AsyncMock())
     iterations = 0
 
     async def wait(seconds):
@@ -82,7 +81,7 @@ async def test_tunnel_exit_stops_worker_once_and_reports_stage(settings, monkeyp
         if iterations == 2:
             service.closing = True
 
-    monkeypatch.setattr("ojol.control.asyncio.sleep", wait)
+    monkeypatch.setattr("ojol.control_service.asyncio.sleep", wait)
     await service.supervise()
     service.stop_worker.assert_awaited_once()
     error = json.loads((service.settings.runtime_dir / "last-error.json").read_text())

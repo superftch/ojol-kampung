@@ -7,23 +7,8 @@ import time
 from datetime import timedelta
 from uuid import uuid4
 
-from .healing import write_private
-from .models import now
-
-STUDY_LABELS = {"perpus": "Auto Perpus (gratis)", "kuliah": "Auto Kuliah (bayar)"}
-AUTO_SUBJECT = "auto"
-SUBJECTS = {
-    "kesehatan": "Kesehatan",
-    "mengajar": "Mengajar",
-    "dagang": "Dagang",
-    "administrasi": "Administrasi",
-    "rawat": "Rawat desa",
-    "konveksi": "Konveksi",
-    "keamanan": "Keamanan",
-    "teknik": "Teknik",
-    "boga": "Tata boga",
-    "penerbangan": "Penerbangan",
-}
+from .models import AUTO_SUBJECT, STUDY_LABELS, SUBJECTS, StopRequested, now
+from .storage import write_private
 
 
 def pick_auto_track(tracks, mode, study_tracks=None):
@@ -167,10 +152,10 @@ async def run_learning(controller):
     from decimal import Decimal
 
     from .auto_settings import auto_flags
-    from .controller import StopRequested
-    from .http_api import HttpCoreError, timestamp
+    from .formatting import parse_api_timestamp as timestamp
+    from .models import HttpCoreError
+    from .notices import queue_error
     from .reconciliation import wait_until_resolved
-    from .telegram import queue_error
 
     c = controller
     flags = auto_flags(c.settings.runtime_dir)
@@ -192,7 +177,7 @@ async def run_learning(controller):
             previous = json.loads(latest["payload"]) if latest else None
             retry_after = timestamp(previous["retry_after"]) if previous else None
             recent = retry_after is not None and retry_after > c.state.observed_at
-            if recent:
+            if recent and previous is not None:
                 track = previous["track"]
                 if (
                     latest["status"] == "verified"

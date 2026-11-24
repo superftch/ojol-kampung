@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from conftest import seed_legacy_account
 from pydantic import ValidationError
 
 from ojol.config import load_settings
@@ -17,8 +18,8 @@ from ojol.journal import Journal
 from ojol.maintenance import MaintenanceWindow
 from ojol.management import MultiAccountService
 from ojol.models import ROOT, Settings
+from ojol.notices import queue_error
 from ojol.session_transfer import parse_cookie_input
-from ojol.telegram import queue_error
 
 
 def manager_with_accounts(settings, **changes):
@@ -26,7 +27,6 @@ def manager_with_accounts(settings, **changes):
         update={
             "env": "local",
             "operator_authorized": True,
-            "telegram_chat_id": 111,
             "max_spend": None,
             "max_jobs": None,
             "max_minutes": None,
@@ -34,7 +34,8 @@ def manager_with_accounts(settings, **changes):
         }
     )
     manager = MultiAccountService(settings)
-    manager.registry.whitelist(222)
+    seed_legacy_account(manager.registry)
+    manager.registry.set_owner_access(222)
     manager.registry.create(222, "Friend")
     for row in manager.registry.list():
         service = manager.service(row["id"])
@@ -65,7 +66,7 @@ async def test_boot_defers_worker_during_maintenance_until_end(settings, monkeyp
     window = MaintenanceWindow.parse("2026-11-12 00:30 / 2026-11-12 01:30")
     write_private(manager.maintenance_file, window.payload())
     spawn = AsyncMock(side_effect=lambda *a, **kw: worker())
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
     assert not window.held(datetime.fromisoformat("2026-11-12T00:27:59+07:00"))
     try:
         await manager.start()
@@ -105,7 +106,7 @@ async def test_boot_starts_all_saved_accounts_including_previously_stopped_and_n
         (service.settings.runtime_dir / "STOP").touch()
         write_private(service.settings.runtime_dir / "status.json", {"pid": 9, "event": "gagal"})
     spawn = AsyncMock(side_effect=lambda *a, **kw: worker())
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
     await manager.start()
     await manager.resume_workers()
     assert spawn.await_count == 2 and manager.active_workers() == 2
@@ -141,7 +142,7 @@ async def test_env_false_disables_all_auto_start_even_with_old_resume_markers(
         write_private(service.settings.runtime_dir / "worker-restart.json", {"ready": True})
     (previously_active.settings.runtime_dir / WORKER_SHUTDOWN).touch()
     spawn = AsyncMock()
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
     await manager.start()
     await manager.resume_workers()
     spawn.assert_not_awaited()
@@ -157,7 +158,7 @@ async def test_capacity_queue_drains_but_manual_stop_cancels_pending_account(set
     manager.registry.set_limit("max_active_workers", 1)
     a, b = manager.services.values()
     spawn = AsyncMock(side_effect=lambda *a, **kw: worker())
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
     await manager.start()
     assert spawn.await_count == 1 and b.auto_start_pending
     await b.command("stop")
@@ -172,7 +173,7 @@ async def test_waiting_accounts_start_when_capacity_becomes_available(settings, 
     manager.registry.set_limit("max_active_workers", 1)
     a, b = manager.services.values()
     spawn = AsyncMock(side_effect=lambda *a, **kw: worker())
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
     await manager.start()
     assert spawn.await_count == 1 and b.auto_start_pending
     await a.command("stop")
@@ -198,15 +199,15 @@ async def test_auto_start_preserves_guards_and_other_accounts_can_start(
         journal.close()
     elif blocked == "revoked":
         bad, good = good, bad
-        manager.registry.whitelist(bad.settings.telegram_chat_id, False)
+        manager.registry.set_owner_access(manager.registry.get(bad.account_id)["owner"], False)
     elif blocked == "archived":
-        manager.registry.archive(bad.settings.telegram_chat_id, bad.account_id)
+        manager.registry.archive(manager.registry.get(bad.account_id)["owner"], bad.account_id)
     elif blocked == "no_cookie":
         (bad.settings.runtime_dir / "http-session.json").unlink()
     else:
         (bad.settings.runtime_dir / "http-session.json").write_text("invalid cookie payload")
     spawn = AsyncMock(side_effect=lambda *a, **kw: worker())
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
     await manager.start()
     await manager.resume_workers()
     assert spawn.await_count == (2 if blocked in {"pending", "uncertain"} else 1)
@@ -262,7 +263,7 @@ async def test_restart_success_notice_requires_usable_game_state(settings, state
 async def test_worker_error_does_not_trigger_an_auto_restart_loop(settings, monkeypatch):
     manager = manager_with_accounts(settings)
     spawn = AsyncMock(side_effect=lambda *a, **kw: worker())
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
     await manager.start()
     service = next(iter(manager.services.values()))
     queue_error(service.settings, RuntimeError("fixture HTTP failure"), "http.auth")
@@ -277,7 +278,7 @@ async def test_worker_error_does_not_trigger_an_auto_restart_loop(settings, monk
 async def test_auto_start_uses_new_sessions_with_configured_session_limits(settings, monkeypatch):
     manager = manager_with_accounts(settings, max_jobs=2, max_minutes=1, max_spend=10)
     spawn = AsyncMock(side_effect=lambda *a, **kw: worker())
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
     await manager.start()
     assert spawn.await_count == 2
     assert all(
@@ -290,7 +291,7 @@ async def test_auto_start_uses_new_sessions_with_configured_session_limits(setti
 async def test_operator_authorization_still_required(settings, monkeypatch):
     manager = manager_with_accounts(settings, operator_authorized=False)
     spawn = AsyncMock()
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
     await manager.start()
     await manager.resume_workers()
     spawn.assert_not_awaited()
@@ -303,13 +304,14 @@ async def test_operator_authorization_still_required(settings, monkeypatch):
 
 
 async def test_testing_environment_never_auto_starts(settings, monkeypatch):
-    manager = MultiAccountService(settings.model_copy(update={"telegram_chat_id": 111}))
+    manager = MultiAccountService(settings)
+    seed_legacy_account(manager.registry)
     service = manager.service(manager.registry.selected(111)["id"])
     write_private(
         service.settings.runtime_dir / "http-session.json", parse_cookie_input("fixture-testing")
     )
     spawn = AsyncMock()
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
     await manager.start()
     await manager.resume_workers()
     spawn.assert_not_awaited()
@@ -328,6 +330,7 @@ async def test_app_shutdown_leaves_isolated_dummy_worker_running(settings):
     )
     service.worker = child
     try:
+        assert child.stdout is not None
         assert await asyncio.wait_for(child.stdout.readline(), 3) == b"ready\n"
         await manager.close()
         assert child.returncode is None
@@ -349,7 +352,7 @@ async def test_auto_start_preserves_needs_only_state_and_does_not_enable_ojol(
     set_auto_flag(service.settings.runtime_dir, "makan", True)
 
     spawn = AsyncMock(side_effect=lambda *a, **kw: worker())
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
 
     try:
         await manager.start()
@@ -373,7 +376,7 @@ async def test_auto_start_skips_account_when_all_auto_flags_disabled(settings, m
             set_auto_flag(s.settings.runtime_dir, k, False)
 
     spawn = AsyncMock(side_effect=lambda *a, **kw: worker())
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
 
     try:
         await manager.start()

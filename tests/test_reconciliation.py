@@ -15,8 +15,8 @@ from ojol.finance import completion_evidence, received_income
 from ojol.http_api import HttpCoreError
 from ojol.journal import Journal
 from ojol.models import GameReceipt, Product
+from ojol.notices import queue_error
 from ojol.reconciliation import reconcile, wait_until_resolved
-from ojol.telegram import queue_error, queued_text, set_notifications
 
 
 def claim_states(state):
@@ -78,7 +78,6 @@ async def test_timed_out_claim_reconciles_receipt_without_another_post(settings,
 async def test_purchase_reconciles_delayed_result_without_another_post(
     settings, state, shop_preview, monkeypatch, resource, failure
 ):
-    set_notifications(settings, True)
     before = state.model_copy(update={"fuel": 36, "condition": 46, "needs": {"makan": 45}})
     product = Product(
         name={
@@ -136,7 +135,6 @@ async def test_purchase_reconciles_delayed_result_without_another_post(
 async def test_purchase_handoff_preserves_session_budget_without_booking_unproven_cost(
     settings, state, shop_preview, monkeypatch
 ):
-    set_notifications(settings, True)
     settings = settings.model_copy(update={"max_spend": Decimal("0.5")})
     product = Product(
         name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
@@ -544,7 +542,7 @@ async def test_waiting_status_names_purchase_and_explains_unstable_game(
 ):
     import os
 
-    import ojol.control as control
+    import ojol.control_service as control
 
     observed = state.model_copy(update={"observed_at": state.observed_at + timedelta(minutes=10)})
     after = observed.model_copy(
@@ -583,12 +581,11 @@ async def test_waiting_status_names_purchase_and_explains_unstable_game(
 
 
 @pytest.mark.parametrize("failures", ["pending", "transport", "mixed"])
-async def test_auto_reconcile_fails_after_three_attempts_and_notifies_even_when_muted(
+async def test_auto_reconcile_fails_after_six_attempts_and_notifies(
     settings, state, monkeypatch, failures
 ):
     import ojol.reconciliation as recovery
 
-    set_notifications(settings, False)
     ui = SimpleNamespace(check_cancel=lambda: None, buy=AsyncMock(), job_click=AsyncMock())
     transport_error = HttpCoreError("fixture connection", category="transport")
     results = {
@@ -630,9 +627,9 @@ async def test_auto_reconcile_fails_after_three_attempts_and_notifies_even_when_
         data = json.loads(notice.read_text())
         assert data["context"]["action_ids"] == [action]
         assert data["context"]["fatal"] is True
-        assert "gagal setelah 6 percobaan" in queued_text(data)
-        assert "Bot dihentikan" in queued_text(data)
-        assert "belum pasti" in queued_text(data)
+        assert "gagal setelah 6 percobaan" in data["text"]
+        assert "Bot dihentikan" in data["text"]
+        assert "belum pasti" in data["text"]
         assert (settings.runtime_dir / "STOP").exists()
     ui.buy.assert_not_awaited()
     ui.job_click.assert_not_awaited()

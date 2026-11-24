@@ -1,44 +1,19 @@
 import asyncio
 import json
 import os
-import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
-import httpx
 import pytest
-from pydantic import SecretStr, ValidationError
 from starlette.testclient import TestClient
 
 from ojol.auto_settings import set_auto_flag
 from ojol.control import ControlService, create_app
 from ojol.healing import write_private
 from ojol.http_api import HttpCoreError
-from ojol.identity import save_profile, verified_profile
 from ojol.login_access import LoginAccess
 from ojol.models import Settings, SleepSchedule
-from ojol.telegram import (
-    BUTTON_COMMANDS,
-    KEYBOARD,
-    TelegramClient,
-    TelegramError,
-    authorized_message,
-    event_text,
-    flush_notices,
-    queue_error,
-    queue_notice,
-    set_notifications,
-)
-
-
-def bot_settings(settings):
-    return settings.model_copy(
-        update={
-            "env": "local",
-            "telegram_bot_token": SecretStr("fake-test-token"),
-            "telegram_chat_id": 123,
-        }
-    )
+from ojol.notices import event_text, queue_error
 
 
 @pytest.mark.parametrize("auto", [True, False])
@@ -49,156 +24,6 @@ def test_status_shows_account_sleep_hours_in_wib(settings, state, auto):
     )
     write_private(settings.runtime_dir / "status.json", {"snapshot": state.model_dump(mode="json")})
     assert f"Tidur otomatis • {'ON' if auto else 'OFF'} • 23.15–06.45 WIB" in service.status()
-
-
-async def test_telegram_private_message_and_sanitized_network_error(settings):
-    settings = bot_settings(settings)
-    calls = []
-
-    def handler(request):
-        calls.append(json.loads(request.content))
-        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        async with TelegramClient(settings, client) as api:
-            await api.send("fixture")
-    assert calls == [
-        {
-            "chat_id": 123,
-            "text": "fixture",
-            "link_preview_options": {"is_disabled": True},
-            "protect_content": True,
-            "reply_markup": KEYBOARD,
-        }
-    ]
-    assert set(BUTTON_COMMANDS.values()) == {
-        "dashboard",
-        "import_cookie",
-        "choose_mode",
-        "resume",
-        "stop_ojol",
-        "run_kebutuhan",
-        "stop_kebutuhan",
-        "status",
-        "status_kebutuhan",
-        "auto",
-        "auto_ojol",
-        "auto_kebutuhan",
-        "profit",
-        "cleanup_scan",
-        "visit_scan",
-        "notifications_on",
-        "notifications_off",
-    }
-    assert all(not label.startswith("/") for label in BUTTON_COMMANDS)
-
-    def unavailable(request):
-        raise httpx.ConnectError("fake-test-token", request=request)
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(unavailable)) as client:
-        async with TelegramClient(settings, client) as api:
-            with pytest.raises(TelegramError) as error:
-                await api.send("fixture")
-    assert "fake-test-token" not in str(error.value)
-    assert error.value.retryable
-    assert "sendMessage: ConnectError" in str(error.value)
-    assert "telegram_bot_token" not in settings.model_dump()
-
-
-@pytest.mark.parametrize("status", [401, 403, 409, 429, 500, 502, 503])
-@pytest.mark.parametrize("json_response", [False, True])
-async def test_telegram_only_retries_transient_responses(settings, status, json_response):
-    def handle(request):
-        if json_response:
-            return httpx.Response(status, json={"ok": False, "description": "fixture"})
-        return httpx.Response(status, text="fixture upstream response")
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-        async with TelegramClient(bot_settings(settings), client) as api:
-            with pytest.raises(TelegramError) as error:
-                await api.call("getUpdates", timeout=20)
-    assert error.value.retryable is (status == 429 or status >= 500)
-    assert str(status) in str(error.value) and "getUpdates" in str(error.value)
-
-
-@pytest.mark.parametrize("payload", ["not-json", "[]"])
-async def test_telegram_malformed_success_response_is_retryable(settings, payload):
-    async with httpx.AsyncClient(
-        transport=httpx.MockTransport(lambda request: httpx.Response(200, text=payload))
-    ) as client:
-        async with TelegramClient(bot_settings(settings), client) as api:
-            with pytest.raises(TelegramError) as error:
-                await api.call("getUpdates", timeout=20)
-    assert error.value.retryable
-    assert "HTTP 200" in str(error.value)
-
-
-async def test_notification_header_uses_verified_nickname_over_old_account_name(settings):
-    settings = bot_settings(settings).model_copy(update={"account_name": "Old Manual Name"})
-    save_profile(
-        settings.runtime_dir,
-        verified_profile({"profile": {"nickname": "Current Nick"}, "balanceMilli": 35000}),
-    )
-    sent = []
-
-    def handle(request):
-        sent.append(json.loads(request.content)["text"])
-        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-        async with TelegramClient(settings, client) as api:
-            await api.send("fixture")
-    assert sent == ["👤 Current Nick\n\nfixture"]
-
-
-def test_only_configured_private_sender_can_control(settings):
-    settings = bot_settings(settings)
-    message = {"chat": {"type": "private", "id": 123}, "from": {"id": 123}}
-    assert authorized_message({"message": message}, settings)
-    for change in [
-        {"chat": {"type": "group", "id": 123}},
-        {"from": {"id": 456}},
-        {"chat": {"type": "private", "id": 456}},
-    ]:
-        assert not authorized_message({"message": {**message, **change}}, settings)
-    assert not authorized_message({}, settings)
-
-
-async def test_error_stops_before_send_retries_and_recovers_interrupted_outbox(settings):
-    settings = bot_settings(settings)
-    notice = queue_error(
-        settings,
-        RuntimeError("fake-test-token https://host/login/secret?state=token"),
-        "purchase.verify.fuel",
-        {"run_id": 7, "tab_id": "owned"},
-    )
-    assert (settings.runtime_dir / "STOP").exists()
-    data = json.loads(notice.read_text())
-    assert data["context"]["stage"] == "purchase.verify.fuel"
-    assert "fake-test-token" not in notice.read_text() and "/login/secret" not in notice.read_text()
-    async with httpx.AsyncClient(
-        transport=httpx.MockTransport(
-            lambda r: httpx.Response(503, json={"ok": False, "description": "offline"})
-        )
-    ) as client:
-        assert await flush_notices(settings, client) == 0
-    data = json.loads(notice.read_text())
-    assert data["attempts"] == 1
-    data["next_attempt"] = 0
-    notice.write_text(json.dumps(data))
-    claimed = notice.with_suffix(".sending")
-    notice.rename(claimed)
-    os.utime(claimed, (time.time() - 120, time.time() - 120))
-    async with httpx.AsyncClient(
-        transport=httpx.MockTransport(
-            lambda r: httpx.Response(200, json={"ok": True, "result": {}})
-        )
-    ) as client:
-        results = await asyncio.gather(
-            flush_notices(settings, client), flush_notices(settings, client)
-        )
-    assert sum(results) == 1
-    assert notice.with_suffix(".sent").exists()
 
 
 @pytest.mark.parametrize(
@@ -224,7 +49,6 @@ async def test_error_stops_before_send_retries_and_recovers_interrupted_outbox(s
         ),
         (RuntimeError("fixture"), "session.import.verify", "Import Cookie"),
         (RuntimeError("fixture"), "tunnel.process_exit", "Hubungi admin"),
-        (RuntimeError("fixture"), "telegram.poll", "Cek Status"),
         (RuntimeError("fixture"), "worker.auto_start", "Tekan Status"),
         (RuntimeError("fixture"), "purchase.verify.data", "pemeriksaan hasil"),
         (RuntimeError("fixture"), "control.command.visit_scan", "Coba lagi"),
@@ -234,7 +58,7 @@ async def test_error_stops_before_send_retries_and_recovers_interrupted_outbox(s
 def test_all_error_notices_have_guidance_and_correlated_id(
     settings, capsys, error, stage, expected
 ):
-    bot = bot_settings(settings)
+    bot = settings
     path = queue_error(bot, error, stage)
     notice = json.loads(path.read_text())
     saved = json.loads((bot.runtime_dir / "last-error.json").read_text())
@@ -251,36 +75,11 @@ def test_all_error_notices_have_guidance_and_correlated_id(
     assert json.loads(second.read_text())["context"]["error_id"] != reference
 
 
-async def test_error_id_survives_delivery_retry_with_routine_notifications_off(settings):
-    bot = bot_settings(settings)
-    set_notifications(bot, False)
-    path = queue_error(bot, RuntimeError("fake-test-token"), "shop.preview.data")
-    reference = json.loads(path.read_text())["context"]["error_id"]
-    attempts = []
-
-    def handler(request):
-        attempts.append(json.loads(request.content)["text"])
-        ok = len(attempts) > 1
-        return httpx.Response(200 if ok else 503, json={"ok": ok, "result": {}})
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        assert await flush_notices(bot, client) == 0
-        data = json.loads(path.read_text())
-        data["next_attempt"] = 0
-        path.write_text(json.dumps(data))
-        assert await flush_notices(bot, client) == 1
-    assert attempts[0] == attempts[1]
-    assert reference in attempts[1] and "kuota HP" in attempts[1]
-    assert "fake-test-token" not in attempts[1]
-    assert reference in ControlService(bot).status()
-
-
 @pytest.mark.parametrize("command", ["cleanup_scan", "visit_scan"])
 @pytest.mark.parametrize("error", [TimeoutError(), ValueError("fixture"), RuntimeError("fixture")])
 async def test_scan_errors_have_ids_without_stopping_worker(settings, monkeypatch, command, error):
     service = ControlService(settings)
     service.command = AsyncMock(side_effect=error)
-    monkeypatch.setattr("ojol.control.flush_notices", AsyncMock())
     await service.execute(command)
     path = next((settings.runtime_dir / "notifications").glob("*.json"))
     data = json.loads(path.read_text())
@@ -292,7 +91,8 @@ async def test_scan_errors_have_ids_without_stopping_worker(settings, monkeypatc
 @pytest.mark.parametrize("fatal", [False, True])
 async def test_worker_crash_after_nonfatal_error_still_notifies(settings, monkeypatch, fatal):
     service = ControlService(settings)
-    service.worker = SimpleNamespace(pid=123, returncode=2)
+    worker = SimpleNamespace(pid=123, returncode=2)
+    monkeypatch.setattr(service, "worker", worker)
     previous = queue_error(
         settings,
         RuntimeError("earlier fixture"),
@@ -301,12 +101,11 @@ async def test_worker_crash_after_nonfatal_error_still_notifies(settings, monkey
         stop_worker=fatal,
     )
     previous_id = json.loads(previous.read_text())["context"]["error_id"]
-    monkeypatch.setattr("ojol.control.flush_notices", AsyncMock())
 
     async def stop_loop(seconds):
         service.closing = True
 
-    monkeypatch.setattr("ojol.control.asyncio.sleep", stop_loop)
+    monkeypatch.setattr("ojol.control_service.asyncio.sleep", stop_loop)
     await service.supervise()
     details = json.loads((settings.runtime_dir / "last-error.json").read_text())
     assert (details["error_id"] == previous_id) is fatal
@@ -314,56 +113,7 @@ async def test_worker_crash_after_nonfatal_error_still_notifies(settings, monkey
         assert details["stage"] == "worker.process_exit"
 
 
-async def test_telegram_renders_pending_legacy_notices_without_debug_fields(settings):
-    bot = bot_settings(settings)
-    set_notifications(bot, True)
-    purchase = {
-        "resource": "makan",
-        "shop": "Akademis.ai Restaurant",
-        "product": "Soto",
-        "cost": "0.7",
-        "before": 55,
-        "after": 90,
-        "wallet": "34.3",
-    }
-    queue_notice(
-        bot,
-        "📣 pembelian_terverifikasi · 11-11-2026\nRun 7 · purchase.verify.makan\n"
-        + json.dumps(purchase),
-        {"routine_event": True, "event": "pembelian_terverifikasi", "run_id": 7},
-    )
-    queue_notice(
-        bot,
-        "👀 Cek kondisi · idle",
-        {"routine_event": True, "event": "observasi", "run_id": 7},
-    )
-    notice = queue_error(
-        bot, RuntimeError("internal-fixture"), "purchase.verify.makan", {"pid": 22}
-    )
-    data = json.loads(notice.read_text())
-    data["text"] = "🛑 Ojol STOP karena error\nstage: purchase.verify.makan\npid: 22"
-    notice.write_text(json.dumps(data))
-    sent = []
-
-    def handle(request):
-        sent.append(json.loads(request.content)["text"])
-        return httpx.Response(200, json={"ok": True, "result": {}})
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handle)) as client:
-        assert await flush_notices(bot, client) == 2
-    assert any("pemeriksaan hasil transaksi secara otomatis" in message for message in sent)
-    assert any("Aksi • Soto" in message and "Makan • 55% → 90%" in message for message in sent)
-    assert all(
-        field not in message
-        for message in sent
-        for field in ("purchase.verify", "run_id", "stage:", "pid:")
-    )
-    assert any("Detail: internal-fixture" in message for message in sent)
-    diagnostics = json.loads((settings.runtime_dir / "last-error.json").read_text())
-    assert diagnostics["stage"] == "purchase.verify.makan" and diagnostics["pid"] == 22
-
-
-def test_telegram_only_announces_confirmed_results():
+def test_in_app_events_announce_confirmed_results():
     assert event_text("observasi", {"phase": "idle"}) is None
     assert event_text("menunggu", {"seconds": 10}) is None
     assert event_text("rencana_beli", {"product": "Soto"}) is None
@@ -403,11 +153,6 @@ def test_login_ticket_single_use_expiry_and_revoke(settings):
 def test_login_origin_rejects_unsafe_urls(url):
     with pytest.raises(ValueError):
         Settings(login_public_url=url)
-
-
-def test_testing_blocks_live_telegram(settings):
-    with pytest.raises(ValidationError):
-        Settings(env="testing", runtime_dir=settings.runtime_dir, telegram_bot_token="test")
 
 
 def test_cookie_gateway_access_origin_size_and_single_use(settings, monkeypatch):
@@ -534,32 +279,12 @@ async def test_fast_double_start_and_stop_before_child_takes_lock(settings, monk
     service = ControlService(settings)
     child = SimpleNamespace(returncode=None)
     child.terminate = Mock(side_effect=lambda: setattr(child, "returncode", -15))
-    service.worker = child
-    monkeypatch.setattr("ojol.control.running", lambda directory: False)
+    monkeypatch.setattr(service, "worker", child)
+    monkeypatch.setattr("ojol.control_service.running", lambda directory: False)
     assert "sudah aktif" in await service.command("run")
     await service.stop_worker()
     child.terminate.assert_called_once()
     assert service.expected_stop and (settings.runtime_dir / "STOP").exists()
-
-
-async def test_status_profit_and_date_buttons_are_distinct(settings):
-    from ojol.finance import report_date
-
-    service = ControlService(settings)
-    status = await service.command("status")
-    profit = await service.command("profit")
-    assert (
-        "Saldo utama" in status and "Notifikasi • OFF" in status and "Pendapatan Ojol" not in status
-    )
-    assert "Pendapatan Ojol" in profit and "Saldo utama" not in profit
-    assert report_date().isoformat() in profit
-    assert "2026-01-02" in await service.command("profit:02-01-2026")
-    markup = service.profit_buttons("2026-01-02")
-    values = [button["callback_data"] for row in markup["inline_keyboard"] for button in row]
-    assert (
-        "profit:2026-01-01" in values and "profit:2026-01-03" in values and "choose_date" in values
-    )
-    assert "YYYY-MM-DD" in await service.command("choose_date") and service.awaiting_date
 
 
 def test_status_lists_need_percentage_and_auto_state_together(settings, state):
@@ -610,101 +335,6 @@ def test_need_update_message_shows_verified_change_real_cost_and_auto_state(
         assert "gratis" not in message
 
 
-async def test_notification_toggle_persists_and_mutes_pending_events_but_not_errors(settings):
-    from ojol.controller import Controller
-    from ojol.journal import Journal
-    from ojol.telegram import notifications_enabled
-
-    service = ControlService(settings)
-    assert not notifications_enabled(settings)
-    await service.command("notifications_on")
-    assert notifications_enabled(settings)
-    assert "Notifikasi • ON" in ControlService(settings).status()
-    journal = Journal(settings.runtime_dir)
-    controller = Controller(None, settings, journal, journal.start(settings))
-    for event in ("observasi", "menunggu", "rencana_beli"):
-        controller.report(event, fixture=True)
-    assert not list((settings.runtime_dir / "notifications").glob("*.json"))
-    controller.report("mulai", live=True)
-    controller.report(
-        "pembelian_terverifikasi",
-        resource="makan",
-        product="Soto",
-        shop="Akademis.ai Restaurant",
-        cost="0.7",
-        before=55,
-        after=90,
-        wallet="34.3",
-    )
-    controller.report("pendapatan_ojol_tercatat", amount="0.704")
-    notices = list((settings.runtime_dir / "notifications").glob("*.json"))
-    assert len(notices) == 3
-    await service.command("notifications_off")
-    assert not notifications_enabled(settings)
-    controller.report("observasi")
-    assert len(list((settings.runtime_dir / "notifications").glob("*.json"))) == 3
-    journal.close()
-    bot = bot_settings(settings)
-    queue_error(bot, RuntimeError("fixture"), "fixture.error")
-    calls = []
-
-    def handler(request):
-        calls.append(json.loads(request.content)["text"])
-        return httpx.Response(200, json={"ok": True, "result": {}})
-
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        assert await flush_notices(bot, client) == 1
-    assert len(calls) == 1 and "Tekan Status" in calls[0] and "fixture.error" not in calls[0]
-    assert len(list((settings.runtime_dir / "notifications").glob("*.muted"))) == 3
-
-
-@pytest.mark.parametrize("enabled", [False, True])
-async def test_critical_notices_keep_details_and_deliver_with_routine_toggle(
-    settings, monkeypatch, enabled
-):
-    from ojol.controller import Controller
-    from ojol.journal import Journal
-
-    bot = bot_settings(settings)
-    set_notifications(bot, enabled)
-    journal = Journal(bot.runtime_dir)
-    try:
-        controller = Controller(None, bot, journal, journal.start(bot))
-        for event, data in (
-            ("maintenance", {"sampai": "2026-11-14T06:30:00+00:00"}),
-            ("maintenance_selesai", {}),
-            ("tidur_mulai", {}),
-            ("bangun", {}),
-        ):
-            controller.report(event, **data)
-        # Already queued maintenance from an older worker may still carry the routine flag.
-        queue_notice(bot, "🛠 Maintenance lama", {"routine_event": True, "event": "maintenance"})
-        path = queue_error(
-            bot, RuntimeError("Stok konter habis; Cookie: secret-cookie"), "shop.preview.data"
-        )
-        reference = json.loads(path.read_text())["context"]["error_id"]
-    finally:
-        journal.close()
-    sent = []
-
-    def handler(request):
-        sent.append(json.loads(request.content)["text"])
-        return httpx.Response(200, json={"ok": True, "result": {}})
-
-    monkeypatch.setattr("ojol.telegram.asyncio.sleep", AsyncMock())
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-        while await flush_notices(bot, client):
-            pass
-    assert len(sent) == 6
-    assert any("13:30 WIB" in text for text in sent)
-    assert any("Maintenance selesai" in text for text in sent)
-    assert any("Karakter sedang tidur" in text for text in sent)
-    assert any("Karakter sudah bangun" in text for text in sent)
-    assert any(reference in text and "Detail: Stok konter habis" in text for text in sent)
-    assert all("secret-cookie" not in text for text in sent)
-    assert not list((bot.runtime_dir / "notifications").glob("*.muted"))
-
-
 @pytest.mark.parametrize(
     "message,secret",
     [
@@ -736,63 +366,7 @@ def test_cookie_form_parser_only_imports_game_session():
             parse_cookie_input(source)
 
 
-def test_callback_authorization(settings):
-    settings = bot_settings(settings)
-    callback = {
-        "from": {"id": 123},
-        "message": {"chat": {"id": 123, "type": "private"}},
-        "data": "profit:2026-11-10",
-    }
-    assert authorized_message({"callback_query": callback}, settings)
-    assert not authorized_message({"callback_query": {**callback, "from": {"id": 456}}}, settings)
-
-
-async def test_telegram_date_callback_ack_and_message_routing(settings, monkeypatch):
-    import ojol.control as module
-
-    service = ControlService(bot_settings(settings))
-    service.execute = AsyncMock()
-    authorized = {
-        "from": {"id": 123},
-        "message": {"chat": {"id": 123, "type": "private"}},
-        "id": "callback-fixture",
-        "data": "profit:2026-11-09",
-    }
-    updates = [
-        {"update_id": 1, "callback_query": {**authorized, "from": {"id": 456}}},
-        {"update_id": 2, "callback_query": authorized},
-        {
-            "update_id": 3,
-            "message": {
-                "from": {"id": 123},
-                "chat": {"id": 123, "type": "private"},
-                "text": "09-11-2026",
-            },
-        },
-    ]
-    api = SimpleNamespace()
-
-    async def call(method, **kwargs):
-        if method == "getUpdates":
-            assert kwargs["allowed_updates"] == ["message", "callback_query"]
-            service.closing = True
-            return updates
-        assert method == "answerCallbackQuery" and kwargs["callback_query_id"] == "callback-fixture"
-
-    api.call = AsyncMock(side_effect=call)
-    context = AsyncMock()
-    context.__aenter__.return_value = api
-    monkeypatch.setattr(module, "TelegramClient", lambda settings: context)
-    await service.poll_telegram()
-    assert [c.args[0] for c in service.execute.await_args_list] == [
-        "profit:2026-11-09",
-        "profit:09-11-2026",
-    ]
-    assert (settings.runtime_dir / "telegram-offset").read_text() == "4"
-
-
 async def test_invalid_report_date_never_stops_gameplay(settings, monkeypatch):
-    monkeypatch.setattr("ojol.control.flush_notices", AsyncMock())
     service = ControlService(settings)
     await service.execute("profit:2026-02-31")
     assert not (settings.runtime_dir / "STOP").exists()
@@ -803,10 +377,9 @@ async def test_invalid_report_date_never_stops_gameplay(settings, monkeypatch):
 
 
 def test_status_snapshot_freshness_and_worker_stop_reason(settings, monkeypatch):
-    import os
     from datetime import datetime
 
-    import ojol.control as control
+    import ojol.control_service as control
 
     service = ControlService(settings.model_copy(update={"account_name": "Akun uji"}))
     assert "belum dijalankan" in service.status()
@@ -848,15 +421,16 @@ async def test_account_profit_unavailable_does_not_stop_worker(settings, monkeyp
     assert not (settings.runtime_dir / "STOP").exists()
 
 
-def test_status_shows_unresolved_action_and_starting_worker(settings, state):
+def test_status_shows_unresolved_action_and_starting_worker(settings, state, monkeypatch):
     from types import SimpleNamespace
 
     from ojol.journal import Journal
 
     service = ControlService(settings)
-    service.worker = SimpleNamespace(pid=123, returncode=None)
+    worker = SimpleNamespace(pid=123, returncode=None)
+    monkeypatch.setattr(service, "worker", worker)
     assert "Worker memulai" in service.status()
-    service.worker.returncode = 1
+    worker.returncode = 1
     journal = Journal(settings.runtime_dir)
     try:
         run_id = journal.start(settings)
@@ -958,7 +532,7 @@ async def test_kebutuhan_and_ojol_separate_buttons(settings, monkeypatch):
     child = SimpleNamespace(returncode=None)
     child.terminate = Mock(side_effect=lambda: setattr(child, "returncode", -15))
     spawn = AsyncMock(return_value=child)
-    monkeypatch.setattr("ojol.control.asyncio.create_subprocess_exec", spawn)
+    monkeypatch.setattr("ojol.control_service.asyncio.create_subprocess_exec", spawn)
 
     # 1. Jalankan Kebutuhan starts worker with ojol OFF and needs ON
     res = await service.command("run_kebutuhan")

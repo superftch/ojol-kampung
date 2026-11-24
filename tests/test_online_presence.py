@@ -3,6 +3,7 @@ import time
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from conftest import seed_legacy_account
 
 from ojol.cli import main
 from ojol.control import ControlService
@@ -150,7 +151,8 @@ def test_control_service_summary_reports_online_presence(settings):
 
 
 async def test_multi_account_maintain_and_fetch_all(settings):
-    manager = MultiAccountService(settings.model_copy(update={"telegram_chat_id": 999}))
+    manager = MultiAccountService(settings)
+    seed_legacy_account(manager.registry, 999)
     registry = manager.registry
     acc1 = registry.create(999, "Akun-1")
     acc2 = registry.create(999, "Akun-2")
