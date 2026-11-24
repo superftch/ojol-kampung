@@ -124,19 +124,19 @@ test("Auto-Ojol Engine (Khusus Mode Kendarai) - Unit & Integration Tests", async
     }
   });
 
-  await t.test("Order Evaluation Engine - Prioritizes highest fare (Max Omzet)", () => {
+  await t.test("Order Evaluation Engine - Default prioritizes highest fare (Max Omzet) without distance limit", () => {
     const orders = [
       { id: "ord-1", fareMilli: 2400, distance: 8, warga: false },
       { id: "ord-2", fareMilli: 5800, distance: 18, warga: false },
       { id: "ord-3", fareMilli: 3900, distance: 10, warga: false }
     ];
 
-    const chosen = evaluateOrders(orders, { strategy: "max_fare" });
+    const chosen = evaluateOrders(orders);
     assert.ok(chosen);
-    assert.equal(chosen.id, "ord-2", "Should choose order with highest fare (5800 m-koin)");
+    assert.equal(chosen.id, "ord-2", "Default strategy must choose order with highest fare (5800 m-koin)");
   });
 
-  await t.test("Order Evaluation Engine - Price-to-Distance & Time Efficiency (Most Worth It per Minute)", () => {
+  await t.test("Order Evaluation Engine - Explicit time_efficiency still works when requested", () => {
     const orders = [
       { id: "ord-1", fareMilli: 2400, distance: 8, warga: false },
       { id: "ord-2", fareMilli: 5800, distance: 18, warga: false },
@@ -147,7 +147,7 @@ test("Auto-Ojol Engine (Khusus Mode Kendarai) - Unit & Integration Tests", async
     // ord-2: 5800 m-koin / 18 petak (322 m-koin/petak, rate 60.4 m-koin/s)
     const chosen = evaluateOrders(orders, { strategy: "time_efficiency" });
     assert.ok(chosen);
-    assert.equal(chosen.id, "ord-3", "Should choose ord-3 with highest price-to-distance ratio (390 m-koin/petak) and fastest turnaround");
+    assert.equal(chosen.id, "ord-3", "Explicit time_efficiency chooses ord-3 with highest price-to-distance ratio");
   });
 
   await t.test("Order Evaluation Engine - Prefer warga orders when fares are equal", () => {
@@ -172,18 +172,15 @@ test("Auto-Ojol Engine (Khusus Mode Kendarai) - Unit & Integration Tests", async
     assert.equal(chosen.id, "ord-near", "Should prefer shorter distance for faster turnaround");
   });
 
-  await t.test("Order Evaluation Engine - Avoid extreme distance trap (>35 petak) over fast orders", () => {
-    // Skenario order trap dari screenshot user:
-    // Order 1: 0.9 koin (45 petak) -> butuh waktu tunggu 4 menit di server
-    // Order 2: 0.8 koin (10 petak) -> selesai dalam 30 detik
+  await t.test("Order Evaluation Engine - Picks highest fare even when distance exceeds 35 petak (no distance limit)", () => {
     const orders = [
-      { id: "ord-trap-45", fareMilli: 900, distance: 45, warga: false },
+      { id: "ord-far-45", fareMilli: 900, distance: 45, warga: false },
       { id: "ord-fast-10", fareMilli: 800, distance: 10, warga: false }
     ];
 
     const chosen = evaluateOrders(orders, { maxDistance: 35 });
     assert.ok(chosen);
-    assert.equal(chosen.id, "ord-fast-10", "Should avoid 45-petak order trap despite 0.1 koin higher nominal fare");
+    assert.equal(chosen.id, "ord-far-45", "Should pick highest fare regardless of distance");
   });
 
   await t.test("Order Card Text Parsing - Extracts fare, distance, and warga status accurately", () => {
