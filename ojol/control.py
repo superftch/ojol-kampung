@@ -866,22 +866,59 @@ class ControlService:
                 if auto_start:
                     self.auto_start_pending = True
                 return maintenance.message()
-        if command == "resume":
+        if command in {"resume", "skip"}:
             from contextlib import closing
 
             from .journal import Journal
+
+            # 1. Hentikan worker jika sedang berjalan agar tidak bertabrakan dengan rekonsiliasi baru
+            try:
+                await self.stop_worker()
+            except Exception:
+                pass
+
+            # 2. Hapus file STOP agar bisa mulai baru
+            (self.settings.runtime_dir / "STOP").unlink(missing_ok=True)
 
             skipped = []
             with closing(Journal(self.settings.runtime_dir)) as journal:
                 for row in journal.unresolved():
                     journal.skip(row["id"])
                     skipped.append(row["id"])
+
+            # 3. Bersihkan status rekonsiliasi lama dari game-sync.json dan status.json
+            sync_path = self.settings.runtime_dir / "game-sync.json"
+            if sync_path.is_file():
+                try:
+                    sync_data = json.loads(sync_path.read_text())
+                    sync_data["reconciliation"] = []
+                    sync_data["unresolved"] = 0
+                    write_private(sync_path, sync_data)
+                except Exception:
+                    pass
+
+            status_path = self.settings.runtime_dir / "status.json"
+            if status_path.is_file():
+                try:
+                    st_data = json.loads(status_path.read_text())
+                    st_data.pop("reconciliation_pending", None)
+                    st_data.pop("reconciliation_attempt", None)
+                    st_data["event"] = "berhenti"
+                    st_data["reason"] = f"Aksi tertahan ({len(skipped)} aksi) dilewati manual oleh pengguna."
+                    write_private(status_path, st_data)
+                except Exception:
+                    pass
+
             text = (
                 "⏩ Aksi belum pasti dilewati: " + ", ".join(f"#{row}" for row in skipped) + ".\n\n"
                 if skipped
                 else "✅ Tidak ada aksi tertahan.\n\n"
             )
-            return text + await self.command("run")
+            try:
+                run_msg = await self.command("run")
+                return text + run_msg
+            except Exception:
+                return text
         if command == "choose_mode":
             return (
                 "🏍️ Pilih mode Ojol\n\n"

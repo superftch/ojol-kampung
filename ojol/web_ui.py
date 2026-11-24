@@ -1811,12 +1811,12 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         }}
 
         async function skipStuckActions() {{
+            const accId = dashboardData?.account?.id;
+            const query = accId ? '?account_id=' + encodeURIComponent(accId) : '';
             if (!confirm('Lewati semua aksi transaksi yang tertahan dan jalankan bot dari kondisi game saat ini?')) return;
             try {{
-                const res = await fetch('/api/control/skip', {{ method: 'POST' }});
-                const json = await res.json();
-                if (!res.ok) throw new Error(json.detail || 'Gagal melewati aksi');
-                showToast(json.message || 'Aksi tertahan dilewati. Bot melanjutkan aktivitas.', 'success');
+                const data = await apiFetch('/api/control/skip' + query, {{ method: 'POST' }});
+                showToast(data.message || 'Aksi tertahan dilewati. Bot melanjutkan aktivitas.', 'success');
                 manualRefreshDashboard();
             }} catch (e) {{
                 showToast(e.message, 'error');
