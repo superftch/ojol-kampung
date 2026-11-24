@@ -442,7 +442,9 @@ def register_web_routes(app, settings, manager=None, service=None):
                     time_display = "Terkini"
                     if created_raw:
                         try:
-                            dt = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00")).astimezone(WIB)
+                            dt = datetime.fromisoformat(
+                                str(created_raw).replace("Z", "+00:00")
+                            ).astimezone(WIB)
                             time_display = dt.strftime("%d/%m %H:%M WIB")
                         except Exception:
                             time_display = str(created_raw)
@@ -452,17 +454,19 @@ def register_web_routes(app, settings, manager=None, service=None):
                     item_name = f"{product} • {shop}" if shop else str(product)
                     amount_num = parse_coins(row["amount"])
 
-                    results.append({
-                        "id": row["id"],
-                        "created": row["created"],
-                        "time_display": time_display,
-                        "category": row["category"] or "pengeluaran",
-                        "item_name": item_name,
-                        "shop": shop,
-                        "product": product,
-                        "amount": format_coins(amount_num),
-                        "amount_num": float(amount_num),
-                    })
+                    results.append(
+                        {
+                            "id": row["id"],
+                            "created": row["created"],
+                            "time_display": time_display,
+                            "category": row["category"] or "pengeluaran",
+                            "item_name": item_name,
+                            "shop": shop,
+                            "product": product,
+                            "amount": format_coins(amount_num),
+                            "amount_num": float(amount_num),
+                        }
+                    )
                 return results
         except Exception:
             return []
@@ -525,31 +529,48 @@ def register_web_routes(app, settings, manager=None, service=None):
                     matching_quiz = None
                     if visit_id:
                         for qz in quiz_actions:
-                            if qz["id"] not in matched_quiz_ids and qz["payload"].get("visit_id") == visit_id:
+                            if (
+                                qz["id"] not in matched_quiz_ids
+                                and qz["payload"].get("visit_id") == visit_id
+                            ):
                                 matching_quiz = qz
                                 matched_quiz_ids.add(qz["id"])
                                 break
 
                     mode = st_payload.get("mode") or "perpus"
-                    track = st_payload.get("track") or (matching_quiz["payload"].get("track") if matching_quiz else "dagang")
+                    track = st_payload.get("track") or (
+                        matching_quiz["payload"].get("track") if matching_quiz else "dagang"
+                    )
                     shop = st_payload.get("shop")
                     if not shop:
                         shop = "Perpustakaan Desa" if mode == "perpus" else "Universitas Terbuka"
                     product = st_payload.get("product") or {}
                     raw_price = product.get("price")
-                    cost_num = parse_coins(raw_price) if raw_price is not None else (Decimal(0) if mode == "perpus" else Decimal(4000))
-                    cost_str = "Gratis (0 koin)" if cost_num == Decimal(0) else f"-{format_coins(cost_num)} koin"
+                    cost_num = (
+                        parse_coins(raw_price)
+                        if raw_price is not None
+                        else (Decimal(0) if mode == "perpus" else Decimal(4000))
+                    )
+                    cost_str = (
+                        "Gratis (0 koin)"
+                        if cost_num == Decimal(0)
+                        else f"-{format_coins(cost_num)} koin"
+                    )
 
                     created_raw = matching_quiz["created"] if matching_quiz else st["created"]
                     time_display = "Terkini"
                     if created_raw:
                         try:
-                            dt = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00")).astimezone(WIB)
+                            dt = datetime.fromisoformat(
+                                str(created_raw).replace("Z", "+00:00")
+                            ).astimezone(WIB)
                             time_display = dt.strftime("%d/%m %H:%M WIB")
                         except Exception:
                             time_display = str(created_raw)
 
-                    track_name = SUBJECTS.get(track, track.capitalize() if isinstance(track, str) else "Keahlian")
+                    track_name = SUBJECTS.get(
+                        track, track.capitalize() if isinstance(track, str) else "Keahlian"
+                    )
                     skill_cur = current_skills.get(track, {})
                     cur_level = skill_cur.get("level")
 
@@ -569,22 +590,24 @@ def register_web_routes(app, settings, manager=None, service=None):
 
                     level_display = f"Lv. {cur_level}" if cur_level is not None else ""
 
-                    sessions.append({
-                        "id": f"study_{st['id']}",
-                        "time_display": time_display,
-                        "created": created_raw,
-                        "mode": mode,
-                        "mode_label": "Perpustakaan" if mode == "perpus" else "Universitas",
-                        "facility_name": shop,
-                        "track_id": track,
-                        "track_name": track_name,
-                        "cost": cost_str,
-                        "cost_num": float(cost_num),
-                        "skill_level": cur_level,
-                        "level_display": level_display,
-                        "skill_gain": skill_gain,
-                        "status": status_text,
-                    })
+                    sessions.append(
+                        {
+                            "id": f"study_{st['id']}",
+                            "time_display": time_display,
+                            "created": created_raw,
+                            "mode": mode,
+                            "mode_label": "Perpustakaan" if mode == "perpus" else "Universitas",
+                            "facility_name": shop,
+                            "track_id": track,
+                            "track_name": track_name,
+                            "cost": cost_str,
+                            "cost_num": float(cost_num),
+                            "skill_level": cur_level,
+                            "level_display": level_display,
+                            "skill_gain": skill_gain,
+                            "status": status_text,
+                        }
+                    )
 
                 for qz in quiz_actions:
                     if qz["id"] in matched_quiz_ids:
@@ -592,20 +615,30 @@ def register_web_routes(app, settings, manager=None, service=None):
                     qz_payload = qz["payload"]
                     mode = qz_payload.get("mode") or "perpus"
                     track = qz_payload.get("track") or "dagang"
-                    shop = qz_payload.get("shop") or ("Perpustakaan Desa" if mode == "perpus" else "Universitas Terbuka")
+                    shop = qz_payload.get("shop") or (
+                        "Perpustakaan Desa" if mode == "perpus" else "Universitas Terbuka"
+                    )
                     cost_num = Decimal(0) if mode == "perpus" else Decimal(4000)
-                    cost_str = "Gratis (0 koin)" if cost_num == Decimal(0) else f"-{format_coins(cost_num)} koin"
+                    cost_str = (
+                        "Gratis (0 koin)"
+                        if cost_num == Decimal(0)
+                        else f"-{format_coins(cost_num)} koin"
+                    )
 
                     created_raw = qz["created"]
                     time_display = "Terkini"
                     if created_raw:
                         try:
-                            dt = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00")).astimezone(WIB)
+                            dt = datetime.fromisoformat(
+                                str(created_raw).replace("Z", "+00:00")
+                            ).astimezone(WIB)
                             time_display = dt.strftime("%d/%m %H:%M WIB")
                         except Exception:
                             time_display = str(created_raw)
 
-                    track_name = SUBJECTS.get(track, track.capitalize() if isinstance(track, str) else "Keahlian")
+                    track_name = SUBJECTS.get(
+                        track, track.capitalize() if isinstance(track, str) else "Keahlian"
+                    )
                     skill_cur = current_skills.get(track, {})
                     cur_level = skill_cur.get("level")
 
@@ -620,22 +653,24 @@ def register_web_routes(app, settings, manager=None, service=None):
 
                     level_display = f"Lv. {cur_level}" if cur_level is not None else ""
 
-                    sessions.append({
-                        "id": f"quiz_{qz['id']}",
-                        "time_display": time_display,
-                        "created": created_raw,
-                        "mode": mode,
-                        "mode_label": "Perpustakaan" if mode == "perpus" else "Universitas",
-                        "facility_name": shop,
-                        "track_id": track,
-                        "track_name": track_name,
-                        "cost": cost_str,
-                        "cost_num": float(cost_num),
-                        "skill_level": cur_level,
-                        "level_display": level_display,
-                        "skill_gain": skill_gain,
-                        "status": "Selesai",
-                    })
+                    sessions.append(
+                        {
+                            "id": f"quiz_{qz['id']}",
+                            "time_display": time_display,
+                            "created": created_raw,
+                            "mode": mode,
+                            "mode_label": "Perpustakaan" if mode == "perpus" else "Universitas",
+                            "facility_name": shop,
+                            "track_id": track,
+                            "track_name": track_name,
+                            "cost": cost_str,
+                            "cost_num": float(cost_num),
+                            "skill_level": cur_level,
+                            "level_display": level_display,
+                            "skill_gain": skill_gain,
+                            "status": "Selesai",
+                        }
+                    )
 
                 # Jika belum ada sesi dari actions, fallback baca events
                 if not sessions:
@@ -656,13 +691,19 @@ def register_web_routes(app, settings, manager=None, service=None):
                         track = edata.get("track") or "dagang"
                         track_name = SUBJECTS.get(track, str(track).capitalize())
                         cost_val = parse_coins(edata.get("cost", 0))
-                        cost_str = "Gratis (0 koin)" if cost_val == Decimal(0) else f"-{format_coins(cost_val)} koin"
+                        cost_str = (
+                            "Gratis (0 koin)"
+                            if cost_val == Decimal(0)
+                            else f"-{format_coins(cost_val)} koin"
+                        )
 
                         created_raw = erow["created"]
                         time_display = "Terkini"
                         if created_raw:
                             try:
-                                dt = datetime.fromisoformat(str(created_raw).replace("Z", "+00:00")).astimezone(WIB)
+                                dt = datetime.fromisoformat(
+                                    str(created_raw).replace("Z", "+00:00")
+                                ).astimezone(WIB)
                                 time_display = dt.strftime("%d/%m %H:%M WIB")
                             except Exception:
                                 time_display = str(created_raw)
@@ -676,28 +717,34 @@ def register_web_routes(app, settings, manager=None, service=None):
                             b = edata.get("benar")
                             t = edata.get("total")
                             bon = edata.get("bonus", 1)
-                            gain = f"Kuis {b}/{t} Benar (+{bon} Keahlian)" if b is not None and t is not None else f"+{bon} Keahlian"
+                            gain = (
+                                f"Kuis {b}/{t} Benar (+{bon} Keahlian)"
+                                if b is not None and t is not None
+                                else f"+{bon} Keahlian"
+                            )
                             st_text = "Selesai"
                         else:
                             gain = "Kunjungan dimulai"
                             st_text = "Menunggu kuis"
 
-                        sessions.append({
-                            "id": f"event_{erow['id']}",
-                            "time_display": time_display,
-                            "created": created_raw,
-                            "mode": mode,
-                            "mode_label": "Perpustakaan" if mode == "perpus" else "Universitas",
-                            "facility_name": shop,
-                            "track_id": track,
-                            "track_name": track_name,
-                            "cost": cost_str,
-                            "cost_num": float(cost_val),
-                            "skill_level": cur_level,
-                            "level_display": level_display,
-                            "skill_gain": gain,
-                            "status": st_text,
-                        })
+                        sessions.append(
+                            {
+                                "id": f"event_{erow['id']}",
+                                "time_display": time_display,
+                                "created": created_raw,
+                                "mode": mode,
+                                "mode_label": "Perpustakaan" if mode == "perpus" else "Universitas",
+                                "facility_name": shop,
+                                "track_id": track,
+                                "track_name": track_name,
+                                "cost": cost_str,
+                                "cost_num": float(cost_val),
+                                "skill_level": cur_level,
+                                "level_display": level_display,
+                                "skill_gain": gain,
+                                "status": st_text,
+                            }
+                        )
 
                 sessions.sort(key=lambda s: s.get("created") or "", reverse=True)
                 return sessions[:limit]
@@ -941,16 +988,22 @@ def register_web_routes(app, settings, manager=None, service=None):
                 if data.get("category"):
                     logs.append(f"   Kategori: {data.get('category')}")
                 if data.get("reconciliation_pending"):
-                    logs.append(f"   Aksi tertahan: {data.get('reconciliation_pending')} transaksi game belum terkonfirmasi")
+                    logs.append(
+                        f"   Aksi tertahan: {data.get('reconciliation_pending')} transaksi game belum terkonfirmasi"
+                    )
                 if data.get("last_action"):
                     la = data["last_action"]
-                    logs.append(f"   Aksi terakhir: #{la.get('action_id', '?')} {la.get('kind', '?')}")
+                    logs.append(
+                        f"   Aksi terakhir: #{la.get('action_id', '?')} {la.get('kind', '?')}"
+                    )
             elif ev in {"rekonsiliasi", "rekonsiliasi_otomatis"}:
                 attempt = data.get("reconciliation_attempt", 1)
                 limit = data.get("reconciliation_limit", 6)
                 pending_cnt = data.get("reconciliation_pending", "?")
                 logs.append(f"[{time_str}] 🔄 Rekonsiliasi Otomatis ({attempt}/{limit})")
-                logs.append(f"   Sedang mencocokkan {pending_cnt} aksi transaksi tertahan dengan game...")
+                logs.append(
+                    f"   Sedang mencocokkan {pending_cnt} aksi transaksi tertahan dengan game..."
+                )
             elif ev == "mulai":
                 logs.append(f"[{time_str}] ▶️ Worker Mulai ({stage_desc})")
             elif ev == "berhenti":
@@ -970,7 +1023,9 @@ def register_web_routes(app, settings, manager=None, service=None):
                     if action.get("status_after") in {"pending", "uncertain"}:
                         desc = action.get("description") or action.get("kind", "Aksi")
                         reason = action.get("reason", "")
-                        logs.append(f"⏳ Aksi tertahan: #{action.get('action_id')} {desc} ({reason})")
+                        logs.append(
+                            f"⏳ Aksi tertahan: #{action.get('action_id')} {desc} ({reason})"
+                        )
             except Exception:
                 pass
 
@@ -1537,17 +1592,21 @@ def register_web_routes(app, settings, manager=None, service=None):
                 if isinstance(v, dict):
                     if v.get("by"):
                         total_contributions += 1
-                    formatted_templates[digit].append({
-                        "glyph": v.get("glyph", []),
-                        "by": v.get("by"),
-                        "at": v.get("at"),
-                    })
+                    formatted_templates[digit].append(
+                        {
+                            "glyph": v.get("glyph", []),
+                            "by": v.get("by"),
+                            "at": v.get("at"),
+                        }
+                    )
                 else:
-                    formatted_templates[digit].append({
-                        "glyph": v,
-                        "by": None,
-                        "at": None,
-                    })
+                    formatted_templates[digit].append(
+                        {
+                            "glyph": v,
+                            "by": None,
+                            "at": None,
+                        }
+                    )
 
         pending = get_all_pending_reviews(fleet_dirs, acc_names)
 
@@ -1607,7 +1666,9 @@ def register_web_routes(app, settings, manager=None, service=None):
                     try:
                         sdata = json.loads(status_file.read_text())
                         snap = sdata.get("snapshot") or {}
-                        if snap.get("phase") == "complete" or str(sdata.get("stage", "")).startswith("job.complete"):
+                        if snap.get("phase") == "complete" or str(
+                            sdata.get("stage", "")
+                        ).startswith("job.complete"):
                             matched = True
                     except Exception:
                         pass
@@ -1651,7 +1712,9 @@ def register_web_routes(app, settings, manager=None, service=None):
 
                 # 4. Jika worker belum aktif, jalankan
                 if acc_service:
-                    is_active = (acc_service.worker and acc_service.worker.returncode is None) or running(p)
+                    is_active = (
+                        acc_service.worker and acc_service.worker.returncode is None
+                    ) or running(p)
                     if not is_active:
                         try:
                             await acc_service.command("run")

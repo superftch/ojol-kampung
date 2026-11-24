@@ -122,7 +122,10 @@ def _stroke_distance(a, b):
             for shift in range(count):
                 shifted = cand[shift:] + cand[:shift]
                 cost = (
-                    sum(((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5 for (x1, y1), (x2, y2) in zip(a, shifted))
+                    sum(
+                        ((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5
+                        for (x1, y1), (x2, y2) in zip(a, shifted)
+                    )
                     / count
                 )
                 best = min(best, cost)
@@ -201,7 +204,14 @@ def load_bank(directory=None):
                     target[digit].append(v)
                 else:
                     # Jika ada kontributor info baru dan yang lama belum ada, perbarui
-                    if isinstance(v, dict) and v.get("by") and (not isinstance(target[digit][found_idx], dict) or not target[digit][found_idx].get("by")):
+                    if (
+                        isinstance(v, dict)
+                        and v.get("by")
+                        and (
+                            not isinstance(target[digit][found_idx], dict)
+                            or not target[digit][found_idx].get("by")
+                        )
+                    ):
                         target[digit][found_idx] = v
 
     if repo_bank.is_file():
@@ -224,7 +234,9 @@ def load_bank(directory=None):
 
     for digit, variants in seeds.items():
         if not stored.get(digit):
-            stored[digit] = [list([list(p) for p in stroke] for stroke in variant) for variant in variants]
+            stored[digit] = [
+                list([list(p) for p in stroke] for stroke in variant) for variant in variants
+            ]
 
     return stored
 
@@ -397,7 +409,9 @@ def get_pending_reviews(directory, account_name=None):
     samples_dir = path / "cek-samples"
     samples_cache = []
     if samples_dir.is_dir():
-        for s_file in sorted(samples_dir.glob("*.svg"), key=lambda f: f.stat().st_mtime, reverse=True):
+        for s_file in sorted(
+            samples_dir.glob("*.svg"), key=lambda f: f.stat().st_mtime, reverse=True
+        ):
             try:
                 content = s_file.read_text().strip()
                 if content.startswith("<svg"):
@@ -472,15 +486,17 @@ def get_pending_reviews(directory, account_name=None):
                         resolved_ids.add(rid)
                         continue
                     svg_text = data.get("svg_text") or find_matching_svg(glyph, data.get("trip_id"))
-                    reviews.append({
-                        "id": rid,
-                        "error_id": data.get("error_id"),
-                        "trip_id": data.get("trip_id"),
-                        "time": data.get("time"),
-                        "glyph": glyph,
-                        "svg_text": svg_text,
-                        "account_name": account_name or data.get("account_name"),
-                    })
+                    reviews.append(
+                        {
+                            "id": rid,
+                            "error_id": data.get("error_id"),
+                            "trip_id": data.get("trip_id"),
+                            "time": data.get("time"),
+                            "glyph": glyph,
+                            "svg_text": svg_text,
+                            "account_name": account_name or data.get("account_name"),
+                        }
+                    )
                     seen_ids.add(rid)
             except (ValueError, OSError):
                 continue
@@ -488,7 +504,9 @@ def get_pending_reviews(directory, account_name=None):
     # 2. Dari errors/OJL-*.json
     err_dir = path / "errors"
     if err_dir.is_dir():
-        for file in sorted(err_dir.glob("OJL-*.json"), key=lambda f: f.stat().st_mtime, reverse=True):
+        for file in sorted(
+            err_dir.glob("OJL-*.json"), key=lambda f: f.stat().st_mtime, reverse=True
+        ):
             err_id = file.stem
             rev_err_id = f"rev-err-{err_id}"
             if (
@@ -503,7 +521,10 @@ def get_pending_reviews(directory, account_name=None):
                 if data.get("trip_id") and data.get("trip_id") in resolved_ids:
                     continue
                 msg = str(data.get("message") or "")
-                if "Glyph cek belum dikenali" in msg or data.get("category") == "SvgCaptchaSolverError":
+                if (
+                    "Glyph cek belum dikenali" in msg
+                    or data.get("category") == "SvgCaptchaSolverError"
+                ):
                     match = re.search(r"Glyph cek belum dikenali:\s*(\[\[\[.*?\]\]\])", msg)
                     if match:
                         glyph = json.loads(match.group(1))
@@ -528,15 +549,17 @@ def get_pending_reviews(directory, account_name=None):
                             continue
 
                         svg_text = find_matching_svg(glyph, data.get("trip_id"))
-                        reviews.append({
-                            "id": rev_err_id,
-                            "error_id": err_id,
-                            "trip_id": data.get("trip_id"),
-                            "time": data.get("time"),
-                            "glyph": glyph,
-                            "svg_text": svg_text,
-                            "account_name": account_name or data.get("account_name"),
-                        })
+                        reviews.append(
+                            {
+                                "id": rev_err_id,
+                                "error_id": err_id,
+                                "trip_id": data.get("trip_id"),
+                                "time": data.get("time"),
+                                "glyph": glyph,
+                                "svg_text": svg_text,
+                                "account_name": account_name or data.get("account_name"),
+                            }
+                        )
                         seen_ids.add(err_id)
                         seen_ids.add(rev_err_id)
             except Exception:
@@ -556,7 +579,9 @@ def get_all_pending_reviews(directories, account_names=None):
         if not d:
             continue
         p = Path(d)
-        acc_name = account_names.get(str(p)) or account_names.get(p.name) or account_names.get(p.stem)
+        acc_name = (
+            account_names.get(str(p)) or account_names.get(p.name) or account_names.get(p.stem)
+        )
         reviews = get_pending_reviews(p, account_name=acc_name)
         for r in reviews:
             rid = r.get("id") or r.get("error_id")
@@ -573,8 +598,12 @@ def get_all_pending_reviews(directories, account_names=None):
                     existing_cross = ex
                     break
             if existing_cross:
-                if r.get("account_name") and r["account_name"] not in (existing_cross.get("account_name") or ""):
-                    existing_cross["account_name"] = f"{existing_cross.get('account_name', '')}, {r['account_name']}".strip(", ")
+                if r.get("account_name") and r["account_name"] not in (
+                    existing_cross.get("account_name") or ""
+                ):
+                    existing_cross["account_name"] = (
+                        f"{existing_cross.get('account_name', '')}, {r['account_name']}".strip(", ")
+                    )
                 seen_ids.add(rid)
                 continue
 
@@ -585,7 +614,9 @@ def get_all_pending_reviews(directories, account_names=None):
     return all_reviews
 
 
-def resolve_review(directory, review_id: str, digit: str = None, glyph: list = None, resolved_by: str = None):
+def resolve_review(
+    directory, review_id: str, digit: str = None, glyph: list = None, resolved_by: str = None
+):
     """Menandai review selesai dan menambahkan ke bank angka bila digit & glyph diberikan (bisa multi-direktori)."""
     if not directory:
         return
@@ -710,13 +741,19 @@ def learn_polyline(directory, svg_text, code, contributed_by=None):
         shapes = bank.get(digit, [])
         normalized = _normalize(glyph)
         if all(
-            _shape_distance(normalized, _normalize([[tuple(p) for p in s] for s in _extract_glyph(shape)]))
+            _shape_distance(
+                normalized, _normalize([[tuple(p) for p in s] for s in _extract_glyph(shape)])
+            )
             > _SWITCH * 0.9
             for shape in shapes
         ):
             cleaned = [[list(p) for p in stroke] for stroke in glyph]
             entry = (
-                {"glyph": cleaned, "by": contributed_by, "at": datetime.now(timezone.utc).isoformat()}
+                {
+                    "glyph": cleaned,
+                    "by": contributed_by,
+                    "at": datetime.now(timezone.utc).isoformat(),
+                }
                 if contributed_by
                 else cleaned
             )

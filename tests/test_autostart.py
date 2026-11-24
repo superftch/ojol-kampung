@@ -338,7 +338,9 @@ async def test_app_shutdown_leaves_isolated_dummy_worker_running(settings):
             await child.wait()
 
 
-async def test_auto_start_preserves_needs_only_state_and_does_not_enable_ojol(settings, monkeypatch):
+async def test_auto_start_preserves_needs_only_state_and_does_not_enable_ojol(
+    settings, monkeypatch
+):
     from ojol.auto_settings import auto_flags, set_auto_flag
 
     manager = manager_with_accounts(settings)
@@ -362,7 +364,7 @@ async def test_auto_start_preserves_needs_only_state_and_does_not_enable_ojol(se
 
 
 async def test_auto_start_skips_account_when_all_auto_flags_disabled(settings, monkeypatch):
-    from ojol.auto_settings import AUTO_LABELS, auto_flags, set_auto_flag
+    from ojol.auto_settings import AUTO_LABELS, set_auto_flag
 
     manager = manager_with_accounts(settings)
     # Turn off all flags for all accounts
@@ -379,4 +381,3 @@ async def test_auto_start_skips_account_when_all_auto_flags_disabled(settings, m
         spawn.assert_not_awaited()
     finally:
         await manager.close()
-

@@ -1160,7 +1160,10 @@ class OjolHttpApi:
         return shop.model_copy(update={"distance_squared": distance_squared}) if shop else None
 
     async def need_suppliers(self, resource, effects, *, preferred_only=False):
-        if getattr(self, "akademis_need_shops", None) is not None and self.akademis_need_shops != self.need_suppliers:
+        if (
+            getattr(self, "akademis_need_shops", None) is not None
+            and self.akademis_need_shops != self.need_suppliers
+        ):
             return await self.akademis_need_shops(resource, effects, preferred_only=preferred_only)
         village = self.home["desa"]
         registered = tuple(
@@ -1714,8 +1717,9 @@ class OjolHttpApi:
                             ref_x = (self.home or {}).get("x", 0)
                             ref_y = (self.home or {}).get("y", 0)
                             spbus.sort(
-                                key=lambda s: (s.get("x", 0) - ref_x) ** 2
-                                + (s.get("y", 0) - ref_y) ** 2
+                                key=lambda s: (
+                                    (s.get("x", 0) - ref_x) ** 2 + (s.get("y", 0) - ref_y) ** 2
+                                )
                             )
                             spbu = spbus[0]
                             plot_id = spbu["plotId"]
@@ -1725,7 +1729,9 @@ class OjolHttpApi:
                                 try:
                                     kd = await self.request("/api/kendaraan")
                                     items = kd.get("items", []) if isinstance(kd, dict) else []
-                                    car = next((c for c in items if c.get("family") == "mobil"), None)
+                                    car = next(
+                                        (c for c in items if c.get("family") == "mobil"), None
+                                    )
                                     is_electric = bool(car and car.get("listrik"))
                                 except Exception:
                                     pass
@@ -1742,7 +1748,11 @@ class OjolHttpApi:
                             price = (Decimal(missing) * Decimal(20)) / Decimal(1000)
                             biz_id = spbu.get("businessId")
                             try:
-                                shop_id = str(UUID(biz_id)) if biz_id else str(uuid5(NAMESPACE_DNS, plot_id))
+                                shop_id = (
+                                    str(UUID(biz_id))
+                                    if biz_id
+                                    else str(uuid5(NAMESPACE_DNS, plot_id))
+                                )
                             except (ValueError, TypeError):
                                 shop_id = str(uuid5(NAMESPACE_DNS, plot_id))
                             identity = json.dumps(
@@ -1763,7 +1773,9 @@ class OjolHttpApi:
                                 row_text=identity,
                                 enabled=True,
                             )
-                            dist_sq = (spbu.get("x", 0) - ref_x) ** 2 + (spbu.get("y", 0) - ref_y) ** 2
+                            dist_sq = (spbu.get("x", 0) - ref_x) ** 2 + (
+                                spbu.get("y", 0) - ref_y
+                            ) ** 2
                             spbu_shop = ShopPreview(
                                 id=shop_id,
                                 plot_id=plot_id,
@@ -2145,7 +2157,9 @@ class OjolHttpApi:
             kend_res = await self.request("/api/kendaraan")
             items = kend_res.get("items", []) if isinstance(kend_res, dict) else []
             v_family = identity.get("vehicle", "motor")
-            target_veh = next((v for v in items if v.get("family") == v_family), items[0] if items else None)
+            target_veh = next(
+                (v for v in items if v.get("family") == v_family), items[0] if items else None
+            )
             veh_code = (target_veh or {}).get("kode")
             if not veh_code:
                 raise HttpCoreError("Kode kendaraan Ojol tidak ditemukan", category="rejected")
@@ -2198,7 +2212,9 @@ class OjolHttpApi:
         is_facility = shop.category == "fasum"
         is_bathroom = shop.category == "kamar-mandi"
         is_spbu = shop.category == "spbu"
-        fallback = is_need and not is_facility and not is_bathroom and not is_spbu and not shop.preferred
+        fallback = (
+            is_need and not is_facility and not is_bathroom and not is_spbu and not shop.preferred
+        )
         version = self.config_version
         vehicle = self.vehicle
         allowed_items = None if is_need else await self.resource_items(resource)

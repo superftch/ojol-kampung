@@ -132,7 +132,12 @@ class Controller:
                 "alasan": "Server game merespons status 409 (penumpang sedang turun atau transit order belum tuntas).",
                 "solusi": "Tunggu beberapa detik di game agar status penumpang selesai turun, lalu tekan Jalankan Ojol.",
             }
-        if isinstance(exc, VerificationPending) or "receipt" in low or "bukti" in low or "history" in low:
+        if (
+            isinstance(exc, VerificationPending)
+            or "receipt" in low
+            or "bukti" in low
+            or "history" in low
+        ):
             return {
                 "alasan": "Server game tidak memunculkan bukti payout/receipt order di riwayat transaksi game setelah 3x percobaan klaim.",
                 "solusi": "Periksa saldo atau riwayat order langsung di game Kampung Sebelah. Jika order sudah selesai, tekan Jalankan Ojol.",
@@ -245,9 +250,8 @@ class Controller:
                 try:
                     await self.read_snapshot()
                 except HttpCoreError as exc:
-                    if (
-                        self.settings.env != "testing"
-                        and (exc.category == "transport" or getattr(exc, "recoverable", False))
+                    if self.settings.env != "testing" and (
+                        exc.category == "transport" or getattr(exc, "recoverable", False)
                     ):
                         continue
                     raise
@@ -657,9 +661,7 @@ class Controller:
                         return
                     else:
                         diag = self._diagnose_claim_failure(exc, self.state)
-                        defined_reason = (
-                            f"Gagal klaim ongkos trip {trip_key} setelah 3 percobaan: {diag['alasan']}"
-                        )
+                        defined_reason = f"Gagal klaim ongkos trip {trip_key} setelah 3 percobaan: {diag['alasan']}"
                         self.claim_failures.pop(trip_key, None)
                         self.claim_errors.pop(trip_key, None)
                         claim_exc = RuntimeError(defined_reason)
@@ -737,9 +739,8 @@ class Controller:
                     and self.handle_ojol_failure(exc)
                 ):
                     continue
-                if (
-                    self.settings.env != "testing"
-                    and (exc.category == "transport" or getattr(exc, "recoverable", False))
+                if self.settings.env != "testing" and (
+                    exc.category == "transport" or getattr(exc, "recoverable", False)
                 ):
                     self.observation_failures += 1
                     if self.observation_failures <= 3:

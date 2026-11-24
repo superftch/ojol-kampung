@@ -706,7 +706,12 @@ async def test_spbu_worker_auto_refills_at_spbu(api, world, settings):
     ]
     world["garage"] = {
         "items": [
-            {"family": "motor", "name": "Motor matic", "kode": "motor-matic:putih:0", "listrik": False}
+            {
+                "family": "motor",
+                "name": "Motor matic",
+                "kode": "motor-matic:putih:0",
+                "listrik": False,
+            }
         ]
     }
     world["home"] = {"plotId": "T30-R08", "x": 75, "y": -68}
@@ -730,6 +735,7 @@ async def test_spbu_worker_auto_refills_at_spbu(api, world, settings):
         "5",
         str(uuid4()),
     )
+    assert receipt.effects == {"fuel": 96}
     spbu_posts = [r for r in api.calls if r.method == "POST" and r.url.path == "/api/spbu/P29-U01"]
     assert len(spbu_posts) == 3
     assert json.loads(spbu_posts[0].content)["aksi"] == "datang"

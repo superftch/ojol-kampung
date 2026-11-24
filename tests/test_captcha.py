@@ -8,7 +8,6 @@ from ojol.svg_captcha_solver import (
     _SEED,
     SvgCaptchaSolverError,
     delete_template_from_bank,
-    dismiss_review,
     get_bank_templates,
     get_pending_reviews,
     learn_polyline,
@@ -58,8 +57,6 @@ def test_digit_six_seed_matches():
 
 
 def test_unknown_glyph_records_to_cek_reviews():
-    import json
-    from pathlib import Path
 
     with tempfile.TemporaryDirectory() as tmp:
         svg = '<svg><polyline points="0,0 5,10 10,0 15,10 20,0"/></svg>'
@@ -92,7 +89,9 @@ def test_get_pending_reviews_discovers_error_files():
         assert pending[0]["glyph"] == [[[0.86, 1.0], [0.86, 0.0], [0.0, 0.74]]]
 
         # Test resolving error
-        resolve_review(tmp, "OJL-DF67EFD4AB5D", digit="4", glyph=[[[0.86, 1.0], [0.86, 0.0], [0.0, 0.74]]])
+        resolve_review(
+            tmp, "OJL-DF67EFD4AB5D", digit="4", glyph=[[[0.86, 1.0], [0.86, 0.0], [0.0, 0.74]]]
+        )
         # After resolve, it should no longer be pending
         assert len(get_pending_reviews(tmp)) == 0
         # Bank should have digit 4
@@ -129,6 +128,7 @@ def test_matching_sample_svg_attached_to_review():
         err_dir = Path(tmp) / "errors"
         err_dir.mkdir(parents=True)
         from ojol.svg_captcha_solver import _glyphs, _normalize
+
         second_glyph = _normalize(_glyphs(raw_svg)[1])
 
         sample_error = {
@@ -150,7 +150,11 @@ def test_reversed_stroke_digit_matches():
     # Test digit 7 drawn in reverse direction (bottom-to-top)
     pts_forward = _SEED["7"][0][0]
     pts_reversed = pts_forward[::-1]
-    reversed_svg = '<svg><polyline points="' + " ".join(f"{x * 20},{y * 20}" for x, y in pts_reversed) + '"/></svg>'
+    reversed_svg = (
+        '<svg><polyline points="'
+        + " ".join(f"{x * 20},{y * 20}" for x, y in pts_reversed)
+        + '"/></svg>'
+    )
     # Must successfully solve as 7 despite reversed drawing direction
     assert solve_polyline_captcha(reversed_svg) == "7"
 
@@ -158,7 +162,8 @@ def test_reversed_stroke_digit_matches():
 def test_no_duplicate_review_when_both_cek_review_and_error_file_exist():
     import json
     from pathlib import Path
-    from ojol.svg_captcha_solver import record_unknown_glyph, _normalize
+
+    from ojol.svg_captcha_solver import _normalize, record_unknown_glyph
 
     with tempfile.TemporaryDirectory() as tmp:
         sample_glyph = [[(10, 0), (20, 20), (30, 0)]]
@@ -192,6 +197,7 @@ def test_no_duplicate_review_when_both_cek_review_and_error_file_exist():
 
 def test_solve_records_all_unknown_glyphs_in_two_digit_captcha():
     from ojol.svg_captcha_solver import get_pending_reviews
+
     with tempfile.TemporaryDirectory() as tmp:
         # SVG with 2 unknown glyphs (spaced > 14px apart)
         svg = '<svg><polyline points="0,0 5,10 10,0"/><polyline points="50,0 55,10 60,0"/></svg>'
@@ -222,7 +228,8 @@ def test_contributor_info_persists_and_not_dropped():
 def test_resolve_review_resolves_duplicate_reviews_for_same_trip():
     import json
     from pathlib import Path
-    from ojol.svg_captcha_solver import record_unknown_glyph, _normalize
+
+    from ojol.svg_captcha_solver import _normalize, record_unknown_glyph
 
     with tempfile.TemporaryDirectory() as tmp:
         g1 = [[(0.0, 0.0), (10.0, 20.0), (20.0, 0.0)]]
@@ -231,14 +238,18 @@ def test_resolve_review_resolves_duplicate_reviews_for_same_trip():
         # Polling retry creates another review file for the same trip with slightly different ID if forced
         rev_dir = Path(tmp) / "cek-reviews"
         r2_file = rev_dir / "REV-FORCE2.json"
-        r2_file.write_text(json.dumps({
-            "id": "REV-FORCE2",
-            "time": "2026-11-24T08:10:00Z",
-            "trip_id": "trip-dup-99",
-            "raw_glyph": g1,
-            "normalized_glyph": norm,
-            "status": "pending",
-        }))
+        r2_file.write_text(
+            json.dumps(
+                {
+                    "id": "REV-FORCE2",
+                    "time": "2026-11-24T08:10:00Z",
+                    "trip_id": "trip-dup-99",
+                    "raw_glyph": g1,
+                    "normalized_glyph": norm,
+                    "status": "pending",
+                }
+            )
+        )
 
         # Resolving one review must resolve all reviews for trip-dup-99
         resolve_review(tmp, r1, digit="4", glyph=g1, resolved_by="yakis")
@@ -249,6 +260,7 @@ def test_resolve_review_resolves_duplicate_reviews_for_same_trip():
 def test_bank_recognition_auto_clears_pending_reviews():
     import json
     from pathlib import Path
+
     from ojol.svg_captcha_solver import _normalize
 
     with tempfile.TemporaryDirectory() as tmp:
@@ -256,14 +268,18 @@ def test_bank_recognition_auto_clears_pending_reviews():
         norm = _normalize(g)
         rev_dir = Path(tmp) / "cek-reviews"
         rev_dir.mkdir(parents=True)
-        (rev_dir / "REV-AUTO1.json").write_text(json.dumps({
-            "id": "REV-AUTO1",
-            "time": "2026-11-24T08:15:00Z",
-            "trip_id": "trip-auto-1",
-            "raw_glyph": g,
-            "normalized_glyph": norm,
-            "status": "pending",
-        }))
+        (rev_dir / "REV-AUTO1.json").write_text(
+            json.dumps(
+                {
+                    "id": "REV-AUTO1",
+                    "time": "2026-11-24T08:15:00Z",
+                    "trip_id": "trip-auto-1",
+                    "raw_glyph": g,
+                    "normalized_glyph": norm,
+                    "status": "pending",
+                }
+            )
+        )
 
         # Before learning, it shows in pending
         assert len(get_pending_reviews(tmp)) == 1

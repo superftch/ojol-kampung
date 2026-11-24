@@ -905,7 +905,9 @@ class ControlService:
                     st_data.pop("reconciliation_pending", None)
                     st_data.pop("reconciliation_attempt", None)
                     st_data["event"] = "berhenti"
-                    st_data["reason"] = f"Aksi tertahan ({len(skipped)} aksi) dilewati manual oleh pengguna."
+                    st_data["reason"] = (
+                        f"Aksi tertahan ({len(skipped)} aksi) dilewati manual oleh pengguna."
+                    )
                     write_private(status_path, st_data)
                 except Exception:
                     pass
@@ -1212,7 +1214,11 @@ class ControlService:
                         "OJOL_ACCOUNT_ID": self.account_id or "",
                         "OJOL_WORKER_AUTO_START": "1" if auto_start else "0",
                         "OJOL_MAINTENANCE_FILE": str(self.maintenance_file),
-                        **({"OJOL_OJOL_MODE": mode} if (is_ojol and mode in {"kendara", "otomatis"}) else {}),
+                        **(
+                            {"OJOL_OJOL_MODE": mode}
+                            if (is_ojol and mode in {"kendara", "otomatis"})
+                            else {}
+                        ),
                     },
                 )
                 if not is_ojol:

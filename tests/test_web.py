@@ -950,7 +950,9 @@ def test_shared_bank_angka_and_crowdsourced_contribution(admin_web):
     assert bank_res.status_code == 200
     bank_data = bank_res.json()
     assert any(p.get("error_id") == "OJL-998877665544" for p in bank_data["pending"])
-    eskobar_pending = next(p for p in bank_data["pending"] if p.get("error_id") == "OJL-998877665544")
+    eskobar_pending = next(
+        p for p in bank_data["pending"] if p.get("error_id") == "OJL-998877665544"
+    )
     assert eskobar_pending["account_name"] == "Akun Eskobar"
 
     # 3. User contributes / saves digit to Bank Angka
@@ -965,6 +967,7 @@ def test_shared_bank_angka_and_crowdsourced_contribution(admin_web):
     assert "Akun Eskobar" in save_json["retried_accounts"]
     # WAKE file created and Auto Ojol enabled
     from ojol.auto_settings import auto_flags
+
     assert auto_flags(r_dir)["ojol"] is True
     assert (r_dir / "WAKE").is_file()
 
@@ -981,6 +984,7 @@ def test_dashboard_html_javascript_syntax_valid():
     import re
     import shutil
     import subprocess
+
     from ojol.web_ui import dashboard_html
 
     html = dashboard_html({"id": 1, "username": "admin", "is_admin": True, "name": "Admin"})
@@ -1001,6 +1005,7 @@ def test_dashboard_html_javascript_syntax_valid():
 def test_web_dashboard_finance_and_expense_history(admin_web):
     import sqlite3
     from datetime import UTC, datetime, timedelta
+
     from ojol.finance import WIB, report_date
 
     client, manager = admin_web
@@ -1013,32 +1018,73 @@ def test_web_dashboard_finance_and_expense_history(admin_web):
 
     today = report_date()
     yesterday = today - timedelta(days=1)
-    today_dt = datetime.combine(today, datetime.min.time(), WIB).astimezone(sqlite3.sqlite_version and UTC)
+    today_dt = datetime.combine(today, datetime.min.time(), WIB).astimezone(
+        sqlite3.sqlite_version and UTC
+    )
     yest_dt = datetime.combine(yesterday, datetime.min.time(), WIB).astimezone(UTC)
 
     # Inisialisasi history.sqlite3 via Journal
     from ojol.journal import Journal
+
     j = Journal(r_dir)
     with j.db:
-        j.db.execute("INSERT INTO runs(id,started,outcome,settings) VALUES (1, ?, 'ok', '{}')", (yest_dt.isoformat(),))
-        j.db.execute("INSERT INTO runs(id,started,outcome,settings) VALUES (2, ?, 'ok', '{}')", (today_dt.isoformat(),))
+        j.db.execute(
+            "INSERT INTO runs(id,started,outcome,settings) VALUES (1, ?, 'ok', '{}')",
+            (yest_dt.isoformat(),),
+        )
+        j.db.execute(
+            "INSERT INTO runs(id,started,outcome,settings) VALUES (2, ?, 'ok', '{}')",
+            (today_dt.isoformat(),),
+        )
         # Kemarin: income 10000, expense 2000 (net 8000)
         j.db.execute(
             "INSERT INTO cashflows(run_id,source_key,created,kind,category,amount,detail) VALUES (?,?,?,?,?,?,?)",
-            (1, "yest_inc", (yest_dt + timedelta(hours=2)).isoformat(), "income", "ojol", "10000", "{}"),
+            (
+                1,
+                "yest_inc",
+                (yest_dt + timedelta(hours=2)).isoformat(),
+                "income",
+                "ojol",
+                "10000",
+                "{}",
+            ),
         )
         j.db.execute(
             "INSERT INTO cashflows(run_id,source_key,created,kind,category,amount,detail) VALUES (?,?,?,?,?,?,?)",
-            (1, "yest_exp", (yest_dt + timedelta(hours=3)).isoformat(), "expense", "bensin", "2000", json.dumps({"product": "Pertalite", "shop": "SPBU"})),
+            (
+                1,
+                "yest_exp",
+                (yest_dt + timedelta(hours=3)).isoformat(),
+                "expense",
+                "bensin",
+                "2000",
+                json.dumps({"product": "Pertalite", "shop": "SPBU"}),
+            ),
         )
         # Hari ini: income 15000, expense 3000 (net 12000)
         j.db.execute(
             "INSERT INTO cashflows(run_id,source_key,created,kind,category,amount,detail) VALUES (?,?,?,?,?,?,?)",
-            (2, "today_inc", (today_dt + timedelta(hours=2)).isoformat(), "income", "ojol", "15000", "{}"),
+            (
+                2,
+                "today_inc",
+                (today_dt + timedelta(hours=2)).isoformat(),
+                "income",
+                "ojol",
+                "15000",
+                "{}",
+            ),
         )
         j.db.execute(
             "INSERT INTO cashflows(run_id,source_key,created,kind,category,amount,detail) VALUES (?,?,?,?,?,?,?)",
-            (2, "today_exp", (today_dt + timedelta(hours=3)).isoformat(), "expense", "bensin", "3000", json.dumps({"product": "Pertamax 2 Liter", "shop": "SPBU Pertamina"})),
+            (
+                2,
+                "today_exp",
+                (today_dt + timedelta(hours=3)).isoformat(),
+                "expense",
+                "bensin",
+                "3000",
+                json.dumps({"product": "Pertamax 2 Liter", "shop": "SPBU Pertamina"}),
+            ),
         )
     j.close()
 
@@ -1087,6 +1133,7 @@ def test_web_dashboard_finance_and_expense_history(admin_web):
 def test_web_dashboard_study_history(admin_web):
     import json
     from datetime import UTC, datetime, timedelta
+
     from ojol.journal import Journal
     from ojol.study import save_skills
 
@@ -1100,7 +1147,12 @@ def test_web_dashboard_study_history(admin_web):
 
     # Simpan skills akun
     skills = [
-        {"id": "administrasi", "name": "Administrasi", "level": 3, "next": {"level": 4, "library": True}},
+        {
+            "id": "administrasi",
+            "name": "Administrasi",
+            "level": 3,
+            "next": {"level": 4, "library": True},
+        },
         {"id": "boga", "name": "Tata boga", "level": 2, "next": {"level": 3, "library": True}},
     ]
     save_skills(r_dir, skills)
@@ -1110,7 +1162,10 @@ def test_web_dashboard_study_history(admin_web):
     # Inisialisasi history.sqlite3 via Journal
     j = Journal(r_dir)
     with j.db:
-        j.db.execute("INSERT INTO runs(id,started,outcome,settings) VALUES (1, ?, 'ok', '{}')", (now_utc.isoformat(),))
+        j.db.execute(
+            "INSERT INTO runs(id,started,outcome,settings) VALUES (1, ?, 'ok', '{}')",
+            (now_utc.isoformat(),),
+        )
 
         # 1. Sesi Perpustakaan: study + study_quiz
         visit_perpus = "visit-perpus-123"
@@ -1124,7 +1179,16 @@ def test_web_dashboard_study_history(admin_web):
         }
         j.db.execute(
             "INSERT INTO actions(id,run_id,created,kind,status,before_state,payload,after_state) VALUES (?,?,?,?,?,?,?,?)",
-            (10, 1, (now_utc - timedelta(hours=2)).isoformat(), "study", "verified", "{}", json.dumps(st_perpus_payload), "{}"),
+            (
+                10,
+                1,
+                (now_utc - timedelta(hours=2)).isoformat(),
+                "study",
+                "verified",
+                "{}",
+                json.dumps(st_perpus_payload),
+                "{}",
+            ),
         )
         qz_perpus_payload = {
             "mode": "perpus",
@@ -1135,7 +1199,16 @@ def test_web_dashboard_study_history(admin_web):
         }
         j.db.execute(
             "INSERT INTO actions(id,run_id,created,kind,status,before_state,payload,after_state) VALUES (?,?,?,?,?,?,?,?)",
-            (11, 1, (now_utc - timedelta(hours=2, minutes=-5)).isoformat(), "study_quiz", "verified", "{}", json.dumps(qz_perpus_payload), "{}"),
+            (
+                11,
+                1,
+                (now_utc - timedelta(hours=2, minutes=-5)).isoformat(),
+                "study_quiz",
+                "verified",
+                "{}",
+                json.dumps(qz_perpus_payload),
+                "{}",
+            ),
         )
 
         # 2. Sesi Kuliah: study + study_quiz
@@ -1150,7 +1223,16 @@ def test_web_dashboard_study_history(admin_web):
         }
         j.db.execute(
             "INSERT INTO actions(id,run_id,created,kind,status,before_state,payload,after_state) VALUES (?,?,?,?,?,?,?,?)",
-            (20, 1, (now_utc - timedelta(hours=1)).isoformat(), "study", "verified", "{}", json.dumps(st_kuliah_payload), "{}"),
+            (
+                20,
+                1,
+                (now_utc - timedelta(hours=1)).isoformat(),
+                "study",
+                "verified",
+                "{}",
+                json.dumps(st_kuliah_payload),
+                "{}",
+            ),
         )
         qz_kuliah_payload = {
             "mode": "kuliah",
@@ -1161,7 +1243,16 @@ def test_web_dashboard_study_history(admin_web):
         }
         j.db.execute(
             "INSERT INTO actions(id,run_id,created,kind,status,before_state,payload,after_state) VALUES (?,?,?,?,?,?,?,?)",
-            (21, 1, (now_utc - timedelta(hours=1, minutes=-10)).isoformat(), "study_quiz", "verified", "{}", json.dumps(qz_kuliah_payload), "{}"),
+            (
+                21,
+                1,
+                (now_utc - timedelta(hours=1, minutes=-10)).isoformat(),
+                "study_quiz",
+                "verified",
+                "{}",
+                json.dumps(qz_kuliah_payload),
+                "{}",
+            ),
         )
     j.close()
 
@@ -1245,8 +1336,3 @@ def test_accounts_and_dashboard_include_auto_ojol_state_and_toggle(admin_web):
     html_res = client.get("/")
     assert html_res.status_code == 200
     assert "autoOjolToggle" in html_res.text
-
-
-
-
-

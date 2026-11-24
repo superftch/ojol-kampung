@@ -712,7 +712,9 @@ async def test_purchase_stops_after_reconciliation_limit_without_replaying_or_bo
         )
 
 
-async def test_claim_failure_retries_and_defines_error_after_three_strikes(settings, state, monkeypatch):
+async def test_claim_failure_retries_and_defines_error_after_three_strikes(
+    settings, state, monkeypatch
+):
     before, _ = claim_states(state)
     # Set auto flag ojol dan kebutuhan agar handle_ojol_failure menguji nonaktifkan ojol
     from ojol.auto_settings import set_auto_flag
@@ -752,6 +754,7 @@ async def test_claim_failure_retries_and_defines_error_after_three_strikes(setti
 
         # Verifikasi Auto Ojol dinonaktifkan
         from ojol.auto_settings import auto_flags
+
         flags = auto_flags(settings.runtime_dir)
         assert flags["ojol"] is False
         assert flags["makan"] is True
@@ -762,7 +765,10 @@ async def test_claim_failure_retries_and_defines_error_after_three_strikes(setti
         last_error = json.loads(last_error_path.read_text())
         assert "setelah 3 percobaan" in last_error["message"]
         assert "payout/receipt" in last_error["message"]
-        assert "solusi" in last_error["tindakan"].lower() or "periksa" in last_error["tindakan"].lower()
+        assert (
+            "solusi" in last_error["tindakan"].lower()
+            or "periksa" in last_error["tindakan"].lower()
+        )
 
 
 async def test_run_worker_skips_unresolved_on_reconciliation_failed(settings, state, monkeypatch):
@@ -783,7 +789,9 @@ async def test_run_worker_skips_unresolved_on_reconciliation_failed(settings, st
     monkeypatch.setattr(
         app,
         "wait_until_resolved",
-        AsyncMock(side_effect=HttpCoreError("Reconciliation failed", category="reconciliation_failed")),
+        AsyncMock(
+            side_effect=HttpCoreError("Reconciliation failed", category="reconciliation_failed")
+        ),
     )
     monkeypatch.setattr(app.Controller, "run", AsyncMock())
 
@@ -797,5 +805,3 @@ async def test_run_worker_skips_unresolved_on_reconciliation_failed(settings, st
     with closing(Journal(settings.runtime_dir)) as journal:
         assert len(journal.unresolved()) == 0
         assert journal.history()["actions"][0]["status"] == "skipped"
-
-

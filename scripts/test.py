@@ -12,7 +12,6 @@ from dotenv import dotenv_values
 
 from ojol.models import Settings
 
-
 # Cakupan pengujian fitur web (UI dashboard, API, autentikasi, kontrol, supervisor worker, bank angka)
 WEB_TEST_FILES = [
     "tests/test_web.py",
@@ -35,7 +34,9 @@ def resolve_pytest_args(raw_args: list[str]) -> tuple[list[str], str]:
             not arg.startswith("-") and (arg.startswith("tests") or Path(arg).exists())
             for arg in filtered
         )
-        banner = "Test: .env.testing eksplisit, seluruh rangkaian test (full suite), tanpa game live."
+        banner = (
+            "Test: .env.testing eksplisit, seluruh rangkaian test (full suite), tanpa game live."
+        )
         return (filtered if has_target else [*filtered, "tests"]), banner
 
     if "--web" in raw_args:

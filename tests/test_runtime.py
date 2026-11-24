@@ -1396,7 +1396,9 @@ def test_select_need_strictly_prioritizes_akademis_ai_and_picks_most_worth_it(se
     assert plan_fb.product.name == "Nasi Biasa"
 
 
-async def test_observation_transport_failure_auto_reconnects_and_recovers(settings, state, monkeypatch):
+async def test_observation_transport_failure_auto_reconnects_and_recovers(
+    settings, state, monkeypatch
+):
     from ojol.auto_settings import set_auto_flag
 
     set_auto_flag(settings.runtime_dir, "ojol", True)
@@ -1448,4 +1450,3 @@ async def test_observation_transport_failure_exceeding_limit_raises(settings, st
         assert controller.observation_failures == 4
     finally:
         journal.close()
-
