@@ -35,6 +35,7 @@ from .shop_locations import (
     SPPG_FACILITIES_BY_VILLAGE,
     STUDY_FACILITIES_BY_VILLAGE,
     NeedShop,
+    ShopLocation,
 )
 from .sppg import solve_nampan_picks
 from .study import (
@@ -64,6 +65,7 @@ WALLET_PRODUCT_CATEGORIES = {
     for name in names
 }
 CATEGORIES = {"fuel": "spbu-pertamina", "condition": "bengkel-motor", "data": "konter-pulsa"}
+OJOL_DIRECTORY_RESOURCES = {"condition", "data"}
 RESOURCES = {"bensin": "fuel", "kendaraan": "condition", "kuota": "data"}
 KINDS = {
     "PENUMPANG": ("🧍", "Antar penumpang"),
@@ -1139,25 +1141,94 @@ class OjolHttpApi:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def directory_need_shop(self, row, resource, effects, distance_squared):
+    async def directory_business(self, row):
         plot, category = row["plotId"], row["item"]
         detail = await self.request(f"/api/world/plots/{plot}?t={int(time.time() * 1000)}")
-        business = detail.get("business") or {}
-        if detail.get("id") != plot or not business:
+        business = detail.get("business") if isinstance(detail, dict) else None
+        if not isinstance(business, dict) or detail.get("id") != plot:
             raise HttpCoreError("Detail plot usaha berubah", category="schema")
         if business.get("desa") != self.home["desa"]:
             return None
         name = business.get("name")
         if business.get("catalogId") != category or name != row["name"]:
-            raise HttpCoreError("Identitas usaha kebutuhan berubah", category="schema")
+            raise HttpCoreError("Identitas usaha berubah", category="schema")
         try:
             identifier = str(UUID(business["id"]))
         except (KeyError, ValueError, TypeError, AttributeError) as exc:
-            raise HttpCoreError(
-                "ID usaha kebutuhan belum terverifikasi", category="schema"
-            ) from exc
-        shop = await self.need_shop(NeedShop(identifier, plot, name, category), resource, effects)
+            raise HttpCoreError("ID usaha belum terverifikasi", category="schema") from exc
+        return NeedShop(identifier, plot, name, category)
+
+    async def directory_need_shop(self, row, resource, effects, distance_squared):
+        location = await self.directory_business(row)
+        if location is None:
+            return None
+        shop = await self.need_shop(location, resource, effects)
         return shop.model_copy(update={"distance_squared": distance_squared}) if shop else None
+
+    async def directory_shop_rows(self, categories):
+        directory = await self.request("/api/tujuan")
+        rows = directory.get("usaha") if isinstance(directory, dict) else None
+        if not isinstance(rows, list):
+            raise HttpCoreError("Direktori usaha belum terverifikasi", category="schema")
+        candidates = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            plot, name, category = row.get("plotId"), row.get("name"), row.get("item")
+            if (
+                not isinstance(category, str)
+                or category not in categories
+                or not isinstance(plot, str)
+                or not re.fullmatch(r"[A-Z][0-9]{2}-U[0-9]{2}", plot)
+                or not isinstance(name, str)
+                or not name.strip()
+                or type(row.get("x")) is not int
+                or type(row.get("y")) is not int
+            ):
+                continue
+            distance = (row["x"] - self.home["x"]) ** 2 + (row["y"] - self.home["y"]) ** 2
+            candidates.append((distance, row))
+        return candidates
+
+    async def directory_ojol_shops(self, resource, effects, allowed_items, locations):
+        async def read_shop(row):
+            business = await self.directory_business(row)
+            if business is None:
+                return None
+            location = ShopLocation(
+                business.id, business.plot_id, business.name, row["x"], row["y"]
+            )
+            shop = await self.preview_shop(location, resource, effects, allowed_items)
+            return shop.model_copy(update={"from_directory": True}) if shop else None
+
+        candidates = await self.directory_shop_rows((CATEGORIES[resource],))
+        rows = []
+        seen = {loc.plot_id for loc in locations}
+        for _, row in sorted(
+            candidates, key=lambda candidate: (candidate[0], candidate[1]["plotId"])
+        ):
+            if row["plotId"] not in seen:
+                seen.add(row["plotId"])
+                rows.append(row)
+        first_error = None
+        for start in range(0, len(rows), 6):
+            results = await self.read_previews(
+                (read_shop(row) for row in rows[start : start + 6]), return_exceptions=True
+            )
+            shops = []
+            for result in results:
+                if isinstance(result, HttpCoreError) and result.category != "auth":
+                    first_error = first_error or result
+                elif isinstance(result, BaseException):
+                    raise result
+                elif result is not None:
+                    shops.append(result)
+            if shops:
+                # shortcut: stop at the first stocked batch, expand if buyers need farther options.
+                return shops
+        if first_error is not None:
+            raise first_error
+        return []
 
     async def need_suppliers(self, resource, effects, *, preferred_only=False):
         if (
@@ -1172,27 +1243,12 @@ class OjolHttpApi:
             if "akademis.ai" in loc.name.casefold()
         )
         registered_plots = {loc.plot_id for loc in registered}
-        directory = await self.request("/api/tujuan")
-        rows = directory.get("usaha") if isinstance(directory, dict) else None
-        if not isinstance(rows, list):
-            raise HttpCoreError("Direktori usaha belum terverifikasi", category="schema")
         preferred, nearby = [], []
         seen = set(registered_plots)
-        for row in rows:
-            if not isinstance(row, dict) or row.get("item") not in NEED_SHOP_CATEGORIES[resource]:
+        for distance, row in await self.directory_shop_rows(NEED_SHOP_CATEGORIES[resource]):
+            plot, name = row["plotId"], row["name"]
+            if plot in seen:
                 continue
-            plot, name = row.get("plotId"), row.get("name")
-            if (
-                not isinstance(plot, str)
-                or not re.fullmatch(r"[A-Z][0-9]{2}-U[0-9]{2}", plot)
-                or plot in seen
-                or not isinstance(name, str)
-                or not name.strip()
-                or type(row.get("x")) is not int
-                or type(row.get("y")) is not int
-            ):
-                continue
-            distance = (row["x"] - self.home["x"]) ** 2 + (row["y"] - self.home["y"]) ** 2
             branded = "akademis.ai" in name.casefold()
             if branded or distance <= 60**2:
                 seen.add(plot)
@@ -1699,6 +1755,7 @@ class OjolHttpApi:
             raise HttpCoreError("Resource tidak didukung", category="blocked")
         self.catalog.pop(resource, None)
         fallback_allowed = False
+        navigation_method = "fixed_catalog_http"
         try:
             async with asyncio.timeout(25):
                 if resource in {"fuel", "condition"} or not getattr(self, "home", None):
@@ -2076,7 +2133,7 @@ class OjolHttpApi:
                         shops, fallback_allowed = await self.need_suppliers(resource, effects)
                 else:
                     locations = self.ojol_shop_locations(resource)
-                    if not locations:
+                    if not locations and resource not in OJOL_DIRECTORY_RESOURCES:
                         raise HttpCoreError(
                             "Toko tetap belum dikonfigurasi untuk desa akun", category="blocked"
                         )
@@ -2086,6 +2143,11 @@ class OjolHttpApi:
                         self.preview_shop(location, resource, effects, allowed_items)
                         for location in locations
                     )
+                    if not any(shops) and resource in OJOL_DIRECTORY_RESOURCES:
+                        navigation_method = "directory_catalog_http"
+                        shops = await self.directory_ojol_shops(
+                            resource, effects, allowed_items, locations
+                        )
         except TimeoutError:
             raise HttpCoreError(
                 "Deadline preview toko tercapai sebelum katalog terverifikasi",
@@ -2106,7 +2168,7 @@ class OjolHttpApi:
                 )
             ],
             "navigation": {
-                "method": "fixed_catalog_http",
+                "method": navigation_method,
                 "panel_verified": True,
                 "travel_request_sent": False,
                 **(
@@ -2305,6 +2367,15 @@ class OjolHttpApi:
                     fresh.id == shop_id and fresh.name == shop.name and product in fresh.products
                     for fresh in candidates
                 )
+        elif shop.from_directory:
+            location = (
+                await self.directory_business(
+                    {"plotId": shop.plot_id, "item": shop.category, "name": shop.name}
+                )
+                if self.home
+                else None
+            )
+            eligible = location is not None and location.id == shop_id
         else:
             locations = (
                 NEED_SHOPS_BY_VILLAGE.get((self.home or {}).get("desa"), {}).get(resource, ())
