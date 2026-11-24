@@ -478,6 +478,7 @@ async def wait_until_resolved(ui, journal, settings):
             pid=os.getpid(),
             event="rekonsiliasi_otomatis",
             stage="worker.reconcile",
+            time=now().isoformat(),
             reconciliation_pending=len(pending),
             reconciliation_attempt=attempt,
             reconciliation_limit=limit,
@@ -492,8 +493,24 @@ async def wait_until_resolved(ui, journal, settings):
                 "hasil transaksi terakhir masih belum pasti.",
                 category="reconciliation_failed",
             )
-            status.update(event="gagal", reason=str(error))
+            status.update(
+                event="gagal",
+                stage="worker.reconcile",
+                time=now().isoformat(),
+                category="reconciliation_failed",
+                reason=str(error),
+            )
             write_private(path, status)
+            queue_error(
+                settings,
+                error,
+                "worker.reconcile",
+                {
+                    "tindakan": "Periksa transaksi terakhir di game. Jika sudah berlalu, klik Jalankan Ojol lagi atau lewati aksi yang tertahan.",
+                    "reconciliation_pending": len(pending),
+                },
+                stop_worker=True,
+            )
             raise error
         write_private(path, status)
         if not waiting and state is not None:

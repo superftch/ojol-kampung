@@ -878,3 +878,42 @@ def test_admin_notifications_panel_and_api(settings):
         for n in recheck_data:
             if n["id"] in {notice_user.stem, notice_admin.stem, notice_system.stem}:
                 assert n["read"] is True
+
+
+def test_web_dashboard_logs_formatting(admin_web):
+    client, manager = admin_web
+    create_res = client.post("/api/accounts/create", json={"name": "Akun Test Logs"})
+    assert create_res.status_code == 200
+    account = create_res.json()["account"]
+    scoped = manager.registry.scoped_settings(account)
+    r_dir = scoped.runtime_dir
+    r_dir.mkdir(parents=True, exist_ok=True)
+
+    import json
+
+    status = {
+        "pid": 12345,
+        "event": "gagal",
+        "stage": "worker.reconcile",
+        "time": "2026-11-24T02:49:29.700820+00:00",
+        "reason": "Auto rekonsiliasi gagal setelah 6 percobaan. Bot dihentikan; hasil transaksi terakhir masih belum pasti.",
+        "category": "reconciliation_failed",
+        "reconciliation_pending": 1,
+    }
+    (r_dir / "status.json").write_text(json.dumps(status))
+
+    last_err = {
+        "error_id": "OJL-DF67EFD4AB5D",
+        "message": "Gagal memecahkan gambar cek: Glyph cek belum dikenali",
+        "tindakan": "Review angka di menu Bank Angka",
+    }
+    (r_dir / "last-error.json").write_text(json.dumps(last_err))
+
+    res = client.get(f"/api/dashboard?account={account['id']}")
+    assert res.status_code == 200
+    logs = res.json()["logs"]
+    assert any("Worker GAGAL saat Rekonsiliasi Transaksi Game" in line for line in logs)
+    assert any("Auto rekonsiliasi gagal setelah 6 percobaan" in line for line in logs)
+    assert any("1 transaksi game belum terkonfirmasi" in line for line in logs)
+    assert any("OJL-DF67EFD4AB5D" in line for line in logs)
+

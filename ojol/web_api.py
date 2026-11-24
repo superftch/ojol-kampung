@@ -503,10 +503,89 @@ def register_web_routes(app, settings, manager=None, service=None):
 
         # Read last logs from history or journal or status
         logs = []
+        from datetime import datetime
+        from .finance import WIB
+
+        def format_log_time(t_raw):
+            if not t_raw:
+                return "Terkini"
+            try:
+                dt = datetime.fromisoformat(str(t_raw).replace("Z", "+00:00")).astimezone(WIB)
+                return dt.strftime("%H:%M:%S WIB")
+            except Exception:
+                return str(t_raw)
+
         if data.get("event"):
-            logs.append(
-                f"[{data.get('time', '')}] Status: {data.get('event')} ({data.get('stage', '')})"
-            )
+            ev = data.get("event")
+            raw_stage = data.get("stage") or ""
+            stage_desc = {
+                "worker.reconcile": "Rekonsiliasi Transaksi Game",
+                "order.search": "Mencari Order",
+                "order.take": "Menerima Order",
+                "order.complete": "Menyelesaikan Order",
+                "purchase.fuel": "Isi Bensin (SPBU)",
+                "sleeping": "Istirahat / Tidur di game",
+                "wait.countdown": "Menunggu Countdown Antar Order",
+            }.get(raw_stage, raw_stage)
+
+            time_str = format_log_time(data.get("time"))
+
+            if ev == "gagal":
+                reason = data.get("reason") or "Bot menemui kendala pada aksi."
+                logs.append(f"[{time_str}] ❌ Worker GAGAL saat {stage_desc}")
+                logs.append(f"   Alasan: {reason}")
+                if data.get("category"):
+                    logs.append(f"   Kategori: {data.get('category')}")
+                if data.get("reconciliation_pending"):
+                    logs.append(f"   Aksi tertahan: {data.get('reconciliation_pending')} transaksi game belum terkonfirmasi")
+                if data.get("last_action"):
+                    la = data["last_action"]
+                    logs.append(f"   Aksi terakhir: #{la.get('action_id', '?')} {la.get('kind', '?')}")
+            elif ev in {"rekonsiliasi", "rekonsiliasi_otomatis"}:
+                attempt = data.get("reconciliation_attempt", 1)
+                limit = data.get("reconciliation_limit", 6)
+                pending_cnt = data.get("reconciliation_pending", "?")
+                logs.append(f"[{time_str}] 🔄 Rekonsiliasi Otomatis ({attempt}/{limit})")
+                logs.append(f"   Sedang mencocokkan {pending_cnt} aksi transaksi tertahan dengan game...")
+            elif ev == "mulai":
+                logs.append(f"[{time_str}] ▶️ Worker Mulai ({stage_desc})")
+            elif ev == "berhenti":
+                reason = data.get("reason") or "Dihentikan oleh pengguna."
+                logs.append(f"[{time_str}] ⏹️ Worker Berhenti: {reason}")
+            elif ev == "tidur":
+                logs.append(f"[{time_str}] 💤 Istirahat / Tidur di game")
+            else:
+                logs.append(f"[{time_str}] Status: {ev} ({stage_desc})")
+
+        # Muat detail aksi tertahan dari game-sync.json jika ada
+        sync_file = directory / "game-sync.json"
+        if sync_file.is_file():
+            try:
+                sync_data = json.loads(sync_file.read_text())
+                for action in sync_data.get("reconciliation", []):
+                    if action.get("status_after") in {"pending", "uncertain"}:
+                        desc = action.get("description") or action.get("kind", "Aksi")
+                        reason = action.get("reason", "")
+                        logs.append(f"⏳ Aksi tertahan: #{action.get('action_id')} {desc} ({reason})")
+            except Exception:
+                pass
+
+        # Muat error terakhir dari last-error.json jika ada
+        last_err_file = directory / "last-error.json"
+        if last_err_file.is_file():
+            try:
+                err_data = json.loads(last_err_file.read_text())
+                err_ctx = err_data.get("context", err_data)
+                err_id = err_ctx.get("error_id")
+                err_msg = err_ctx.get("message") or err_data.get("message")
+                err_tindakan = err_ctx.get("tindakan") or err_data.get("tindakan")
+                if err_id and err_msg:
+                    logs.append(f"🚨 Error Terakhir [{err_id}]: {err_msg[:120]}")
+                    if err_tindakan:
+                        logs.append(f"   💡 Solusi: {err_tindakan}")
+            except Exception:
+                pass
+
         hist_file = directory / "history.jsonl"
         if hist_file.is_file():
             try:
