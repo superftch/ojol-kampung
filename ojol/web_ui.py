@@ -2760,6 +2760,8 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     }})
                 }});
                 if (res && res.ok) {{
+                    delete selectedReviewDigits[reviewId];
+                    delete pendingGlyphsMap[reviewId];
                     const retried = res.retried_accounts && res.retried_accounts.length > 0
                         ? `\n🚀 Langsung mencoba menyelesaikan order tertahan pada akun: ${{res.retried_accounts.join(', ')}}`
                         : '';
@@ -2781,6 +2783,8 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ review_id: reviewId, error_id: errorId || null, glyph: glyph }})
                 }});
+                delete selectedReviewDigits[reviewId];
+                delete pendingGlyphsMap[reviewId];
                 await loadBankAngka();
                 manualRefreshDashboard();
             }} catch (e) {{

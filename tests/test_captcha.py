@@ -202,3 +202,74 @@ def test_solve_records_all_unknown_glyphs_in_two_digit_captcha():
         pending = get_pending_reviews(tmp)
         assert len(pending) == 2
         assert all(p["trip_id"] == "trip-multi" for p in pending)
+
+
+def test_contributor_info_persists_and_not_dropped():
+    with tempfile.TemporaryDirectory() as tmp:
+        glyph_a = [[[10.0, 0.0], [10.0, 40.0], [30.0, 40.0]]]
+        save_template_to_bank(tmp, "4", glyph_a, contributed_by="yakis")
+        bank = get_bank_templates(tmp)
+        assert "4" in bank
+        assert any(isinstance(v, dict) and v.get("by") == "yakis" for v in bank["4"])
+
+        # Identical glyph should update contributor
+        save_template_to_bank(tmp, "4", glyph_a, contributed_by="zeta")
+        bank2 = get_bank_templates(tmp)
+        matching = [v for v in bank2["4"] if isinstance(v, dict) and v.get("by") == "zeta"]
+        assert len(matching) == 1
+
+
+def test_resolve_review_resolves_duplicate_reviews_for_same_trip():
+    import json
+    from pathlib import Path
+    from ojol.svg_captcha_solver import record_unknown_glyph, _normalize
+
+    with tempfile.TemporaryDirectory() as tmp:
+        g1 = [[(0.0, 0.0), (10.0, 20.0), (20.0, 0.0)]]
+        norm = _normalize(g1)
+        r1 = record_unknown_glyph(tmp, g1, norm, trip_id="trip-dup-99")
+        # Polling retry creates another review file for the same trip with slightly different ID if forced
+        rev_dir = Path(tmp) / "cek-reviews"
+        r2_file = rev_dir / "REV-FORCE2.json"
+        r2_file.write_text(json.dumps({
+            "id": "REV-FORCE2",
+            "time": "2026-11-24T08:10:00Z",
+            "trip_id": "trip-dup-99",
+            "raw_glyph": g1,
+            "normalized_glyph": norm,
+            "status": "pending",
+        }))
+
+        # Resolving one review must resolve all reviews for trip-dup-99
+        resolve_review(tmp, r1, digit="4", glyph=g1, resolved_by="yakis")
+        pending = get_pending_reviews(tmp)
+        assert len(pending) == 0
+
+
+def test_bank_recognition_auto_clears_pending_reviews():
+    import json
+    from pathlib import Path
+    from ojol.svg_captcha_solver import _normalize
+
+    with tempfile.TemporaryDirectory() as tmp:
+        g = [[(15.0, 0.0), (15.0, 40.0), (35.0, 40.0)]]
+        norm = _normalize(g)
+        rev_dir = Path(tmp) / "cek-reviews"
+        rev_dir.mkdir(parents=True)
+        (rev_dir / "REV-AUTO1.json").write_text(json.dumps({
+            "id": "REV-AUTO1",
+            "time": "2026-11-24T08:15:00Z",
+            "trip_id": "trip-auto-1",
+            "raw_glyph": g,
+            "normalized_glyph": norm,
+            "status": "pending",
+        }))
+
+        # Before learning, it shows in pending
+        assert len(get_pending_reviews(tmp)) == 1
+
+        # Now bank learns this glyph
+        save_template_to_bank(tmp, "4", g, contributed_by="yakis")
+
+        # After learning, get_pending_reviews must automatically filter it out
+        assert len(get_pending_reviews(tmp)) == 0

@@ -1520,7 +1520,7 @@ def register_web_routes(app, settings, manager=None, service=None):
         fleet_dirs, acc_names = get_all_fleet_directories()
         from .svg_captcha_solver import get_bank_templates, get_all_pending_reviews
 
-        raw_templates = get_bank_templates(settings.runtime_dir)
+        raw_templates = get_bank_templates(fleet_dirs)
         formatted_templates = {}
         total_variants = 0
         total_contributions = 0
