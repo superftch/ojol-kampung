@@ -485,7 +485,10 @@ async def test_order_uses_available_car_before_motor(api, world, inventory, vehi
     assert (await api.snapshot()).ojol_vehicle == vehicle
     await api.job_action("search")
     posts = [r for r in api.calls if r.method == "POST"]
-    assert [json.loads(r.content) for r in posts] == [{"action": "ambil", "vehicle": vehicle}]
+    assert [json.loads(r.content) for r in posts] == [
+        {"action": "tawar", "vehicle": vehicle, "mode": "otomatis"},
+        {"action": "ambil", "vehicle": vehicle},
+    ]
     assert not any(r.url.path == "/api/kendaraan" for r in api.calls)
 
 
@@ -572,6 +575,24 @@ def _kendara_posts(world, pilihan):
         return {"trip": {**trip(), "arrived": False}}
 
     world["post_responses"] = {"/api/ojol": respond}
+
+
+async def test_job_action_otomatis_mode_tawar_picks_highest_fare_regardless_of_distance(api, world):
+    world["ojol"]["pakai"] = {"bensin": 5, "kendaraan": 2, "kuota": 4}
+    _kendara_posts(
+        world,
+        [
+            {"id": "dekat_murah", "fareMilli": 800, "distance": 10, "warga": True},
+            {"id": "jauh_mahal", "fareMilli": 900, "distance": 45, "warga": False},
+            {"id": "sedang_murah", "fareMilli": 750, "distance": 12, "warga": False},
+        ],
+    )
+    await api.job_action("search", mode="otomatis")
+    posts = [json.loads(r.content) for r in api.calls if r.method == "POST"]
+    assert posts == [
+        {"action": "tawar", "vehicle": "motor", "mode": "otomatis"},
+        {"action": "ambil", "vehicle": "motor", "pilih": "jauh_mahal"},
+    ]
 
 
 async def test_job_action_kendara_mode_tawar_picks_highest_fare(api, world):
@@ -986,8 +1007,13 @@ async def test_worker_buys_best_value_for_food_then_returns_to_ojol(api, world, 
         assert journal.profit()["biaya_per_kategori"] == {"makan": "0.7"}
         assert controller.state.needs == {"makan": 90}
     posts = [request for request in api.calls if request.method == "POST"]
-    assert [request.url.path for request in posts] == [f"/api/shops/{SHOP}/buy", "/api/ojol"]
+    assert [request.url.path for request in posts] == [
+        f"/api/shops/{SHOP}/buy",
+        "/api/ojol",
+        "/api/ojol",
+    ]
     assert json.loads(posts[0].content)["item"] == "soto"
+    assert [json.loads(r.content)["action"] for r in posts[1:]] == ["tawar", "ambil"]
 
 
 async def test_need_disabled_during_preflight_never_posts(api, world, settings, monkeypatch):

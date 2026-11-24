@@ -2424,23 +2424,31 @@ class OjolHttpApi:
                     "Resource kendaraan tidak cukup untuk order", category="rejected"
                 )
             effective_mode = mode or getattr(self, "ojol_mode", "otomatis")
-            if effective_mode == "kendara":
-                tawar_res = await self.request(
-                    "/api/ojol",
-                    {"action": "tawar", "vehicle": state.ojol_vehicle, "mode": "kendara"},
+            tawar_res = await self.request(
+                "/api/ojol",
+                {"action": "tawar", "vehicle": state.ojol_vehicle, "mode": effective_mode},
+            )
+            pilihan = tawar_res.get("pilihan") if isinstance(tawar_res, dict) else []
+            if pilihan:
+                chosen = max(
+                    pilihan,
+                    key=lambda o: (
+                        integer(o.get("fareMilli", 0)),
+                        1 if o.get("warga") else 0,
+                        -integer(o.get("distance"))
+                        if type(o.get("distance")) is int and o.get("distance") >= 0
+                        else 0,
+                    ),
                 )
-                pilihan = tawar_res.get("pilihan") if isinstance(tawar_res, dict) else []
-                if pilihan:
-                    chosen = max(pilihan, key=lambda o: integer(o.get("fareMilli", 0)))
-                    take_res = await self.request(
-                        "/api/ojol",
-                        {
-                            "action": "ambil",
-                            "mode": "kendara",
-                            "pilih": chosen["id"],
-                            "vehicle": state.ojol_vehicle,
-                        },
-                    )
+                ambil_payload = {
+                    "action": "ambil",
+                    "vehicle": state.ojol_vehicle,
+                    "pilih": chosen["id"],
+                }
+                if effective_mode == "kendara":
+                    ambil_payload["mode"] = "kendara"
+                take_res = await self.request("/api/ojol", ambil_payload)
+                if effective_mode == "kendara":
                     trip = (take_res.get("trip") if isinstance(take_res, dict) else None) or chosen
                     from_pos = trip.get("from") or {}
                     to_pos = trip.get("to") or {}
@@ -2464,7 +2472,7 @@ class OjolHttpApi:
                             )
                         except Exception:
                             pass
-                    return take_res
+                return take_res
             return await self.request(
                 "/api/ojol", {"action": "ambil", "vehicle": state.ojol_vehicle}
             )
