@@ -245,6 +245,7 @@ class ShopPreview(Model):
     category: str
     distance_squared: Annotated[int, Field(ge=0)]
     products: list[Product]
+    from_directory: bool = Field(default=False, exclude=True)
 
     @property
     def preferred(self):

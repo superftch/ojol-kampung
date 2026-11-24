@@ -472,7 +472,10 @@ async def test_order_uses_available_car_before_motor(api, world, inventory, vehi
     assert (await api.snapshot()).ojol_vehicle == vehicle
     await api.job_action("search")
     posts = [r for r in api.calls if r.method == "POST"]
-    assert [json.loads(r.content) for r in posts] == [{"action": "ambil", "vehicle": vehicle}]
+    assert [json.loads(r.content) for r in posts] == [
+        {"action": "tawar", "vehicle": vehicle, "mode": "otomatis"},
+        {"action": "ambil", "vehicle": vehicle},
+    ]
     assert not any(r.url.path == "/api/kendaraan" for r in api.calls)
 
 
@@ -559,6 +562,24 @@ def _kendara_posts(world, pilihan):
         return {"trip": {**trip(), "arrived": False}}
 
     world["post_responses"] = {"/api/ojol": respond}
+
+
+async def test_job_action_otomatis_mode_tawar_picks_highest_fare_regardless_of_distance(api, world):
+    world["ojol"]["pakai"] = {"bensin": 5, "kendaraan": 2, "kuota": 4}
+    _kendara_posts(
+        world,
+        [
+            {"id": "dekat_murah", "fareMilli": 800, "distance": 10, "warga": True},
+            {"id": "jauh_mahal", "fareMilli": 900, "distance": 45, "warga": False},
+            {"id": "sedang_murah", "fareMilli": 750, "distance": 12, "warga": False},
+        ],
+    )
+    await api.job_action("search", mode="otomatis")
+    posts = [json.loads(r.content) for r in api.calls if r.method == "POST"]
+    assert posts == [
+        {"action": "tawar", "vehicle": "motor", "mode": "otomatis"},
+        {"action": "ambil", "vehicle": "motor", "pilih": "jauh_mahal"},
+    ]
 
 
 async def test_job_action_kendara_mode_tawar_picks_highest_fare(api, world):
@@ -949,8 +970,13 @@ async def test_worker_buys_best_value_for_food_then_returns_to_ojol(
         assert journal.profit()["biaya_per_kategori"] == {"makan": "0.7"}
         assert controller.observed_state.needs == {"makan": 90}
     posts = [request for request in api.calls if request.method == "POST"]
-    assert [request.url.path for request in posts] == [f"/api/shops/{SHOP}/buy", "/api/ojol"]
+    assert [request.url.path for request in posts] == [
+        f"/api/shops/{SHOP}/buy",
+        "/api/ojol",
+        "/api/ojol",
+    ]
     assert json.loads(posts[0].content)["item"] == "soto"
+    assert [json.loads(r.content)["action"] for r in posts[1:]] == ["tawar", "ambil"]
 
 
 async def test_need_disabled_during_preflight_never_posts(api, world, settings, monkeypatch):
@@ -1395,11 +1421,58 @@ async def test_fallback_when_preferred_shop_has_no_eligible_plan(api, world, set
     assert shop.id == SHOP and not shop.preferred and not deferred
 
 
-async def test_preview_without_configured_village_never_reads_catalog(api, world):
+async def test_preview_without_configured_village_or_directory_matches_returns_no_shops(api, world):
     world["me"]["home"]["desa"] = "outside-fixture"
-    with pytest.raises(HttpCoreError, match="Toko tetap belum dikonfigurasi"):
-        await api.preview("data")
+    assert (await api.preview("data"))["shops"] == []
+    assert any(r.url.path == "/api/tujuan" for r in api.calls)
     assert not any(r.url.path.startswith("/api/shops/") for r in api.calls)
+
+
+@pytest.mark.parametrize(
+    ("resource", "item", "label", "current"),
+    [("data", "pulsa", "Isi pulsa", 50), ("condition", "tambal-ban", "Tambal ban", 70)],
+)
+async def test_ojol_directory_falls_back_to_local_shop_and_rechecks_plot_before_buying(
+    api, world, resource, item, label, current
+):
+    village = world["me"]["home"]["desa"] = "kampung-sebelah"
+    category = CATEGORIES[resource]
+    for number, shop_village in [(8, "desa-utara"), (9, village)]:
+        add_shop(world, number, f"Toko {number}", category, item, label, 500)
+        loc = world["locations"][resource].pop()
+        world["directory"].append(
+            {"plotId": loc.plot_id, "item": category, "name": loc.name, "x": loc.x, "y": loc.y}
+        )
+        world["plot_details"][loc.plot_id] = {
+            "id": loc.plot_id,
+            "business": {
+                "id": loc.id,
+                "catalogId": category,
+                "name": loc.name,
+                "desa": shop_village,
+            },
+        }
+
+    preview = await api.preview(resource)
+    assert preview["navigation"]["method"] == "directory_catalog_http"
+    assert [shop["id"] for shop in preview["shops"]] == [loc.id]
+    assert [r.url.path for r in api.calls if r.url.path.startswith("/api/shops/")] == [
+        f"/api/shops/{loc.id}"
+    ]
+
+    product = preview["shops"][0]["products"][0]
+    business = world["plot_details"][loc.plot_id]["business"]
+    business["desa"] = "desa-utara"
+    with pytest.raises(HttpCoreError, match="berubah sebelum pembelian"):
+        await api.purchase(product, "35", current, "20", str(uuid4()))
+    assert all(r.method == "GET" for r in api.calls)
+
+    business["desa"] = village
+    request_id = str(uuid4())
+    await api.purchase(product, "35", current, "20", request_id)
+    posts = [r for r in api.calls if r.method == "POST"]
+    assert [r.url.path for r in posts] == [f"/api/shops/{loc.id}/buy"]
+    assert json.loads(posts[0].content) == {"item": item, "requestId": request_id}
 
 
 async def test_incomplete_scan_clears_previous_preview_and_never_buys(api, world):

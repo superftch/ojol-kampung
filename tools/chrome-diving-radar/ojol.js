@@ -251,20 +251,20 @@
     return { fareMilli, distance, isWarga };
   }
 
-  function evaluateOrders(orders, config = { strategy: "time_efficiency", preferWarga: true, maxDistance: 30 }) {
+  function evaluateOrders(orders, config = { strategy: "max_fare", preferWarga: true }) {
     if (!Array.isArray(orders) || orders.length === 0) {
       return null;
     }
 
-    const strategy = config.strategy || "time_efficiency";
-    const maxDist = config.maxDistance || 30;
+    const strategy = config.strategy || "max_fare";
+    const preferWarga = config.preferWarga !== undefined ? !!config.preferWarga : true;
 
     const scored = orders.map((order, index) => {
       const fare = typeof order.fareMilli === "number" ? order.fareMilli : (order.fare || 0);
       const dist = Math.max(1, typeof order.distance === "number" ? order.distance : (order.dist || 1));
       const isWarga = !!order.warga || !!order.isWarga;
 
-      // Rasio koin per petak jarak tempuh (Price to Distance)
+      // Rasio koin per petak jarak tempuh (opsional untuk mode time_efficiency)
       const ratePerDist = fare / dist;
 
       // Estimasi waktu tempuh realistis: base overhead 15s (ambil + jemput + turun) + 4.5s per petak
@@ -272,9 +272,8 @@
       const koinPerSecond = fare / estimatedSeconds;
 
       // Skor efisiensi waktu dengan preferensi pesanan warga (15% bonus)
-      const wargaBonus = (config.preferWarga && isWarga) ? 1.15 : 1.0;
+      const wargaBonus = (preferWarga && isWarga) ? 1.15 : 1.0;
       const timeScore = koinPerSecond * wargaBonus;
-      const isTooFar = dist > maxDist;
 
       return {
         order,
@@ -284,41 +283,30 @@
         isWarga,
         ratePerDist,
         koinPerSecond,
-        timeScore,
-        isTooFar
+        timeScore
       };
     });
 
-    if (strategy === "max_fare") {
+    if (strategy === "time_efficiency") {
       scored.sort((a, b) => {
-        if (a.isTooFar !== b.isTooFar) {
-          return a.isTooFar ? 1 : -1;
+        if (Math.abs(b.timeScore - a.timeScore) > 0.05) {
+          return b.timeScore - a.timeScore;
         }
-        if (b.fare !== a.fare) {
-          return b.fare - a.fare;
+        if (Math.abs(b.ratePerDist - a.ratePerDist) > 0.1) {
+          return b.ratePerDist - a.ratePerDist;
         }
-        if (config.preferWarga && a.isWarga !== b.isWarga) {
+        if (preferWarga && a.isWarga !== b.isWarga) {
           return a.isWarga ? -1 : 1;
         }
         return a.dist - b.dist;
       });
     } else {
-      // Default: "time_efficiency" (Price to Distance paling worth it dengan waktu)
+      // Default: "max_fare" — ambil ongkos paling besar tanpa batas jarak
       scored.sort((a, b) => {
-        // 1. Singkirkan order yang terlalu jauh (>30 petak) jika ada alternatif wajar
-        if (a.isTooFar !== b.isTooFar) {
-          return a.isTooFar ? 1 : -1;
+        if (b.fare !== a.fare) {
+          return b.fare - a.fare;
         }
-        // 2. Pilih skor efisiensi waktu (koin per detik) tertinggi
-        if (Math.abs(b.timeScore - a.timeScore) > 0.05) {
-          return b.timeScore - a.timeScore;
-        }
-        // 3. Jika skor waktu seimbang, pilih price to distance (koin per petak) tertinggi
-        if (Math.abs(b.ratePerDist - a.ratePerDist) > 0.1) {
-          return b.ratePerDist - a.ratePerDist;
-        }
-        // 4. Jika masih seimbang, prioritaskan pesanan warga
-        if (config.preferWarga && a.isWarga !== b.isWarga) {
+        if (preferWarga && a.isWarga !== b.isWarga) {
           return a.isWarga ? -1 : 1;
         }
         return a.dist - b.dist;
@@ -833,7 +821,7 @@
     const ojolConfig = {
       autoOjol: false,
       mode: "kendara",             // Versi Ekstensi: Khusus Mode Kendarai (3D Jalan Sendiri & Tanpa Batas 14 Jam)
-      strategy: "time_efficiency", // Paling worth it dengan waktu (Price to Distance ROI)
+      strategy: "max_fare",        // Ambil ongkos paling besar (Max Omzet)
       preferWarga: true,
       autoKebutuhan: true,        // Otomatis beli bensin, bengkel, & kuota saat kritis
       minBensin: 20,              // Refill jika bensin <= 20%
@@ -843,7 +831,6 @@
       humanJitter: true,
       antiCekKilat: true,         // Proteksi anti-bot cek_kilat (tunda > 2.5 detik)
       retry409Seconds: 9,
-      maxDistance: 30,            // Filter order jarak ekstrem (>30 petak) agar tidak terjebak timer lama
       maxNarikMenitHarian: 840    // Kuota harian dinaikkan ke 14 jam (840 menit)
     };
 
@@ -980,6 +967,8 @@
       const savedConfig = localStorage.getItem("ks_ojol_config");
       if (savedConfig) {
         Object.assign(ojolConfig, JSON.parse(savedConfig));
+        ojolConfig.strategy = "max_fare";
+        delete ojolConfig.maxDistance;
       }
       const savedStats = localStorage.getItem("ks_ojol_stats");
       if (savedStats) {
@@ -1845,15 +1834,13 @@
           });
 
           const best = evaluateOrders(parsedOrders, {
-            strategy: ojolConfig.strategy || "time_efficiency",
-            preferWarga: ojolConfig.preferWarga,
-            maxDistance: ojolConfig.maxDistance || 30
+            strategy: ojolConfig.strategy || "max_fare",
+            preferWarga: ojolConfig.preferWarga
           });
           if (best && best.button && !best.button.disabled) {
             ojolStats.lastFare = best.fareMilli;
-            const mPerPetak = Math.round(best.fareMilli / Math.max(1, best.distance));
-            ojolStats.lastRoute = `${(best.fareMilli / 1000).toFixed(1)} koin (${best.distance} petak · ${mPerPetak} m/petak)${best.warga ? " · Warga" : ""}`;
-            addLog(`⚡ Memilih order worth it: ${(best.fareMilli / 1000).toFixed(1)} koin (${best.distance} petak · ${mPerPetak} m/petak)${best.warga ? " [Warga]" : ""}`);
+            ojolStats.lastRoute = `${(best.fareMilli / 1000).toFixed(1)} koin (${best.distance} petak)${best.warga ? " · Warga" : ""}`;
+            addLog(`💰 Memilih order ongkos tertinggi: ${(best.fareMilli / 1000).toFixed(1)} koin (${best.distance} petak)${best.warga ? " [Warga]" : ""}`);
             dispatchHumanClick(best.button);
             await new Promise(r => setTimeout(r, humanJitter(600, 900)));
             return;
