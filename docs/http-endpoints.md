@@ -47,7 +47,7 @@ Setiap request ke `https://www.kampungsebelah.com` kini menyertakan header brows
 | POST `/api/ojol` | `{action:"lacak", x: float, y: float}` | Mode kendara: memperbarui posisi koordinat GPS mitra menuju titik jemput atau titik tujuan (maks laju 1.8 petak/detik). Live terverifikasi 20 November 2026. |
 | POST `/api/ojol` | `{action:"jemput"}` | Mode kendara: menjemput penumpang setelah tiba dalam radius `dekat_petak` (3.5 petak) dari titik jemput (`jemput: true`). Live terverifikasi 20 November 2026. |
 | POST `/api/ojol` | `{action:"selesai", kode?}` | Menyelesaikan order dan mencairkan ongkos setelah sampai di tujuan. Mode kendara mengirim `lacak` koordinat tujuan akhir sebelum `selesai`. Field `cek` trip adalah boolean (live 20 November 2026: `false` pada order biasa; `true` berarti verifikasi aktif); bila string, nilainya dipakai langsung sebagai `kode`. Bila `cek` aktif, client menampilkan gambar dari endpoint GET di bawah dan mengirim 2 angka sebagai `kode`. `selesai` tanpa verifikasi live terverifikasi 20 November 2026. |
-| GET `/api/ojol/cek?t={trip.id}&a={trip.arriveAt}&m={n}` | Gambar cek pengemudi (SVG) saat `cek` trip aktif; `m` adalah nomor muat ulang gambar dari bundle client live. Dipecahkan otomatis oleh `ojol/svg_captcha_solver.py` (port MIT dari [AmireNoori/SVG-Captcha-Solver](https://github.com/AmireNoori/SVG-Captcha-Solver)); hasil bukan 2 angka atau pola tidak dikenal gagal aman tanpa mengirim `kode` salah. Bentuk respons gambar belum diamati live karena order sampel tidak memicu `cek`. |
+| GET `/api/ojol/cek?t={trip.id}&a={trip.arriveAt}&m={n}` | Gambar cek pengemudi (SVG) saat `cek` trip aktif; `m` adalah nomor muat ulang gambar dari bundle client live. Dipecahkan otomatis oleh `app/modules/captcha/__init__.py` (port MIT dari [AmireNoori/SVG-Captcha-Solver](https://github.com/AmireNoori/SVG-Captcha-Solver)); hasil bukan 2 angka atau pola tidak dikenal gagal aman tanpa mengirim `kode` salah. Bentuk respons gambar belum diamati live karena order sampel tidak memicu `cek`. |
 | GET `/api/facilities/{id}` | Status, layanan, tarif, cooldown, serta bidang belajar | Browser Harness dan GET terotorisasi 19 November 2026; lihat validasi kebutuhan/belajar di bawah |
 | POST `/api/facilities/{id}/use` | `{requestId}` untuk fisik; `{requestId, track}` untuk perpus/kuliah | POST live terotorisasi 19 November 2026: gym, perpus, universitas |
 | GET `/api/facilities/{id}/kuis` | `available`, `visitId`, `track`, `bacaan`, `soal[].{q,options}`, `need`; selesai: `reason: selesai`, `track`, `bonus` | Browser Harness dan GET live 19 November 2026 |
@@ -124,7 +124,7 @@ Verifikasi live read-only 12 November 2026 pukul 02.51–02.53 WIB memakai sesi 
 
 Worker membaca jadwal akun pada setiap snapshot dan menghitung batas berikutnya dengan `GET /api/time.now` dalam `Asia/Jakarta`, termasuk lintas tengah malam. Waktu sejak snapshot diterima dihitung dengan jam monotonic agar waktu tunggu tidak melewati batas jadwal yang sudah diketahui. Di batas itu worker membaca ulang status, dan selama tidur memeriksa berkala sesuai `idle_poll_seconds`. Status tidur dari salah satu `kebutuhan.asleep` atau `profile.resting` menahan semua transaksi; jam jadwal sendiri tidak menimpa status bangun manual. Perubahan tepat di antara GET terakhir dan POST tetap tunduk pada keputusan server, dan hasil transaksi belum pasti tetap memerlukan bukti sebelum dilanjutkan.
 
-Tombol mata memanggil onLook → centerOn + pembukaan panel. Panel membaca detail plot lalu katalog. Tombol Pergi memakai POST `/api/tujuan`; core HTTP tidak mengirim endpoint tersebut. Adapter membaca katalog berdasarkan ID toko tetap di `ojol/shop_locations.py`. Jika tidak ada katalog tetap berisi produk isi ulang yang tersedia, kuota HP dan kondisi kendaraan memakai konter atau bengkel dari GET `/api/tujuan`, diperiksa bertahap dari yang terdekat. Detail plot memastikan identitas usaha dan desa akun. Worker membaca ulang plot dan katalog sebelum mengirim pembelian. Pembelian service sendiri dapat mempunyai efek tampil di toko yang ditentukan server, sama seperti Beli dari preview browser.
+Tombol mata memanggil onLook → centerOn + pembukaan panel. Panel membaca detail plot lalu katalog. Tombol Pergi memakai POST `/api/tujuan`; core HTTP tidak mengirim endpoint tersebut. Adapter membaca katalog berdasarkan ID toko tetap di `app/integrations/kampung/shop_locations.py`. Jika tidak ada katalog tetap berisi produk isi ulang yang tersedia, kuota HP dan kondisi kendaraan memakai konter atau bengkel dari GET `/api/tujuan`, diperiksa bertahap dari yang terdekat. Detail plot memastikan identitas usaha dan desa akun. Worker membaca ulang plot dan katalog sebelum mengirim pembelian. Pembelian service sendiri dapat mempunyai efek tampil di toko yang ditentukan server, sama seperti Beli dari preview browser.
 
 Auto Kebutuhan memeriksa cabang Akademis.ai terdaftar dan kandidat bermerek dalam direktori untuk desa akun. Rotasi mendahulukan cabang yang paling lama tidak memiliki pembelian terverifikasi, selama produknya memenuhi anggaran dan kebutuhan. Cadangan baru dicari jika tidak ada produk Akademis.ai yang tersedia atau Akademis.ai tidak dapat dijangkau. Cadangan berada di desa yang sama dan maksimal 60 petak dari rumah berdasarkan jarak lurus. Katalog cadangan diperiksa dan dipilih bertahap mulai dari yang terdekat secara dinamis. Adapter memeriksa ulang prioritas dan produk sebelum POST.
 
@@ -300,7 +300,7 @@ SPBU Pertamina dikeluarkan dari daftar pembelian di atas karena tidak muncul pad
 
 ## Aksi adapter Ojol
 
-Worker memanggil [`ojol/http_api.py`](../ojol/http_api.py) langsung melalui adapter [`ojol/ui.py`](../ojol/ui.py); tidak ada lagi stdio MCP di antara worker dan API. Nama aksi pada tabel berikut dipertahankan sebagai label seam pengujian `HttpUI.call_tool`.
+Worker memanggil [`app/integrations/kampung/http_api.py`](../app/integrations/kampung/http_api.py) langsung melalui adapter [`app/modules/worker/ui.py`](../app/modules/worker/ui.py); tidak ada lagi stdio MCP di antara worker dan API. Nama pada tabel berikut merupakan label aksi adapter.
 
 | Tool | Parameter | Hasil atau aksi |
 |---|---|---|
@@ -314,7 +314,7 @@ Worker memanggil [`ojol/http_api.py`](../ojol/http_api.py) langsung melalui adap
 
 ## HTTP service aplikasi
 
-Route berikut dideklarasikan di [`ojol/control.py`](../ojol/control.py) dan berjalan di host aplikasi Ojol.
+Route berikut terdaftar melalui [`app/web/factory.py`](../app/web/factory.py) dan berjalan di host aplikasi Ojol.
 
 | Route | Pemakaian |
 |---|---|

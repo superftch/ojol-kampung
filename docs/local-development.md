@@ -37,4 +37,12 @@ Jalankan suite yang sama dengan CI melalui Docker. Suite memakai fixture dan mem
 docker build --target test -t ojol-kampung:test .
 ```
 
-Untuk memeriksa tipe secara lokal, jalankan `uv run ty check --python .venv/bin/python ojol main.py scripts tests`. Jalankan suite penuh lewat `uv run python scripts/test.py --all` setelah memeriksa isolasi `.env.testing`.
+Pemeriksaan lokal untuk aplikasi, CLI, dan tes:
+
+```sh
+uv run ruff check app ojol main.py scripts/test.py tests
+uv run ruff format --check app ojol main.py scripts/test.py tests
+uv run ty check --python .venv/bin/python app ojol main.py scripts tests
+```
+
+Konfigurasi mypy strict tersedia untuk audit tipe lanjutan melalui `uvx mypy --python-executable .venv/bin/python app`. Jalankan suite penuh lewat `uv run python scripts/test.py --all` setelah memeriksa isolasi `.env.testing`.

@@ -1,0 +1,419 @@
+import json
+from datetime import datetime, timedelta
+from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from app.core.models import GameReceipt
+from app.modules.ledger.reconciliation import reconcile
+from app.modules.ledger.repository import Journal
+
+
+@pytest.fixture
+def search_before(state):
+    return state.model_copy(
+        update={
+            "observed_at": datetime.fromisoformat("2030-01-02T15:12:12+00:00"),
+            "phase": "idle",
+            "wallet": Decimal("45.09"),
+            "fuel": 48,
+            "condition": 71,
+            "data": 97,
+            "today_income": Decimal("26.399"),
+            "raw_text": "Narik pakai motor\n📲 Cari order",
+            "trip": "undefined | undefined",
+            "buttons": ["📲 Cari order", "Berhenti jadi mitra ojol"],
+        }
+    )
+
+
+@pytest.mark.parametrize("asleep", [False, True])
+@pytest.mark.parametrize("drain", [0, 1])
+@pytest.mark.parametrize("unstable", [False, True])
+@pytest.mark.parametrize("wallet_gain", ["0", "14.301"])
+async def test_reconcile_idle_search_records_unknown_resource_deltas_without_replay_or_money(
+    settings, search_before, monkeypatch, capsys, asleep, drain, unstable, wallet_gain
+):
+    import app.modules.worker.runner as module
+
+    before = search_before
+    if asleep:
+        before = before.model_copy(
+            update={
+                "raw_text": "Kamu sedang tidur. Tekan ☀ Bangun dulu.",
+                "trip": "Kamu sedang tidur. Tekan ☀ Bangun dulu. | undefined",
+            }
+        )
+    after = search_before.model_copy(
+        update={
+            "observed_at": before.observed_at + timedelta(minutes=26),
+            "wallet": before.wallet + Decimal(wallet_gain),
+            "fuel": before.fuel - drain,
+            "data": before.data - drain,
+        }
+    )
+    confirmed = after.model_copy(update={"observed_at": after.observed_at + timedelta(seconds=2)})
+    if unstable:
+        confirmed = confirmed.model_copy(update={"data": confirmed.data - 1})
+    journal = Journal(settings.runtime_dir)
+    try:
+        run = journal.start(settings)
+        action = journal.begin(run, "search", before, {"label": "📲 Cari order"})
+        journal.settle(action, False)
+        context = AsyncMock()
+        monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
+        ui = SimpleNamespace(
+            snapshot=AsyncMock(side_effect=[after, confirmed, after, confirmed]),
+            job_click=AsyncMock(),
+        )
+        context.__aenter__.return_value = ui
+        monkeypatch.setattr(module, "HttpUI", lambda *args, **kwargs: context)
+        for _ in range(2):
+            await module.run_app(settings.model_copy(update={"env": "local"}), "reconcile")
+        row = journal.history()["actions"][0]
+        assert row["status"] == ("uncertain" if unstable else "closed_idle")
+        assert row["before_state"] == before.model_dump_json()
+        assert journal.profit()["trip_tercatat"] == 0
+        assert journal.profit()["pendapatan_ojol"] == "0"
+        assert journal.profit()["pengeluaran"] == "0"
+        if unstable:
+            with pytest.raises(RuntimeError, match="belum terverifikasi"):
+                journal.start(settings)
+        else:
+            assert journal.start(settings) > run
+        events = journal.db.execute(
+            "SELECT data FROM events WHERE event='pencarian_ditutup_tanpa_order_aktif'"
+        ).fetchall()
+        assert len(events) == (0 if unstable else 1)
+        if events:
+            proof = json.loads(events[0]["data"])
+            assert proof["resource_delta"] == {"fuel": -drain, "condition": 0, "data": -drain}
+            assert proof["resource_delta_cause"] == "not_attributed"
+            assert Decimal(proof["wallet_delta"]) == Decimal(wallet_gain)
+            assert proof["wallet_delta_cause"] == "not_attributed"
+            assert proof["original_outcome"] == "uncertain"
+            if Decimal(wallet_gain):
+                assert "Selisih saldo 14.301 koin" in capsys.readouterr().out
+        else:
+            line = next(
+                line
+                for line in capsys.readouterr().out.splitlines()
+                if line.startswith("Bukti pencarian: ")
+            )
+            diagnostic = json.loads(line.removeprefix("Bukti pencarian: "))
+            assert not diagnostic["observations_stable"]
+            assert not diagnostic["history_changed"]
+            assert diagnostic["current"]["data"] == confirmed.data
+        ui.snapshot.assert_awaited()
+        assert ui.snapshot.await_count == (4 if unstable else 3)
+        ui.job_click.assert_not_awaited()
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("extra_days", [0, 1])
+async def test_reconcile_idle_search_after_balance_drop_and_new_trips(
+    settings, search_before, monkeypatch, extra_days
+):
+    before = search_before.model_copy(
+        update={
+            "wallet": Decimal("21.031"),
+            "condition": 97,
+            "history": [],
+            "today_income": Decimal(0),
+        }
+    )
+    receipt = GameReceipt(
+        id="later-trip",
+        done_at=before.observed_at + timedelta(minutes=30, days=extra_days),
+        kind="PENUMPANG",
+        origin="Toko Contoh",
+        destination="Rumah Contoh",
+        amount=Decimal("0.418"),
+    )
+    after = before.model_copy(
+        update={
+            "observed_at": before.observed_at + timedelta(hours=1, days=extra_days),
+            "wallet": Decimal("20.814"),
+            "fuel": before.fuel + 1,
+            "condition": 77,
+            "today_income": Decimal("11.247"),
+            "history": ["22.42 Toko Contoh → Rumah Contoh · +0,418"],
+            "game_history": [receipt],
+        }
+    )
+    confirmed = after.model_copy(update={"observed_at": after.observed_at + timedelta(seconds=2)})
+    ui = SimpleNamespace(snapshot=AsyncMock(side_effect=[after, confirmed]), job_click=AsyncMock())
+    monkeypatch.setattr("app.modules.ledger.reconciliation.asyncio.sleep", AsyncMock())
+    journal = Journal(settings.runtime_dir)
+    try:
+        run = journal.start(settings)
+        action = journal.begin(run, "search", before, {"label": "📲 Cari order"})
+        journal.settle(action, False)
+
+        assert await reconcile(ui, journal) == confirmed
+        row = journal.history()["actions"][0]
+        assert row["status"] == "closed_idle"
+        assert row["before_state"] == before.model_dump_json()
+        assert row["after_state"] == confirmed.model_dump_json()
+        proof = json.loads(
+            journal.db.execute(
+                "SELECT data FROM events WHERE event='pencarian_ditutup_tanpa_order_aktif'"
+            ).fetchone()[0]
+        )
+        assert proof["original_outcome"] == "uncertain"
+        assert proof["wallet_delta"] == "-0.217"
+        assert proof["wallet_delta_cause"] == "not_attributed"
+        assert journal.db.execute("SELECT COUNT(*) FROM cashflows").fetchone()[0] == 0
+        assert journal.start(settings) > run
+        ui.job_click.assert_not_awaited()
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"phase": "delivering", "remaining_seconds": 10},
+        {"phase": "searching"},
+        {"buttons": ["📲 Cari order", "Terima order"]},
+        {"buttons": []},
+        {"trip": "📍 Toko Contoh 🏁 Rumah Contoh"},
+        {"trip_id": "active-trip"},
+        {"arrive_at": datetime.fromisoformat("2030-01-02T16:00:00+00:00")},
+    ],
+)
+def test_idle_search_remains_blocked_with_active_or_ambiguous_orders(
+    settings, search_before, change
+):
+    journal = Journal(settings.runtime_dir)
+    try:
+        run = journal.start(settings)
+        action = journal.begin(run, "search", search_before, {"label": "📲 Cari order"})
+        journal.settle(action, False)
+        after = search_before.model_copy(
+            update={"observed_at": search_before.observed_at + timedelta(minutes=20), **change}
+        )
+        confirmed = after.model_copy(
+            update={"observed_at": after.observed_at + timedelta(seconds=2)}
+        )
+        assert not journal.resolve_search(action, after, confirmed)
+        assert journal.history()["actions"][0]["status"] == "uncertain"
+        with pytest.raises(RuntimeError, match="belum terverifikasi"):
+            journal.start(settings)
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("kind", ["complete", "purchase", "take"])
+def test_idle_search_resolution_never_clears_other_action_kinds(settings, search_before, kind):
+    journal = Journal(settings.runtime_dir)
+    try:
+        run = journal.start(settings)
+        action = journal.begin(run, kind, search_before, {})
+        after = search_before.model_copy(
+            update={"observed_at": search_before.observed_at + timedelta(minutes=20)}
+        )
+        confirmed = after.model_copy(
+            update={"observed_at": after.observed_at + timedelta(seconds=2)}
+        )
+        assert not journal.resolve_search(action, after, confirmed)
+        assert journal.history()["actions"][0]["status"] == "pending"
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("field,value", [("data", 96), ("wallet", Decimal("59.391"))])
+def test_idle_search_requires_two_distinct_stable_observations(
+    settings, search_before, field, value
+):
+    journal = Journal(settings.runtime_dir)
+    try:
+        run = journal.start(settings)
+        action = journal.begin(run, "search", search_before, {})
+        after = search_before.model_copy(
+            update={"observed_at": search_before.observed_at + timedelta(minutes=20)}
+        )
+        assert not journal.resolve_search(action, after, after)
+        changed = after.model_copy(
+            update={"observed_at": after.observed_at + timedelta(seconds=2), field: value}
+        )
+        assert not journal.resolve_search(action, after, changed)
+        assert journal.history()["actions"][0]["status"] == "pending"
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("age_minutes", [2, 20])
+@pytest.mark.parametrize("matching_route", [True, False])
+async def test_reconcile_claim_requires_exact_receipt_and_never_replays_or_double_books(
+    settings, state, monkeypatch, age_minutes, matching_route
+):
+    import app.modules.worker.runner as module
+
+    before = state.model_copy(
+        update={
+            "observed_at": datetime.fromisoformat("2030-01-02T01:10:31+00:00"),
+            "phase": "complete",
+            "trip": "Antar · ongkos0,8 | 📍 Toko Contoh🏁 Rumah Contoh",
+            "today_income": Decimal("3.00"),
+        }
+    )
+    shop = "Toko Contoh" if matching_route else "Other Shop"
+    after = before.model_copy(
+        update={
+            "observed_at": before.observed_at + timedelta(minutes=age_minutes),
+            "phase": "idle",
+            "today_income": Decimal("3.72"),
+            "history": [f"08.10 🧍 {shop} → Rumah Contoh · +0,72", *before.history],
+        }
+    )
+    monkeypatch.setattr("app.core.models.now", lambda: after.observed_at)
+    journal = Journal(settings.runtime_dir)
+    try:
+        run = journal.start(settings)
+        action = journal.begin(run, "complete", before, {"label": "Sampai"})
+        journal.settle(action, False)
+        context = AsyncMock()
+        ui = SimpleNamespace(snapshot=AsyncMock(return_value=after), job_click=AsyncMock())
+        context.__aenter__.return_value = ui
+        monkeypatch.setattr(module, "HttpUI", lambda *args, **kwargs: context)
+        for _ in range(2):
+            await module.run_app(settings.model_copy(update={"env": "local"}), "reconcile")
+        row = journal.history()["actions"][0]
+        assert row["status"] == ("verified" if matching_route else "uncertain")
+        assert journal.profit()["trip_tercatat"] == int(matching_route)
+        assert journal.profit()["pendapatan_ojol"] == ("0.72" if matching_route else "0")
+        ui.job_click.assert_not_awaited()
+        if not matching_route:
+            with pytest.raises(RuntimeError, match="belum terverifikasi"):
+                journal.start(settings)
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("phase", ["complete", "delivering", "idle"])
+async def test_reconciled_search_hands_off_current_trip_without_claiming_early_or_replaying(
+    settings, search_before, monkeypatch, phase
+):
+    import app.modules.worker.runner as module
+    from app.modules.worker.controller import Controller
+
+    buttons = {
+        "complete": ["✅ Sampai! Terima ongkos", "📍 Lihat di peta"],
+        "delivering": ["🛵 Mengantar… 1:20", "📍 Lihat di peta"],
+        "idle": ["Terima order", "📍 Lihat di peta"],
+    }
+    remaining = {"complete": 0, "delivering": 80, "idle": None}
+    ready = search_before.model_copy(
+        update={
+            "observed_at": search_before.observed_at + timedelta(minutes=36),
+            "phase": phase,
+            "remaining_seconds": remaining[phase],
+            "trip": "Antar penumpang · ongkos 0,8 koin | 📍 Toko Contoh🏁 Rumah Contoh",
+            "fuel": 42,
+            "condition": 69,
+            "data": 92,
+            "buttons": buttons[phase],
+            "raw_text": "Current observed order",
+        }
+    )
+    confirmed = ready.model_copy(update={"observed_at": ready.observed_at + timedelta(seconds=2)})
+    if phase == "delivering":
+        confirmed = confirmed.model_copy(
+            update={
+                "remaining_seconds": 78,
+                "buttons": ["🛵 Mengantar… 1:18", "📍 Lihat di peta"],
+                "raw_text": "Current order 1:18",
+            }
+        )
+    journal = Journal(settings.runtime_dir)
+    try:
+        run = journal.start(settings)
+        search = journal.begin(run, "search", search_before, {"label": "📲 Cari order"})
+        journal.settle(search, False)
+        context = AsyncMock()
+        monkeypatch.setattr(module.asyncio, "sleep", AsyncMock())
+        ui = SimpleNamespace(
+            snapshot=AsyncMock(side_effect=[ready, confirmed, confirmed]), job_click=AsyncMock()
+        )
+        context.__aenter__.return_value = ui
+        monkeypatch.setattr(module, "HttpUI", lambda *args, **kwargs: context)
+        for _ in range(2):
+            await module.run_app(settings.model_copy(update={"env": "local"}), "reconcile")
+        assert journal.history()["actions"][0]["status"] == "handed_off"
+        assert journal.profit()["pendapatan_ojol"] == "0"
+        ui.job_click.assert_not_awaited()
+        events = journal.db.execute(
+            "SELECT data FROM events WHERE event='pencarian_diserahkan_ke_state_teramati'"
+        ).fetchall()
+        assert len(events) == 1
+        evidence = json.loads(events[0]["data"])
+        assert evidence["resource_delta"] == {"fuel": -6, "condition": -2, "data": -5}
+        resumed = journal.start(settings)
+        if phase == "complete":
+            paid = confirmed.model_copy(
+                update={
+                    "phase": "idle",
+                    "remaining_seconds": None,
+                    "buttons": ["📲 Cari order"],
+                    "wallet": confirmed.wallet + Decimal("0.72"),
+                    "today_income": confirmed.today_income + Decimal("0.72"),
+                    "history": ["22.49 Toko Contoh → Rumah Contoh · +0,72", *confirmed.history],
+                }
+            )
+            ui.snapshot = AsyncMock(return_value=paid)
+            controller = Controller(ui, settings, journal, resumed)
+            await controller.job_action(confirmed, "complete")
+            ui.job_click.assert_awaited_once_with("✅ Sampai! Terima ongkos")
+            assert journal.profit()["pendapatan_ojol"] == "0.72"
+            assert journal.profit()["trip_tercatat"] == 1
+            await module.run_app(settings.model_copy(update={"env": "local"}), "reconcile")
+            ui.job_click.assert_awaited_once()
+            assert journal.profit()["trip_tercatat"] == 1
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"trip": "Unknown order"},
+        {"buttons": ["✅ Sampai! Terima ongkos", "Selesaikan"]},
+        {"buttons": ["✅ Sampai! Terima ongkos", "Terima order"]},
+        {"wallet": Decimal("45.81")},
+        {"wallet": Decimal("45.08")},
+        {"fuel": 49},
+        {"today_income": Decimal("27.00")},
+        {"history": ["22.49 Other → Route · +0,72"]},
+        {"observed_at": datetime.fromisoformat("2030-01-03T15:30:31+00:00")},
+        {"remaining_seconds": 1},
+    ],
+)
+def test_ready_trip_search_handoff_rejects_ambiguous_or_paid_states(
+    settings, search_before, change
+):
+    journal = Journal(settings.runtime_dir)
+    try:
+        run = journal.start(settings)
+        action = journal.begin(run, "search", search_before, {})
+        ready = search_before.model_copy(
+            update={
+                "observed_at": search_before.observed_at + timedelta(minutes=36),
+                "phase": "complete",
+                "remaining_seconds": 0,
+                "buttons": ["✅ Sampai! Terima ongkos"],
+                "trip": "Antar | 📍 Toko Contoh🏁 Rumah Contoh",
+                **change,
+            }
+        )
+        confirmed = ready.model_copy(
+            update={"observed_at": ready.observed_at + timedelta(seconds=2)}
+        )
+        assert not journal.resolve_search(action, ready, confirmed)
+        assert journal.history()["actions"][0]["status"] == "pending"
+        assert journal.profit()["pendapatan_ojol"] == "0"
+    finally:
+        journal.close()

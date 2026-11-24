@@ -8,21 +8,21 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-from dotenv import dotenv_values
+from dotenv import dotenv_values  # noqa: E402
 
-from ojol.models import Settings
+from app.core.models import Settings  # noqa: E402
 
 # Cakupan pengujian fitur web (UI dashboard, API, autentikasi, kontrol, supervisor worker, bank angka)
 WEB_TEST_FILES = [
-    "tests/test_web.py",
-    "tests/test_control.py",
-    "tests/test_accounts.py",
-    "tests/test_worker_service.py",
-    "tests/test_autostart.py",
-    "tests/test_thresholds.py",
-    "tests/test_captcha.py",
-    "tests/test_study.py",
-    "tests/test_browser_headers.py",
+    "tests/integration/test_web.py",
+    "tests/integration/test_control.py",
+    "tests/integration/test_accounts.py",
+    "tests/integration/test_worker_service.py",
+    "tests/integration/test_autostart.py",
+    "tests/unit/test_thresholds.py",
+    "tests/integration/test_captcha.py",
+    "tests/integration/test_study.py",
+    "tests/integration/test_browser_headers.py",
 ]
 
 
@@ -99,7 +99,8 @@ def main():
         )
         pytest_args, banner = resolve_pytest_args(sys.argv[1:])
         print(banner, flush=True)
-        return subprocess.call(
+        # Launch the local interpreter with isolated configuration and direct arguments.
+        return subprocess.call(  # noqa: S603
             [sys.executable, "-m", "pytest", "-p", "pytest_asyncio.plugin", *pytest_args],
             cwd=ROOT,
             env=env,

@@ -10,6 +10,33 @@ Browser memakai dashboard FastAPI dan sesi HttpOnly untuk login, memilih akun, s
 
 Dashboard membaca ringkasan dan ledger SQLite melalui koneksi read-only. Backfill ledger lama berjalan saat startup. Log akun masuk ke feed notifikasi, dengan akses seluruh akun di tab Admin.
 
+## Struktur kode
+
+```text
+app/
+  main.py                 Entrypoint control server
+  cli.py                  Perintah operator
+  core/                   Konfigurasi, model bersama, keamanan, exception, dan penyimpanan
+  modules/
+    accounts/             Registry SQLite, kepemilikan, dan router akun
+    auth/                 Login web, sesi, dan tiket impor cookie
+    admin/                Persetujuan pengguna dan pengaturan server
+    worker/               Supervisor, kontrol, status, dan planner
+    ledger/               Jurnal SQLite, laporan, dan rekonsiliasi
+    gameplay/             Studi, kebutuhan, dan aktivitas pendukung
+    notifications/        Notifikasi dashboard
+    captcha/              Bank template dan pemeriksaan SVG
+  integrations/kampung/   Adapter HTTP game, parser, dan katalog toko
+  web/                    Factory FastAPI, dependensi, template, dan aset statis
+tests/
+  unit/                   Utilitas dan planner
+  integration/            API, SQLite, dan alur worker dengan fixture
+```
+
+Router fitur memakai dependensi FastAPI melalui `Annotated`. Factory di `app/web/factory.py` mendaftarkan router dan lifecycle. Repository akun dan jurnal tetap memakai SQLite serta format data yang sudah ada. [FastAPI Best Practices](https://github.com/zhanymkanov/fastapi-best-practices) · [Architecture Patterns with Python](https://www.cosmicpython.com/book/preface.html)
+
+Perintah container `ojol.control`, `ojol.worker_service`, dan `ojol.session_transfer` memakai modul kompatibilitas di `ojol/`. Kode implementasi berada di `app/`. Pemindahan tersebut mempertahankan perintah operasi dan route web yang berlaku. [Martin Fowler – Refactoring](https://refactoring.com/)
+
 ## Proses akun dan container worker
 
 [Python asyncio menyediakan proses asynchronous](https://docs.python.org/3.12/library/asyncio-subprocess.html) yang dapat dipantau bersamaan. Proyek memakai container worker khusus untuk menjaga subprocess akun tetap hidup saat container app diperbarui; satu akun tetap satu subprocess dengan journal per direktori.
@@ -26,7 +53,7 @@ Default3worker adalah pembatas operasional awal, bukan hasil pengukuran. Contain
 
 ## HTTP dan transaksi
 
-Lima aksi adapter: snapshot, katalog toko tetap, beli satu item, aksi Ojol dan aktivitas pendukung. Adapter hanya mengizinkan origin/path/metode game yang diperiksa. Snapshot membaca wallet/Ojol/kebutuhan/waktu server; milli-koin memakai Decimal, arrival memakai waktu server. Daftar toko berasal dari `ojol/shop_locations.py` berdasarkan desa dan resource. Planner menyaring rencana isi ulang yang layak berdasarkan katalog terkini. Rotasi menurut jurnal akun berlaku antar toko Akademis.ai satu tipe. Toko cadangan dipilih berdasarkan biaya jika tak ada rencana Akademis.ai yang layak. Pembelian memeriksa ulang desa, fase, saldo, resource, dan katalog sebelum POST. Efek item berasal dari data bundle client tanpa mengeksekusi JavaScript, cache mengikuti `configVersion`.
+Lima aksi adapter: snapshot, katalog toko tetap, beli satu item, aksi Ojol dan aktivitas pendukung. Adapter hanya mengizinkan origin/path/metode game yang diperiksa. Snapshot membaca wallet/Ojol/kebutuhan/waktu server; milli-koin memakai Decimal, arrival memakai waktu server. Daftar toko berasal dari `app/integrations/kampung/shop_locations.py` berdasarkan desa dan resource. Planner menyaring rencana isi ulang yang layak berdasarkan katalog terkini. Rotasi menurut jurnal akun berlaku antar toko Akademis.ai satu tipe. Toko cadangan dipilih berdasarkan biaya jika tak ada rencana Akademis.ai yang layak. Pembelian memeriksa ulang desa, fase, saldo, resource, dan katalog sebelum POST. Efek item berasal dari data bundle client tanpa mengeksekusi JavaScript, cache mengikuti `configVersion`.
 
 GET sementara gagal dicoba3kali dengan backoff1/2detik. Auth/redirect ditolak. POST satu percobaan; timeout write tidak menyebabkan retry. Batas request API30detik dan tunggu worker40detik. Stop diperiksa selama menunggu aksi dan countdown.
 

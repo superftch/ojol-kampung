@@ -122,6 +122,13 @@ Feature-based modular monolith inside `ojol/` with the existing container and CL
 - The full suite passed **685 tests** with verified `.env.testing`. `ty` passed for the application, scripts, entry point, and tests. Ruff, dashboard JavaScript syntax, and the Docker test build with 175 isolated tests also passed.
 - Browser Harness verified registration, login, game-account creation, live dashboard SSE, and maintenance on/off on a local Uvicorn instance with a standalone worker. The worker responded to IPC ping. The smoke environment used `.env.testing` and an isolated browser profile.
 
+### Main synchronization and feature folders
+
+- Merged `origin/main` at `51717a4`. Kept the split adapter, directory fallback and catalog revalidation, and the automatic-mode order selection from main. The same 54 web-only routes and deployed module commands remain available.
+- Moved the implementation into `app/core`, `app/modules`, `app/integrations`, and `app/web`. Grouped the test suite under `tests/unit` and `tests/integration`. Existing SQLite data paths and schema remain in use.
+- Added the requested Ruff, pytest and strict mypy settings. Ruff passed for the application and test scope. The CI type checker `ty` passed. The separate strict mypy audit returned 1,234 diagnostics across 54 files.
+- The isolated Python suite passed 690 tests, the extension suite passed 62 tests, and the Docker test target passed 176 tests. See [the architecture guide](docs/architecture.md#struktur-kode) for the folder map.
+
 ## Known Risks
 
 - `OjolHttpApi` still owns shop, trip, and facility workflows. Fleet supervision and tunnel lifecycle remain in the existing control services. The web routers retain existing form and JSON parsing contracts.

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from ojol.config import load_settings
-from ojol.models import ROOT, ShopPreview, Snapshot
+from app.core.config import load_settings
+from app.core.models import ROOT, ShopPreview, Snapshot
 
 
 def pytest_configure(config):

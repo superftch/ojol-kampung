@@ -17,6 +17,6 @@ jobs:
           persist-credentials: false
       - name: Lint and isolated non-root tests with private source permissions
         run: |
-          chmod -R go-rwx ojol tests scripts
+          chmod -R go-rwx app ojol assets tests scripts
           chmod 600 main.py
           docker build --target test -t ojol-kampung:test .

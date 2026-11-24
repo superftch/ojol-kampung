@@ -1,0 +1,1454 @@
+import asyncio
+import json
+from datetime import datetime
+from decimal import Decimal
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import pytest
+
+from app.cli import exclusive_lock, main, running
+from app.core.config import load_settings
+from app.core.models import ROOT, Product, SleepSchedule
+from app.core.storage import write_private
+from app.integrations.kampung.http_api import HttpCoreError
+from app.modules.ledger.repository import Journal
+from app.modules.worker.controller import Controller, StopRequested
+from app.modules.worker.maintenance import MaintenanceWindow
+from app.modules.worker.settings import AUTO_LABELS, set_auto_flag
+
+
+def test_environment_and_double_runner_block(settings):
+    with pytest.raises(ValueError):
+        load_settings()
+    assert settings.runtime_dir.is_relative_to(ROOT / ".local/testing")
+    assert not settings.operator_authorized
+    with exclusive_lock(settings.runtime_dir):
+        assert running(settings.runtime_dir)
+        with pytest.raises(RuntimeError), exclusive_lock(settings.runtime_dir):
+            pass
+    assert not running(settings.runtime_dir)
+
+
+def test_journal_write_before_click_blocks_unknown_replay(settings, state):
+    journal = Journal(settings.runtime_dir)
+    run = journal.start(settings)
+    action = journal.begin(run, "purchase", state, {"product": "Isi pulsa"})
+    with pytest.raises(RuntimeError, match="belum terverifikasi"):
+        journal.start(settings)
+    journal.settle(action, False)
+    with pytest.raises(RuntimeError):
+        journal.start(settings)
+    journal.settle(action, True, state)
+    assert journal.start(settings) > run
+    journal.close()
+
+
+async def test_purchase_verified_by_wallet_and_resource(settings, state, shop_preview):
+    product = Product(
+        name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
+    )
+    after = state.model_copy(update={"wallet": state.wallet - Decimal("0.5"), "data": 86})
+    ui = SimpleNamespace(
+        preview_shops=AsyncMock(return_value=[shop_preview([product])]),
+        buy=AsyncMock(),
+        snapshot=AsyncMock(return_value=after),
+    )
+    journal = Journal(settings.runtime_dir)
+    controller = Controller(ui, settings, journal, journal.start(settings))
+    await controller.purchase(state, "data")
+    assert controller.spent == Decimal("0.5")
+    assert journal.history()["actions"][0]["status"] == "verified"
+    ui.buy.assert_awaited_once()
+    journal.close()
+
+
+async def test_timeout_does_not_repeat_purchase(settings, state, shop_preview):
+    product = Product(
+        name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
+    )
+    ui = SimpleNamespace(
+        preview_shops=AsyncMock(return_value=[shop_preview([product])]),
+        buy=AsyncMock(side_effect=TimeoutError),
+    )
+    journal = Journal(settings.runtime_dir)
+    controller = Controller(ui, settings, journal, journal.start(settings))
+    with pytest.raises(TimeoutError):
+        await controller.purchase(state, "data")
+    assert ui.buy.await_count == 1 and controller.spent == 0
+    assert journal.history()["actions"][0]["status"] == "uncertain"
+    journal.close()
+
+
+@pytest.mark.parametrize("stage", ["preview", "buy"])
+async def test_need_errors_notify_without_stopping_worker(settings, state, shop_preview, stage):
+    state = state.model_copy(update={"needs": {"makan": 45}})
+    product = Product(
+        name="Soto", price="0.5", effects={"makan": 20}, row_text="fixture", enabled=True
+    )
+    shop = shop_preview([product]).model_copy(update={"name": "Akademis.ai Restaurant"})
+    error = HttpCoreError("fixture", category="rejected")
+    ui = SimpleNamespace(
+        preview_shops=AsyncMock(
+            side_effect=error if stage == "preview" else None, return_value=[shop]
+        ),
+        buy=AsyncMock(side_effect=error),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        assert await controller.purchase(state, "makan") is False
+        path = next((settings.runtime_dir / "notifications").glob("*.json"))
+        data = json.loads(path.read_text())
+        assert data["context"]["error_id"] in data["text"]
+        assert not (settings.runtime_dir / "STOP").exists()
+        assert not journal.unresolved() and controller.spent == 0
+    finally:
+        journal.close()
+
+
+async def test_stop_interrupts_long_countdown(settings, state):
+    journal = Journal(settings.runtime_dir)
+    controller = Controller(None, settings, journal, journal.start(settings))
+
+    async def stop():
+        await asyncio.sleep(0.01)
+        (settings.runtime_dir / "STOP").touch()
+
+    task = asyncio.create_task(stop())
+    with pytest.raises(StopRequested):
+        await asyncio.wait_for(controller.wait(100), 1)
+    await task
+    journal.close()
+
+
+@pytest.mark.parametrize("server_now", ["2026-11-12T14:59:55+00:00", "2026-11-12T21:59:55+00:00"])
+@pytest.mark.parametrize("auto", [True, False])
+async def test_wait_rechecks_at_sleep_boundary_using_server_clock_and_snapshot_age(
+    settings, state, monkeypatch, server_now, auto
+):
+    clock = 100
+    monkeypatch.setattr(
+        "app.modules.worker.controller.time", SimpleNamespace(monotonic=lambda: clock)
+    )
+    state = state.model_copy(
+        update={
+            "observed_at": datetime.fromisoformat(server_now),
+            "sleep_schedule": SleepSchedule(auto=auto, start=1320, end=300, in_schedule=False),
+        }
+    )
+    ui = SimpleNamespace(snapshot=AsyncMock(return_value=state))
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        await controller.read_snapshot()
+        clock += 3
+
+        async def advance(seconds):
+            nonlocal clock
+            clock += seconds
+
+        monkeypatch.setattr("app.modules.worker.controller.asyncio.sleep", advance)
+        await controller.wait(10)
+        assert clock == (105 if auto else 113)
+        status = json.loads((settings.runtime_dir / "status.json").read_text())
+        assert status["seconds"] == (2 if auto else 10)
+    finally:
+        journal.close()
+
+
+async def test_worker_pauses_before_game_calls_and_resumes(settings, state, monkeypatch):
+    clock = datetime.fromisoformat("2026-11-12T00:29+07:00")
+    monkeypatch.setattr("app.modules.worker.maintenance.now", lambda: clock)
+    window = MaintenanceWindow.parse("2026-11-12 00:30 / 2026-11-12 01:30")
+    ui = SimpleNamespace(snapshot=AsyncMock(return_value=state))
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        write_private(controller.maintenance_file, window.payload())
+
+        async def advance(seconds):
+            nonlocal clock
+            ui.snapshot.assert_not_awaited()
+            assert controller.stage == "maintenance"
+            clock = window.end
+
+        monkeypatch.setattr("app.modules.worker.controller.asyncio.sleep", advance)
+        await controller.run(dry_run=True)
+        ui.snapshot.assert_awaited_once()
+        assert controller.last_event == "dry_run"
+        notices = [
+            json.loads(path.read_text())
+            for path in sorted((settings.runtime_dir / "notifications").glob("*.json"))
+        ]
+        assert [notice["context"]["event"] for notice in notices] == [
+            "maintenance",
+            "maintenance_selesai",
+        ]
+    finally:
+        journal.close()
+
+
+async def test_needs_only_worker_skips_disabled_need_and_all_ojol_actions(
+    settings, state, shop_preview
+):
+    set_auto_flag(settings.runtime_dir, "ojol", False)
+    set_auto_flag(settings.runtime_dir, "makan", False)
+    before = state.model_copy(update={"fuel": 1, "needs": {"makan": 1, "kesehatan": 45}})
+    after = before.model_copy(
+        update={"wallet": before.wallet - Decimal("0.5"), "needs": {"makan": 1, "kesehatan": 65}}
+    )
+    product = Product(
+        name="Obat", price="0.5", effects={"kesehatan": 20}, row_text="fixture", enabled=True
+    )
+    shop = shop_preview([product]).model_copy(update={"name": "Akademis.ai Farma"})
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[before, after, after]),
+        preview_shops=AsyncMock(return_value=[shop]),
+        buy=AsyncMock(),
+        job_click=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.wait = AsyncMock(side_effect=StopRequested("selesai fixture"))
+        with pytest.raises(StopRequested):
+            await controller.run()
+        ui.preview_shops.assert_awaited_once_with("kesehatan")
+        ui.buy.assert_awaited_once()
+        ui.job_click.assert_not_awaited()
+        assert journal.history()["actions"][0]["status"] == "verified"
+    finally:
+        journal.close()
+
+
+async def test_worker_auto_ojol_maintenance_allows_needs_purchases_and_skips_ojol_actions(
+    settings, state, shop_preview
+):
+    set_auto_flag(settings.runtime_dir, "ojol", True)
+    set_auto_flag(settings.runtime_dir, "makan", True)
+    before = state.model_copy(update={"fuel": 5, "needs": {"makan": 30}})
+    after = before.model_copy(
+        update={"wallet": before.wallet - Decimal("0.8"), "needs": {"makan": 70}}
+    )
+    product = Product(
+        name="Nasi bungkus",
+        price="0.8",
+        effects={"makan": 40},
+        row_text="makan fixture",
+        enabled=True,
+    )
+    shop = shop_preview([product]).model_copy(update={"name": "Akademis.ai Warung"})
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[before, after, after]),
+        preview_shops=AsyncMock(return_value=[shop]),
+        buy=AsyncMock(),
+        job_click=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        # Set manual maintenance for Auto Ojol
+        write_private(
+            controller.maintenance_file,
+            MaintenanceWindow.create_manual(target="ojol").payload(),
+        )
+        controller.wait = AsyncMock(side_effect=StopRequested("selesai maintenance test"))
+        with pytest.raises(StopRequested):
+            await controller.run()
+        # Makan is purchased even though Auto Ojol is under maintenance
+        ui.preview_shops.assert_awaited_once_with("makan")
+        ui.buy.assert_awaited_once()
+        # Ojol actions (trips / jobs) are not called
+        ui.job_click.assert_not_awaited()
+        assert journal.history()["actions"][0]["status"] == "verified"
+    finally:
+        journal.close()
+
+
+async def test_worker_auto_kesehatan_bpjs_priority_then_medicine_fallback(
+    settings, state, shop_preview
+):
+    set_auto_flag(settings.runtime_dir, "ojol", False)
+    set_auto_flag(settings.runtime_dir, "kesehatan", True)
+
+    s1 = state.model_copy(update={"wallet": Decimal("35"), "needs": {"kesehatan": 40}})
+    s2 = state.model_copy(update={"wallet": Decimal("35"), "needs": {"kesehatan": 55}})
+    s3 = state.model_copy(update={"wallet": Decimal("33.5"), "needs": {"kesehatan": 80}})
+
+    puskesmas_prod = Product(
+        name="Periksa tensi", price="0", effects={"kesehatan": 15}, row_text="p1", enabled=True
+    )
+    puskesmas_shop = shop_preview([puskesmas_prod]).model_copy(
+        update={"name": "Puskesmas Desa", "category": "fasum"}
+    )
+
+    obat_prod = Product(
+        name="Obat flu", price="1.5", effects={"kesehatan": 25}, row_text="p2", enabled=True
+    )
+    farma_shop = shop_preview([obat_prod]).model_copy(
+        update={"name": "Akademis.ai Farma", "category": "toko-obat"}
+    )
+
+    preview_calls = []
+
+    async def mock_preview(res):
+        preview_calls.append(res)
+        if len(preview_calls) == 1:
+            return [puskesmas_shop]
+        return [farma_shop]
+
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[s1, s2, s2, s3, s3]),
+        preview_shops=AsyncMock(side_effect=mock_preview),
+        buy=AsyncMock(),
+        job_click=AsyncMock(),
+        ensure_bpjs=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.wait = AsyncMock(side_effect=StopRequested("selesai fixture"))
+        with pytest.raises(StopRequested):
+            await controller.run()
+        assert ui.ensure_bpjs.call_count >= 1
+        assert preview_calls == ["kesehatan", "kesehatan"]
+        assert ui.buy.call_count == 2
+        assert ui.buy.call_args_list[0].args[0].name == "Periksa tensi"
+        assert ui.buy.call_args_list[1].args[0].name == "Obat flu"
+    finally:
+        journal.close()
+
+
+async def test_worker_waits_without_game_calls_until_auto_is_reenabled(settings, state):
+    for key in AUTO_LABELS:
+        set_auto_flag(settings.runtime_dir, key, False)
+    ui = SimpleNamespace(snapshot=AsyncMock(return_value=state))
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+
+        async def enable_during_wait(seconds):
+            ui.snapshot.assert_not_awaited()
+            set_auto_flag(settings.runtime_dir, "makan", True)
+            controller.wait = AsyncMock(side_effect=StopRequested("selesai fixture"))
+
+        controller.wait = enable_during_wait
+        with pytest.raises(StopRequested):
+            await controller.run()
+        ui.snapshot.assert_awaited_once()
+    finally:
+        journal.close()
+
+
+async def test_purchase_does_not_start_if_maintenance_begins_during_preview(
+    settings, state, shop_preview, monkeypatch
+):
+    clock = datetime.fromisoformat("2026-11-12T00:27:59+07:00")
+    monkeypatch.setattr("app.modules.worker.maintenance.now", lambda: clock)
+    window = MaintenanceWindow.parse("2026-11-12 00:30 / 2026-11-12 01:30")
+    product = Product(
+        name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
+    )
+
+    async def preview(resource):
+        nonlocal clock
+        clock = datetime.fromisoformat("2026-11-12T00:28:00+07:00")
+        return [shop_preview([product])]
+
+    ui = SimpleNamespace(preview_shops=preview, buy=AsyncMock())
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        write_private(controller.maintenance_file, window.payload())
+        assert await controller.purchase(state, "data") is False
+        ui.buy.assert_not_awaited()
+        assert journal.history()["actions"] == []
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("sleep_during_verification", [False, True])
+async def test_trip_completion_verified_only_after_history_change(
+    settings, state, sleep_during_verification
+):
+    before = state.model_copy(update={"phase": "complete", "buttons": ["✅ Sampai! Terima ongkos"]})
+    after = state.model_copy(update={"history": ["17.30 trip fixture · +0,72", *state.history]})
+    snapshots = (
+        [after.model_copy(update={"phase": "sleeping"}), after]
+        if sleep_during_verification
+        else [after]
+    )
+    ui = SimpleNamespace(job_click=AsyncMock(), snapshot=AsyncMock(side_effect=snapshots))
+    journal = Journal(settings.runtime_dir)
+    controller = Controller(ui, settings, journal, journal.start(settings))
+    controller.wait = AsyncMock()
+    await controller.job_action(before, "complete")
+    ui.job_click.assert_awaited_once()
+    assert controller.wait.await_count == int(sleep_during_verification)
+    assert controller.completed == 1
+    assert journal.history()["actions"][0]["status"] == "verified"
+    journal.close()
+
+
+@pytest.mark.parametrize("kind", ["search", "complete"])
+async def test_job_sleep_preflight_rejection_waits_without_uncertain_action(settings, state, kind):
+    before = state.model_copy(
+        update={
+            "phase": "complete" if kind == "complete" else "idle",
+            "buttons": ["✅ Sampai! Terima ongkos" if kind == "complete" else "📲 Cari order"],
+        }
+    )
+    asleep = before.model_copy(update={"phase": "sleeping"})
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[asleep, before]),
+        job_click=AsyncMock(
+            side_effect=HttpCoreError("Karakter sedang tidur", category="sleeping")
+        ),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.wait = AsyncMock()
+        await controller.job_action(before, kind)
+        ui.job_click.assert_awaited_once()
+        controller.wait.assert_awaited_once()
+        assert controller.state is before and controller.completed == 0
+        assert journal.history()["actions"][0]["status"] == "rejected"
+        assert not journal.unresolved()
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("ojol_enabled", [True, False])
+async def test_sleeping_worker_pauses_all_auto_then_resumes(settings, state, ojol_enabled):
+    set_auto_flag(settings.runtime_dir, "ojol", ojol_enabled)
+    awake = state.model_copy(update={"data": 80, "needs": {"makan": 5}})
+    asleep = state.model_copy(update={"phase": "sleeping", "needs": {"makan": 5}})
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[asleep, asleep, awake, awake]),
+        preview_shops=AsyncMock(),
+        job_click=AsyncMock(),
+        buy=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        purchase = AsyncMock(side_effect=StopRequested("lanjut setelah bangun"))
+        controller.purchase = purchase
+
+        async def sleeping_wait(seconds):
+            assert seconds == settings.idle_poll_seconds
+            assert not journal.history()["actions"]
+            ui.preview_shops.assert_not_awaited()
+            ui.buy.assert_not_awaited()
+            ui.job_click.assert_not_awaited()
+            purchase.assert_not_awaited()
+            notices = [
+                json.loads(path.read_text())
+                for path in (settings.runtime_dir / "notifications").glob("*.json")
+            ]
+            assert len(notices) == 1
+            assert notices[0]["context"]["event"] == "tidur_mulai"
+
+        controller.wait = AsyncMock(side_effect=sleeping_wait)
+        with pytest.raises(StopRequested, match="lanjut setelah bangun"):
+            await controller.run(auto_start=True)
+        assert controller.wait.await_count == 2
+        events = [
+            json.loads(path.read_text())["context"].get("event")
+            for path in (settings.runtime_dir / "notifications").glob("*.json")
+        ]
+        assert events.count("tidur_mulai") == events.count("bangun") == 1
+        controller.purchase.assert_awaited_once_with(awake, "makan")
+        ui.job_click.assert_not_awaited()
+        ui.buy.assert_not_awaited()
+    finally:
+        journal.close()
+
+
+async def test_sleep_freezes_session_verification_and_activity_timers(settings, state, monkeypatch):
+    clock = 0
+    monkeypatch.setattr(
+        "app.modules.worker.controller.time", SimpleNamespace(monotonic=lambda: clock)
+    )
+    asleep = state.model_copy(update={"phase": "sleeping"})
+    ui = SimpleNamespace(snapshot=AsyncMock(side_effect=[asleep, asleep, state]))
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.trip_due = 20
+        controller.busy_since = 1
+        controller.need_retry_at = {"makan": 100}
+
+        async def advance(seconds):
+            nonlocal clock
+            clock += 3600
+            controller.check_cancel()
+
+        controller.wait = AsyncMock(side_effect=advance)
+        assert await controller.verify(lambda snapshot: snapshot.phase == "idle") is state
+        assert controller.started == 7200
+        assert controller.trip_due == 7220
+        assert controller.busy_since == 7201
+        assert controller.need_retry_at == {"makan": 7300}
+        assert controller.sleep_started is None
+        controller.check_cancel()
+        clock += settings.max_minutes * 60
+        with pytest.raises(StopRequested, match="durasi"):
+            controller.check_cancel()
+    finally:
+        journal.close()
+
+
+async def test_stop_still_interrupts_sleep_without_gameplay(settings, state):
+    asleep = state.model_copy(update={"phase": "sleeping"})
+    ui = SimpleNamespace(snapshot=AsyncMock(return_value=asleep), job_click=AsyncMock())
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+
+        async def stop():
+            await asyncio.sleep(0.01)
+            (settings.runtime_dir / "STOP").touch()
+
+        task = asyncio.create_task(stop())
+        try:
+            with pytest.raises(StopRequested, match="pengguna"):
+                await asyncio.wait_for(controller.run(), 1)
+        finally:
+            await task
+        ui.snapshot.assert_awaited_once()
+        ui.job_click.assert_not_awaited()
+        assert not journal.history()["actions"]
+        status = json.loads((settings.runtime_dir / "status.json").read_text())
+        assert status["stage"] == "sleeping" and status["event"] == "tidur"
+    finally:
+        journal.close()
+
+
+async def test_purchase_verification_waits_through_sleep_without_repeating_buy(
+    settings, state, shop_preview
+):
+    product = Product(
+        name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
+    )
+    after = state.model_copy(update={"wallet": state.wallet - Decimal("0.5"), "data": 86})
+    asleep = after.model_copy(update={"phase": "sleeping"})
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[asleep, asleep, after]),
+        preview_shops=AsyncMock(return_value=[shop_preview([product])]),
+        buy=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+
+        async def sleep_wait(seconds):
+            assert journal.history()["actions"][0]["status"] == "pending"
+            ui.buy.assert_awaited_once()
+
+        controller.wait = AsyncMock(side_effect=sleep_wait)
+        assert await controller.purchase(state, "data")
+        ui.buy.assert_awaited_once()
+        assert journal.history()["actions"][0]["status"] == "verified"
+        assert controller.spent == Decimal("0.5")
+    finally:
+        journal.close()
+
+
+async def test_search_accepts_in_progress_once_without_repeating_click(settings, state):
+    before = state.model_copy(update={"buttons": ["📲 Cari order"]})
+    searching = before.model_copy(update={"phase": "searching", "buttons": ["⏳ Mencari…"]})
+    ui = SimpleNamespace(snapshot=AsyncMock(return_value=searching), job_click=AsyncMock())
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        await controller.job_action(before, "search")
+        ui.job_click.assert_awaited_once_with("📲 Cari order")
+        ui.snapshot.assert_awaited_once()
+        assert journal.history()["actions"][0]["status"] == "verified"
+        assert controller.observed_state.phase == "searching"
+    finally:
+        journal.close()
+
+
+async def test_dry_run_never_performs_gameplay(settings, state):
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(return_value=state), buy=AsyncMock(), job_click=AsyncMock()
+    )
+    journal = Journal(settings.runtime_dir)
+    controller = Controller(ui, settings, journal, journal.start(settings))
+    await controller.run(dry_run=True)
+    ui.buy.assert_not_called()
+    ui.job_click.assert_not_called()
+    assert journal.history()["actions"] == []
+    journal.close()
+
+
+def test_cli_live_and_http_blocked_in_testing(settings, monkeypatch, capsys):
+    monkeypatch.setenv("OJOL_RUNTIME_DIR", str(settings.runtime_dir))
+    assert main(["--env-file", str(ROOT / ".env.testing"), "run", "--live"]) == 2
+    assert "izin operator" in capsys.readouterr().err
+    assert main(["--env-file", str(ROOT / ".env.testing"), "inspect"]) == 2
+    assert "diblokir" in capsys.readouterr().err
+    assert main(["--env-file", str(ROOT / ".env.testing"), "cleanup-scan"]) == 2
+    assert "diblokir" in capsys.readouterr().err
+
+
+async def test_complete_loop_maintains_searches_waits_and_claims(settings, state, shop_preview):
+    settings = settings.model_copy(update={"max_jobs": 1})
+    product = Product(
+        name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="fixture", enabled=True
+    )
+    replenished = state.model_copy(update={"wallet": state.wallet - Decimal("0.5"), "data": 86})
+    delivering = replenished.model_copy(
+        update={
+            "phase": "delivering",
+            "remaining_seconds": 2,
+            "trip": "Trip fixture",
+            "buttons": ["🛵 Mengantar… 0:02"],
+        }
+    )
+    complete = delivering.model_copy(
+        update={
+            "phase": "complete",
+            "remaining_seconds": 0,
+            "buttons": ["✅ Sampai! Terima ongkos"],
+        }
+    )
+    finished = replenished.model_copy(
+        update={
+            "wallet": replenished.wallet + Decimal("0.72"),
+            "history": ["18.01 trip fixture · +0,72", *state.history],
+        }
+    )
+    ui = SimpleNamespace(
+        preview_shops=AsyncMock(return_value=[shop_preview([product])]),
+        buy=AsyncMock(),
+        job_click=AsyncMock(),
+        snapshot=AsyncMock(
+            side_effect=[
+                state,
+                replenished,
+                replenished,
+                delivering,
+                delivering,
+                complete,
+                finished,
+                finished,
+            ]
+        ),
+    )
+    journal = Journal(settings.runtime_dir)
+    controller = Controller(ui, settings, journal, journal.start(settings))
+    controller.wait = AsyncMock()
+    with pytest.raises(StopRequested, match="jumlah trip"):
+        await controller.run()
+    assert ui.buy.await_count == 1 and ui.job_click.await_count == 2
+    controller.wait.assert_awaited_once()
+    assert controller.wait.call_args.args[0] > 2
+    assert controller.spent == Decimal("0.5") and controller.completed == 1
+    assert all(row["status"] == "verified" for row in journal.history()["actions"])
+    journal.close()
+
+
+async def test_capacity_deferral_checks_next_resource_on_same_snapshot(
+    settings, state, shop_preview
+):
+    state = state.model_copy(update={"fuel": 45})
+    fuel = Product(
+        name="Isi Pertalite", price="0.5", effects={"fuel": 60}, row_text="fuel", enabled=True
+    )
+    data = Product(
+        name="Isi pulsa", price="0.5", effects={"data": 40}, row_text="data", enabled=True
+    )
+    after = state.model_copy(update={"wallet": state.wallet - Decimal("0.5"), "data": 86})
+    ui = SimpleNamespace(
+        preview_shops=AsyncMock(side_effect=[[shop_preview([fuel])], [shop_preview([data])]]),
+        buy=AsyncMock(),
+        snapshot=AsyncMock(side_effect=[state, after, StopRequested("done")]),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        with pytest.raises(StopRequested, match="done"):
+            await controller.run()
+        assert [call.args for call in ui.preview_shops.await_args_list] == [("fuel",), ("data",)]
+        ui.buy.assert_awaited_once_with(data, state.wallet, state.data, settings.min_balance)
+        assert len(journal.history()["actions"]) == 1
+    finally:
+        journal.close()
+
+
+async def test_unavailable_data_after_fuel_deferral_still_searches(settings, state, shop_preview):
+    settings = settings.model_copy(update={"max_spend": None, "min_balance": Decimal(20)})
+    state = state.model_copy(
+        update={
+            "wallet": Decimal("89.007"),
+            "fuel": 37,
+            "condition": 69,
+            "data": 53,
+            "ojol_vehicle": "mobil",
+        }
+    )
+    fuel = Product(
+        name="Isi daya SPKLU (mobil listrik)",
+        price="0.8",
+        effects={"fuel": 70},
+        row_text="fuel",
+        enabled=True,
+    )
+    searching = state.model_copy(update={"phase": "searching"})
+    ui = SimpleNamespace(
+        preview_shops=AsyncMock(side_effect=[[shop_preview([fuel])], []]),
+        buy=AsyncMock(),
+        job_click=AsyncMock(),
+        snapshot=AsyncMock(side_effect=[state, searching, StopRequested("done")]),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        with pytest.raises(StopRequested, match="done"):
+            await controller.run()
+        assert [call.args for call in ui.preview_shops.await_args_list] == [("fuel",), ("data",)]
+        ui.buy.assert_not_awaited()
+        ui.job_click.assert_awaited_once_with("🔎 Cari order")
+        actions = journal.history()["actions"]
+        assert len(actions) == 1
+        assert actions[0]["kind"] == "search" and actions[0]["status"] == "verified"
+    finally:
+        journal.close()
+
+
+@pytest.mark.parametrize("resource", ["fuel", "condition", "data"])
+@pytest.mark.parametrize("above_reserve", [False, True])
+@pytest.mark.parametrize("unavailable", ["empty", "sold_out", "cash_reserve", "budget"])
+async def test_unavailable_refill_defers_only_above_resource_reserve(
+    settings, state, shop_preview, resource, above_reserve, unavailable
+):
+    current = settings.resource_reserve_percent + int(above_reserve)
+    state = state.model_copy(update={resource: current})
+    names = {"fuel": "Isi Pertalite", "condition": "Servis motor", "data": "Isi pulsa"}
+    product = Product(
+        name=names[resource],
+        price="100" if unavailable == "cash_reserve" else "0.5",
+        effects={resource: 40},
+        row_text="fixture",
+        enabled=unavailable != "sold_out",
+    )
+    if unavailable == "budget":
+        settings = settings.model_copy(update={"max_spend": Decimal(0)})
+    ui = SimpleNamespace(
+        preview_shops=AsyncMock(
+            return_value=[] if unavailable == "empty" else [shop_preview([product])]
+        ),
+        buy=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        if above_reserve:
+            assert await controller.purchase(state, resource) is False
+            assert controller.last_event == "isi_ulang_ditunda"
+            status = json.loads((settings.runtime_dir / "status.json").read_text())
+            assert status["reason"] == (
+                "Tidak ada pembelian layak; resource masih di atas batas cadangan"
+            )
+        else:
+            with pytest.raises(RuntimeError, match="Tidak ada pembelian"):
+                await controller.purchase(state, resource)
+        ui.buy.assert_not_awaited()
+        assert journal.history()["actions"] == []
+        assert controller.spent == 0
+    finally:
+        journal.close()
+
+
+async def test_cancel_before_purchase_sends_nothing(settings, state):
+    ui = SimpleNamespace(preview_shops=AsyncMock(), buy=AsyncMock())
+    journal = Journal(settings.runtime_dir)
+    cancel = asyncio.Event()
+    cancel.set()
+    controller = Controller(ui, settings, journal, journal.start(settings), cancel)
+    with pytest.raises(StopRequested):
+        await controller.purchase(state, "data")
+    ui.preview_shops.assert_not_awaited()
+    ui.buy.assert_not_awaited()
+    assert not journal.history()["actions"]
+    journal.close()
+
+
+def test_status_shows_elapsed_countdown_in_wib(settings, monkeypatch, capsys):
+    from datetime import timedelta
+
+    from app import cli
+    from app.core.models import now
+
+    moment = now()
+    (settings.runtime_dir / "status.json").write_text(
+        json.dumps(
+            {"event": "menunggu", "wait_until": (moment + timedelta(seconds=90)).isoformat()}
+        )
+    )
+    monkeypatch.setenv("OJOL_RUNTIME_DIR", str(settings.runtime_dir))
+    monkeypatch.setattr(cli, "running", lambda _: True)
+    monkeypatch.setattr(cli, "now", lambda: moment)
+    assert main(["--env-file", str(ROOT / ".env.testing"), "status"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["countdown_estimate"] == "1:30"
+    assert output["wait_until_wib"].endswith("+07:00")
+
+
+async def test_stuck_search_stops_without_clicking_again(settings, state):
+    import time
+
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(return_value=state.model_copy(update={"phase": "searching"})),
+        job_click=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    controller = Controller(ui, settings, journal, journal.start(settings))
+    controller.busy_since = time.monotonic() - 31
+    with pytest.raises(RuntimeError, match="30 detik"):
+        await controller.run()
+    ui.job_click.assert_not_awaited()
+    assert not journal.history()["actions"]
+    journal.close()
+
+
+async def test_unlimited_run_passes_old_trip_and_duration_limits_but_manual_stop_works(
+    settings, state
+):
+    import time
+
+    from app.core.models import Settings
+
+    assert Settings().max_jobs is None and Settings().max_minutes is None
+    assert Settings(max_jobs="", max_minutes="").max_jobs is None
+    unlimited = settings.model_copy(update={"max_jobs": None, "max_minutes": None})
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(
+            return_value=state.model_copy(update={"fuel": 100, "condition": 100, "data": 100})
+        )
+    )
+    journal = Journal(settings.runtime_dir)
+    controller = Controller(ui, unlimited, journal, journal.start(unlimited))
+    controller.started = time.monotonic() - 100 * 86400
+    controller.completed = 100000
+    controller.check_cancel()
+    controller.job_action = AsyncMock(side_effect=StopRequested("reached next order"))
+    with pytest.raises(StopRequested, match="reached next order"):
+        await controller.run()
+    controller.job_action.assert_awaited_once()
+    (settings.runtime_dir / "STOP").touch()
+    with pytest.raises(StopRequested, match="Dihentikan pengguna"):
+        controller.check_cancel()
+    journal.close()
+
+
+def test_explicit_duration_limit_still_supported_for_isolated_checks(settings):
+    import time
+
+    journal = Journal(settings.runtime_dir)
+    controller = Controller(
+        None, settings.model_copy(update={"max_minutes": 1}), journal, journal.start(settings)
+    )
+    controller.started = time.monotonic() - 61
+    with pytest.raises(StopRequested, match="Batas durasi"):
+        controller.check_cancel()
+    journal.close()
+
+
+def test_background_start_omits_unlimited_flags(settings, monkeypatch):
+    from unittest.mock import Mock
+
+    from app import cli
+    from app.core.models import ROOT
+
+    unlimited = settings.model_copy(
+        update={"env": "local", "operator_authorized": True, "max_jobs": None, "max_minutes": None}
+    )
+    monkeypatch.setattr(cli, "load_settings", lambda path: unlimited)
+    launch = Mock(return_value=SimpleNamespace(pid=12345, poll=lambda: None))
+    monkeypatch.setattr(cli.subprocess, "Popen", launch)
+    monkeypatch.setattr(cli.time, "sleep", lambda seconds: None)
+    assert cli.main(["--env-file", str(ROOT / ".env.testing"), "start", "--live"]) == 0
+    command = launch.call_args.args[0]
+    assert "--max-jobs" not in command and "--max-minutes" not in command and "None" not in command
+
+
+def test_start_error_does_not_inherit_previous_process_verification_stage(settings, monkeypatch):
+    import app.cli as cli
+    import app.modules.worker.runner as app
+
+    isolated = settings.model_copy(update={"env": "local"})
+    (settings.runtime_dir / "status.json").write_text(
+        json.dumps({"pid": -1, "event": "gagal", "stage": "job.complete.verify", "run_id": 1})
+    )
+    monkeypatch.setattr(cli, "load_settings", lambda path: isolated)
+    monkeypatch.setattr(
+        app, "run_app", AsyncMock(side_effect=RuntimeError("Aksi belum terverifikasi"))
+    )
+    assert cli.main(["--env-file", str(ROOT / ".env.testing"), "run"]) == 2
+    error = json.loads((settings.runtime_dir / "last-error.json").read_text())
+    assert error["stage"] == "cli.run"
+
+
+@pytest.mark.parametrize("command", ["inspect", "doctor", "reconcile", "start", "run"])
+def test_cli_lock_conflict_notifies_without_stopping_existing_worker(
+    settings, monkeypatch, command
+):
+    import app.cli as cli
+    import app.modules.worker.runner as app
+    from app.modules.accounts.repository import Accounts
+
+    local = settings.model_copy(update={"env": "local", "operator_authorized": True})
+    registry = Accounts(local)
+    from tests.conftest import seed_legacy_account
+
+    account = seed_legacy_account(registry)
+    directory = registry.scoped_settings(account).runtime_dir
+    original_status = json.dumps(
+        {"pid": -1, "run_id": 31, "event": "observasi", "last_action": {"action_id": 1946}}
+    )
+    (directory / "status.json").write_text(original_status)
+    monkeypatch.setattr(cli, "load_settings", lambda path: local)
+    run_app = AsyncMock()
+    monkeypatch.setattr(app, "run_app", run_app)
+    args = ["--env-file", str(ROOT / ".env.testing"), "--account", account["id"], command]
+    if command in {"run", "start"}:
+        args.append("--live")
+    with exclusive_lock(directory):
+        assert cli.main(args) == 2
+        assert running(directory)
+        assert not (directory / "STOP").exists()
+    run_app.assert_not_awaited()
+    details = json.loads((directory / "last-error.json").read_text())
+    assert details["fatal"] is False
+    assert details["stage"] == f"cli.{command}"
+    assert details["account_id"] == account["id"]
+    assert details.get("last_action") is None and details.get("run_id") is None
+    assert (directory / "status.json").read_text() == original_status
+    path = next((directory / "notifications").glob("*.json"))
+    assert details["error_id"] in json.loads(path.read_text())["text"]
+
+
+@pytest.mark.parametrize("live", [False, True])
+def test_cli_failure_only_stops_its_own_live_run(settings, monkeypatch, live):
+    import app.cli as cli
+    import app.modules.worker.runner as app
+
+    local = settings.model_copy(update={"env": "local", "operator_authorized": True})
+    monkeypatch.setattr(cli, "load_settings", lambda path: local)
+    monkeypatch.setattr(app, "run_app", AsyncMock(side_effect=RuntimeError("fixture failure")))
+    args = ["--env-file", str(ROOT / ".env.testing"), "run"]
+    if live:
+        args.append("--live")
+    assert cli.main(args) == 2
+    assert (settings.runtime_dir / "STOP").exists() is live
+    details = json.loads((settings.runtime_dir / "last-error.json").read_text())
+    assert details["fatal"] is live
+
+
+async def test_observation_failure_after_verified_claim_does_not_reopen_or_repeat_claim(
+    settings, state
+):
+    before = state.model_copy(update={"phase": "complete", "buttons": ["✅ Sampai! Terima ongkos"]})
+    paid = state.model_copy(
+        update={
+            "history": ["23.03 A → B · +0,401", *before.history],
+            "wallet": before.wallet + Decimal("0.401"),
+        }
+    )
+    failure = HttpCoreError("Pembacaan HTTP timeout", category="transport")
+    ui = SimpleNamespace(
+        job_click=AsyncMock(), snapshot=AsyncMock(side_effect=[before, paid, failure])
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        with pytest.raises(HttpCoreError):
+            await controller.run()
+        ui.job_click.assert_awaited_once()
+        assert journal.history()["actions"][0]["status"] == "verified"
+        assert journal.profit()["pendapatan_ojol"] == "0.401"
+        assert journal.profit()["trip_tercatat"] == 1
+        assert journal.start(settings) > controller.run_id
+    finally:
+        journal.close()
+
+
+async def test_ojol_failure_keeps_auto_kebutuhan_running(settings, state, shop_preview):
+    from app.modules.worker.settings import auto_flags, set_auto_flag
+
+    set_auto_flag(settings.runtime_dir, "ojol", True)
+    set_auto_flag(settings.runtime_dir, "makan", True)
+
+    before_search = state.model_copy(
+        update={
+            "phase": "idle",
+            "buttons": ["📲 Cari order"],
+            "needs": {"makan": 30},
+            "fuel": 80,
+            "condition": 80,
+            "data": 80,
+        }
+    )
+    after_makan = before_search.model_copy(
+        update={
+            "wallet": before_search.wallet - Decimal("0.8"),
+            "needs": {"makan": 80},
+        }
+    )
+
+    product = Product(
+        name="Nasi bungkus",
+        price="0.8",
+        effects={"makan": 50},
+        row_text="makan row",
+        enabled=True,
+    )
+    shop = shop_preview([product]).model_copy(update={"name": "Akademis.ai Warung"})
+
+    snap_calls = 0
+
+    async def dynamic_snapshot():
+        nonlocal snap_calls
+        snap_calls += 1
+        if snap_calls <= 2:
+            return before_search
+        return after_makan
+
+    ui = SimpleNamespace(
+        snapshot=dynamic_snapshot,
+        preview_shops=AsyncMock(return_value=[shop]),
+        buy=AsyncMock(),
+        job_click=AsyncMock(side_effect=RuntimeError("Gagal klik job Ojol")),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.wait = AsyncMock(side_effect=StopRequested("selesai test kebutuhan"))
+
+        # Controller.run should not crash; it should catch Ojol failure, disable Auto Ojol,
+        # and continue running Auto Kebutuhan (makan).
+        with pytest.raises(StopRequested):
+            await controller.run()
+
+        # Ojol failed on job_click
+        ui.job_click.assert_awaited_once()
+        # But makan purchase still proceeded!
+        ui.preview_shops.assert_awaited_once_with("makan")
+        ui.buy.assert_awaited_once()
+        # And Auto Ojol flag was turned OFF while Auto Makan remained ON
+        flags = auto_flags(settings.runtime_dir)
+        assert flags["ojol"] is False
+        assert flags["makan"] is True
+    finally:
+        journal.close()
+
+
+async def test_ojol_stop_step_keeps_auto_kebutuhan_running(settings, state, shop_preview):
+    from app.modules.worker.settings import auto_flags, set_auto_flag
+
+    set_auto_flag(settings.runtime_dir, "ojol", True)
+    set_auto_flag(settings.runtime_dir, "makan", True)
+
+    # State with unknown buttons so next_step returns step.action == "stop"
+    state_unknown = state.model_copy(
+        update={
+            "phase": "idle",
+            "buttons": ["Tombol aneh yang tidak dikenal"],
+            "needs": {"makan": 30},
+            "fuel": 80,
+            "condition": 80,
+            "data": 80,
+        }
+    )
+    after_makan = state_unknown.model_copy(
+        update={
+            "wallet": state_unknown.wallet - Decimal("0.8"),
+            "needs": {"makan": 80},
+        }
+    )
+
+    product = Product(
+        name="Nasi padang",
+        price="0.8",
+        effects={"makan": 50},
+        row_text="makan row",
+        enabled=True,
+    )
+    shop = shop_preview([product]).model_copy(update={"name": "Akademis.ai Resto"})
+
+    snap_calls = 0
+
+    async def dynamic_snapshot():
+        nonlocal snap_calls
+        snap_calls += 1
+        if snap_calls <= 2:
+            return state_unknown
+        return after_makan
+
+    ui = SimpleNamespace(
+        snapshot=dynamic_snapshot,
+        preview_shops=AsyncMock(return_value=[shop]),
+        buy=AsyncMock(),
+        job_click=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.wait = AsyncMock(side_effect=StopRequested("selesai stop step test"))
+
+        with pytest.raises(StopRequested):
+            await controller.run()
+
+        # Makan purchase succeeded
+        ui.preview_shops.assert_awaited_once_with("makan")
+        ui.buy.assert_awaited_once()
+        flags = auto_flags(settings.runtime_dir)
+        assert flags["ojol"] is False
+        assert flags["makan"] is True
+    finally:
+        journal.close()
+
+
+async def test_ojol_refill_failure_keeps_auto_kebutuhan_running(settings, state, shop_preview):
+    from app.modules.worker.settings import auto_flags, set_auto_flag
+
+    set_auto_flag(settings.runtime_dir, "ojol", True)
+    set_auto_flag(settings.runtime_dir, "makan", True)
+
+    before_refill = state.model_copy(
+        update={
+            "phase": "idle",
+            "data": 10,  # Below reserve (maintain triggered for data)
+            "fuel": 80,
+            "condition": 80,
+            "needs": {"makan": 30},
+        }
+    )
+    after_makan = before_refill.model_copy(
+        update={
+            "wallet": before_refill.wallet - Decimal("0.8"),
+            "needs": {"makan": 80},
+        }
+    )
+
+    product = Product(
+        name="Nasi bungkus",
+        price="0.8",
+        effects={"makan": 50},
+        row_text="makan row",
+        enabled=True,
+    )
+    makan_shop = shop_preview([product]).model_copy(update={"name": "Akademis.ai Warung"})
+
+    snap_calls = 0
+
+    async def dynamic_snapshot():
+        nonlocal snap_calls
+        snap_calls += 1
+        if snap_calls <= 2:
+            return before_refill
+        return after_makan
+
+    async def dynamic_preview(resource):
+        if resource == "data":
+            return []  # No data product available (triggers refill failure)
+        return [makan_shop]
+
+    ui = SimpleNamespace(
+        snapshot=dynamic_snapshot,
+        preview_shops=AsyncMock(side_effect=dynamic_preview),
+        buy=AsyncMock(),
+        job_click=AsyncMock(),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.wait = AsyncMock(side_effect=StopRequested("selesai refill failure test"))
+
+        with pytest.raises(StopRequested):
+            await controller.run()
+
+        # Data failed to refill, which disabled Auto Ojol
+        flags = auto_flags(settings.runtime_dir)
+        assert flags["ojol"] is False
+        assert flags["makan"] is True
+
+        # But Auto Kebutuhan (makan) still proceeded and bought food!
+        ui.buy.assert_awaited_once()
+    finally:
+        journal.close()
+
+
+async def test_need_purchase_and_reconcile_with_tolerance_and_free_action(settings, state):
+    from datetime import timedelta
+    from decimal import Decimal
+
+    from app.modules.ledger.reconciliation import reconcile
+
+    journal = Journal(settings.runtime_dir)
+    try:
+        run_id = journal.start(settings)
+        # 1. Test need purchase with small wallet rounding
+        before_state = state.model_copy(update={"needs": {"makan": 20}, "wallet": Decimal("50.00")})
+        # After state: makan increased to 70, wallet decreased by 9.99 (price 10.00, 0.01 tolerance)
+        after_state = before_state.model_copy(
+            update={
+                "needs": {"makan": 70},
+                "wallet": Decimal("40.01"),
+                "observed_at": before_state.observed_at + timedelta(seconds=5),
+            }
+        )
+        payload = {
+            "resource": "makan",
+            "product": {"name": "Nasi Goreng", "price": "10.00"},
+            "shop": "Warung",
+        }
+        action_id = journal.begin(run_id, "purchase", before_state, payload)
+        ui = SimpleNamespace(
+            snapshot=AsyncMock(return_value=after_state),
+            check_cancel=lambda: None,
+        )
+        resolved_state = await reconcile(ui, journal)
+        assert resolved_state is not None
+        assert not journal.unresolved()
+        row = journal.db.execute("SELECT status FROM actions WHERE id=?", (action_id,)).fetchone()
+        assert row["status"] == "verified"
+
+        # 2. Test free bathroom action (price 0) where resource increases even if wallet has tiny float delta
+        before_wc = state.model_copy(update={"needs": {"wc": 0}, "wallet": Decimal("50.00")})
+        after_wc = before_wc.model_copy(
+            update={
+                "needs": {"wc": 100},
+                "wallet": Decimal("49.99"),
+                "observed_at": before_wc.observed_at + timedelta(seconds=5),
+            }
+        )
+        payload_wc = {
+            "resource": "wc",
+            "product": {"name": "WC", "price": "0"},
+            "shop": "Kamar Mandi",
+        }
+        wc_action_id = journal.begin(run_id, "purchase", before_wc, payload_wc)
+        ui_wc = SimpleNamespace(
+            snapshot=AsyncMock(return_value=after_wc),
+            check_cancel=lambda: None,
+        )
+        resolved_wc = await reconcile(ui_wc, journal)
+        assert resolved_wc is not None
+        assert not journal.unresolved()
+        row_wc = journal.db.execute(
+            "SELECT status FROM actions WHERE id=?", (wc_action_id,)
+        ).fetchone()
+        assert row_wc["status"] == "verified"
+    finally:
+        journal.close()
+
+
+def test_select_need_strictly_prioritizes_akademis_ai_and_picks_most_worth_it(settings, state):
+    from app.core.models import ShopPreview
+    from app.modules.worker.planner import select_need
+
+    test_state = state.model_copy(
+        update={
+            "needs": {"makan": 30, "kesehatan": 70, "rekreasi": 40},
+            "wallet": Decimal("50.0"),
+        }
+    )
+
+    fallback_shop = ShopPreview(
+        id="warung-asing",
+        plot_id="J23-U01",
+        name="Warung Asing Non-Akademis",
+        category="restoran",
+        distance_squared=1,
+        products=[
+            Product(
+                name="Nasi Polos",
+                price=Decimal("0.2"),
+                effects={"makan": 20},
+                row_text=json.dumps({"shop": "warung-asing", "item": "nasi"}),
+                enabled=True,
+            )
+        ],
+    )
+
+    akademis_shop_1 = ShopPreview(
+        id="akademis-resto",
+        plot_id="K40-U04",
+        name="Akademis.ai Restaurant",
+        category="restoran",
+        distance_squared=10,
+        products=[
+            Product(
+                name="Paket Hemat",
+                price=Decimal("0.8"),
+                effects={"makan": 40},
+                row_text=json.dumps({"shop": "akademis-resto", "item": "hemat"}),
+                enabled=True,
+            ),
+            Product(
+                name="Paket Kenyang Bahagia",
+                price=Decimal("1.0"),
+                effects={"makan": 50, "rekreasi": 30},
+                row_text=json.dumps({"shop": "akademis-resto", "item": "kenyang"}),
+                enabled=True,
+            ),
+        ],
+    )
+
+    akademis_shop_2 = ShopPreview(
+        id="akademis-pecel",
+        plot_id="O39-U01",
+        name="Akademis.ai Pecel Lele & Ayam",
+        category="lamongan",
+        distance_squared=15,
+        products=[
+            Product(
+                name="Paket Pecel Lele Komplit",
+                price=Decimal("1.0"),
+                effects={"makan": 50, "rekreasi": 30},
+                row_text=json.dumps({"shop": "akademis-pecel", "item": "pecel"}),
+                enabled=True,
+            ),
+        ],
+    )
+
+    # 1. Akademis.ai MUST be Priority 1 over fallback even if fallback is cheaper
+    selection = select_need(
+        test_state,
+        "makan",
+        [fallback_shop, akademis_shop_1],
+        settings,
+        spent=Decimal(0),
+        last_purchases={},
+        allow_fallback=True,
+    )
+    assert selection is not None
+    shop, plan = selection
+    assert shop.preferred is True
+    assert shop.id == "akademis-resto"
+    # And among products in Akademis.ai, the most worth it (Paket Kenyang Bahagia) is selected
+    assert plan.product.name == "Paket Kenyang Bahagia"
+
+    # 2. Fair rotation among Akademis.ai shops: if akademis-resto was visited recently, akademis-pecel is picked
+    selection_rotated = select_need(
+        test_state,
+        "makan",
+        [akademis_shop_1, akademis_shop_2],
+        settings,
+        spent=Decimal(0),
+        last_purchases={"akademis-resto": 100},
+    )
+    assert selection_rotated is not None
+    shop_rot, plan_rot = selection_rotated
+    assert shop_rot.id == "akademis-pecel"
+    assert plan_rot.product.name == "Paket Pecel Lele Komplit"
+
+    # 3. Dynamic nearest shop when Akademis.ai is not reachable / not available:
+    fallback_near = ShopPreview(
+        id="warung-dekat",
+        plot_id="J23-U02",
+        name="Warung Dekat",
+        category="restoran",
+        distance_squared=4,
+        products=[
+            Product(
+                name="Nasi Biasa",
+                price=Decimal("1.5"),
+                effects={"makan": 30},
+                row_text=json.dumps({"shop": "warung-dekat", "item": "nasi"}),
+                enabled=True,
+            )
+        ],
+    )
+    fallback_far = ShopPreview(
+        id="warung-jauh",
+        plot_id="J23-U99",
+        name="Warung Jauh Sangat Murah",
+        category="restoran",
+        distance_squared=64,
+        products=[
+            Product(
+                name="Nasi Super Hemat",
+                price=Decimal("0.5"),
+                effects={"makan": 50},
+                row_text=json.dumps({"shop": "warung-jauh", "item": "nasi-hemat"}),
+                enabled=True,
+            )
+        ],
+    )
+    selection_fallback = select_need(
+        test_state,
+        "makan",
+        [fallback_far, fallback_near],
+        settings,
+        spent=Decimal(0),
+        last_purchases={},
+        allow_fallback=True,
+    )
+    assert selection_fallback is not None
+    shop_fb, plan_fb = selection_fallback
+    assert shop_fb.id == "warung-dekat"
+    assert plan_fb.product.name == "Nasi Biasa"
+
+
+async def test_observation_transport_failure_auto_reconnects_and_recovers(
+    settings, state, monkeypatch
+):
+    from app.modules.worker.settings import set_auto_flag
+
+    set_auto_flag(settings.runtime_dir, "ojol", True)
+    local_settings = settings.model_copy(update={"env": "local"})
+    failure = HttpCoreError("Pembacaan HTTP timeout", category="transport", recoverable=True)
+    stop_event = StopRequested("test finished")
+
+    # Snapshot sequence: 1 failure -> 1 successful recovery state -> stop
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[failure, state, stop_event]),
+        check_cancel=lambda: None,
+        preview_shops=AsyncMock(return_value=[]),
+        job_click=AsyncMock(),
+    )
+    journal = Journal(local_settings.runtime_dir)
+    monkeypatch.setattr("asyncio.sleep", AsyncMock())
+    try:
+        controller = Controller(ui, local_settings, journal, journal.start(local_settings))
+        # controller.wait should also not actually sleep during test
+        controller.wait = AsyncMock()
+        with pytest.raises(StopRequested):
+            await controller.run()
+        # Verify it recovered and did not drop STOP file
+        assert not (local_settings.runtime_dir / "STOP").exists()
+        assert controller.observation_failures == 0
+        assert ui.snapshot.await_count == 3
+    finally:
+        journal.close()
+
+
+async def test_observation_transport_failure_exceeding_limit_raises(settings, state, monkeypatch):
+    from app.modules.worker.settings import set_auto_flag
+
+    set_auto_flag(settings.runtime_dir, "ojol", True)
+    local_settings = settings.model_copy(update={"env": "local"})
+    failure = HttpCoreError("Pembacaan HTTP timeout", category="transport", recoverable=True)
+
+    # 4 consecutive failures exceeds the 3 retry limit
+    ui = SimpleNamespace(
+        snapshot=AsyncMock(side_effect=[failure, failure, failure, failure]),
+        check_cancel=lambda: None,
+    )
+    journal = Journal(local_settings.runtime_dir)
+    try:
+        controller = Controller(ui, local_settings, journal, journal.start(local_settings))
+        controller.wait = AsyncMock()
+        with pytest.raises(HttpCoreError):
+            await controller.run()
+        assert controller.observation_failures == 4
+    finally:
+        journal.close()

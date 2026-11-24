@@ -1,0 +1,560 @@
+import json
+import os
+import re
+import sqlite3
+from decimal import Decimal
+from pathlib import Path
+
+from app.core.database import read_sqlite
+from app.core.models import Snapshot, now
+from app.core.storage import write_private
+from app.modules.ledger.finance import WIB, day_bounds, received_income, report_date
+
+UNRESOLVED_ACTION = (
+    "SELECT id,kind FROM actions WHERE status IN ('pending','uncertain') ORDER BY id DESC LIMIT 1"
+)
+
+
+def load_journal_snapshot(value):
+    data = json.loads(value)
+    if isinstance(data, dict):
+        # Older snapshots stored timestamps without the receipt IDs used today.
+        data.pop("history_done_at", None)
+    return Snapshot.model_validate(data)
+
+
+def unresolved_action(directory: Path):
+    path = directory / "history.sqlite3"
+    if not path.is_file():
+        return None
+    try:
+        with read_sqlite(path, timeout=0.25) as db:
+            return db.execute(UNRESOLVED_ACTION).fetchone()
+    except sqlite3.Error:
+        return None
+
+
+class Journal:
+    def __init__(self, directory: Path):
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        path = directory / "history.sqlite3"
+        self.db = sqlite3.connect(path, timeout=10)
+        os.chmod(path, 0o600)
+        self.db.row_factory = sqlite3.Row
+        self.db.executescript("""
+            PRAGMA journal_mode=WAL;
+            PRAGMA foreign_keys=ON;
+            CREATE TABLE IF NOT EXISTS runs(id INTEGER PRIMARY KEY,started TEXT,ended TEXT,outcome TEXT,settings TEXT);
+            CREATE TABLE IF NOT EXISTS actions(id INTEGER PRIMARY KEY,run_id INTEGER REFERENCES runs(id),created TEXT,
+                kind TEXT,status TEXT,before_state TEXT,payload TEXT,after_state TEXT);
+            CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,run_id INTEGER REFERENCES runs(id),created TEXT,event TEXT,data TEXT);
+            CREATE TABLE IF NOT EXISTS cashflows(id INTEGER PRIMARY KEY,run_id INTEGER REFERENCES runs(id),source_key TEXT UNIQUE,
+                created TEXT,kind TEXT,category TEXT,amount TEXT,detail TEXT);
+            CREATE INDEX IF NOT EXISTS cashflows_created ON cashflows(created);
+        """)
+        self.backfill_cashflows()
+        self.directory = directory
+
+    def close(self):
+        self.db.close()
+
+    def ensure_resolved(self):
+        unresolved = self.db.execute(UNRESOLVED_ACTION).fetchone()
+        if unresolved:
+            raise RuntimeError(
+                f"Aksi #{unresolved['id']} ({unresolved['kind']}) belum terverifikasi. Periksa history sebelum menjalankan ulang; klik tidak diulang."
+            )
+
+    def unresolved(self):
+        return [
+            dict(row)
+            for row in self.db.execute(
+                "SELECT * FROM actions WHERE status IN ('pending','uncertain') ORDER BY id"
+            )
+        ]
+
+    def sync_game(self, state, resolved=None, reconciliation=None):
+        write_private(
+            self.directory / "game-sync.json",
+            {
+                "checked_at": now().isoformat(),
+                "snapshot": state.model_dump(mode="json"),
+                "resolved": resolved or [],
+                "unresolved": len(self.unresolved()),
+                "reconciliation": reconciliation or [],
+            },
+        )
+
+    def start(self, settings):
+        self.ensure_resolved()
+        with self.db:
+            return self.db.execute(
+                "INSERT INTO runs(started,outcome,settings) VALUES(?,?,?)",
+                (now().isoformat(), "running", settings.model_dump_json()),
+            ).lastrowid
+
+    def finish(self, run_id, outcome):
+        with self.db:
+            self.db.execute(
+                "UPDATE runs SET ended=?,outcome=? WHERE id=?", (now().isoformat(), outcome, run_id)
+            )
+
+    def resolve_search(self, action_id, observed, after):
+        row = self.db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
+        if not row or row["kind"] != "search" or row["status"] not in {"pending", "uncertain"}:
+            return None
+        before = load_journal_snapshot(row["before_state"])
+        # Hand off the currently proven state without attributing it to the original click.
+        if (
+            before.phase not in {"idle", "sleeping"}
+            or observed.observed_at >= after.observed_at
+            or observed.observed_at < before.observed_at
+        ):
+            return None
+        exclude = {"observed_at"}
+        if after.phase == "delivering":
+            exclude.update({"remaining_seconds", "buttons", "raw_text"})
+            if (
+                observed.remaining_seconds is None
+                or after.remaining_seconds is None
+                or not 0 < after.remaining_seconds <= observed.remaining_seconds
+                or [re.sub(r"\d+:[0-5]\d", "<timer>", b) for b in observed.buttons]
+                != [re.sub(r"\d+:[0-5]\d", "<timer>", b) for b in after.buttons]
+            ):
+                return None
+        if observed.model_dump(exclude=exclude) != after.model_dump(exclude=exclude):
+            return None
+
+        def count(pattern):
+            return sum(bool(re.search(pattern, b, re.IGNORECASE)) for b in after.buttons)
+
+        route = bool(re.search(r"📍\s*\S.*?🏁\s*\S", after.trip or "", re.DOTALL))
+        no_search = count(r"Cari order|Mencari") == 0
+        if (
+            after.phase in {"idle", "sleeping"}
+            and after.remaining_seconds is None
+            and after.trip_id is None
+            and after.arrive_at is None
+            and count(r"Cari order") == 1
+            and count(r"Mencari|Terima|Ambil|Antar sekarang|Mengantar|Sampai|Selesai") == 0
+            and not re.search(r"📍|🏁|→", after.trip or "")
+        ):
+            status, handoff = "closed_idle", "no_active_order"
+        elif (
+            route
+            and no_search
+            and (
+                after.phase == "complete"
+                and after.remaining_seconds == 0
+                and count(r"Selesaikan|Sampai|Selesai") == 1
+                and count(r"Mengantar") == 0
+                and count(r"Ambil|Antar sekarang|^\W*Terima\b") == 0
+            )
+        ):
+            status, handoff = "handed_off", "ready_to_claim"
+        elif (
+            route
+            and no_search
+            and after.phase == "delivering"
+            and count(r"Mengantar") == 1
+            and count(r"Selesaikan|Sampai|Selesai|Ambil|Antar sekarang|^\W*Terima\b") == 0
+        ):
+            status, handoff = "handed_off", "delivery_in_progress"
+        elif (
+            route
+            and no_search
+            and after.phase == "idle"
+            and after.remaining_seconds is None
+            and count(r"Terima|Ambil|Antar sekarang") == 1
+            and count(r"Mengantar|Selesaikan|Sampai|Selesai") == 0
+        ):
+            status, handoff = "handed_off", "offer_available"
+        else:
+            return None
+        # An active order needs continuity with the original search; idle only proves no order remains.
+        if status == "handed_off" and (
+            before.observed_at.astimezone(WIB).date() != after.observed_at.astimezone(WIB).date()
+            or before.today_income is None
+            or any(
+                getattr(before, field) != getattr(after, field)
+                for field in ("wallet", "today_income", "history")
+            )
+            or any(
+                getattr(after, field) > getattr(before, field)
+                for field in ("fuel", "condition", "data")
+            )
+        ):
+            return None
+        evidence = {
+            "action_id": action_id,
+            "method": "two_consistent_observations_after_refresh",
+            "status": status,
+            "handoff": handoff,
+            "observation_times": [observed.observed_at.isoformat(), after.observed_at.isoformat()],
+            "resource_delta": {
+                field: getattr(after, field) - getattr(before, field)
+                for field in ("fuel", "condition", "data")
+            },
+            "resource_delta_cause": "not_attributed",
+            "wallet_delta": str(after.wallet - before.wallet),
+            "wallet_delta_cause": "not_attributed",
+            "original_outcome": "uncertain",
+        }
+        with self.db:
+            result = self.db.execute(
+                "UPDATE actions SET status=?,after_state=? WHERE id=? AND kind='search' AND status IN ('pending','uncertain')",
+                (status, after.model_dump_json(), action_id),
+            )
+            if result.rowcount != 1:
+                return None
+            self.db.execute(
+                "INSERT INTO events(run_id,created,event,data) VALUES(?,?,?,?)",
+                (
+                    row["run_id"],
+                    now().isoformat(),
+                    "pencarian_ditutup_tanpa_order_aktif"
+                    if status == "closed_idle"
+                    else "pencarian_diserahkan_ke_state_teramati",
+                    json.dumps(evidence),
+                ),
+            )
+        return evidence
+
+    def begin(self, run_id, kind, state, payload):
+        with self.db:
+            return self.db.execute(
+                "INSERT INTO actions(run_id,created,kind,status,before_state,payload) VALUES(?,?,?,?,?,?)",
+                (
+                    run_id,
+                    now().isoformat(),
+                    kind,
+                    "pending",
+                    state.model_dump_json(),
+                    json.dumps(payload, ensure_ascii=False, default=str),
+                ),
+            ).lastrowid
+
+    def handoff_action(self, action_id, observed, after):
+        row = self.db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
+        if (
+            not row
+            or row["kind"] not in {"complete", "purchase", "take", "study", "study_quiz", "garden"}
+            or row["status"] not in {"pending", "uncertain"}
+        ):
+            return None
+        before = load_journal_snapshot(row["before_state"])
+        if row["kind"] == "complete":
+            if (
+                before.phase != "complete"
+                or (before.trip_id and before.trip_id in {observed.trip_id, after.trip_id})
+                or (after.phase == "complete" and not before.trip_id)
+            ):
+                return None
+        elif (observed.observed_at - before.observed_at).total_seconds() <= 300:
+            return None
+        if (
+            not before.observed_at <= observed.observed_at < after.observed_at
+            or observed.phase != after.phase
+            or after.phase == "unknown"
+            or (row["kind"] != "complete" and after.phase == "searching")
+        ):
+            return None
+        excluded = {"observed_at", "remaining_seconds", "buttons", "raw_text"}
+        if observed.model_dump(exclude=excluded) != after.model_dump(exclude=excluded):
+            return None
+        if after.phase == "delivering" and not (
+            observed.remaining_seconds is not None
+            and after.remaining_seconds is not None
+            and 0 < after.remaining_seconds <= observed.remaining_seconds
+        ):
+            return None
+        evidence = {
+            "action_id": action_id,
+            "method": "two_consistent_current_observations",
+            "original_outcome": "uncertain",
+            "payout_attributed": False,
+            "expense_attributed": False,
+            "old_trip_id": before.trip_id,
+            "current_trip_id": after.trip_id,
+            "observation_times": [observed.observed_at.isoformat(), after.observed_at.isoformat()],
+        }
+        with self.db:
+            changed = self.db.execute(
+                "UPDATE actions SET status='handed_off',after_state=? "
+                "WHERE id=? AND status IN ('pending','uncertain')",
+                (after.model_dump_json(), action_id),
+            )
+            if changed.rowcount != 1:
+                return None
+            self.db.execute(
+                "INSERT INTO events(run_id,created,event,data) VALUES(?,?,?,?)",
+                (
+                    row["run_id"],
+                    now().isoformat(),
+                    "klaim_diserahkan_ke_state_teramati"
+                    if row["kind"] == "complete"
+                    else "aksi_lama_diserahkan_ke_state_teramati",
+                    json.dumps(evidence),
+                ),
+            )
+        return evidence
+
+    def skip(self, action_id):
+        if action_id <= 0:
+            raise ValueError("ID aksi harus bilangan positif")
+        with self.db:
+            row = self.db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
+            if row is None:
+                raise ValueError(f"Aksi #{action_id} tidak ditemukan pada akun ini")
+            if row["status"] == "skipped":
+                return dict(row)
+            if row["status"] not in {"pending", "uncertain"}:
+                raise ValueError(f"Aksi #{action_id} sudah berstatus {row['status']}")
+            changed = self.db.execute(
+                "UPDATE actions SET status='skipped' WHERE id=? AND status=?",
+                (action_id, row["status"]),
+            )
+            if changed.rowcount != 1:
+                raise RuntimeError("Status aksi berubah saat skip; periksa history lalu coba lagi")
+            self.db.execute(
+                "INSERT INTO events(run_id,created,event,data) VALUES(?,?,?,?)",
+                (
+                    row["run_id"],
+                    now().isoformat(),
+                    "aksi_dilewati_operator",
+                    json.dumps(
+                        {
+                            "action_id": action_id,
+                            "kind": row["kind"],
+                            "original_status": row["status"],
+                            "original_outcome": "uncertain",
+                            "payout_attributed": False,
+                            "expense_attributed": False,
+                        }
+                    ),
+                ),
+            )
+        return dict(row)
+
+    def reject(self, action_id):
+        with self.db:
+            self.db.execute(
+                "UPDATE actions SET status='rejected' WHERE id=? AND status='pending'",
+                (action_id,),
+            )
+
+    def last_purchases_by_shop(self, resource):
+        rows = self.db.execute(
+            """SELECT json_extract(payload, '$.shop_id') AS shop_id, MAX(id)
+               FROM actions
+               WHERE kind='purchase' AND status='verified'
+                 AND json_extract(payload, '$.resource') = ?
+                 AND json_extract(payload, '$.shop_id') IS NOT NULL
+               GROUP BY shop_id""",
+            (resource,),
+        )
+        return dict(rows)
+
+    def recent_product_streak(self, resource: str) -> tuple[str | None, int]:
+        rows = self.db.execute(
+            """SELECT json_extract(payload, '$.product.name') AS product_name
+               FROM actions
+               WHERE kind='purchase' AND status='verified'
+                 AND json_extract(payload, '$.resource') = ?
+               ORDER BY id DESC
+               LIMIT 10""",
+            (resource,),
+        ).fetchall()
+        if not rows or not rows[0][0]:
+            return None, 0
+        latest = rows[0][0]
+        streak = 0
+        for r in rows:
+            if r[0] == latest:
+                streak += 1
+            else:
+                break
+        return latest, streak
+
+    def settle(self, action_id, verified, after=None):
+        with self.db:
+            self.db.execute(
+                "UPDATE actions SET status=?,after_state=? WHERE id=?",
+                (
+                    "verified" if verified else "uncertain",
+                    after.model_dump_json() if after else None,
+                    action_id,
+                ),
+            )
+            if verified:
+                row = self.db.execute("SELECT * FROM actions WHERE id=?", (action_id,)).fetchone()
+                return self.record_action_cashflow(row)
+
+    def record_action_cashflow(self, row):
+        if not row or row["status"] != "verified" or not row["after_state"]:
+            return None
+        payload = json.loads(row["payload"])
+        before, after = (
+            load_journal_snapshot(row["before_state"]),
+            load_journal_snapshot(row["after_state"]),
+        )
+        detail = {
+            "action_id": row["id"],
+            "wallet_before": str(before.wallet),
+            "wallet_after": str(after.wallet),
+        }
+        if row["kind"] in {"purchase", "study"} and isinstance(payload.get("product"), dict):
+            amount = Decimal(payload["product"]["price"])
+            if row["kind"] == "study" and amount == 0:
+                return None
+            kind, category = "expense", payload["resource"]
+            detail.update(shop=payload["shop"], product=payload["product"]["name"])
+            if row["kind"] == "study":
+                detail.update(source="facility_study_visit", receipt=payload.get("receipt"))
+        elif row["kind"] == "complete":
+            observed = received_income(before, after)
+            if observed is None:
+                return None
+            amount, entries = observed
+            kind, category = "income", "ojol"
+            detail.update(history_entries=entries, source="observed_game_history_received_payout")
+        elif row["kind"] == "garden":
+            amount = Decimal(str(payload.get("cost", 0)))
+            if amount <= Decimal(0):
+                return None
+            kind, category = "expense", "kebun"
+            detail.update(garden_id=payload.get("garden_id"), action=payload.get("action"))
+        else:
+            return None
+        self.db.execute(
+            "INSERT OR IGNORE INTO cashflows(run_id,source_key,created,kind,category,amount,detail) VALUES(?,?,?,?,?,?,?)",
+            (
+                row["run_id"],
+                f"action:{row['id']}",
+                row["created"],
+                kind,
+                category,
+                str(amount),
+                json.dumps(detail, ensure_ascii=False),
+            ),
+        )
+        return {"kind": kind, "category": category, "amount": str(amount)}
+
+    def backfill_cashflows(self):
+        rows = self.db.execute(
+            "SELECT a.* FROM actions a LEFT JOIN cashflows c ON c.source_key='action:'||a.id "
+            "WHERE a.status='verified' AND a.kind IN ('purchase','complete','study','garden') AND c.id IS NULL"
+        ).fetchall()
+        with self.db:
+            for row in rows:
+                self.record_action_cashflow(row)
+
+    def observed_income(self, run_id, before, after):
+        observed = received_income(before, after)
+        if observed is None:
+            return None
+        amount, entries = observed
+        detail = json.dumps(
+            {"history_entries": entries, "source": "observed_automatic_completion"},
+            ensure_ascii=False,
+        )
+        with self.db:
+            self.db.execute(
+                "INSERT OR IGNORE INTO cashflows(run_id,source_key,created,kind,category,amount,detail) VALUES(?,?,?,?,?,?,?)",
+                (
+                    run_id,
+                    f"auto:{before.observed_at.isoformat()}:{detail}",
+                    now().isoformat(),
+                    "income",
+                    "ojol",
+                    str(amount),
+                    detail,
+                ),
+            )
+        return str(amount)
+
+    def cashflow_filter(self, run_id=None, day=None):
+        """Build predicates from fixed SQL fragments and keep values as parameters."""
+        conditions, values = [], []
+        if run_id is not None:
+            conditions.append("run_id=?")
+            values.append(run_id)
+        if day is not None:
+            conditions.extend(["created>=?", "created<?"])
+            values.extend(day_bounds(day))
+        return (" WHERE " + " AND ".join(conditions) if conditions else ""), values
+
+    def profit(self, run_id=None, day=None):
+        where, values = self.cashflow_filter(run_id, day)
+        rows = self.db.execute(
+            "SELECT kind,category,amount FROM cashflows" + where,  # noqa: S608
+            values,
+        ).fetchall()
+        income = sum(
+            (Decimal(row["amount"]) for row in rows if row["kind"] == "income"), Decimal(0)
+        )
+        expenses = sum(
+            (Decimal(row["amount"]) for row in rows if row["kind"] == "expense"), Decimal(0)
+        )
+        categories = {}
+        for row in rows:
+            if row["kind"] == "expense":
+                categories[row["category"]] = categories.get(row["category"], Decimal(0)) + Decimal(
+                    row["amount"]
+                )
+        return {
+            "pendapatan_ojol": str(income),
+            "pengeluaran": str(expenses),
+            "laba_bersih": str(income - expenses),
+            "biaya_per_kategori": {key: str(value) for key, value in categories.items()},
+            "trip_tercatat": sum(row["kind"] == "income" for row in rows),
+            "pembelian_tercatat": sum(row["kind"] == "expense" for row in rows),
+            "basis": "Payout diterima dari riwayat game (angka tampilan); biaya pembelian terverifikasi. Potongan aplikasi sudah termasuk dalam payout.",
+        }
+
+    def financial_report(self, day=None, all_time=False):
+        day = None if all_time else report_date(day)
+        where, values = self.cashflow_filter(day=day)
+        runs = self.db.execute(
+            "SELECT DISTINCT run_id FROM cashflows" + where + " ORDER BY run_id DESC",  # noqa: S608
+            values,
+        ).fetchall()
+        return {
+            "tanggal": day.isoformat() if day else None,
+            "zona_waktu": "Asia/Jakarta",
+            "total": self.profit(day=day),
+            "per_sesi": [
+                {"run_id": row["run_id"], **self.profit(row["run_id"], day)} for row in runs
+            ],
+            "transaksi_terakhir": [
+                dict(row)
+                for row in self.db.execute(
+                    "SELECT * FROM cashflows" + where + " ORDER BY id DESC LIMIT 20",  # noqa: S608
+                    values,
+                )
+            ],
+        }
+
+    def event(self, run_id, name, data):
+        with self.db:
+            self.db.execute(
+                "INSERT INTO events(run_id,created,event,data) VALUES(?,?,?,?)",
+                (
+                    run_id,
+                    now().isoformat(),
+                    name,
+                    json.dumps(data, ensure_ascii=False, default=str),
+                ),
+            )
+
+    def history(self, limit=10):
+        return {
+            table: [
+                dict(row)
+                for row in self.db.execute(
+                    f"SELECT * FROM {table} ORDER BY id DESC LIMIT ?",  # noqa: S608 - literal table names
+                    (limit,),
+                )
+            ]
+            for table in ("runs", "actions")
+        }
