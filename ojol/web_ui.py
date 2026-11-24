@@ -597,6 +597,16 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 </div>
                 <button class="btn btn-primary" type="button" onclick="showTab('tab-bank-angka')" style="padding: 6px 14px; font-size: 12px; font-weight: 700;">Review Angka Sekarang</button>
             </div>
+            <div id="reconcileStuckBanner" class="alert alert-warning" style="display: none; margin-bottom: 20px; background: rgba(245, 158, 11, 0.12); border: 1px solid rgba(245, 158, 11, 0.35); border-radius: 8px; padding: 14px 18px; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap;">
+                <div style="display: flex; align-items: center; gap: 10px;">
+                    <span style="font-size: 20px;">⏳</span>
+                    <div>
+                        <div style="font-weight: 700; color: var(--warning, #f59e0b); font-size: 14px;">Ada transaksi game sebelumnya yang belum pasti!</div>
+                        <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">Bot tertahan saat mencocokkan riwayat game. Lewati aksi jika transaksi sudah berlalu di game agar bot bisa lanjut narik.</div>
+                    </div>
+                </div>
+                <button class="btn btn-primary" type="button" onclick="skipStuckActions()" style="padding: 6px 14px; font-size: 12px; font-weight: 700;">⏩ Lewati Aksi Tertahan</button>
+            </div>
             <section id="onboardingCard" class="card onboarding" hidden aria-labelledby="onboardingTitle">
                 <h2 id="onboardingTitle" class="card-title">Hubungkan akun game</h2>
                 <p class="meta">Impor cookie sesi KampungSebelah untuk mulai mengelola akun ini.</p>
@@ -686,7 +696,10 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
     }
                             </section>
                             <section class="card activity-card" aria-labelledby="activityTitle">
-                                <div class="card-header"><h2 id="activityTitle" class="card-title">Aktivitas terbaru</h2></div>
+                                <div class="card-header" style="display: flex; justify-content: space-between; align-items: center;">
+                                    <h2 id="activityTitle" class="card-title">Aktivitas terbaru</h2>
+                                    <button id="btnSkipActions" class="btn btn-utility" type="button" style="display: none; padding: 4px 10px; font-size: 12px; color: var(--warning, #f59e0b); border-color: rgba(245, 158, 11, 0.4); font-weight: 700;" onclick="skipStuckActions()">⏩ Lewati Aksi Tertahan</button>
+                                </div>
                                 <div id="logConsole" class="log-box">Memuat aktivitas…</div>
                             </section>
                         </div>
@@ -1789,6 +1802,25 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             const logBox = document.getElementById('logConsole');
             const logs = data.logs?.length ? data.logs.join('\\n') : 'Belum ada aktivitas.';
             if (logBox.textContent !== logs) logBox.textContent = logs;
+
+            const hasStuck = (data.logs || []).some(l => l.includes('Aksi tertahan:') || l.includes('Rekonsiliasi Transaksi Game'));
+            const stuckBanner = document.getElementById('reconcileStuckBanner');
+            if (stuckBanner) stuckBanner.style.display = hasStuck ? 'flex' : 'none';
+            const btnSkip = document.getElementById('btnSkipActions');
+            if (btnSkip) btnSkip.style.display = hasStuck ? 'inline-block' : 'none';
+        }}
+
+        async function skipStuckActions() {{
+            if (!confirm('Lewati semua aksi transaksi yang tertahan dan jalankan bot dari kondisi game saat ini?')) return;
+            try {{
+                const res = await fetch('/api/control/skip', {{ method: 'POST' }});
+                const json = await res.json();
+                if (!res.ok) throw new Error(json.detail || 'Gagal melewati aksi');
+                showToast(json.message || 'Aksi tertahan dilewati. Bot melanjutkan aktivitas.', 'success');
+                manualRefreshDashboard();
+            }} catch (e) {{
+                showToast(e.message, 'error');
+            }}
         }}
 
         function updateMeter(id, val) {{

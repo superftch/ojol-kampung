@@ -917,3 +917,8 @@ def test_web_dashboard_logs_formatting(admin_web):
     assert any("1 transaksi game belum terkonfirmasi" in line for line in logs)
     assert any("OJL-DF67EFD4AB5D" in line for line in logs)
 
+    # Test skip endpoint
+    skip_res = client.post("/api/control/skip")
+    assert skip_res.status_code == 200
+    assert skip_res.json()["success"] is True
+

@@ -828,6 +828,17 @@ def register_web_routes(app, settings, manager=None, service=None):
         except Exception as exc:
             raise HTTPException(400, str(exc))
 
+    @app.post("/api/control/skip")
+    async def skip_actions(request: Request, user: dict = Depends(require_user)):
+        cur_service = resolve_account_service(request)
+        if not cur_service:
+            raise HTTPException(400, "Belum ada akun game yang terhubung atau dipilih.")
+        try:
+            res = await cur_service.command("skip")
+            return {"success": True, "message": res}
+        except Exception as exc:
+            raise HTTPException(400, str(exc))
+
     @app.post("/api/control/run-needs")
     async def run_needs(request: Request, user: dict = Depends(require_user)):
         cur_service = resolve_account_service(request)

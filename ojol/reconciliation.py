@@ -333,13 +333,27 @@ async def reconcile(ui, journal, error_id=None, action_id=None):
                 else f"Game masih berfase {state.phase}; penerimaan order belum terbukti."
             )
         elif action["kind"] == "complete":
-            evidence = None if before.trip_id in claimed else completion_evidence(before, state)
+            if before.trip_id and before.trip_id in claimed:
+                journal.skip(action["id"])
+                resolved.append(action["id"])
+                reports.append(
+                    report_action(
+                        journal,
+                        action,
+                        state,
+                        {"method": "duplicate_trip_claim", "trip_id": before.trip_id},
+                        "Trip ini sudah dibukukan oleh aksi sebelumnya; duplikasi klaim dilewati otomatis.",
+                        error_id,
+                    )
+                )
+                continue
+            evidence = completion_evidence(before, state)
             valid = evidence is not None
             if not valid:
                 observed = state
                 await asyncio.sleep(1)
                 state = await ui.snapshot()
-                evidence = None if before.trip_id in claimed else completion_evidence(before, state)
+                evidence = completion_evidence(before, state)
                 valid = evidence is not None
                 if not valid:
                     handoff = journal.handoff_action(action["id"], observed, state)
