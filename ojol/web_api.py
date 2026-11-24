@@ -1208,9 +1208,10 @@ def register_web_routes(app, settings, manager=None, service=None):
         fleet_dirs, _ = get_all_fleet_directories()
         from .svg_captcha_solver import dismiss_review
 
+        glyph = body.get("glyph")
         if review_id:
-            dismiss_review(fleet_dirs, review_id)
+            dismiss_review(fleet_dirs, review_id, glyph=glyph)
         if error_id:
-            dismiss_review(fleet_dirs, error_id)
+            dismiss_review(fleet_dirs, error_id, glyph=glyph)
 
         return {"ok": True}

@@ -2324,6 +2324,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         // BANK ANGKA (CAPTCHA SOLVER REVIEW & TRAIN)
         // ==========================================
         const selectedReviewDigits = {{}};
+        const pendingGlyphsMap = {{}};
         let manualSelectedDigit = '0';
 
         function updateBankBadge(count) {{
@@ -2425,7 +2426,8 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     `;
                 }} else {{
                     listEl.innerHTML = pending.map((item, idx) => {{
-                        const glyphJsonStr = escapeHtml(JSON.stringify(item.glyph));
+                        const rid = escapeHtml(item.id);
+                        pendingGlyphsMap[item.id] = item.glyph;
                         const errIdStr = item.error_id ? `<span style="background: rgba(239, 68, 68, 0.18); color: var(--danger); border-radius: 4px; padding: 2px 8px; font-weight: 700; font-size: 12px;">🚨 ${{escapeHtml(item.error_id)}}</span>` : '';
                         const accStr = item.account_name ? `<span style="background: rgba(167, 139, 250, 0.18); color: #a78bfa; border-radius: 4px; padding: 2px 8px; font-weight: 700; font-size: 12px;">👤 Akun: ${{escapeHtml(item.account_name)}}</span>` : '';
                         const timeStr = item.time ? new Date(item.time).toLocaleTimeString('id-ID', {{ hour: '2-digit', minute: '2-digit', second: '2-digit' }}) : 'Baru saja';
@@ -2491,7 +2493,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                                     </div>
                                     <div style="display: flex; gap: 8px; align-items: center;">
                                         <button class="btn btn-secondary" type="button" onclick="dismissReview('${{rid}}', '${{escapeHtml(item.error_id || '')}}')" style="padding: 8px 14px; font-size: 12px;">Abaikan</button>
-                                        <button class="btn btn-primary" type="button" onclick="saveReviewToBank('${{rid}}', '${{escapeHtml(item.error_id || '')}}', '${{glyphJsonStr}}')" style="padding: 8px 18px; font-size: 13px; font-weight: 700;">💾 Simpan & Kontribusi ke Bank Angka</button>
+                                        <button class="btn btn-primary" type="button" onclick="saveReviewToBank('${{rid}}', '${{escapeHtml(item.error_id || '')}}')" style="padding: 8px 18px; font-size: 13px; font-weight: 700;">💾 Simpan & Kontribusi ke Bank Angka</button>
                                     </div>
                                 </div>
                             </div>
@@ -2560,14 +2562,18 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             }}
         }}
 
-        async function saveReviewToBank(reviewId, errorId, glyphJsonStr) {{
+        async function saveReviewToBank(reviewId, errorId) {{
             const sel = selectedReviewDigits[reviewId];
             if (sel === undefined || sel === null || sel === '') {{
                 alert('Silakan tentukan angka (0 - 9) untuk bentuk ini terlebih dahulu!');
                 return;
             }}
+            const glyph = pendingGlyphsMap[reviewId];
+            if (!glyph) {{
+                alert('Data bentuk glyph tidak ditemukan.');
+                return;
+            }}
             try {{
-                const glyph = JSON.parse(glyphJsonStr);
                 const res = await apiFetch('/api/bank-angka/save', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
@@ -2590,11 +2596,12 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
         async function dismissReview(reviewId, errorId) {{
             if (!confirm('Abaikan review angka ini?')) return;
+            const glyph = pendingGlyphsMap[reviewId] || null;
             try {{
                 await apiFetch('/api/bank-angka/dismiss', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
-                    body: JSON.stringify({{ review_id: reviewId, error_id: errorId || null }})
+                    body: JSON.stringify({{ review_id: reviewId, error_id: errorId || null, glyph: glyph }})
                 }});
                 await loadBankAngka();
                 manualRefreshDashboard();

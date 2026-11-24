@@ -83,13 +83,13 @@ def _resample(points, count=24):
     out = []
     for step in range(count):
         target = total * step / (count - 1)
-        index = max(
-            0,
-            min(
-                len(points) - 2,
-                next((i for i, value in enumerate(lengths) if value >= target), len(lengths) - 1),
-            ),
-        )
+        index = 0
+        for i in range(len(lengths) - 1):
+            if lengths[i] <= target <= lengths[i + 1]:
+                index = i
+                break
+        else:
+            index = len(points) - 2
         span = lengths[index + 1] - lengths[index] or 1.0
         ratio = min(1.0, max(0.0, (target - lengths[index]) / span))
         x1, y1 = points[index]
@@ -114,15 +114,25 @@ def _stroke_distance(a, b):
     count = len(a)
     if len(b) != count:
         return 1.0
-    # Server menggambar arah konsisten; hanya fase awal yang bisa bergeser.
     best = 1.0
-    for shift in range(count):
-        shifted = b[shift:] + b[:shift]
-        cost = (
-            sum(((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5 for (x1, y1), (x2, y2) in zip(a, shifted))
-            / count
-        )
-        best = min(best, cost)
+    is_closed = ((b[0][0] - b[-1][0]) ** 2 + (b[0][1] - b[-1][1]) ** 2) ** 0.5 < 0.15
+    candidates = [b, b[::-1]]
+    if is_closed:
+        for cand in candidates:
+            for shift in range(count):
+                shifted = cand[shift:] + cand[:shift]
+                cost = (
+                    sum(((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5 for (x1, y1), (x2, y2) in zip(a, shifted))
+                    / count
+                )
+                best = min(best, cost)
+    else:
+        for cand in candidates:
+            cost = (
+                sum(((x1 - x2) ** 2 + (y1 - y2) ** 2) ** 0.5 for (x1, y1), (x2, y2) in zip(a, cand))
+                / count
+            )
+            best = min(best, cost)
     return best
 
 
@@ -359,6 +369,24 @@ def get_pending_reviews(directory, account_name=None):
                     match = re.search(r"Glyph cek belum dikenali:\s*(\[\[\[.*?\]\]\])", msg)
                     if match:
                         glyph = json.loads(match.group(1))
+                        # Deduplikasi: bila review untuk trip_id atau bentuk glyph ini sudah tercatat dari cek-reviews,
+                        # cukup tautkan error_id ke review tersebut agar tidak muncul kartu duplikat.
+                        norm_g = _normalize(glyph)
+                        existing_rev = None
+                        for r in reviews:
+                            if data.get("trip_id") and r.get("trip_id") == data.get("trip_id"):
+                                existing_rev = r
+                                break
+                            if _shape_distance(norm_g, _normalize(r.get("glyph", []))) < 0.05:
+                                existing_rev = r
+                                break
+                        if existing_rev:
+                            if not existing_rev.get("error_id"):
+                                existing_rev["error_id"] = err_id
+                            seen_ids.add(err_id)
+                            seen_ids.add(rev_err_id)
+                            continue
+
                         svg_text = find_matching_svg(glyph, data.get("trip_id"))
                         reviews.append({
                             "id": rev_err_id,
@@ -392,9 +420,26 @@ def get_all_pending_reviews(directories, account_names=None):
         reviews = get_pending_reviews(p, account_name=acc_name)
         for r in reviews:
             rid = r.get("id") or r.get("error_id")
-            if rid and rid not in seen_ids:
+            if not rid or rid in seen_ids:
+                continue
+            # Deduplikasi lintas armada jika bentuk glyph sama (< 0.04) atau trip_id sama
+            norm_r = _normalize(r.get("glyph", []))
+            existing_cross = None
+            for ex in all_reviews:
+                if ex.get("trip_id") and r.get("trip_id") and ex.get("trip_id") == r.get("trip_id"):
+                    existing_cross = ex
+                    break
+                if _shape_distance(norm_r, _normalize(ex.get("glyph", []))) < 0.04:
+                    existing_cross = ex
+                    break
+            if existing_cross:
+                if r.get("account_name") and r["account_name"] not in (existing_cross.get("account_name") or ""):
+                    existing_cross["account_name"] = f"{existing_cross.get('account_name', '')}, {r['account_name']}".strip(", ")
                 seen_ids.add(rid)
-                all_reviews.append(r)
+                continue
+
+            seen_ids.add(rid)
+            all_reviews.append(r)
 
     all_reviews.sort(key=lambda x: str(x.get("time") or ""), reverse=True)
     return all_reviews
@@ -425,28 +470,63 @@ def resolve_review(directory, review_id: str, digit: str = None, glyph: list = N
             match = re.search(r"OJL-[0-9A-F]{12}", review_id)
             if match:
                 resolved_ids.add(match.group(0))
+                resolved_ids.add(f"rev-err-{match.group(0)}")
+
+        # Bersihkan file cek-reviews/*.json yang relevan
+        rev_dir = path / "cek-reviews"
+        if rev_dir.is_dir():
+            for rf in rev_dir.glob("*.json"):
+                if rf.stem == review_id:
+                    resolved_ids.add(rf.stem)
+                    try:
+                        data = json.loads(rf.read_text())
+                        data["status"] = "resolved"
+                        data["resolved_digit"] = digit
+                        if resolved_by:
+                            data["resolved_by"] = resolved_by
+                        rf.write_text(json.dumps(data, indent=2))
+                    except (ValueError, OSError):
+                        pass
+                elif glyph:
+                    try:
+                        data = json.loads(rf.read_text())
+                        g = data.get("normalized_glyph") or data.get("raw_glyph")
+                        if g and _shape_distance(_normalize(glyph), _normalize(g)) < 0.05:
+                            resolved_ids.add(rf.stem)
+                            data["status"] = "resolved"
+                            data["resolved_digit"] = digit
+                            if resolved_by:
+                                data["resolved_by"] = resolved_by
+                            rf.write_text(json.dumps(data, indent=2))
+                    except Exception:
+                        pass
+
+        # Bersihkan juga error ID yang terkait glyph yang sama dari daftar pending
+        if glyph:
+            err_dir = path / "errors"
+            if err_dir.is_dir():
+                for ef in err_dir.glob("OJL-*.json"):
+                    try:
+                        edata = json.loads(ef.read_text())
+                        emsg = str(edata.get("message") or "")
+                        ematch = re.search(r"Glyph cek belum dikenali:\s*(\[\[\[.*?\]\]\])", emsg)
+                        if ematch:
+                            eglyph = json.loads(ematch.group(1))
+                            if _shape_distance(_normalize(glyph), _normalize(eglyph)) < 0.05:
+                                resolved_ids.add(ef.stem)
+                                resolved_ids.add(f"rev-err-{ef.stem}")
+                    except Exception:
+                        pass
 
         try:
             resolved_file.write_text(json.dumps(list(resolved_ids), indent=2))
         except OSError:
             pass
 
-        rev_file = path / "cek-reviews" / f"{review_id}.json"
-        if rev_file.is_file():
-            try:
-                data = json.loads(rev_file.read_text())
-                data["status"] = "resolved"
-                data["resolved_digit"] = digit
-                if resolved_by:
-                    data["resolved_by"] = resolved_by
-                rev_file.write_text(json.dumps(data, indent=2))
-            except (OSError, ValueError):
-                pass
 
-
-def dismiss_review(directory, review_id: str):
+def dismiss_review(directory, review_id: str, glyph: list = None):
     """Mengabaikan review tanpa menyimpan ke bank angka."""
-    resolve_review(directory, review_id, digit=None, glyph=None)
+    resolve_review(directory, review_id, digit=None, glyph=glyph)
 
 
 def learn_polyline(directory, svg_text, code, contributed_by=None):
@@ -503,6 +583,7 @@ def _glyphs(svg_text):
 def solve_polyline_captcha(svg_text, directory=None, trip_id=None):
     bank = load_bank(directory)
     result = []
+    unknowns = []
     for glyph in _glyphs(svg_text):
         normalized = _normalize(glyph)
         xs = [x for stroke in glyph for x, _ in stroke]
@@ -536,10 +617,16 @@ def solve_polyline_captcha(svg_text, directory=None, trip_id=None):
         ):
             best_digit = "1"  # digit sempit hampir pasti 1
         if best_digit is None:
-            if directory:
-                record_unknown_glyph(directory, glyph, normalized, trip_id=trip_id, svg_text=svg_text)
-            raise SvgCaptchaSolverError(
-                "Glyph cek belum dikenali: " + json.dumps(normalized, default=list)
-            )
-        result.append(best_digit)
+            unknowns.append((glyph, normalized))
+        else:
+            result.append(best_digit)
+
+    if unknowns:
+        if directory:
+            for g, norm in unknowns:
+                record_unknown_glyph(directory, g, norm, trip_id=trip_id, svg_text=svg_text)
+        first_norm = unknowns[0][1]
+        raise SvgCaptchaSolverError(
+            "Glyph cek belum dikenali: " + json.dumps(first_norm, default=list)
+        )
     return "".join(result)

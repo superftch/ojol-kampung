@@ -144,3 +144,61 @@ def test_matching_sample_svg_attached_to_review():
         assert pending[0]["error_id"] == "OJL-AABBCCDDEEFF"
         # Must attach matching raw_svg from cek-samples
         assert pending[0]["svg_text"] == raw_svg
+
+
+def test_reversed_stroke_digit_matches():
+    # Test digit 7 drawn in reverse direction (bottom-to-top)
+    pts_forward = _SEED["7"][0][0]
+    pts_reversed = pts_forward[::-1]
+    reversed_svg = '<svg><polyline points="' + " ".join(f"{x * 20},{y * 20}" for x, y in pts_reversed) + '"/></svg>'
+    # Must successfully solve as 7 despite reversed drawing direction
+    assert solve_polyline_captcha(reversed_svg) == "7"
+
+
+def test_no_duplicate_review_when_both_cek_review_and_error_file_exist():
+    import json
+    from pathlib import Path
+    from ojol.svg_captcha_solver import record_unknown_glyph, _normalize
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sample_glyph = [[(10, 0), (20, 20), (30, 0)]]
+        norm = _normalize(sample_glyph)
+        # 1. Bot creates cek-reviews
+        rev_id = record_unknown_glyph(tmp, sample_glyph, norm, trip_id="trip-12345")
+        assert rev_id is not None
+
+        # 2. Worker error logger creates error file
+        err_dir = Path(tmp) / "errors"
+        err_dir.mkdir(parents=True)
+        err_data = {
+            "error_id": "OJL-112233445566",
+            "category": "SvgCaptchaSolverError",
+            "message": f"Gagal memecahkan gambar cek: Glyph cek belum dikenali: {json.dumps(norm)}",
+            "time": "2026-11-24T08:05:00Z",
+            "trip_id": "trip-12345",
+        }
+        (err_dir / "OJL-112233445566.json").write_text(json.dumps(err_data))
+
+        # 3. get_pending_reviews must deduplicate so user sees only 1 review card, not 2
+        pending = get_pending_reviews(tmp)
+        assert len(pending) == 1
+        assert pending[0]["id"] == rev_id
+        assert pending[0]["error_id"] == "OJL-112233445566"
+
+        # 4. Resolving that single review must clear both IDs
+        resolve_review(tmp, rev_id, digit="3", glyph=sample_glyph)
+        assert len(get_pending_reviews(tmp)) == 0
+
+
+def test_solve_records_all_unknown_glyphs_in_two_digit_captcha():
+    from ojol.svg_captcha_solver import get_pending_reviews
+    with tempfile.TemporaryDirectory() as tmp:
+        # SVG with 2 unknown glyphs (spaced > 14px apart)
+        svg = '<svg><polyline points="0,0 5,10 10,0"/><polyline points="50,0 55,10 60,0"/></svg>'
+        with pytest.raises(SvgCaptchaSolverError):
+            solve_polyline_captcha(svg, directory=tmp, trip_id="trip-multi")
+
+        # Both unknown glyphs must be recorded
+        pending = get_pending_reviews(tmp)
+        assert len(pending) == 2
+        assert all(p["trip_id"] == "trip-multi" for p in pending)
