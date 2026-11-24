@@ -631,7 +631,97 @@
     return needs[0];
   }
 
-  async function buyShopItem(resource, shopList = DEFAULT_SHOPS) {
+  async function refillSpbuViaApi(activeVehicle = "motor") {
+    try {
+      // 1. Ambil data kendaraan aktif
+      const kendRes = await fetch("/api/kendaraan", { credentials: "same-origin" });
+      if (!kendRes.ok) return { success: false, error: "Gagal membaca kendaraan" };
+      const kendData = await kendRes.json();
+      const vehicles = Array.isArray(kendData?.items) ? kendData.items : [];
+      const isCar = activeVehicle === "mobil";
+      const vehicle = vehicles.find(v => isCar ? (v.family === "mobil") : (v.family === "motor")) || vehicles[0];
+      if (!vehicle || !vehicle.kode) return { success: false, error: "Kendaraan Ojol belum terdaftar" };
+
+      // 2. Dapatkan daftar SPBU terdekat via /api/tujuan
+      const destRes = await fetch("/api/tujuan", { credentials: "same-origin" });
+      if (!destRes.ok) return { success: false, error: "Gagal membaca lokasi SPBU" };
+      const destData = await destRes.json();
+      const spbus = (destData?.usaha || []).filter(u => u.item === "spbu-pertamina");
+      if (spbus.length === 0) return { success: false, error: "Tidak ada SPBU terdaftar di peta" };
+
+      // Referensi posisi sorting (rumah akun atau koordinat 0,0)
+      let refX = 0, refY = 0;
+      try {
+        const meRes = await fetch("/api/game/me", { credentials: "same-origin" });
+        if (meRes.ok) {
+          const meData = await meRes.json();
+          refX = meData?.home?.x ?? 0;
+          refY = meData?.home?.y ?? 0;
+        }
+      } catch {}
+
+      spbus.sort((a, b) => ((a.x - refX) ** 2 + (a.y - refY) ** 2) - ((b.x - refX) ** 2 + (b.y - refY) ** 2));
+      const spbu = spbus[0];
+      const plotId = spbu.plotId;
+
+      // 3. POST datang ke SPBU
+      const datangRes = await fetch(`/api/spbu/${plotId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          aksi: "datang",
+          kode: vehicle.kode,
+          dorong: false,
+          x: spbu.x,
+          y: spbu.y
+        })
+      });
+      if (!datangRes.ok) {
+        const errData = await datangRes.json().catch(() => ({}));
+        return { success: false, error: errData?.error || `Gagal registrasi hadir di SPBU (${datangRes.status})` };
+      }
+
+      // 4. POST isi bensin penuh
+      const reqId = (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `req_${Date.now()}`;
+      const isiRes = await fetch(`/api/spbu/${plotId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          aksi: "isi",
+          jumlah: "penuh",
+          x: spbu.x,
+          y: spbu.y,
+          requestId: reqId
+        })
+      });
+      const isiData = await isiRes.json().catch(() => ({}));
+
+      // 5. POST pamit dari SPBU
+      try {
+        await fetch(`/api/spbu/${plotId}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "same-origin",
+          body: JSON.stringify({ aksi: "pamit" })
+        });
+      } catch {}
+
+      if (isiRes.ok) {
+        return { success: true, shop: spbu.name || "SPBU", item: isiData.item || "isi-bensin" };
+      } else {
+        return { success: false, error: isiData?.error || `Gagal pengisian tangki (${isiRes.status})` };
+      }
+    } catch (err) {
+      return { success: false, error: err.message || "Gagal menghubungi layanan SPBU" };
+    }
+  }
+
+  async function buyShopItem(resource, shopList = DEFAULT_SHOPS, activeVehicle = "motor") {
+    if (resource === "fuel") {
+      return await refillSpbuViaApi(activeVehicle);
+    }
     const candidates = shopList[resource] || [];
     for (const shop of candidates) {
       try {
@@ -776,12 +866,9 @@
       const needed = evaluateKebutuhanRefill(bars, ojolConfig);
       ojolStats.spbuNeeded = !ojolStats.trip && bars.bensin <= ojolConfig.minBensin;
       if (!needed || ojolStats.trip) return false;
-      if (needed.resource === "fuel") {
-        ojolStats.statusMessage = "Bawa kendaraan Ojol ke SPBU dan buka pompa.";
-        return false;
-      }
 
       const labelMap = {
+        fuel: "⛽ Mengisi Bensin di SPBU...",
         condition: "🔧 Servis Mesin di Bengkel...",
         data: "📶 Membeli Kuota di Konter..."
       };
@@ -789,15 +876,19 @@
       ojolStats.statusMessage = `🛒 Mengisi ${needed.name}...`;
       updateHUDView();
 
-      const result = await buyShopItem(needed.resource);
+      const result = await buyShopItem(needed.resource, DEFAULT_SHOPS, ojolStats.vehicle || "motor");
       if (result.success) {
         addLog(`✅ Berhasil isi ${needed.name} di ${result.shop}!`);
+        ojolStats.spbuNeeded = false;
         await fetchOjolBars();
         updateHUDView();
         await new Promise(r => setTimeout(r, humanJitter(600, 1000)));
         return true;
       } else {
         addLog(`⚠️ Gagal isi ${needed.name}: ${result.error}`);
+        if (needed.resource === "fuel") {
+          ojolStats.statusMessage = "Bawa kendaraan Ojol ke SPBU dan buka pompa.";
+        }
         return false;
       }
     }
@@ -1774,6 +1865,8 @@
     DEFAULT_SHOPS,
     evaluateKebutuhanRefill,
     spbuVehicleMatches,
-    spbuRefillQuote
+    spbuRefillQuote,
+    buyShopItem,
+    refillSpbuViaApi
   };
 });

@@ -528,4 +528,68 @@ test("Auto-Ojol Engine (Khusus Mode Kendarai) - Unit & Integration Tests", async
     assert.equal(konterKs.id, "bdda0310-4488-418f-a479-9710a10e2d96");
     assert.equal(konterKs.item, "pulsa");
   });
+
+  await t.test("Auto-Kebutuhan SPBU API Flow - Verified direct refill via API", async () => {
+    const { buyShopItem, refillSpbuViaApi } = ojol;
+    const calls = [];
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = async (url, opts = {}) => {
+      calls.push({ url, method: opts.method || "GET", body: opts.body ? JSON.parse(opts.body) : undefined });
+      if (url === "/api/kendaraan") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ items: [{ family: "motor", kode: "motor-matic:putih:0", name: "Motor matic" }] })
+        };
+      }
+      if (url === "/api/tujuan") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ usaha: [{ item: "spbu-pertamina", plotId: "P29-U01", name: "SPBU Desa Timur 2", x: 66, y: -103 }] })
+        };
+      }
+      if (url === "/api/game/me") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ home: { x: 75, y: -68 } })
+        };
+      }
+      if (url.startsWith("/api/spbu/P29-U01")) {
+        const payload = opts.body ? JSON.parse(opts.body) : {};
+        if (payload.aksi === "datang") {
+          return { ok: true, status: 200, json: async () => ({ hadir: true }) };
+        }
+        if (payload.aksi === "isi") {
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ replayed: false, item: "isi-bensin-motor", poin: 96, priceMilli: 1920, sebelum: 4, sesudah: 100 })
+          };
+        }
+        if (payload.aksi === "pamit") {
+          return { ok: true, status: 200, json: async () => ({}) };
+        }
+      }
+      return { ok: false, status: 404, json: async () => ({}) };
+    };
+
+    try {
+      const res = await buyShopItem("fuel", undefined, "motor");
+      assert.equal(res.success, true);
+      assert.equal(res.shop, "SPBU Desa Timur 2");
+      assert.equal(res.item, "isi-bensin-motor");
+
+      const spbuCalls = calls.filter(c => c.url.startsWith("/api/spbu/P29-U01"));
+      assert.equal(spbuCalls.length, 3);
+      assert.equal(spbuCalls[0].body.aksi, "datang");
+      assert.equal(spbuCalls[0].body.kode, "motor-matic:putih:0");
+      assert.equal(spbuCalls[1].body.aksi, "isi");
+      assert.equal(spbuCalls[1].body.jumlah, "penuh");
+      assert.equal(spbuCalls[2].body.aksi, "pamit");
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
 });
