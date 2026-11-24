@@ -2431,7 +2431,6 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                         const errIdStr = item.error_id ? `<span style="background: rgba(239, 68, 68, 0.18); color: var(--danger); border-radius: 4px; padding: 2px 8px; font-weight: 700; font-size: 12px;">🚨 ${{escapeHtml(item.error_id)}}</span>` : '';
                         const accStr = item.account_name ? `<span style="background: rgba(167, 139, 250, 0.18); color: #a78bfa; border-radius: 4px; padding: 2px 8px; font-weight: 700; font-size: 12px;">👤 Akun: ${{escapeHtml(item.account_name)}}</span>` : '';
                         const timeStr = item.time ? new Date(item.time).toLocaleTimeString('id-ID', {{ hour: '2-digit', minute: '2-digit', second: '2-digit' }}) : 'Baru saja';
-                        const rid = escapeHtml(item.id);
 
                         let capturedSvgBlock = '';
                         if (item.svg_text && item.svg_text.trim().startsWith('<svg')) {{

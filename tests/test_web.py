@@ -976,3 +976,25 @@ def test_shared_bank_angka_and_crowdsourced_contribution(admin_web):
     assert bank_after["total_contributions"] >= 1
 
 
+def test_dashboard_html_javascript_syntax_valid():
+    import json
+    import re
+    import shutil
+    import subprocess
+    from ojol.web_ui import dashboard_html
+
+    html = dashboard_html({"id": 1, "username": "admin", "is_admin": True, "name": "Admin"})
+    scripts = re.findall(r"<script[\s\S]*?>([\s\S]*?)</script>", html, re.IGNORECASE)
+    assert len(scripts) >= 1
+    node_bin = shutil.which("node")
+    if node_bin:
+        for idx, s in enumerate(scripts):
+            check_code = f"new Function({json.dumps(s)});"
+            res = subprocess.run(
+                [node_bin, "-e", check_code],
+                capture_output=True,
+                text=True,
+            )
+            assert res.returncode == 0, f"Script {idx} has JS syntax error: {res.stderr}"
+
+
