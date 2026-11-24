@@ -1,6 +1,8 @@
 import hashlib
 import hmac
+import json
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,8 +10,12 @@ from starlette.testclient import TestClient
 
 from ojol.accounts import Accounts
 from ojol.control import create_app
+from ojol.identity import save_profile
+from ojol.maintenance import MaintenanceWindow
 from ojol.management import MultiAccountService
+from ojol.session_transfer import parse_cookie_input
 from ojol.web_auth import hash_password, verify_password, verify_telegram_widget
+from ojol.worker_service import WorkerService
 
 
 def make_tg_auth_data(
@@ -177,6 +183,7 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
         )
         assert reg_res.status_code == 200
         assert reg_res.json()["user"]["status"] == "pending"
+        assert {"password_hash", "salt"}.isdisjoint(reg_res.json()["user"])
 
         # 5. Try login before approval -> 400
         login_res = client.post(
@@ -196,6 +203,7 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
             json={"username": "agus_ojol", "password": "password123"},
         )
         assert login_ok.status_code == 200
+        assert {"password_hash", "salt"}.isdisjoint(login_ok.json()["user"])
         assert "ojol_web_session" in client.cookies
 
         # 8. Now root page returns 200 dashboard HTML
@@ -207,6 +215,11 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
         assert "btnCookieToolbar" in dash_page.text
         assert "openCookieModalFor" in dash_page.text
         assert "cookieTargetAccountId" in dash_page.text
+        assert '<dialog id="cookieModal"' in dash_page.text
+        assert 'aria-label="Pilih akun game"' in dash_page.text
+        stylesheet = client.get("/ui/console.css")
+        assert stylesheet.status_code == 200 and "DM Sans" in stylesheet.text
+        assert client.get("/ui/dm-sans.woff2").content.startswith(b"wOF2")
 
         # 9. GET /api/dashboard
         dash_api = client.get("/api/dashboard")
@@ -297,6 +310,144 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
         # Cookie removed or invalidated
         unauth_dash = client.get("/api/dashboard")
         assert unauth_dash.status_code == 401
+
+
+@pytest.fixture
+def admin_web(settings):
+    app = create_app(settings)
+    with TestClient(app) as client:
+        credentials = {"username": "web_admin", "password": "fixture-password"}
+        assert (
+            client.post(
+                "/api/auth/register", json={**credentials, "name": "Admin & <Ops>"}
+            ).status_code
+            == 200
+        )
+        assert client.post("/api/auth/login", json=credentials).status_code == 200
+        yield client, app.state.manager
+
+
+def test_web_cookie_onboarding_and_archive(admin_web, monkeypatch):
+    client, manager = admin_web
+
+    async def install_fixture(settings, payload):
+        directory = settings.runtime_dir
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "http-session.json").write_text(payload)
+        profile = {"nickname": "Akun pertama", "balanceMilli": 112113}
+        save_profile(directory, profile)
+        return profile
+
+    install = AsyncMock(side_effect=install_fixture)
+    monkeypatch.setattr("ojol.session_transfer.import_session", install)
+    assert r"Admin & \u003cOps>" in client.get("/").text
+    assert client.get("/api/dashboard").json()["account"] is None
+    response = client.post("/api/control/import-cookie", json={"cookie": "fixture-session"})
+    assert response.status_code == 200
+    first = client.get("/api/dashboard").json()["account"]
+    assert first["name"] == "Akun pertama"
+    assert first["has_cookie"] is True
+    assert "cookie_hash" not in first
+
+    archived = client.post("/api/accounts/archive", json={"account_id": first["id"]})
+    assert archived.status_code == 200
+    row = client.get("/api/accounts").json()["accounts"][0]
+    assert row["archived"] and row["has_cookie"] and not row["is_running"]
+    assert client.get("/api/dashboard").json()["accounts"] == []
+    account = manager.registry.get(first["id"], archived=True)
+    assert (manager.registry.scoped_settings(account).runtime_dir / "STOP").is_file()
+
+    second = client.post("/api/accounts/create", json={"name": "Cadangan"}).json()["account"]
+    invalid = client.post(
+        "/api/control/import-cookie",
+        json={"cookie": "different-fixture", "account_id": first["id"]},
+    )
+    assert invalid.status_code == 400
+    assert install.await_count == 1
+    assert client.get("/api/dashboard").json()["account"]["id"] == second["id"]
+    restored = client.post(
+        "/api/accounts/archive", json={"account_id": first["id"], "archived": False}
+    )
+    assert restored.status_code == 200
+    assert len(client.get("/api/dashboard").json()["accounts"]) == 2
+
+
+def test_web_dashboard_keeps_fractional_balances(admin_web):
+    client, manager = admin_web
+    for name, wallet, income in (("Satu", "112.113", "0.704"), ("Dua", "1500", "1.001")):
+        account = client.post("/api/accounts/create", json={"name": name}).json()["account"]
+        directory = manager.service(account["id"]).settings.runtime_dir
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "status.json").write_text(
+            json.dumps(
+                {
+                    "snapshot_received_at": "2026-11-24T01:00:00+00:00",
+                    "snapshot": {"wallet": wallet, "today_income": income, "today_count": 1},
+                }
+            )
+        )
+        (directory / "game-sync.json").write_text(
+            json.dumps(
+                {
+                    "checked_at": "2026-11-24T00:00:00+00:00",
+                    "snapshot": {"wallet": "0", "today_income": "0", "today_count": 0},
+                }
+            )
+        )
+    response = client.get("/api/dashboard")
+    assert response.status_code == 200
+    totals = response.json()["all_accounts_summary"]
+    assert totals["total_wallet"] == "1.612,113"
+    assert totals["total_income"] == "1,705"
+    assert totals["total_wallet_num"] == 1612.113
+    assert totals["total_trips"] == 2
+    assert response.json()["snapshot"]["wallet"] == "1500"
+
+
+def test_web_admin_rejects_invalid_worker_settings(admin_web):
+    client, manager = admin_web
+    response = client.post(
+        "/api/admin/settings", json={"max_active_workers": 0, "idle_poll_seconds": 25}
+    )
+    assert response.status_code == 400
+    assert manager.registry.get_all_settings()["max_active_workers"] == 3
+    assert manager.registry.get_all_settings()["idle_poll_seconds"] == 10
+    valid = client.post("/api/admin/settings", json={"max_active_workers": "2"})
+    assert valid.status_code == 200
+    assert valid.json()["settings"]["max_active_workers"] == 2
+
+
+def test_web_run_respects_account_target_and_worker_capacity(admin_web, monkeypatch):
+    client, manager = admin_web
+    manager.settings.operator_authorized = True
+    manager.registry.set_limit("max_active_workers", 1)
+    first, second = [
+        client.post("/api/accounts/create", json={"name": name}).json()["account"]["id"]
+        for name in ("Satu", "Dua")
+    ]
+    for account_id in (first, second):
+        directory = manager.service(account_id).settings.runtime_dir
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "http-session.json").write_text(json.dumps(parse_cookie_input(account_id)))
+
+    worker = WorkerService(manager.settings)
+    spawn = AsyncMock(return_value=SimpleNamespace(pid=1234, returncode=None))
+    monkeypatch.setattr("ojol.worker_service.asyncio.create_subprocess_exec", spawn)
+
+    async def dispatch(directory, command, **kwargs):
+        return await worker.handle_request(command) if command["action"] == "start" else None
+
+    monkeypatch.setattr("ojol.worker_service.send_worker_command", dispatch)
+    manager.maintenance_file.write_text(json.dumps(MaintenanceWindow.create_manual().payload()))
+    response = client.post("/api/control/run-needs", params={"account_id": first})
+    assert response.status_code == 200
+    assert first in worker.workers and second not in worker.workers
+    manager.maintenance_file.unlink()
+    assert client.get("/api/dashboard").json()["account"]["id"] == second
+    rejected = client.post("/api/control/run", params={"account_id": second})
+    assert rejected.status_code == 400
+    assert "Slot worker penuh" in rejected.json()["detail"]
+    spawn.assert_awaited_once()
 
 
 def test_telegram_widget_login_and_existing_accounts_merge(settings):
@@ -645,6 +796,12 @@ def test_admin_notifications_panel_and_api(settings):
         user_notif_ids = {n["id"] for n in user_notif_res.json()["notifications"]}
         assert notice_user.stem in user_notif_ids
         assert notice_admin.stem not in user_notif_ids
+        bad_target = client.post("/api/control/run", params={"account_id": acc_admin["id"]})
+        assert bad_target.status_code == 400
+        archived = client.post("/api/accounts/archive", json={"account_id": acc_user["id"]})
+        assert archived.status_code == 200
+        assert client.get("/api/notifications").json()["notifications"] == []
+        assert client.post("/api/notifications/read").json()["marked_count"] == 0
 
         client.post("/api/auth/logout")
 
@@ -670,6 +827,7 @@ def test_admin_notifications_panel_and_api(settings):
         assert notice_user.stem in admin_notif_ids
         assert notice_admin.stem in admin_notif_ids
         assert notice_system.stem in admin_notif_ids
+        assert not next(n for n in admin_notif_data if n["id"] == notice_system.stem)["read"]
 
         # Admin mark all read
         mark_res = client.post("/api/admin/notifications/read")

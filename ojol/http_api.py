@@ -10,7 +10,7 @@ import secrets
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
-from math import ceil
+from math import ceil, floor
 from pathlib import Path
 from uuid import UUID, uuid4
 
@@ -28,7 +28,7 @@ from .shop_locations import (
     BPJS_KANTOR_BY_VILLAGE,
     GYM_FACILITIES_BY_VILLAGE,
     HEALTH_FACILITIES_BY_VILLAGE,
-    NEED_FALLBACK_PLOTS,
+    NEED_SHOP_CATEGORIES,
     NEED_SHOPS_BY_VILLAGE,
     RECREATION_FACILITIES_BY_VILLAGE,
     SHOPS_BY_VILLAGE,
@@ -151,6 +151,13 @@ def ojol_vehicle(payload, trip):
     available = payload.get("vehicles", [payload.get("vehicle")])
     if not isinstance(available, list):
         raise HttpCoreError("Daftar kendaraan Ojol belum dapat dibaca", recoverable=True)
+    selected = payload.get("vehicle")
+    if (
+        "bensinMin" in (payload.get("pakai") or {})
+        and selected in ("motor", "mobil")
+        and selected in available
+    ):
+        return selected
     return next((vehicle for vehicle in ("mobil", "motor") if vehicle in available), None)
 
 
@@ -351,11 +358,35 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
             f"{done:%H.%M} {icon} {receipt['from']['label']} → {receipt['to']['label']} · +{display(coin(receipt['netMilli']))}"
         )
     bars = ojol["bars"] if require_ojol else (ojol.get("bars") or {})
+    minimum = (ojol.get("pakai") or {}).get("bensinMin")
+    min_fuel = minimum if type(minimum) is int and 1 <= minimum <= 100 else None
+    fuel = bars["bensin"] if require_ojol else bars.get("bensin", 0)
+    if vehicle and min_fuel is not None:
+        tank = "bensinMobil" if vehicle == "mobil" else "bensin"
+        rows = needs.get("needs")
+        tank_value = (
+            next(
+                (
+                    row.get("value")
+                    for row in rows
+                    if isinstance(row, dict) and row.get("id") == tank
+                ),
+                None,
+            )
+            if isinstance(rows, list)
+            else None
+        )
+        if type(tank_value) in (int, float) and 0 <= tank_value <= 100:
+            fuel = floor(tank_value)
+        elif vehicle != ojol.get("vehicle"):
+            raise HttpCoreError("Tangki kendaraan Ojol belum dapat dibedakan", recoverable=True)
+        elif type(fuel) in (int, float) and 0 <= fuel <= 100:
+            fuel = floor(fuel)
     income = ojol["earnedTodayMilli"] if require_ojol else ojol.get("earnedTodayMilli", 0)
     return Snapshot(
         observed_at=server_now,
         wallet=coin(me["balanceMilli"]),
-        fuel=integer(bars["bensin"] if require_ojol else bars.get("bensin", 0)),
+        fuel=integer(fuel),
         condition=integer(bars["kendaraan"] if require_ojol else bars.get("kendaraan", 0)),
         data=integer(bars["kuota"] if require_ojol else bars.get("kuota", 0)),
         phase=phase,
@@ -376,6 +407,8 @@ def snapshot_from_api(ojol, me, needs, server_now, *, require_ojol=True):
         village=(me.get("home") or {}).get("desa"),
         sleep_schedule=sleep_schedule,
         ojol_vehicle=vehicle,
+        ojol_min_fuel=min_fuel,
+        ojol_fuel_blocked=bool(ojol.get("problem") and ojol.get("fix") == "bensin"),
         ojol_resting=is_ojol_resting,
         ojol_rest_until=ojol_rest_until,
         ojol_shift_done=is_shift_done,
@@ -617,6 +650,7 @@ class OjolHttpApi:
                 "/api/kebutuhan?tempat=fisik",
                 "/api/minigame",
                 "/api/time",
+                "/api/tujuan",
                 "/kampung",
                 "/api/bpjs",
                 "/api/bpjs/bayar",
@@ -920,8 +954,19 @@ class OjolHttpApi:
     async def resource_items(self, resource):
         if self.vehicle == "mobil" and resource == "condition":
             return ITEMS[resource] | {CAR_SERVICE}
-        if resource == "fuel":
-            return ITEMS[resource] | {EV_CHARGE}
+        if resource == "fuel" and self.vehicle == "mobil":
+            garage = (await self.request("/api/kendaraan")).get("items")
+            cars = (
+                [row for row in garage if isinstance(row, dict) and row.get("family") == "mobil"]
+                if isinstance(garage, list)
+                else []
+            )
+            power = [row.get("listrik") for row in cars]
+            if not power or any(type(value) is not bool for value in power) or len(set(power)) != 1:
+                raise HttpCoreError(
+                    "Jenis tenaga mobil Ojol belum terverifikasi", category="rejected"
+                )
+            return {EV_CHARGE} if power[0] else ITEMS[resource]
         return ITEMS[resource]
 
     def ojol_shop_locations(self, resource):
@@ -993,6 +1038,8 @@ class OjolHttpApi:
             raise HttpCoreError("Status atau kepemilikan toko belum dapat diverifikasi")
         if catalog["mine"] or not catalog["open"]:
             return catalog, []
+        if resource == "fuel" and isinstance(catalog.get("spbu"), dict):
+            return catalog, []
         products = []
         for row in catalog["menu"]:
             item = row["item"]
@@ -1042,12 +1089,6 @@ class OjolHttpApi:
                 enabled=not bool(sold_out),
             )
             products.append(product)
-        if resource == "fuel":
-            spklu_products = [
-                p for p in products if json.loads(p.row_text).get("item") == EV_CHARGE
-            ]
-            if spklu_products:
-                products = spklu_products
         return catalog, products
 
     async def preview_shop(self, location, resource, effects, allowed_items):
@@ -1074,7 +1115,9 @@ class OjolHttpApi:
             catalog, products = await self.products(location.id, resource, effects)
         except ShopClosed:
             return None
-        if catalog.get("plang") != location.name or not products:
+        if catalog.get("plang") != location.name:
+            raise HttpCoreError("Identitas usaha kebutuhan belum terverifikasi", category="schema")
+        if not products:
             return None
         return ShopPreview(
             id=location.id,
@@ -1085,52 +1128,107 @@ class OjolHttpApi:
             products=products,
         )
 
-    async def read_previews(self, calls):
+    async def read_previews(self, calls, *, return_exceptions=False):
         tasks = [asyncio.create_task(call) for call in calls]
         try:
-            return await asyncio.gather(*tasks)
+            return await asyncio.gather(*tasks, return_exceptions=return_exceptions)
         finally:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
 
-    async def akademis_need_shops(self, resource, effects):
-        locations = NEED_SHOPS_BY_VILLAGE.get(self.home["desa"], {}).get(resource, ())
-        shops = await self.read_previews(
-            self.need_shop(location, resource, effects)
-            for location in locations
-            if "akademis.ai" in location.name.casefold()
-        )
-        sold_out = (
-            bool(locations)
-            and len(shops) == len(locations)
-            and all(
-                shop is not None and all(not product.enabled for product in shop.products)
-                for shop in shops
-            )
-        )
-        return shops, sold_out
-
-    async def fallback_need_shop(self, resource, effects):
-        village = self.home["desa"]
-        fallback = NEED_FALLBACK_PLOTS.get(village, {}).get(resource)
-        if fallback is None:
-            return None
-        plot, category = fallback
+    async def directory_need_shop(self, row, resource, effects, distance_squared):
+        plot, category = row["plotId"], row["item"]
         detail = await self.request(f"/api/world/plots/{plot}?t={int(time.time() * 1000)}")
         business = detail.get("business") or {}
-        name = business.get("name")
-        if (
-            detail.get("id") != plot
-            or business.get("desa") != village
-            or business.get("catalogId") != category
-            or not isinstance(name, str)
-            or not name.strip()
-            or "akademis.ai" in name.casefold()
-        ):
+        if detail.get("id") != plot or not business:
+            raise HttpCoreError("Detail plot usaha berubah", category="schema")
+        if business.get("desa") != self.home["desa"]:
             return None
-        identifier = str(UUID(business["id"]))
-        return await self.need_shop(NeedShop(identifier, plot, name, category), resource, effects)
+        name = business.get("name")
+        if business.get("catalogId") != category or name != row["name"]:
+            raise HttpCoreError("Identitas usaha kebutuhan berubah", category="schema")
+        try:
+            identifier = str(UUID(business["id"]))
+        except (KeyError, ValueError, TypeError, AttributeError) as exc:
+            raise HttpCoreError(
+                "ID usaha kebutuhan belum terverifikasi", category="schema"
+            ) from exc
+        shop = await self.need_shop(NeedShop(identifier, plot, name, category), resource, effects)
+        return shop.model_copy(update={"distance_squared": distance_squared}) if shop else None
+
+    async def need_suppliers(self, resource, effects, *, preferred_only=False):
+        village = self.home["desa"]
+        registered = tuple(
+            loc
+            for loc in NEED_SHOPS_BY_VILLAGE.get(village, {}).get(resource, ())
+            if "akademis.ai" in loc.name.casefold()
+        )
+        registered_plots = {loc.plot_id for loc in registered}
+        directory = await self.request("/api/tujuan")
+        rows = directory.get("usaha") if isinstance(directory, dict) else None
+        if not isinstance(rows, list):
+            raise HttpCoreError("Direktori usaha belum terverifikasi", category="schema")
+        preferred, nearby = [], []
+        seen = set(registered_plots)
+        for row in rows:
+            if not isinstance(row, dict) or row.get("item") not in NEED_SHOP_CATEGORIES[resource]:
+                continue
+            plot, name = row.get("plotId"), row.get("name")
+            if (
+                not isinstance(plot, str)
+                or not re.fullmatch(r"[A-Z][0-9]{2}-U[0-9]{2}", plot)
+                or plot in seen
+                or not isinstance(name, str)
+                or not name.strip()
+                or type(row.get("x")) is not int
+                or type(row.get("y")) is not int
+            ):
+                continue
+            distance = (row["x"] - self.home["x"]) ** 2 + (row["y"] - self.home["y"]) ** 2
+            branded = "akademis.ai" in name.casefold()
+            if branded or distance <= 60**2:
+                seen.add(plot)
+                (preferred if branded else nearby).append((distance, row))
+
+        def available_shops(results, *, require_certain):
+            errors = [item for item in results if isinstance(item, BaseException)]
+            for exc in errors:
+                if not isinstance(exc, HttpCoreError) or exc.category == "auth":
+                    raise exc
+            available = [
+                shop
+                for shop in results
+                if isinstance(shop, ShopPreview) and any(p.enabled for p in shop.products)
+            ]
+            if require_certain and not available and errors:
+                raise errors[0]
+            return available
+
+        shops = await self.read_previews(
+            [self.need_shop(loc, resource, effects) for loc in registered]
+            + [
+                self.directory_need_shop(row, resource, effects, distance)
+                for distance, row in preferred
+            ],
+            return_exceptions=True,
+        )
+        available = available_shops(shops, require_certain=True)
+        if available or preferred_only:
+            return available, False
+        candidates = sorted(nearby, key=lambda candidate: (candidate[0], candidate[1]["plotId"]))
+        for start in range(0, len(candidates), 6):
+            fallback = await self.read_previews(
+                (
+                    self.directory_need_shop(row, resource, effects, distance)
+                    for distance, row in candidates[start : start + 6]
+                ),
+                return_exceptions=True,
+            )
+            available = available_shops(fallback, require_certain=False)
+            if available:
+                return available, True
+        return [], True
 
     minigame_wait_multiplier: float = 1.0
 
@@ -1584,11 +1682,16 @@ class OjolHttpApi:
         if resource not in CATEGORIES and resource not in NEEDS:
             raise HttpCoreError("Resource tidak didukung", category="blocked")
         self.catalog.pop(resource, None)
-        sold_out = False
+        fallback_allowed = False
         try:
             async with asyncio.timeout(25):
                 if resource in {"fuel", "condition"} or not getattr(self, "home", None):
-                    await self.snapshot()
+                    current = await self.snapshot()
+                    if resource == "fuel" and current.ojol_min_fuel is not None:
+                        return {
+                            "shops": [],
+                            "navigation": {"method": "spbu_visit", "travel_request_sent": False},
+                        }
                 if not self.home:
                     raise HttpCoreError("Rumah akun belum tersedia", category="blocked")
                 if resource == "fisik":
@@ -1864,17 +1967,9 @@ class OjolHttpApi:
                                 products=products,
                             )
                         ]
-                    if not shops and (
-                        NEED_SHOPS_BY_VILLAGE.get(self.home["desa"], {}).get(resource)
-                        or NEED_FALLBACK_PLOTS.get(self.home["desa"], {}).get(resource)
-                    ):
+                    if not shops and resource in NEED_SHOP_CATEGORIES:
                         effects = await self.effects(for_needs=True)
-                        shops, sold_out = await self.akademis_need_shops(resource, effects)
-                        if sold_out or not shops:
-                            fallback = await self.fallback_need_shop(resource, effects)
-                            if fallback:
-                                shops = [fallback]
-                                sold_out = True
+                        shops, fallback_allowed = await self.need_suppliers(resource, effects)
                 else:
                     locations = self.ojol_shop_locations(resource)
                     if not locations:
@@ -1911,7 +2006,7 @@ class OjolHttpApi:
                 "panel_verified": True,
                 "travel_request_sent": False,
                 **(
-                    {"akademis_sold_out": sold_out}
+                    {"akademis_unavailable": fallback_allowed}
                     if resource in NEEDS and resource != "fisik"
                     else {}
                 ),
@@ -2003,6 +2098,10 @@ class OjolHttpApi:
         state = await self.snapshot()
         if state.phase == "sleeping":
             raise HttpCoreError("Karakter sedang tidur; transaksi ditunda", category="sleeping")
+        if resource == "fuel" and state.ojol_min_fuel is not None:
+            raise HttpCoreError(
+                "Pengisian tangki memerlukan kunjungan ke SPBU", category="rejected"
+            )
         identity = json.loads(product.row_text) if product.row_text else {}
         if is_bathroom:
             if not self.home:
@@ -2054,17 +2153,23 @@ class OjolHttpApi:
                 and service.get("open") is not False
             )
         elif fallback and self.home:
-            locations = NEED_SHOPS_BY_VILLAGE.get(self.home["desa"], {}).get(resource, ())
-            sold_out = True
-            if locations:
-                _, sold_out = await self.akademis_need_shops(resource, effects)
-            fresh_shop = await self.fallback_need_shop(resource, effects) if sold_out else None
-            eligible = (
-                fresh_shop is not None
-                and fresh_shop.id == shop_id
-                and fresh_shop.name == shop.name
-                and product in fresh_shop.products
+            candidates, allowed = await self.need_suppliers(resource, effects)
+            eligible = allowed and any(
+                fresh.id == shop_id and fresh.name == shop.name and product in fresh.products
+                for fresh in candidates
             )
+        elif is_need and shop.preferred and self.home:
+            if any(
+                location.id == shop_id
+                for location in NEED_SHOPS_BY_VILLAGE.get(self.home["desa"], {}).get(resource, ())
+            ):
+                eligible = True
+            else:
+                candidates, _ = await self.need_suppliers(resource, effects, preferred_only=True)
+                eligible = any(
+                    fresh.id == shop_id and fresh.name == shop.name and product in fresh.products
+                    for fresh in candidates
+                )
         else:
             locations = (
                 NEED_SHOPS_BY_VILLAGE.get((self.home or {}).get("desa"), {}).get(resource, ())

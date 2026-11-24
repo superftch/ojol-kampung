@@ -140,11 +140,22 @@ def next_step(
         )
     resources = sorted((getattr(state, key), key) for key in ("fuel", "condition", "data"))
     for value, resource in resources:
+        if resource == "fuel" and state.ojol_min_fuel is not None:
+            continue
         thresh = settings.threshold_for(resource)
         if value < thresh and resource not in (deferred or ()):
             return Step(
                 action="maintain", resource=resource, reason=f"{resource} {value}% di bawah target"
             )
+    if state.ojol_min_fuel is not None and (
+        state.ojol_fuel_blocked or state.fuel < state.ojol_min_fuel
+    ):
+        return Step(
+            action="wait",
+            resource="fuel",
+            reason="Bawa kendaraan Ojol ke SPBU untuk isi ulang.",
+            wait_seconds=settings.idle_poll_seconds,
+        )
     if any("Cari order" in button for button in state.buttons):
         return Step(action="search", reason="Resource aman, cari order melalui UI.")
     if any(
@@ -188,6 +199,12 @@ def select_shop(
         for product in shop.products:
             gain = product.effects.get(resource, 0)
             if product.name not in ALLOWED_ITEMS[resource] or not product.enabled or gain <= 0:
+                continue
+            if (
+                resource == "fuel"
+                and product.name == "Isi daya SPKLU (mobil listrik)"
+                and state.ojol_vehicle != "mobil"
+            ):
                 continue
             if (
                 resource == "condition"
@@ -309,13 +326,14 @@ def select_need(
             not is_health_fasum,
             not is_sppg_fasum,
             not is_rec_fasum,
-            is_streak_exhausted,
             not shop.preferred,
+            last_purchases.get(shop.id, 0) if shop.preferred else 0,
+            is_streak_exhausted,
             plan.total_cost / points,
             plan.projected_percent < thresh,
             plan.total_cost,
             -points,
-            last_purchases.get(shop.id, 0) if shop.preferred else 0,
+            shop.distance_squared,
             shop.id,
             plan.product.row_text,
         )

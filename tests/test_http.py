@@ -18,7 +18,7 @@ from ojol.http_api import CATEGORIES, ITEMS, ORIGIN, HttpCoreError, OjolHttpApi,
 from ojol.identity import cached_profile, save_profile, verified_profile
 from ojol.journal import Journal
 from ojol.models import ShopPreview
-from ojol.planner import select_need, select_shop
+from ojol.planner import next_step, select_need, select_shop
 from ojol.shop_locations import NeedShop, ShopLocation
 from ojol.study import set_subject
 from ojol.ui import HTTP_TOOLS, HttpUI
@@ -330,7 +330,7 @@ def world():
         },
         "needs": {"asleep": False},
         "need_locations": {},
-        "need_fallback": {},
+        "directory": [],
         "plot_details": {},
         "need_effects": {},
         "facility_effects": {
@@ -381,9 +381,6 @@ async def api(settings, world, monkeypatch):
     monkeypatch.setattr(
         "ojol.http_api.NEED_SHOPS_BY_VILLAGE", {"fixture-desa": world["need_locations"]}
     )
-    monkeypatch.setattr(
-        "ojol.http_api.NEED_FALLBACK_PLOTS", {"fixture-desa": world["need_fallback"]}
-    )
 
     def handle(request):
         calls.append(request)
@@ -409,6 +406,7 @@ async def api(settings, world, monkeypatch):
             "/api/game/me": world["me"],
             "/api/kebutuhan": world["needs"],
             "/api/time": world["time"],
+            "/api/tujuan": {"usaha": world["directory"]},
             **{"/api/shops/" + key: value for key, value in world["shops"].items()},
             **{"/api/facilities/" + key: value for key, value in world["facilities"].items()},
             **{"/api/world/plots/" + key: value for key, value in world["plot_details"].items()},
@@ -625,7 +623,7 @@ async def test_snapshot_tracks_12_hour_limit_from_narik_menit(api, world):
 @pytest.mark.parametrize(
     ("vehicle", "item", "name"),
     [
-        ("motor", "isi-daya", "Isi daya SPKLU (mobil listrik)"),
+        ("motor", "isi-pertalite", "Isi Pertalite"),
         ("mobil", "isi-daya", "Isi daya SPKLU (mobil listrik)"),
     ],
 )
@@ -653,6 +651,39 @@ async def test_refill_uses_matching_power_source(api, world, settings, vehicle, 
     await api.purchase(product.model_dump(mode="json"), "35", fuel, "20", str(uuid4()))
     posts = [r for r in api.calls if r.method == "POST"]
     assert len(posts) == 1 and json.loads(posts[0].content)["item"] == item
+
+
+@pytest.mark.parametrize(
+    ("vehicle", "tank", "other_tank"),
+    [
+        ("motor", "bensin", "bensinMobil"),
+        ("mobil", "bensinMobil", "bensin"),
+    ],
+)
+async def test_spbu_worker_reads_selected_tank_and_waits_for_refill(
+    api, world, settings, vehicle, tank, other_tank
+):
+    world["ojol"].update(
+        vehicle=vehicle,
+        vehicles=["motor", "mobil"],
+        pakai={"bensin": 6, "bensinMin": 3, "kendaraan": 2, "kuota": 4},
+        problem="Bensin kurang",
+        fix="bensin",
+        bars={"bensin": 88, "kendaraan": 90, "kuota": 90},
+    )
+    rows = [{"id": other_tank, "value": 88}, {"id": tank, "value": 2}]
+    world["needs"].update(enabled=True, needs=rows)
+    state = await api.snapshot()
+    assert state.ojol_vehicle == vehicle
+    assert state.fuel == 2
+    assert next_step(state, settings).action == "wait"
+    assert next_step(state, settings).resource == "fuel"
+    preview = await api.preview("fuel")
+    assert preview["shops"] == [] and preview["navigation"]["method"] == "spbu_visit"
+    rows[-1]["value"] = 100
+    world["ojol"].update(problem=None, fix=None)
+    assert next_step(await api.snapshot(), settings).action == "search"
+    assert all(request.method == "GET" for request in api.calls)
 
 
 async def test_car_condition_prefers_lower_cost_for_same_recovery(api, world, settings):
@@ -979,7 +1010,7 @@ def add_food_supplier(world, name, price, *, fallback=False):
         "menu": [{"item": "soto", "name": "Soto", "priceMilli": price}],
     }
     if fallback:
-        world["need_fallback"]["makan"] = (plot, category)
+        world["directory"].append({"plotId": plot, "name": name, "item": category, "x": 2, "y": 0})
         world["plot_details"][plot] = {
             "id": plot,
             "business": {
@@ -994,13 +1025,15 @@ def add_food_supplier(world, name, price, *, fallback=False):
     return shop_id
 
 
-async def test_need_value_beats_rotation_and_rotates_only_equivalent_plans(api, world, settings):
+async def test_need_rotates_available_akademis_shops_before_comparing_item_value(
+    api, world, settings
+):
     setup_food_catalog(world)
     other = add_food_supplier(world, "Akademis.ai Cabang", 1200)
     before = await api.snapshot()
     shops = [ShopPreview.model_validate(row) for row in (await api.preview("makan"))["shops"]]
     choice, _ = select_need(before, "makan", shops, settings, Decimal(0), {SHOP: 20, other: 10})
-    assert choice.id == SHOP
+    assert choice.id == other
     limited = settings.model_copy(update={"max_spend": Decimal(1)})
     choice, _ = select_need(before, "makan", shops, limited, Decimal(0), {SHOP: 20, other: 10})
     assert choice.id == SHOP
@@ -1012,12 +1045,12 @@ async def test_need_value_beats_rotation_and_rotates_only_equivalent_plans(api, 
 
 
 @pytest.mark.parametrize("status", ["in_stock", "closed", "own_shop", "empty_menu", "unknown"])
-async def test_need_fallback_requires_all_akademis_catalogs_prove_stockout(api, world, status):
+async def test_need_fallback_requires_akademis_unavailable(api, world, status):
     setup_food_catalog(world)
     for row in world["shop"]["menu"]:
         row["habis"] = "bahan"
     other = add_food_supplier(world, "Akademis.ai Cabang", 1200)
-    add_food_supplier(world, "Warung cadangan", 100, fallback=True)
+    fallback = add_food_supplier(world, "Warung cadangan", 100, fallback=True)
     catalog = world["shops"][other]
     if status == "closed":
         catalog["open"] = False
@@ -1032,11 +1065,12 @@ async def test_need_fallback_requires_all_akademis_catalogs_prove_stockout(api, 
             await api.preview("makan")
     else:
         preview = await api.preview("makan")
-        assert preview["navigation"]["akademis_sold_out"] is False
+        assert preview["navigation"]["akademis_unavailable"] is (status != "in_stock")
         assert [shop["id"] for shop in preview["shops"]] == (
-            [other] if status == "in_stock" else []
+            [other] if status == "in_stock" else [fallback]
         )
-    assert not any("/api/world/plots/" in request.url.path for request in api.calls)
+    if status in {"in_stock", "unknown"}:
+        assert not any("/api/world/plots/" in request.url.path for request in api.calls)
 
 
 async def test_need_fallback_rechecks_akademis_stock_before_purchase(api, world, settings):
@@ -1049,7 +1083,7 @@ async def test_need_fallback_rechecks_akademis_stock_before_purchase(api, world,
     fallback = add_food_supplier(world, "Warung cadangan", 100, fallback=True)
     before = await api.snapshot()
     preview = await api.preview("makan")
-    assert preview["navigation"]["akademis_sold_out"] is True
+    assert preview["navigation"]["akademis_unavailable"] is True
     shops = [ShopPreview.model_validate(row) for row in preview["shops"]]
     assert select_need(before, "makan", shops, settings, Decimal(0), {}) is None
     supplier, plan = select_need(
@@ -1067,6 +1101,39 @@ async def test_need_fallback_rechecks_akademis_stock_before_purchase(api, world,
     assert [request.url.path for request in api.calls if request.method == "POST"] == [
         f"/api/shops/{fallback}/buy"
     ]
+
+
+async def test_need_directory_prioritizes_new_akademis_and_limits_fallback(api, world):
+    setup_food_catalog(world)
+    for row in world["shop"]["menu"]:
+        row["habis"] = True
+    preferred = add_food_supplier(world, "Akademis.ai Cabang Baru", 1100)
+    location = world["need_locations"]["makan"].pop()
+    world["directory"].append(
+        {
+            "plotId": location.plot_id,
+            "item": location.category,
+            "name": location.name,
+            "x": 10,
+            "y": 0,
+        }
+    )
+    world["plot_details"][location.plot_id] = {
+        "id": location.plot_id,
+        "business": {
+            "id": preferred,
+            "name": location.name,
+            "catalogId": location.category,
+            "desa": "fixture-desa",
+        },
+    }
+    fallback = add_food_supplier(world, "Usaha dekat", 100, fallback=True)
+    assert [shop["id"] for shop in (await api.preview("makan"))["shops"]] == [preferred]
+    world["shops"][preferred]["open"] = False
+    assert [shop["id"] for shop in (await api.preview("makan"))["shops"]] == [fallback]
+    world["directory"][-1]["x"] = 61
+    assert (await api.preview("makan"))["shops"] == []
+    assert all(request.method == "GET" for request in api.calls)
 
 
 async def test_need_purchase_keeps_uncertain_post_single_attempt(api, world, settings):
@@ -2465,15 +2532,21 @@ async def test_kamar_mandi_kebersihan_preview_and_purchase(api, world):
     assert any(p.get("aksi") == "mandi" for p in posted)
 
 
-async def test_penampilan_fallback_kampung_sebelah(api, world, monkeypatch):
-    from ojol.shop_locations import NEED_FALLBACK_PLOTS as REAL_FALLBACK_PLOTS
-
+async def test_penampilan_fallback_kampung_sebelah(api, world):
     setup_food_catalog(world)
     world["needs"]["needs"].append({"id": "penampilan", "name": "Penampilan", "value": 0})
-    monkeypatch.setattr("ojol.http_api.NEED_FALLBACK_PLOTS", REAL_FALLBACK_PLOTS)
     world["me"]["home"]["desa"] = "kampung-sebelah"
     await api.snapshot()
     shop_id = "57458327-df64-483f-8904-0ec40bfc28fe"
+    world["directory"].append(
+        {
+            "plotId": "S09-U09",
+            "item": "barbershop",
+            "name": "Cukur Sisi Jalan",
+            "x": 10,
+            "y": 0,
+        }
+    )
     world["plot_details"]["S09-U09"] = {
         "id": "S09-U09",
         "business": {

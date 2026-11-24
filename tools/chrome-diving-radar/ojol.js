@@ -552,11 +552,6 @@
   // ==========================================
 
   const DEFAULT_SHOPS = {
-    fuel: [
-      { id: "914b6bb0-6684-4037-93bc-423810875eae", name: "SPBU Kampung Sebelah", item: "isi-pertalite" },
-      { id: "2106025d-77ac-4a49-8520-8d84740ef17f", name: "SPBU Utara 1", item: "isi-pertalite" },
-      { id: "8d1714a7-f9e0-4f38-b5a2-dcc0e2834c08", name: "SPBU Utara 2", item: "isi-pertalite" }
-    ],
     condition: [
       { id: "b2400595-7b5b-4571-aa2e-bcff27a04d9f", name: "Bengke spesialis motor", item: "servis-motor" },
       { id: "4f1f6929-8ea1-4209-ab30-523b314efe11", name: "Akademis.ai Motor", item: "servis-motor" },
@@ -568,6 +563,29 @@
       { id: "dffbbddb-37f7-4e2d-9d22-f91af809c2ab", name: "TOPUP CELL", item: "pulsa" }
     ]
   };
+
+  function spbuVehicleMatches(vehicleLabel, meterLabel, family) {
+    const name = vehicleLabel.trim().replace(/\s*·\s*didorong$/, "");
+    const fuel = meterLabel.trim();
+    if (name === "Mobil listrik") {
+      return family === "mobil" && /^Baterai\b/.test(fuel) && /\bSPKLU\b/.test(fuel);
+    }
+    const combustion = family === "motor" && /^Motor\b/.test(name)
+      || family === "mobil" && ["City car", "Pick-up", "Mobil keluarga", "Sedan mewah"].includes(name);
+    return combustion && /^Bensin\b/.test(fuel) && /\bPertalite\b/.test(fuel);
+  }
+
+  function spbuRefillQuote(meterLabel, buttonLabel, threshold) {
+    const currentText = meterLabel.match(/^(?:Bensin|Baterai)\s+(\d+(?:,\d+)?)\s+dari 100 poin\b/);
+    const quote = buttonLabel.trim().match(/^Isi\s+(\d+(?:,\d+)?)\s+poin\s*[·•]\s*(\d+(?:,\d+)?)\s+koin$/);
+    if (!currentText || !quote) return false;
+    const number = text => Number(text.replace(",", "."));
+    const fuel = number(currentText[1]);
+    const points = number(quote[1]);
+    const price = number(quote[2]);
+    return fuel <= threshold && points >= 1 && Math.abs(fuel + points - 100) <= .02
+      && price > 0 && price <= 2 && Math.abs(price - points * .02) <= .0011;
+  }
 
   function evaluateKebutuhanRefill(bars, config = {}) {
     if (!bars) return null;
@@ -707,6 +725,9 @@
       },
       narikMenit: 0,
       narikMaksMenit: 840,
+      vehicle: null,
+      trip: null,
+      spbuNeeded: false,
       logs: []
     };
 
@@ -723,6 +744,8 @@
             kondisi: typeof data.bars.kendaraan === "number" ? data.bars.kendaraan : 100,
             kuota: typeof data.bars.kuota === "number" ? data.bars.kuota : 100
           };
+          ojolStats.vehicle = data.vehicle;
+          ojolStats.trip = data.trip || null;
           if (typeof data.narikMenit === "number") {
             ojolStats.narikMenit = data.narikMenit;
           }
@@ -751,10 +774,14 @@
       if (!ojolConfig.autoKebutuhan) return false;
 
       const needed = evaluateKebutuhanRefill(bars, ojolConfig);
-      if (!needed) return false;
+      ojolStats.spbuNeeded = !ojolStats.trip && bars.bensin <= ojolConfig.minBensin;
+      if (!needed || ojolStats.trip) return false;
+      if (needed.resource === "fuel") {
+        ojolStats.statusMessage = "Bawa kendaraan Ojol ke SPBU dan buka pompa.";
+        return false;
+      }
 
       const labelMap = {
-        fuel: "⛽ Mengisi Bensin di SPBU...",
         condition: "🔧 Servis Mesin di Bengkel...",
         data: "📶 Membeli Kuota di Konter..."
       };
@@ -773,6 +800,35 @@
         addLog(`⚠️ Gagal isi ${needed.name}: ${result.error}`);
         return false;
       }
+    }
+
+    const submittedSpbu = new WeakSet();
+    let lastSpbuCheck = 0;
+    async function refillAtSpbu(panel) {
+      const dialog = panel.closest('[role="dialog"]');
+      const button = panel.querySelector('[data-testid="isi-bensin"]');
+      const full = panel.querySelector('[data-testid="jumlah-penuh"]');
+      if (!dialog || submittedSpbu.has(dialog) || !button || !full || full.disabled
+          || Date.now() - lastSpbuCheck < 2000) return;
+      lastSpbuCheck = Date.now();
+      const bars = await fetchOjolBars();
+      if (!bars || ojolStats.trip || !panel.isConnected || !ojolConfig.autoOjol || !ojolConfig.autoKebutuhan) return;
+      const vehicle = panel.querySelector("b")?.textContent || "";
+      const meter = panel.querySelector("small")?.textContent || "";
+      if (!spbuVehicleMatches(vehicle, meter, ojolStats.vehicle)) {
+        ojolStats.statusMessage = "Pompa tidak cocok dengan kendaraan Ojol yang dipilih.";
+        return;
+      }
+      if (full.getAttribute("aria-checked") !== "true") {
+        full.click();
+        return;
+      }
+      if (button.disabled || !spbuRefillQuote(meter, button.textContent, ojolConfig.minBensin)) return;
+      // One request per visit; the game owns the quote, location, and transaction.
+      submittedSpbu.add(dialog);
+      button.click();
+      lastKebutuhanCheckTime = 0;
+      addLog("Pengisian SPBU diminta untuk " + vehicle.trim());
     }
 
     function addLog(msg) {
@@ -1361,6 +1417,11 @@
 
       isProcessing = true;
       try {
+        const pump = document.querySelector('[data-testid="panel-isi"]');
+        if (pump && ojolConfig.autoKebutuhan) {
+          await refillAtSpbu(pump);
+          return;
+        }
         await executeOjolStep();
       } catch (err) {
         console.warn("[AutoOjol] Step error:", err);
@@ -1374,7 +1435,7 @@
       // 0. Auto-Kebutuhan: Periksa dan isi bensin, bengkel, atau kuota secara otomatis
       if (ojolConfig.autoKebutuhan) {
         const refilled = await checkAndRefillKebutuhan();
-        if (refilled) return;
+        if (refilled || ojolStats.spbuNeeded) return;
       }
 
       // 1. Cek tombol HUD "Terima ongkos" saat tiba di tujuan
@@ -1711,6 +1772,8 @@
     calculateAntiStuckNudge,
     determineKemudiAction,
     DEFAULT_SHOPS,
-    evaluateKebutuhanRefill
+    evaluateKebutuhanRefill,
+    spbuVehicleMatches,
+    spbuRefillQuote
   };
 });

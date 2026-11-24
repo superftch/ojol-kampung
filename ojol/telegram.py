@@ -255,6 +255,12 @@ def koin(value):
 
 
 def event_text(event, data):
+    if event == "spbu_perlu_isi":
+        return (
+            f"⛽ Tangki {data['vehicle']} Ojol tinggal {data['fuel']}%. "
+            "Bawa kendaraan yang dipakai Ojol ke SPBU dan buka pompa. "
+            "Auto Ojol memeriksa tangki lagi sebelum mengambil order."
+        )
     if event == "ojol_gagal":
         reason = data.get("reason", "Terjadi kendala pada Ojol")
         return f"⚠️ Auto Ojol dinonaktifkan: {reason}.\n\nFitur auto kebutuhan tetap berjalan normal. Tekan Jalankan Ojol jika ingin mencoba lagi."

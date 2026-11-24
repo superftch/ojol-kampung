@@ -194,6 +194,8 @@ class Snapshot(Model):
     village: str | None = None
     sleep_schedule: SleepSchedule | None = None
     ojol_vehicle: OjolVehicle | None = None
+    ojol_min_fuel: Percent | None = None
+    ojol_fuel_blocked: bool = False
     ojol_resting: bool = False
     ojol_rest_until: datetime | None = None
     ojol_shift_done: bool = False

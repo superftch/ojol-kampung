@@ -11,6 +11,26 @@ const ojolModulePath = path.resolve(__dirname, "../ojol.js");
 await import(ojolModulePath);
 const ojol = globalThis.__KS_OJOL_ENGINE__ || {};
 
+test("SPBU uses the pump for the vehicle that arrived", () => {
+  const { spbuVehicleMatches: matches } = ojol;
+  assert.equal(matches("Motor matic · didorong", "Bensin 0 dari 100 poin · Pertalite", "motor"), true);
+  assert.equal(matches("Mobil keluarga", "Bensin 16 dari 100 poin · Pertalite", "mobil"), true);
+  assert.equal(matches("Mobil listrik", "Baterai 16 dari 100 poin · Isi daya SPKLU", "mobil"), true);
+  assert.equal(matches("Mobil keluarga", "Baterai 16 dari 100 poin · Isi daya SPKLU", "mobil"), false);
+  assert.equal(matches("Mobil listrik", "Bensin 16 dari 100 poin · Pertalite", "mobil"), false);
+  assert.equal(matches("Motor matic", "Bensin 16 dari 100 poin · Pertalite", "mobil"), false);
+});
+
+test("SPBU only submits a current full-tank quote at the verified rate", () => {
+  const { spbuRefillQuote: quote } = ojol;
+  const meter = "Bensin 12,5 dari 100 poin · Pertalite";
+  assert.equal(quote(meter, "Isi 87,5 poin · 1,75 koin", 20), true);
+  assert.equal(quote(meter, "Isi 25 poin · 0,5 koin", 20), false);
+  assert.equal(quote(meter, "Isi 87,5 poin · 1,8 koin", 20), false);
+  assert.equal(quote(meter, "Isi 87,5 poin · 1,75 koin", 10), false);
+  assert.equal(quote(meter, "Sedang mengisi…", 20), false);
+});
+
 const {
   SEED_TEMPLATES,
   resample,
@@ -495,15 +515,11 @@ test("Auto-Ojol Engine (Khusus Mode Kendarai) - Unit & Integration Tests", async
   });
 
   await t.test("Auto-Kebutuhan Shop Database - Verified shop IDs and items", () => {
-    assert.ok(DEFAULT_SHOPS.fuel.length >= 2, "Must contain fuel shop locations");
+    assert.equal(DEFAULT_SHOPS.fuel, undefined, "Fuel uses the official SPBU pump");
     assert.ok(DEFAULT_SHOPS.condition.length >= 2, "Must contain condition/bengkel shop locations");
     assert.ok(DEFAULT_SHOPS.data.length >= 2, "Must contain kuota/konter shop locations");
 
     // Kampung Sebelah shop locations
-    const spbuKs = DEFAULT_SHOPS.fuel.find(s => s.name.includes("Kampung Sebelah"));
-    assert.equal(spbuKs.id, "914b6bb0-6684-4037-93bc-423810875eae");
-    assert.equal(spbuKs.item, "isi-pertalite");
-
     const bengkelKs = DEFAULT_SHOPS.condition.find(s => s.name.includes("spesialis motor"));
     assert.equal(bengkelKs.id, "b2400595-7b5b-4571-aa2e-bcff27a04d9f");
     assert.equal(bengkelKs.item, "servis-motor");

@@ -53,6 +53,7 @@ class Controller:
         self.study_retry_at = {}
         self.garden_retry_at = 0
         self.gym_retry_at = 0
+        self.spbu_reminded_vehicle = None
         self.maintenance_file = Path(
             os.environ.get("OJOL_MAINTENANCE_FILE", str(settings.runtime_dir / SCHEDULE_FILE))
         )
@@ -307,7 +308,7 @@ class Controller:
                 self.settings,
                 self.spent,
                 last_purchases,
-                allow_fallback=getattr(self.ui, "last_navigation", {}).get("akademis_sold_out")
+                allow_fallback=getattr(self.ui, "last_navigation", {}).get("akademis_unavailable")
                 is True,
                 streak_product=streak_product,
                 streak_count=streak_count,
@@ -357,9 +358,9 @@ class Controller:
                 source = "fasum"
                 reason = "Fasilitas dengan manfaat terpakai per koin terbaik"
             elif supplier.preferred:
-                reason = "Manfaat terpakai per koin terbaik di toko Akademis.ai; rotasi saat setara"
+                reason = "Giliran toko Akademis.ai; item dipilih berdasarkan manfaat dan harga"
             else:
-                reason = "Seluruh stok relevan Akademis.ai terkonfirmasi habis"
+                reason = "Tidak ada produk relevan yang tersedia dari Akademis.ai"
         self.report(
             "rencana_beli",
             shop=shop,
@@ -696,6 +697,18 @@ class Controller:
             if is_sleeping(self.state):
                 await self.wait_for_wake()
                 continue
+            if (
+                flags["ojol"] is True
+                and self.state.phase == "idle"
+                and self.state.ojol_min_fuel is not None
+                and self.state.fuel < self.settings.threshold_for("fuel")
+            ):
+                vehicle = self.state.ojol_vehicle
+                if vehicle and self.spbu_reminded_vehicle != vehicle:
+                    self.spbu_reminded_vehicle = vehicle
+                    self.report("spbu_perlu_isi", vehicle=vehicle, fuel=self.state.fuel)
+            elif self.state.fuel >= self.settings.threshold_for("fuel") or not flags["ojol"]:
+                self.spbu_reminded_vehicle = None
             if auto_start and step.action != "stop":
                 queue_notice(
                     self.settings,
@@ -736,6 +749,7 @@ class Controller:
                 raise RuntimeError(step.reason)
             if self.state.phase == "idle" and (
                 step.action in {"search", "take"}
+                or (step.action == "wait" and step.resource == "fuel")
                 or not flags["ojol"]
                 or flags.get("ojol") == "maintenance"
                 or is_ojol_maint

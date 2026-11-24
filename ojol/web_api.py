@@ -1,15 +1,24 @@
 """Web API endpoints for dashboard, account management, control, and auth."""
 
 import json
+from contextlib import nullcontext
+from decimal import Decimal, InvalidOperation
 from urllib.parse import quote_plus, urlsplit
 
 from fastapi import Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import ValidationError
 
 from .auto_settings import auto_flags, set_auto_flag
-from .control import status_record
+from .control import status_record, status_timestamp
+from .maintenance import held_window
+from .models import Settings
 from .study import set_subject, subjects
 from .web_ui import dashboard_html, login_html, register_html, setup_password_html
+
+
+def public_user(user):
+    return {key: value for key, value in user.items() if key not in {"password_hash", "salt"}}
 
 
 def register_web_routes(app, settings, manager=None, service=None):
@@ -68,6 +77,13 @@ def register_web_routes(app, settings, manager=None, service=None):
         # Fallback to selected account for current user
         user = require_user(request)
         owner = registry.owner_for_user(user)
+        explicit_id = request.query_params.get("account_id")
+        if explicit_id:
+            try:
+                registry.get(explicit_id, owner=owner)
+                return manager.service(explicit_id)
+            except ValueError as exc:
+                raise HTTPException(400, str(exc))
         selected = registry.selected(owner)
         if not selected:
             active = registry.list(owner)
@@ -210,7 +226,7 @@ def register_web_routes(app, settings, manager=None, service=None):
             else:
                 msg = "Pendaftaran berhasil! Akun Anda sedang menunggu persetujuan admin."
             if is_json:
-                return {"success": True, "message": msg, "user": user}
+                return {"success": True, "message": msg, "user": public_user(user)}
             return RedirectResponse("/login?success=" + quote_plus(msg), status_code=303)
         except ValueError as exc:
             if is_json:
@@ -231,7 +247,7 @@ def register_web_routes(app, settings, manager=None, service=None):
             token = registry.web.issue_session(user["id"])
             is_secure = urlsplit(request.base_url._url).scheme == "https"
             if is_json:
-                res = JSONResponse({"success": True, "user": user})
+                res = JSONResponse({"success": True, "user": public_user(user)})
             else:
                 res = RedirectResponse("/", status_code=303)
             res.set_cookie(
@@ -289,7 +305,7 @@ def register_web_routes(app, settings, manager=None, service=None):
                 res = JSONResponse(
                     {
                         "success": True,
-                        "user": user,
+                        "user": public_user(user),
                         "setup_required": not user.get("has_password", 1),
                         "redirect": dest,
                     }
@@ -340,31 +356,42 @@ def register_web_routes(app, settings, manager=None, service=None):
 
     # ==================== DASHBOARD & ACCOUNTS ====================
 
-    def parse_coins(val) -> int:
-        if not val:
-            return 0
-        s = str(val).strip().replace(".", "").replace(",", "")
+    def parse_coins(val) -> Decimal:
         try:
-            return int(s)
-        except ValueError:
-            return 0
+            amount = Decimal(str(val))
+            return amount if amount.is_finite() else Decimal(0)
+        except InvalidOperation:
+            return Decimal(0)
 
-    def format_coins(num: int) -> str:
-        return f"{num:,}".replace(",", ".")
+    def format_coins(num: Decimal) -> str:
+        whole, _, fraction = f"{num:,f}".partition(".")
+        fraction = fraction.rstrip("0")
+        return whole.replace(",", ".") + ("," + fraction if fraction else "")
+
+    def dashboard_snapshot(directory, data):
+        snapshot = data.get("snapshot") or {}
+        sync, _ = status_record(directory / "game-sync.json")
+        checked = status_timestamp(sync.get("checked_at"))
+        observed = status_timestamp(data.get("snapshot_received_at") or snapshot.get("observed_at"))
+        if (
+            checked
+            and (observed is None or checked > observed)
+            and isinstance(sync.get("snapshot"), dict)
+        ):
+            return sync["snapshot"]
+        return snapshot
 
     async def build_dashboard_payload(request: Request, user: dict) -> dict:
         owner = registry.owner_for_user(user)
-        accounts_list = registry.list(owner) + registry.list(owner, archived=True)
+        accounts_list = registry.list(owner)
         selected = registry.selected(owner)
         if not selected and accounts_list:
-            active_only = [a for a in accounts_list if not a["archived"]]
-            if active_only:
-                registry.select(owner, active_only[0]["id"])
-                selected = active_only[0]
+            selected = accounts_list[0]
+            registry.select(owner, selected["id"])
 
         accounts_payload = []
-        total_wallet = 0
-        total_income = 0
+        total_wallet = Decimal(0)
+        total_income = Decimal(0)
         total_trips = 0
         active_workers = 0
         online_accounts = 0
@@ -377,16 +404,12 @@ def register_web_routes(app, settings, manager=None, service=None):
             acc_snap = {}
             if r_dir:
                 st_data, _ = status_record(r_dir / "status.json")
-                acc_snap = st_data.get("snapshot") or {}
-                sync_data, _ = status_record(r_dir / "game-sync.json")
-                if isinstance(sync_data.get("snapshot"), dict):
-                    acc_snap = {**acc_snap, **sync_data["snapshot"]}
+                acc_snap = dashboard_snapshot(r_dir, st_data)
 
-            acc_wallet_str = sum_info.get("wallet") or acc_snap.get("wallet") or "0"
-            acc_wallet_num = parse_coins(acc_wallet_str)
-            acc_income_str = acc_snap.get("today_income") or "0"
-            acc_income_num = parse_coins(acc_income_str)
-            acc_trips = sum_info.get("trips") or acc_snap.get("today_count") or 0
+            wallet = acc_snap.get("wallet", sum_info.get("wallet"))
+            acc_wallet_num = parse_coins(wallet)
+            acc_income_num = parse_coins(acc_snap.get("today_income"))
+            acc_trips = acc_snap.get("today_count", sum_info.get("trips", 0))
             try:
                 acc_trips = int(acc_trips)
             except (ValueError, TypeError):
@@ -394,14 +417,11 @@ def register_web_routes(app, settings, manager=None, service=None):
 
             is_active = bool(sum_info.get("active", False))
             is_online = bool(sum_info.get("online", False))
-            if not acc.get("archived"):
-                total_wallet += acc_wallet_num
-                total_income += acc_income_num
-                total_trips += acc_trips
-                if is_active:
-                    active_workers += 1
-                if is_online or is_active:
-                    online_accounts += 1
+            total_wallet += acc_wallet_num
+            total_income += acc_income_num
+            total_trips += acc_trips
+            active_workers += int(is_active)
+            online_accounts += int(is_online or is_active)
 
             accounts_payload.append(
                 {
@@ -416,26 +436,25 @@ def register_web_routes(app, settings, manager=None, service=None):
                     "icon": sum_info.get("icon", "⚪"),
                     "phase": sum_info.get("phase", "idle"),
                     "status_text": sum_info.get("status_text", "Standby"),
-                    "wallet": str(acc_wallet_str),
-                    "wallet_num": acc_wallet_num,
-                    "today_income": str(acc_income_str),
-                    "today_income_num": acc_income_num,
+                    "wallet": format_coins(acc_wallet_num) if wallet is not None else None,
+                    "wallet_num": float(acc_wallet_num),
+                    "today_income": format_coins(acc_income_num),
+                    "today_income_num": float(acc_income_num),
                     "trips": acc_trips,
-                    "fuel": sum_info.get("fuel") or acc_snap.get("fuel"),
-                    "condition": sum_info.get("condition") or acc_snap.get("condition"),
-                    "data": sum_info.get("data") or acc_snap.get("data"),
+                    "fuel": acc_snap.get("fuel", sum_info.get("fuel")),
+                    "condition": acc_snap.get("condition", sum_info.get("condition")),
+                    "data": acc_snap.get("data", sum_info.get("data")),
                 }
             )
 
-        active_accounts_count = len([a for a in accounts_payload if not a["archived"]])
         all_accounts_summary = {
-            "total_accounts": active_accounts_count,
+            "total_accounts": len(accounts_payload),
             "active_workers": active_workers,
             "online_accounts": online_accounts,
             "total_wallet": format_coins(total_wallet),
-            "total_wallet_num": total_wallet,
+            "total_wallet_num": float(total_wallet),
             "total_income": format_coins(total_income),
-            "total_income_num": total_income,
+            "total_income_num": float(total_income),
             "total_trips": total_trips,
         }
 
@@ -461,10 +480,7 @@ def register_web_routes(app, settings, manager=None, service=None):
 
         # Read state & sync
         data, _ = status_record(directory / "status.json")
-        state = data.get("snapshot") or {}
-        sync, _ = status_record(directory / "game-sync.json")
-        if isinstance(sync.get("snapshot"), dict):
-            state = {**state, **sync["snapshot"]}
+        state = dashboard_snapshot(directory, data)
 
         flags = auto_flags(directory)
         subj_dict = subjects(directory)
@@ -510,7 +526,11 @@ def register_web_routes(app, settings, manager=None, service=None):
         )
 
         return {
-            "account": {**selected, "has_cookie": summary.get("has_cookie", False)},
+            "account": {
+                "id": selected["id"],
+                "name": selected["name"],
+                "has_cookie": summary.get("has_cookie", False),
+            },
             "accounts": accounts_payload,
             "all_accounts_summary": all_accounts_summary,
             "summary": summary,
@@ -581,7 +601,10 @@ def register_web_routes(app, settings, manager=None, service=None):
                 if await request.is_disconnected():
                     break
                 try:
-                    payload = await build_dashboard_payload(request, user)
+                    current = get_current_user(request)
+                    if not current or current["status"] != "approved":
+                        break
+                    payload = await build_dashboard_payload(request, current)
                     yield f"data: {json.dumps(payload, default=str)}\n\n"
                 except Exception:
                     break
@@ -604,8 +627,12 @@ def register_web_routes(app, settings, manager=None, service=None):
         selected = registry.selected(owner)
         payload = []
         for acc in accounts_list:
-            acc_service = resolve_account_service(request, acc["id"]) if manager else service
-            sum_info = acc_service.summary() if acc_service else {}
+            if acc["archived"]:
+                scoped = registry.scoped_settings(acc)
+                sum_info = {"has_cookie": (scoped.runtime_dir / "http-session.json").is_file()}
+            else:
+                acc_service = resolve_account_service(request, acc["id"])
+                sum_info = acc_service.summary() if acc_service else {}
             payload.append(
                 {
                     "id": acc["id"],
@@ -666,9 +693,19 @@ def register_web_routes(app, settings, manager=None, service=None):
             raise HTTPException(400, "ID akun diperlukan")
         owner = registry.owner_for_user(user)
         try:
-            registry.archive(owner, account_id, archived=archived)
+            async with manager.lock if manager else nullcontext():
+                if archived and manager:
+                    registry.get(account_id, owner=owner)
+                    scoped = manager.service(account_id)
+                    async with scoped.lock:
+                        scoped.access.revoke()
+                        await scoped.close()
+                        registry.archive(owner, account_id)
+                        manager.services.pop(account_id, None)
+                else:
+                    registry.archive(owner, account_id, archived=archived)
             return {"success": True}
-        except ValueError as exc:
+        except (ValueError, RuntimeError) as exc:
             raise HTTPException(400, str(exc))
 
     # ==================== WORKER & GAMEPLAY CONTROL ====================
@@ -808,61 +845,49 @@ def register_web_routes(app, settings, manager=None, service=None):
         custom_name = (body.get("name") or "").strip()
         account_name = custom_name or "Akun Utama"
 
-        # Check if an account was explicitly targeted or already exists for this owner
         account_id = (body.get("account_id") or "").strip()
-        if account_id and registry:
+        async with manager.lock if manager else nullcontext():
             try:
-                registry.get(account_id, owner=owner)
-            except ValueError:
-                account_id = None
-
-        if not account_id and registry:
-            selected = registry.selected(owner)
-            if selected:
-                account_id = selected["id"]
-            else:
-                active_list = registry.list(owner)
-                if active_list:
-                    account_id = active_list[0]["id"]
-                    registry.select(owner, account_id)
-
-        # If user has no account yet, create a new one specifically for this owner
-        if not account_id and registry:
-            account_id = registry.create(owner, account_name)
-            registry.select(owner, account_id)
-
-        cur_service = manager.service(account_id) if (manager and account_id) else service
-        if not cur_service:
-            raise HTTPException(500, "Layanan akun tidak dapat diinisialisasi")
-
-        digest = None
-        if registry and account_id:
-            try:
-                digest = registry.check_cookie(account_id, payload)
+                if registry and account_id:
+                    registry.get(account_id, owner=owner)
+                elif registry:
+                    account = registry.selected(owner)
+                    if not account:
+                        accounts = registry.list(owner)
+                        if accounts:
+                            account = accounts[0]
+                            registry.select(owner, account["id"])
+                        else:
+                            account = registry.create(owner, account_name)
+                    account_id = account["id"]
+                cur_service = manager.service(account_id) if manager else service
             except ValueError as exc:
-                raise HTTPException(409, str(exc))
+                raise HTTPException(400, str(exc))
+            if not cur_service:
+                raise HTTPException(500, "Layanan akun tidak dapat diinisialisasi")
 
-        if cur_service and hasattr(cur_service, "stop_worker"):
-            await cur_service.stop_worker()
-        try:
-            profile = await import_session(cur_service.settings, json.dumps(payload))
-            nickname = (profile or {}).get("nickname")
-            if registry and account_id and nickname:
-                if not custom_name or custom_name in {"Akun Utama", "Draft"}:
-                    try:
-                        registry.rename(owner, account_id, nickname)
-                    except Exception:
-                        pass
-            if registry and account_id and digest:
-                registry.bind_cookie(account_id, digest)
-            display_name = nickname if (nickname and not custom_name) else account_name
-            return {
-                "success": True,
-                "message": f"Cookie berhasil diimpor! Akun terhubung sebagai '{display_name}'.",
-                "nickname": nickname,
-            }
-        except Exception as exc:
-            raise HTTPException(400, f"Verifikasi sesi gagal: {exc}")
+            async with cur_service.lock:
+                if maintenance := held_window(cur_service.maintenance_file):
+                    raise HTTPException(503, maintenance.message())
+                try:
+                    digest = registry.check_cookie(account_id, payload) if registry else None
+                except ValueError as exc:
+                    raise HTTPException(409, str(exc))
+                try:
+                    await cur_service.stop_worker()
+                    profile = await import_session(cur_service.settings, json.dumps(payload))
+                    if digest:
+                        registry.bind_cookie(account_id, digest)
+                    cur_service.access.revoke()
+                except Exception as exc:
+                    raise HTTPException(400, f"Verifikasi sesi gagal: {exc}")
+
+        nickname = profile["nickname"]
+        return {
+            "success": True,
+            "message": f"Cookie berhasil diimpor! Akun terhubung sebagai '{nickname}'.",
+            "nickname": nickname,
+        }
 
     # ==================== NOTIFICATIONS ====================
 
@@ -871,6 +896,8 @@ def register_web_routes(app, settings, manager=None, service=None):
         from .notifications import list_notifications
 
         cur_service = resolve_account_service(request)
+        if not cur_service and user.get("role") != "admin":
+            return {"notifications": []}
         target_settings = cur_service.settings if cur_service else settings
         notices = list_notifications(target_settings)
         return {"notifications": notices}
@@ -886,6 +913,8 @@ def register_web_routes(app, settings, manager=None, service=None):
         )
         notice_ids = body.get("ids")
         cur_service = resolve_account_service(request)
+        if not cur_service and user.get("role") != "admin":
+            return {"success": True, "marked_count": 0}
         target_settings = cur_service.settings if cur_service else settings
         count = mark_notifications_read(target_settings, notice_ids)
         return {"success": True, "marked_count": count}
@@ -950,12 +979,28 @@ def register_web_routes(app, settings, manager=None, service=None):
         return registry.get_all_settings()
 
     @app.post("/api/admin/settings")
-    async def admin_update_settings(request: Request, user: dict = Depends(require_admin)):
-        body = await request.json()
+    async def admin_update_settings(body: dict, user: dict = Depends(require_admin)):
         try:
-            updated = registry.update_settings(body)
+            fields = body.keys() & registry.get_all_settings().keys()
+            if "telegram_bot_token" in fields and body["telegram_bot_token"] is None:
+                body["telegram_bot_token"] = ""
+            candidate = Settings.model_validate(
+                {
+                    **{key: getattr(settings, key) for key in Settings.model_fields},
+                    **{key: body[key] for key in fields},
+                }
+            )
+            updates = {key: getattr(candidate, key) for key in fields}
+            if "telegram_bot_token" in fields:
+                updates["telegram_bot_token"] = candidate.telegram_bot_token.get_secret_value()
+            updated = registry.update_settings(updates)
             if manager:
                 manager.settings = registry.settings
             return {"success": True, "settings": updated}
+        except ValidationError as exc:
+            error = exc.errors(include_input=False, include_context=False)[0]
+            field = ".".join(map(str, error["loc"]))
+            message = (field + ": " if field else "") + error["msg"]
+            raise HTTPException(400, message)
         except ValueError as exc:
             raise HTTPException(400, str(exc))

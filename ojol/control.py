@@ -20,6 +20,7 @@ from uuid import uuid4
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
 
 from .auto_settings import AUTO_LABELS, auto_flags, set_auto_flag
 from .cleanup import find_unvisited, scan
@@ -651,6 +652,15 @@ class ControlService:
                 flags = auto_flags(directory)
                 if not flags.get("ojol") and any(flags.get(k) for k in NEEDS):
                     status_text = "Memantau Kebutuhan"
+                elif (
+                    flags.get("ojol") is True
+                    and state.get("ojol_min_fuel") is not None
+                    and (
+                        state.get("ojol_fuel_blocked")
+                        or state.get("fuel", 0) < state["ojol_min_fuel"]
+                    )
+                ):
+                    status_text = "Menunggu isi SPBU"
                 else:
                     status_text = "Standby"
                 icon = "🟢"
@@ -1006,6 +1016,8 @@ class ControlService:
             return "⏹ Aktivitas akun sudah dihentikan.\n\nTekan Jalankan Ojol atau Jalankan Kebutuhan jika ingin melanjutkan."
         if command == "run_kebutuhan":
             async with self.lock:
+                if self.closing:
+                    raise RuntimeError("Akun tidak tersedia. Pilih akun lain.")
                 for key in NEEDS:
                     set_auto_flag(self.settings.runtime_dir, key, True)
                 if (self.worker and self.worker.returncode is None) or running(
@@ -1034,9 +1046,12 @@ class ControlService:
                         "account_id": self.account_id,
                         "mode": None,
                         "auto_start": auto_start,
+                        "needs_only": True,
                     },
                 )
-                if worker_resp and worker_resp.get("ok"):
+                if worker_resp is not None:
+                    if not worker_resp.get("ok"):
+                        raise RuntimeError(worker_resp.get("error") or worker_resp["message"])
                     self.expected_stop = False
                     return (
                         "▶️ Bot sedang memulai (Auto Kebutuhan)\n\n"
@@ -1071,6 +1086,8 @@ class ControlService:
                 )
         if command == "run":
             async with self.lock:
+                if self.closing:
+                    raise RuntimeError("Akun tidak tersedia. Pilih akun lain.")
                 set_auto_flag(self.settings.runtime_dir, "ojol", True)
                 label = (
                     "Berkendara" if mode == "kendara" else "Otomatis" if mode == "otomatis" else ""
@@ -1104,7 +1121,9 @@ class ControlService:
                         "auto_start": auto_start,
                     },
                 )
-                if worker_resp and worker_resp.get("ok"):
+                if worker_resp is not None:
+                    if not worker_resp.get("ok"):
+                        raise RuntimeError(worker_resp.get("error") or worker_resp["message"])
                     self.expected_stop = False
                     label = (
                         "Berkendara"
@@ -1424,6 +1443,7 @@ def create_app(settings, service=None):
                 await lifecycle.close()
 
     app = FastAPI(lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+    app.mount("/ui", StaticFiles(directory=ROOT / "ojol" / "ui_assets"), name="ui")
     app.state.manager = manager
     app.state.service = service
 

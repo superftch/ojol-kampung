@@ -149,7 +149,10 @@ class WorkerService:
 
         if action == "start":
             return await self.start_account_worker(
-                account_id=account_id, mode=mode, auto_start=auto_start
+                account_id=account_id,
+                mode=mode,
+                auto_start=auto_start,
+                needs_only=data.get("needs_only") is True,
             )
 
         if action == "stop":
@@ -158,7 +161,12 @@ class WorkerService:
         return {"ok": False, "error": f"Aksi '{action}' tidak dikenal"}
 
     async def start_account_worker(
-        self, account_id: str | None = None, mode: str | None = None, auto_start: bool = False
+        self,
+        account_id: str | None = None,
+        mode: str | None = None,
+        auto_start: bool = False,
+        *,
+        needs_only: bool = False,
     ) -> dict:
         async with self.lock:
             try:
@@ -192,9 +200,13 @@ class WorkerService:
                 }
 
             if maintenance := held_window(self.maintenance_file):
-                if auto_start:
-                    return {"ok": False, "maintenance": True, "message": maintenance.message()}
-                return {"ok": False, "error": maintenance.message()}
+                if not (needs_only and maintenance.target == "ojol"):
+                    if auto_start:
+                        return {"ok": False, "maintenance": True, "message": maintenance.message()}
+                    return {"ok": False, "error": maintenance.message()}
+
+            if self.active_worker_count() >= self.registry.value("max_active_workers"):
+                return {"ok": False, "error": "Slot worker penuh. Hentikan salah satu akun dulu."}
 
             # Unlink STOP file if present
             (directory / "STOP").unlink(missing_ok=True)

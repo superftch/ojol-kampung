@@ -3,6 +3,8 @@
 import html
 import json
 
+BRAND_MARK = """<svg class="brand-mark" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M4 27h24M7 27l5-22m13 22L20 5m-4 7v4m0 5v3" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="16" cy="5" r="2" fill="currentColor"/></svg>"""
+
 
 def login_html(
     bot_username: str = "", error: str = "", success: str = "", default_code: str = ""
@@ -42,7 +44,7 @@ def login_html(
             --danger: #ef4444;
             --radius: 12px;
         }}
-        * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
             background: var(--bg);
             color: var(--text);
@@ -164,13 +166,14 @@ def login_html(
         .divider span {{ padding: 0 10px; }}
         .tg-widget-container {{ display: flex; justify-content: center; margin: 12px 0; min-height: 44px; }}
     </style>
+    <link rel="stylesheet" href="/ui/console.css">
 </head>
-<body>
+<body class="auth-page">
     <div class="card">
         <div class="logo">
-            <div class="logo-icon">🛵</div>
+            {BRAND_MARK}
             <h1>Kampung Ojol Automation</h1>
-            <p>Panel Kontrol Otomasi Multi-Akun</p>
+            <p>Kelola akun dan aktivitas Ojol.</p>
         </div>
 
         {f'<div class="alert alert-danger">{escaped_error}</div>' if escaped_error else ""}
@@ -179,8 +182,8 @@ def login_html(
         {
         '''
         <div class="tabs">
-            <div class="tab active" onclick="switchTab('tab-password')">Username & Password</div>
-            <div class="tab" onclick="switchTab('tab-telegram')">Telegram</div>
+            <button class="tab active" type="button" onclick="switchTab('tab-password')">Username & Password</button>
+            <button class="tab" type="button" onclick="switchTab('tab-telegram')">Telegram</button>
         </div>
         '''
         if bot_username
@@ -278,7 +281,7 @@ def register_html(error: str = "", success: str = "") -> str:
             --danger: #ef4444;
             --radius: 12px;
         }}
-        * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
             background: var(--bg);
             color: var(--text);
@@ -345,11 +348,12 @@ def register_html(error: str = "", success: str = "") -> str:
         .footer-links a {{ color: var(--primary); text-decoration: none; font-weight: 500; }}
         .footer-links a:hover {{ text-decoration: underline; }}
     </style>
+    <link rel="stylesheet" href="/ui/console.css">
 </head>
-<body>
+<body class="auth-page">
     <div class="card">
         <div class="logo">
-            <div class="logo-icon">🛵</div>
+            {BRAND_MARK}
             <h1>Daftar Akun Baru</h1>
             <p>Pendaftaran memerlukan persetujuan admin</p>
         </div>
@@ -413,7 +417,7 @@ def setup_password_html(user: dict, error: str = "") -> str:
             --danger: #ef4444;
             --radius: 12px;
         }}
-        * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
+        * {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{
             background: var(--bg);
             color: var(--text);
@@ -477,11 +481,12 @@ def setup_password_html(user: dict, error: str = "") -> str:
         .alert-danger {{ background: rgba(239, 68, 68, 0.15); border: 1px solid var(--danger); color: #fca5a5; }}
         .alert-info {{ background: rgba(59, 130, 246, 0.15); border: 1px solid var(--primary); color: #93c5fd; }}
     </style>
+    <link rel="stylesheet" href="/ui/console.css">
 </head>
-<body>
+<body class="auth-page">
     <div class="card">
         <div class="logo">
-            <div class="logo-icon">🔐</div>
+            {BRAND_MARK}
             <h1>Buat Akun Web Anda</h1>
             <p>Lengkapi kredensial untuk login mandiri</p>
         </div>
@@ -513,8 +518,21 @@ def setup_password_html(user: dict, error: str = "") -> str:
 """
 
 
+def meters_html(fields):
+    return "".join(
+        f"""<div class="meter-row">
+            <div class="meter-label">
+                <span id="{key}Label">{label}</span>
+                <span id="{key}Text" class="meter-val">—</span>
+            </div>
+            <div class="meter-bar" aria-hidden="true"><div id="{key}Bar" class="meter-fill" style="width:0"></div></div>
+        </div>"""
+        for key, label in fields
+    )
+
+
 def dashboard_html(user: dict, bot_username: str = "") -> str:
-    user_json = json.dumps(user)
+    user_json = json.dumps(user).replace("<", "\\u003c")
 
     return f"""<!DOCTYPE html>
 <html lang="id">
@@ -522,1100 +540,170 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard · Kampung Ojol Automation</title>
-    <style>
-        :root {{
-            --bg: #0b1120;
-            --surface: #1e293b;
-            --surface-hover: #293548;
-            --border: #334155;
-            --text: #f8fafc;
-            --text-muted: #94a3b8;
-            --primary: #3b82f6;
-            --primary-hover: #2563eb;
-            --success: #10b981;
-            --warning: #f59e0b;
-            --danger: #ef4444;
-            --purple: #8b5cf6;
-            --radius: 12px;
-        }}
-        * {{ box-sizing: border-box; margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
-        body {{
-            background: var(--bg);
-            color: var(--text);
-            min-height: 100vh;
-            display: flex;
-            flex-direction: column;
-        }}
-        /* Header */
-        header {{
-            background: var(--surface);
-            border-bottom: 1px solid var(--border);
-            padding: 14px 24px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            position: sticky;
-            top: 0;
-            z-index: 100;
-        }}
-        .brand {{ display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; }}
-        .header-actions {{ display: flex; align-items: center; gap: 16px; }}
-        .account-select-wrap {{ display: flex; align-items: center; gap: 8px; }}
-        select.account-select {{
-            background: #0f172a;
-            color: var(--text);
-            border: 1px solid var(--border);
-            padding: 8px 12px;
-            border-radius: 8px;
-            font-size: 13px;
-            font-weight: 500;
-            outline: none;
-            cursor: pointer;
-        }}
-        .user-badge {{
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            background: #0f172a;
-            border: 1px solid var(--border);
-            padding: 6px 12px;
-            border-radius: 20px;
-            font-size: 13px;
-        }}
-        .tg-status {{
-            display: inline-block;
-            width: 8px;
-            height: 8px;
-            border-radius: 50%;
-        }}
-        .tg-status.connected {{ background: var(--success); box-shadow: 0 0 6px var(--success); }}
-        .tg-status.disconnected {{ background: var(--text-muted); }}
-
-        /* Navigation Tabs */
-        nav.nav-tabs {{
-            background: var(--surface);
-            border-bottom: 1px solid var(--border);
-            padding: 0 24px;
-            display: flex;
-            gap: 8px;
-            overflow-x: auto;
-        }}
-        .nav-btn {{
-            padding: 14px 18px;
-            font-size: 14px;
-            font-weight: 600;
-            color: var(--text-muted);
-            background: none;
-            border: none;
-            border-bottom: 3px solid transparent;
-            cursor: pointer;
-            transition: all 0.2s;
-            white-space: nowrap;
-        }}
-        .nav-btn:hover {{ color: var(--text); }}
-        .nav-btn.active {{ color: var(--primary); border-bottom-color: var(--primary); }}
-
-        /* Container */
-        .container {{
-            max-width: 1200px;
-            margin: 0 auto;
-            padding: 24px 16px;
-            width: 100%;
-            flex: 1;
-        }}
-        .tab-panel {{ display: none; }}
-        .tab-panel.active {{ display: block; }}
-
-        /* Status Hero Card */
-        .hero-card {{
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 24px;
-            margin-bottom: 24px;
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: space-between;
-            align-items: center;
-            gap: 20px;
-        }}
-        .hero-info {{ display: flex; align-items: center; gap: 16px; }}
-        .status-pulse {{
-            width: 52px;
-            height: 52px;
-            border-radius: 16px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 26px;
-            background: #0f172a;
-            border: 1px solid var(--border);
-        }}
-        .hero-details h2 {{ font-size: 20px; font-weight: 700; margin-bottom: 4px; }}
-        .hero-details p {{ font-size: 14px; color: var(--text-muted); }}
-        .hero-stats {{ display: flex; gap: 24px; }}
-        .stat-item {{ text-align: right; }}
-        .stat-label {{ font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; }}
-        .stat-val {{ font-size: 20px; font-weight: 700; color: var(--text); margin-top: 2px; }}
-
-        /* Unified Control Toolbar */
-        .control-toolbar {{
-            background: linear-gradient(180deg, rgba(30, 41, 59, 0.7) 0%, rgba(15, 23, 42, 0.8) 100%);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 12px 18px;
-            margin-bottom: 24px;
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            justify-content: space-between;
-            gap: 16px;
-        }}
-        .toolbar-group-wrap {{
-            display: flex;
-            flex-wrap: wrap;
-            align-items: center;
-            gap: 20px;
-        }}
-        .control-group {{
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }}
-        .control-group-title {{
-            font-size: 11px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            color: var(--text-muted);
-            white-space: nowrap;
-        }}
-        .btn-segment-group {{
-            display: inline-flex;
-            background: #0b1120;
-            border: 1px solid rgba(255, 255, 255, 0.08);
-            border-radius: 8px;
-            padding: 3px;
-            gap: 3px;
-        }}
-        .btn-segment-group .btn {{
-            padding: 7px 15px;
-            font-size: 13px;
-            font-weight: 600;
-            border-radius: 6px;
-            border: 1px solid transparent;
-            background: transparent;
-            color: var(--text-muted);
-            transition: all 0.15s ease;
-        }}
-        .btn-segment-group .btn:hover:not(:disabled) {{
-            color: var(--text);
-            background: rgba(255, 255, 255, 0.07);
-        }}
-        .btn-segment-group .btn.active-run {{
-            background: var(--primary) !important;
-            color: #ffffff !important;
-            box-shadow: 0 1px 4px rgba(59, 130, 246, 0.4);
-        }}
-        .btn-segment-group .btn.active-stop {{
-            background: #ef4444 !important;
-            color: #ffffff !important;
-            box-shadow: 0 1px 4px rgba(239, 68, 68, 0.4);
-        }}
-        .btn-segment-group .btn.active-needs {{
-            background: var(--purple) !important;
-            color: #ffffff !important;
-            box-shadow: 0 1px 4px rgba(139, 92, 246, 0.4);
-        }}
-        .toolbar-utilities {{
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }}
-        .btn-utility {{
-            padding: 8px 14px;
-            font-size: 13px;
-            font-weight: 500;
-            background: #1e293b;
-            color: var(--text);
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            transition: all 0.15s ease;
-        }}
-        .btn-utility:hover:not(:disabled) {{
-            background: #293548;
-            border-color: #475569;
-        }}
-        .action-bar {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
-            margin-bottom: 24px;
-        }}
-        .btn {{
-            display: inline-flex;
-            align-items: center;
-            justify-content: center;
-            gap: 8px;
-            padding: 10px 18px;
-            border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
-            border: 1px solid transparent;
-            cursor: pointer;
-            transition: all 0.15s ease-in-out;
-            text-decoration: none;
-            user-select: none;
-            position: relative;
-        }}
-        .btn:active:not(:disabled) {{
-            transform: scale(0.98);
-        }}
-        .btn:disabled, .btn[disabled] {{
-            opacity: 0.55 !important;
-            cursor: not-allowed !important;
-            pointer-events: none !important;
-            filter: grayscale(25%);
-        }}
-        .btn-loading {{
-            opacity: 0.85 !important;
-            cursor: wait !important;
-            pointer-events: none !important;
-        }}
-        .btn-spinner {{
-            width: 15px;
-            height: 15px;
-            border: 2px solid rgba(255, 255, 255, 0.35);
-            border-top-color: #ffffff;
-            border-radius: 50%;
-            animation: btn-spin 0.65s linear infinite;
-            display: inline-block;
-            vertical-align: middle;
-            flex-shrink: 0;
-        }}
-        @keyframes btn-spin {{
-            to {{ transform: rotate(360deg); }}
-        }}
-        .btn-primary {{ background: var(--primary); color: white; }}
-        .btn-primary:hover {{ background: var(--primary-hover); }}
-        .btn-success {{ background: var(--success); color: white; }}
-        .btn-success:hover {{ background: #059669; }}
-        .btn-danger {{ background: var(--danger); color: white; }}
-        .btn-danger:hover {{ background: #dc2626; }}
-        .btn-secondary {{ background: #334155; color: var(--text); border-color: rgba(255, 255, 255, 0.08); }}
-        .btn-secondary:hover {{ background: #475569; }}
-        .btn-purple {{ background: var(--purple); color: white; }}
-        .btn-purple:hover {{ background: #7c3aed; }}
-
-        /* Non-blocking Toast Notification */
-        .toast-container {{
-            position: fixed;
-            bottom: 24px;
-            right: 24px;
-            z-index: 9999;
-            display: flex;
-            flex-direction: column;
-            gap: 10px;
-            max-width: 380px;
-            pointer-events: none;
-        }}
-        .toast {{
-            background: #1e293b;
-            color: #f8fafc;
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 12px 18px;
-            font-size: 13px;
-            font-weight: 500;
-            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
-            display: flex;
-            align-items: center;
-            gap: 10px;
-            pointer-events: auto;
-            transform: translateY(20px);
-            opacity: 0;
-            transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-        }}
-        .toast.toast-show {{
-            transform: translateY(0);
-            opacity: 1;
-        }}
-        .toast-success {{
-            border-left: 4px solid var(--success);
-        }}
-        .toast-error {{
-            border-left: 4px solid var(--danger);
-        }}
-        .toast-info {{
-            border-left: 4px solid var(--primary);
-        }}
-
-        /* Fleet Summary Section */
-        .fleet-box {{
-            background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 20px 24px;
-            margin-bottom: 24px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
-        }}
-        .fleet-header {{
-            display: flex;
-            flex-wrap: wrap;
-            justify-content: space-between;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 16px;
-            padding-bottom: 14px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.07);
-        }}
-        .fleet-title-wrap {{
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }}
-        .fleet-icon {{
-            width: 42px;
-            height: 42px;
-            border-radius: 12px;
-            background: rgba(59, 130, 246, 0.15);
-            border: 1px solid rgba(59, 130, 246, 0.3);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 22px;
-        }}
-        .fleet-title {{
-            font-size: 17px;
-            font-weight: 700;
-            color: var(--text);
-        }}
-        .fleet-subtitle {{
-            font-size: 13px;
-            color: var(--text-muted);
-        }}
-        .fleet-badges {{
-            display: flex;
-            gap: 8px;
-            align-items: center;
-            flex-wrap: wrap;
-        }}
-        .fleet-badge {{
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 5px 12px;
-            border-radius: 20px;
-            font-size: 12px;
-            font-weight: 600;
-            background: rgba(15, 23, 42, 0.8);
-            border: 1px solid var(--border);
-            color: var(--text-muted);
-        }}
-        .fleet-badge.badge-running {{
-            background: rgba(16, 185, 129, 0.15);
-            border-color: rgba(16, 185, 129, 0.3);
-            color: #34d399;
-        }}
-
-        .fleet-stats-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 12px;
-            margin-bottom: 18px;
-        }}
-        .fleet-stat-card {{
-            background: rgba(15, 23, 42, 0.6);
-            border: 1px solid rgba(255, 255, 255, 0.06);
-            border-radius: 10px;
-            padding: 14px 16px;
-            display: flex;
-            flex-direction: column;
-            gap: 4px;
-            transition: border-color 0.2s;
-        }}
-        .fleet-stat-card:hover {{
-            border-color: rgba(255, 255, 255, 0.15);
-        }}
-        .fleet-stat-label {{
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            color: var(--text-muted);
-        }}
-        .fleet-stat-val {{
-            font-size: 20px;
-            font-weight: 700;
-            color: var(--text);
-        }}
-        .fleet-stat-val.text-amber {{ color: #fbbf24; }}
-        .fleet-stat-val.text-green {{ color: #34d399; }}
-        .fleet-stat-val.text-blue {{ color: #38bdf8; }}
-
-        .fleet-accounts-title {{
-            font-size: 12px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            color: var(--text-muted);
-            margin-bottom: 10px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }}
-        .fleet-cards-grid {{
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-            gap: 12px;
-        }}
-        .account-fleet-card {{
-            background: rgba(15, 23, 42, 0.7);
-            border: 1px solid var(--border);
-            border-radius: 10px;
-            padding: 14px;
-            cursor: pointer;
-            transition: all 0.2s ease;
-            position: relative;
-            display: flex;
-            flex-direction: column;
-            justify-content: space-between;
-            gap: 10px;
-        }}
-        .account-fleet-card:hover {{
-            border-color: #64748b;
-            transform: translateY(-2px);
-        }}
-        .account-fleet-card.is-active-account {{
-            border-color: var(--primary);
-            background: rgba(59, 130, 246, 0.08);
-            box-shadow: 0 0 0 1px var(--primary);
-        }}
-        .afc-header {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }}
-        .afc-name-wrap {{
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-weight: 700;
-            font-size: 15px;
-            color: var(--text);
-        }}
-        .afc-tag {{
-            font-size: 10px;
-            font-weight: 700;
-            text-transform: uppercase;
-            padding: 2px 7px;
-            border-radius: 10px;
-            background: rgba(59, 130, 246, 0.2);
-            color: #60a5fa;
-            border: 1px solid rgba(59, 130, 246, 0.4);
-        }}
-        .afc-status {{
-            font-size: 12px;
-            color: var(--text-muted);
-            display: flex;
-            align-items: center;
-            gap: 6px;
-        }}
-        .afc-metrics {{
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            background: rgba(0, 0, 0, 0.25);
-            border-radius: 6px;
-            padding: 8px 10px;
-            font-size: 12px;
-        }}
-        .afc-metric-item {{
-            display: flex;
-            flex-direction: column;
-        }}
-        .afc-metric-item .m-lbl {{ font-size: 10px; color: var(--text-muted); }}
-        .afc-metric-item .m-val {{ font-weight: 700; color: var(--text); }}
-
-        .active-account-divider {{
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            margin: 28px 0 16px 0;
-        }}
-        .active-account-divider .line {{
-            flex: 1;
-            height: 1px;
-            background: var(--border);
-        }}
-        .active-account-divider .banner-tag {{
-            font-size: 12px;
-            font-weight: 700;
-            letter-spacing: 0.5px;
-            text-transform: uppercase;
-            color: #38bdf8;
-            background: rgba(56, 189, 248, 0.1);
-            border: 1px solid rgba(56, 189, 248, 0.25);
-            padding: 6px 16px;
-            border-radius: 20px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }}
-
-        /* Grid */
-        .grid-2 {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-            gap: 24px;
-            margin-bottom: 24px;
-        }}
-        .grid-4 {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-            gap: 16px;
-            margin-bottom: 24px;
-        }}
-        .card {{
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            padding: 20px;
-        }}
-        .card-header {{
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 16px;
-            padding-bottom: 12px;
-            border-bottom: 1px solid var(--border);
-        }}
-        .card-title {{ font-size: 16px; font-weight: 700; display: flex; align-items: center; gap: 8px; }}
-
-        /* Progress Bars / Gauges */
-        .meter-row {{ margin-bottom: 14px; }}
-        .meter-label {{ display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px; }}
-        .meter-name {{ color: var(--text); font-weight: 500; display: flex; align-items: center; gap: 6px; }}
-        .meter-val {{ font-weight: 700; }}
-        .meter-bar {{
-            height: 10px;
-            background: #0f172a;
-            border-radius: 5px;
-            overflow: hidden;
-            position: relative;
-        }}
-        .meter-fill {{
-            height: 100%;
-            border-radius: 5px;
-            transition: width 0.4s ease;
-        }}
-        .fill-green {{ background: var(--success); }}
-        .fill-orange {{ background: var(--warning); }}
-        .fill-red {{ background: var(--danger); }}
-
-        /* Toggle Switches */
-        .toggle-item {{
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            padding: 12px 0;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        }}
-        .toggle-item:last-child {{ border-bottom: none; }}
-        .toggle-info {{ display: flex; flex-direction: column; }}
-        .toggle-title {{ font-size: 14px; font-weight: 600; }}
-        .toggle-desc {{ font-size: 12px; color: var(--text-muted); }}
-        .switch {{
-            position: relative;
-            display: inline-block;
-            width: 44px;
-            height: 24px;
-        }}
-        .switch input {{ opacity: 0; width: 0; height: 0; }}
-        .slider {{
-            position: absolute;
-            cursor: pointer;
-            top: 0; left: 0; right: 0; bottom: 0;
-            background-color: #334155;
-            transition: .3s;
-            border-radius: 24px;
-        }}
-        .slider:before {{
-            position: absolute;
-            content: "";
-            height: 18px;
-            width: 18px;
-            left: 3px;
-            bottom: 3px;
-            background-color: white;
-            transition: .3s;
-            border-radius: 50%;
-        }}
-        input:checked + .slider {{ background-color: var(--primary); }}
-        input:checked + .slider:before {{ transform: translateX(20px); }}
-
-        /* Log Feed */
-        .log-box {{
-            background: #090d16;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            padding: 14px;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-            font-size: 12px;
-            color: #38bdf8;
-            max-height: 220px;
-            overflow-y: auto;
-            white-space: pre-wrap;
-            line-height: 1.6;
-        }}
-
-        /* Table */
-        table.data-table {{
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 14px;
-        }}
-        table.data-table th, table.data-table td {{
-            padding: 12px 14px;
-            text-align: left;
-            border-bottom: 1px solid var(--border);
-        }}
-        table.data-table th {{
-            color: var(--text-muted);
-            font-size: 12px;
-            text-transform: uppercase;
-            font-weight: 600;
-        }}
-        table.data-table tr:hover {{ background: rgba(255, 255, 255, 0.02); }}
-
-        /* Modal */
-        .modal {{
-            display: none;
-            position: fixed;
-            top: 0; left: 0; width: 100%; height: 100%;
-            background: rgba(0, 0, 0, 0.75);
-            backdrop-filter: blur(4px);
-            z-index: 1000;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }}
-        .modal.open {{ display: flex; }}
-        .modal-content {{
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            max-width: 500px;
-            width: 100%;
-            padding: 24px;
-            box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
-        }}
-        .modal-header {{
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            margin-bottom: 16px;
-        }}
-        .modal-header h3 {{ font-size: 18px; font-weight: 700; }}
-        .close-btn {{ background: none; border: none; color: var(--text-muted); font-size: 20px; cursor: pointer; }}
-        textarea.cookie-box {{
-            width: 100%;
-            height: 120px;
-            background: #0f172a;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            color: var(--text);
-            padding: 10px;
-            font-family: monospace;
-            font-size: 12px;
-            outline: none;
-            margin-bottom: 16px;
-            resize: vertical;
-        }}
-    </style>
+    <link rel="stylesheet" href="/ui/console.css">
 </head>
-<body>
-    <header>
+<body class="app-shell">
+    <header class="app-header">
         <div class="brand">
-            <span>🛵</span>
+            {BRAND_MARK}
             <span>Kampung Ojol</span>
         </div>
         <div class="header-actions">
             <div class="account-select-wrap">
-                <select id="accountDropdown" class="account-select" onchange="switchAccount(this.value)">
+                <select id="accountDropdown" class="account-select" aria-label="Pilih akun game" onchange="switchAccount(this.value)">
                     <option value="">Memuat akun...</option>
                 </select>
-                <button class="btn btn-secondary" style="padding: 6px 10px; font-size: 12px;" onclick="openModal('addAccountModal')">+ Akun</button>
             </div>
-            <div class="user-badge" title="Web Dashboard • Online">
-                <span class="tg-status connected"></span>
+            <div class="user-badge" title="Pengguna web">
                 <span id="navUsername">{html.escape(user.get("username", "User"))}</span>
             </div>
             <button class="btn btn-secondary" style="padding: 6px 12px; font-size: 12px;" onclick="logout()">Keluar</button>
         </div>
     </header>
 
-    <nav class="nav-tabs">
-        <button class="nav-btn active" onclick="showTab('tab-dashboard')">📊 Dashboard</button>
-        <button class="nav-btn" onclick="showTab('tab-auto')">⚙️ Auto & Kebutuhan</button>
-        <button class="nav-btn" onclick="showTab('tab-accounts')">👥 Akun Saya</button>
-        <button class="nav-btn" onclick="showTab('tab-notifications')">🔔 Notifikasi <span id="notifBadge" style="display:none; background:var(--danger); color:white; font-size:10px; padding:2px 6px; border-radius:10px; margin-left:4px;">0</span></button>
+    <nav class="nav-tabs" aria-label="Navigasi utama">
+        <button class="nav-btn active" aria-current="page" onclick="showTab('tab-dashboard')">Ringkasan</button>
+        <button class="nav-btn" onclick="showTab('tab-auto')"><span class="nav-label-wide">Pengaturan Auto</span><span class="nav-label-short">Auto</span></button>
+        <button class="nav-btn" onclick="showTab('tab-accounts')">Akun</button>
+        <button class="nav-btn" onclick="showTab('tab-notifications')">Notifikasi <span id="notifBadge" class="nav-count" style="display: none;">0</span></button>
         <button id="adminTabBtn" class="nav-btn" style="display: {
         "block" if user.get("role") == "admin" else "none"
-    };" onclick="showTab('tab-admin')">🛡️ Admin Panel</button>
+    };" onclick="showTab('tab-admin')">Admin</button>
     </nav>
 
-    <div class="container">
+    <main class="container">
         <!-- TAB 1: DASHBOARD -->
         <div id="tab-dashboard" class="tab-panel active">
-            <!-- Warning Banner: Kuota Narik Otomatis Habis (Beralih ke Extension Mode Kendarai) -->
-            <div id="limitNoticeCard" style="display: none; background: linear-gradient(135deg, rgba(239, 68, 68, 0.18), rgba(245, 158, 11, 0.18)); border: 1px solid rgba(245, 158, 11, 0.5); border-radius: var(--radius); padding: 18px 20px; margin-bottom: 24px; box-shadow: 0 4px 16px rgba(245, 158, 11, 0.1);">
-                <div style="display: flex; align-items: flex-start; gap: 14px;">
-                    <div style="font-size: 32px; line-height: 1;">⚠️</div>
-                    <div style="flex: 1;">
-                        <h3 style="font-size: 16px; font-weight: 700; color: #fbbf24; margin-bottom: 4px;">
-                            Batas Narik Mode Otomatis Hari Ini Tercapai (Maksimal 14 Jam / 840 Menit)
-                        </h3>
-                        <p style="font-size: 13px; color: #cbd5e1; line-height: 1.5; margin-bottom: 12px;">
-                            Kuota narik harian Mode Otomatis akun ini telah mencapai batas maksimal (14 jam). Server game melarang order otomatis baru hingga reset jam 00:00 WIB.<br>
-                            <b>Namun Anda tetap bisa narik TANPA BATAS dengan beralih ke Mode Kendarai</b> (<code style="background:rgba(0,0,0,0.3); padding:2px 5px; border-radius:4px; color:#38bdf8;">kendara.tanpaBatas: true</code>) menggunakan <b>Ekstensi Chrome KampungSebelah Helper</b>!
-                        </p>
-                        <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                            <a href="/api/extension/download" class="btn btn-warning" style="background:#f59e0b; color:#0f172a; font-weight:700;">📦 Download Extension (.ZIP)</a>
-                            <button class="btn btn-secondary" onclick="openModal('extensionModal')">📖 Panduan Pasang Extension</button>
-                        </div>
-                    </div>
+
+            <div class="page-title">
+                <div>
+                    <h1>Ringkasan armada</h1>
+                    <p>Pantau akun dan kelola aktivitas Ojol.</p>
+                </div>
+                <div class="page-title-actions">
+                    <span id="dashboardFreshness" class="freshness" role="status">Memuat dashboard…</span>
+                    <button id="btnRefreshDash" class="btn btn-utility" type="button" onclick="manualRefreshDashboard()">Segarkan</button>
                 </div>
             </div>
+            <section id="onboardingCard" class="card onboarding" hidden aria-labelledby="onboardingTitle">
+                <h2 id="onboardingTitle" class="card-title">Hubungkan akun game</h2>
+                <p class="meta">Impor cookie sesi KampungSebelah untuk mulai mengelola akun ini.</p>
+                <div class="onboarding-fields">
+                    <label for="onboardingAccountName">Nama akun <span class="meta">(opsional)</span></label>
+                    <input id="onboardingAccountName" type="text" placeholder="Gunakan nama karakter" maxlength="40">
+                    <label for="onboardingCookieInput">Cookie sesi game</label>
+                    <textarea id="onboardingCookieInput" class="cookie-box" rows="4" placeholder="Tempel nilai token atau JSON cookie" spellcheck="false" autocomplete="off"></textarea>
+                </div>
+                <div class="actions">
+                    <button id="btnOnboardingSubmit" class="btn btn-primary" type="button" onclick="submitOnboardingCookie()">Hubungkan akun</button>
+                    <span id="onboardingLoadingText" class="meta" role="status" style="display: none;">Memverifikasi sesi…</span>
+                </div>
+            </section>
+            <div id="activeDashboardSection" hidden>
+                <dl class="card fleet-stats" aria-label="Ringkasan seluruh akun">
+                    <div><dt>Worker berjalan</dt><dd id="fleetCountWorkers">—</dd></div>
+                    <div><dt>Saldo armada</dt><dd id="fleetTotalWallet">—</dd></div>
+                    <div><dt>Penghasilan hari ini</dt><dd id="fleetTotalIncome">—</dd></div>
+                    <div><dt>Trip hari ini</dt><dd id="fleetTotalTrips">—</dd></div>
+                </dl>
 
-            <!-- Onboarding Card: Belum Ada Akun (Langsung Import Cookie) -->
-            <div id="onboardingCard" style="display: none; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 32px 28px; margin-bottom: 24px;">
-                <div style="max-width: 780px; margin: 0 auto;">
-                    <div style="display: flex; align-items: flex-start; gap: 16px; margin-bottom: 18px;">
-                        <div style="width: 48px; height: 48px; border-radius: 12px; background: rgba(59, 130, 246, 0.12); border: 1px solid rgba(59, 130, 246, 0.3); display: flex; align-items: center; justify-content: center; font-size: 24px; flex-shrink: 0;">🛵</div>
-                        <div>
-                            <h2 style="font-size: 19px; font-weight: 700; color: #f8fafc; letter-spacing: -0.01em; margin-bottom: 4px;">
-                                Hubungkan Akun KampungSebelah
-                            </h2>
-                            <p style="font-size: 13px; color: var(--text-muted); line-height: 1.5;">
-                                Belum ada akun game yang terhubung. Masukkan cookie sesi peramban game Anda di bawah untuk mengaktifkan otomatisasi order di background.
-                            </p>
-                        </div>
-                    </div>
-
-                    <!-- Inline Import Cookie Form -->
-                    <div style="background: #0f172a; border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 22px;">
-                        <div style="margin-bottom: 14px;">
-                            <label style="display: block; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #94a3b8; margin-bottom: 6px;">
-                                Nama Akun (Otomatis Sesuai Nickname Game)
-                            </label>
-                            <input type="text" id="onboardingAccountName" placeholder="Otomatis memakai Nickname karakter game (kosongkan saja)" style="width: 100%; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: var(--text); font-size: 13px; outline: none;">
-                        </div>
-
-                        <div style="margin-bottom: 16px;">
-                            <label style="display: block; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: #94a3b8; margin-bottom: 6px;">
-                                Cookie Sesi Game (Nilai vtW... atau Format Utuh)
-                            </label>
-                            <textarea id="onboardingCookieInput" rows="4" placeholder="Tempel cookie KampungSebelah di sini (contoh: vtW1tcmp4qCDI9cxOfOjr0YSykpDHKfS...)" style="width: 100%; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; color: #38bdf8; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; outline: none; resize: vertical; line-height: 1.5;"></textarea>
-                        </div>
-
-                        <div style="display: flex; justify-content: flex-end; gap: 12px; align-items: center; flex-wrap: wrap;">
-                            <span id="onboardingLoadingText" style="display: none; font-size: 13px; color: #fbbf24;">
-                                ⏳ Memverifikasi cookie dengan server KampungSebelah...
-                            </span>
-                            <button id="btnOnboardingSubmit" class="btn btn-primary" onclick="submitOnboardingCookie()" style="padding: 10px 22px; font-weight: 600; font-size: 14px;">
-                                🚀 Hubungkan Akun & Mulai
-                            </button>
-                        </div>
-                    </div>
-
-                    <!-- 3 Langkah Cepat -->
-                    <div style="border-top: 1px solid var(--border); padding-top: 18px;">
-                        <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); margin-bottom: 12px;">
-                            Cara Mengambil Cookie dari Browser (3 Langkah Mudah)
-                        </div>
-                        <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 12px;">
-                            <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;">
-                                <div style="font-size: 11px; font-weight: 700; color: #38bdf8; margin-bottom: 4px;">1. BUKA GAME</div>
-                                <p style="font-size: 12px; color: #94a3b8; line-height: 1.4; margin: 0;">
-                                    Buka <code style="color:#e2e8f0; font-size: 11px;">kampungsebelah.com</code> di browser dan pastikan sudah masuk sampai desa tampil.
-                                </p>
+                <div class="ops-grid">
+                    <div class="account-workbench">
+                        <section class="card account-card" aria-labelledby="activeAccountBannerName">
+                            <div class="account-header">
+                                <div>
+                                    <h2 id="activeAccountBannerName">Akun terpilih</h2>
+                                    <p id="statusTitle">Memuat status akun…</p>
+                                </div>
+                                <button id="btnCookieToolbar" class="btn btn-utility" type="button" onclick="openCookieModalFor()">Cookie akun</button>
                             </div>
-                            <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;">
-                                <div style="font-size: 11px; font-weight: 700; color: #38bdf8; margin-bottom: 4px;">2. TEKAN F12</div>
-                                <p style="font-size: 12px; color: #94a3b8; line-height: 1.4; margin: 0;">
-                                    Buka tab <b>Application</b> (Chrome) atau <b>Storage</b> (Firefox) &gt; <b>Cookies</b> &gt; cari nilai <code style="color:#e2e8f0; font-size: 11px;">vtW...</code>.
-                                </p>
+                            <dl class="account-metrics">
+                                <div><dt>Saldo akun</dt><dd id="walletVal">—</dd></div>
+                                <div><dt>Trip akun</dt><dd id="tripsVal">—</dd></div>
+                                <div><dt>Aktivitas game</dt><dd id="countdownVal">—</dd><span id="presenceVal" class="meta"></span></div>
+                            </dl>
+                            <div class="control-toolbar" aria-label="Kontrol otomatisasi">
+                                <div class="control-group">
+                                    <div><span class="control-group-title">Auto Ojol</span><span id="toolbarOjolBadge" class="control-state">—</span></div>
+                                    <div class="btn-segment-group">
+                                        <button id="btnRunOjol" class="btn btn-primary" type="button" onclick="controlAction('run')" aria-label="Jalankan Auto Ojol">Jalankan</button>
+                                        <button id="btnStopOjol" class="btn btn-stop" type="button" onclick="controlAction('stop')" aria-label="Hentikan Auto Ojol">Hentikan</button>
+                                    </div>
+                                </div>
+                                <div class="control-group">
+                                    <div><span class="control-group-title">Auto Kebutuhan</span><span id="toolbarNeedsBadge" class="control-state">—</span></div>
+                                    <div class="btn-segment-group">
+                                        <button id="btnRunNeeds" class="btn btn-primary" type="button" onclick="controlAction('run-needs')" aria-label="Jalankan Auto Kebutuhan">Jalankan</button>
+                                        <button id="btnStopNeeds" class="btn btn-stop" type="button" onclick="controlAction('stop-needs')" aria-label="Hentikan Auto Kebutuhan">Hentikan</button>
+                                    </div>
+                                </div>
                             </div>
-                            <div style="background: rgba(15, 23, 42, 0.7); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px;">
-                                <div style="font-size: 11px; font-weight: 700; color: #38bdf8; margin-bottom: 4px;">3. SALIN & TEMPEL</div>
-                                <p style="font-size: 12px; color: #94a3b8; line-height: 1.4; margin: 0;">
-                                    Salin nilainya, tempelkan di kotak di atas, lalu klik <b>Hubungkan Akun & Mulai</b>.
-                                </p>
-                            </div>
+                        </section>
+
+                        <div id="limitNoticeCard" class="notice notice-warning" hidden>
+                            <strong>Batas narik harian tercapai</strong>
+                            <p>Periksa sisa waktu di game sebelum mengambil order lagi.</p>
+                        </div>
+
+                        <div class="grid-2 resource-grid">
+                            <section class="card vehicle-card" aria-labelledby="vehicleTitle">
+                                <div class="card-header"><h2 id="vehicleTitle" class="card-title">Kendaraan & kuota</h2></div>
+                                {
+        meters_html((("fuel", "Bensin"), ("cond", "Kondisi mesin"), ("data", "Kuota HP")))
+    }
+                                <p id="spbuWaitHint" class="notice notice-warning" hidden></p>
+                            </section>
+                            <section class="card needs-card" aria-labelledby="needsTitle">
+                                <div class="card-header">
+                                    <h2 id="needsTitle" class="card-title">Kebutuhan karakter</h2>
+                                    <span id="needsCardBadge" class="meta"></span>
+                                </div>
+                                {
+        meters_html(
+            (
+                ("makan", "Makan"),
+                ("kesehatan", "Kesehatan"),
+                ("fisik", "Fisik"),
+                ("rekreasi", "Rekreasi"),
+                ("kebersihan", "Kebersihan"),
+                ("wc", "Buang air"),
+                ("penampilan", "Penampilan"),
+                ("rumah", "Kondisi rumah"),
+            )
+        )
+    }
+                            </section>
+                            <section class="card activity-card" aria-labelledby="activityTitle">
+                                <div class="card-header"><h2 id="activityTitle" class="card-title">Aktivitas terbaru</h2></div>
+                                <div id="logConsole" class="log-box">Memuat aktivitas…</div>
+                            </section>
                         </div>
                     </div>
+                    <aside class="fleet-rail" aria-labelledby="fleetTitle">
+                        <div class="rail-header"><h2 id="fleetTitle">Akun armada</h2><span id="fleetCountAccounts">—</span></div>
+                        <div id="fleetAccountsGrid" class="card fleet-list"></div>
+                        <button class="btn btn-secondary" type="button" onclick="showTab('tab-accounts')">Kelola akun</button>
+                    </aside>
                 </div>
             </div>
-
-            <!-- Active Dashboard Section (Tampil saat akun sudah terhubung) -->
-            <div id="activeDashboardSection">
-                <!-- TOP SECTION: Summary All Accounts (Armada) -->
-                <div class="fleet-box">
-                    <div class="fleet-header">
-                        <div class="fleet-title-wrap">
-                            <div class="fleet-icon">🌐</div>
-                            <div>
-                                <div class="fleet-title">Ringkasan Semua Akun (Armada)</div>
-                                <div class="fleet-subtitle">Total koin, trip, dan status operasional seluruh akun game Anda</div>
-                            </div>
-                        </div>
-                        <div class="fleet-badges">
-                            <span id="fleetRunningBadge" class="fleet-badge badge-running">⚡ 0 Worker Aktif</span>
-                            <span id="fleetTotalAccountsBadge" class="fleet-badge">👥 0 Akun</span>
-                        </div>
-                    </div>
-
-                    <!-- Fleet KPI Cards -->
-                    <div class="fleet-stats-grid">
-                        <div class="fleet-stat-card">
-                            <div class="fleet-stat-label">💰 Saldo Gabungan</div>
-                            <div id="fleetTotalWallet" class="fleet-stat-val text-amber">- koin</div>
-                        </div>
-                        <div class="fleet-stat-card">
-                            <div class="fleet-stat-label">📈 Penghasilan Hari Ini</div>
-                            <div id="fleetTotalIncome" class="fleet-stat-val text-green">+0 koin</div>
-                        </div>
-                        <div class="fleet-stat-card">
-                            <div class="fleet-stat-label">🛵 Trip Gabungan Hari Ini</div>
-                            <div id="fleetTotalTrips" class="fleet-stat-val text-blue">0 Trip</div>
-                        </div>
-                        <div class="fleet-stat-card">
-                            <div class="fleet-stat-label">👥 Total Armada Akun</div>
-                            <div id="fleetCountAccounts" class="fleet-stat-val">-</div>
-                        </div>
-                        <div class="fleet-stat-card">
-                            <div class="fleet-stat-label">⚡ Worker Berjalan</div>
-                            <div id="fleetCountWorkers" class="fleet-stat-val text-green">-</div>
-                        </div>
-                    </div>
-
-                    <!-- Accounts Cards Grid / Switcher -->
-                    <div class="fleet-accounts-title">
-                        <span>Pilih & Pantau Akun:</span>
-                        <span style="font-weight: normal; text-transform: none; color: #94a3b8; font-size: 11px;">Klik kartu untuk beralih kontrol akun</span>
-                    </div>
-                    <div id="fleetAccountsGrid" class="fleet-cards-grid">
-                        <!-- Populated dynamically via JS -->
-                    </div>
-                </div>
-
-                <!-- Visual Divider to Active Account Detail & Control -->
-                <div class="active-account-divider">
-                    <div class="line"></div>
-                    <div class="banner-tag">
-                        <span>🛵 DETAIL & KONTROL AKUN AKTIF:</span>
-                        <strong id="activeAccountBannerName" style="color: #fff;">-</strong>
-                    </div>
-                    <div class="line"></div>
-                </div>
-
-            <!-- Hero Status Card -->
-            <div class="hero-card">
-                <div class="hero-info">
-                    <div id="statusIcon" class="status-pulse">⚪</div>
-                    <div class="hero-details">
-                        <h2 id="statusTitle">Memuat status...</h2>
-                        <p id="statusSubtitle">Menghubungkan ke controller akun</p>
-                    </div>
-                </div>
-                <div class="hero-stats">
-                    <div class="stat-item">
-                        <div class="stat-label">Saldo Koin</div>
-                        <div id="walletVal" class="stat-val">-</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-label">Trip Hari Ini</div>
-                        <div id="tripsVal" class="stat-val">-</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-label">⏱️ Sisa Waktu / Countdown</div>
-                        <div id="countdownVal" class="stat-val" style="color: #38bdf8;">-</div>
-                    </div>
-                    <div class="stat-item">
-                        <div class="stat-label">Presence Online</div>
-                        <div id="presenceVal" class="stat-val">-</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Unified Control Toolbar -->
-            <div class="control-toolbar">
-                <div class="toolbar-group-wrap">
-                    <!-- Ojol Order Automation -->
-                    <div class="control-group">
-                        <span class="control-group-title">🛵 Order Ojol</span>
-                        <div class="btn-segment-group">
-                            <button id="btnRunOjol" class="btn" onclick="controlAction('run')">▶️ Jalankan</button>
-                            <button id="btnStopOjol" class="btn" onclick="controlAction('stop')">⏹️ Hentikan</button>
-                        </div>
-                    </div>
-
-                    <!-- Character Needs Automation -->
-                    <div class="control-group">
-                        <span class="control-group-title">🍲 Kebutuhan</span>
-                        <div class="btn-segment-group">
-                            <button id="btnRunNeeds" class="btn" onclick="controlAction('run-needs')">🔄 Jalankan</button>
-                            <button id="btnStopNeeds" class="btn" onclick="controlAction('stop-needs')">⏹️ Hentikan</button>
-                        </div>
-                        <span id="toolbarNeedsBadge" style="display:none; font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 10px;"></span>
-                    </div>
-                </div>
-
-                <!-- Right Utility Actions -->
-                <div class="toolbar-utilities">
-                    <button id="btnCookieToolbar" class="btn btn-utility" onclick="openCookieModalFor()" title="Hubungkan atau perbarui cookie game">🍪 Ganti Cookie</button>
-                    <button id="btnRefreshDash" class="btn btn-utility" onclick="manualRefreshDashboard()" title="Segarkan status dashboard">🔄 Refresh</button>
-                </div>
-            </div>
-
-            <!-- Grid: Kendaraan & Kebutuhan -->
-            <div class="grid-2">
-                <!-- Card 1: Resource Kendaraan -->
-                <div class="card">
-                    <div class="card-header">
-                        <div class="card-title">🛵 Resource Kendaraan & Kuota</div>
-                    </div>
-                    <div class="meter-row">
-                        <div class="meter-label">
-                            <span class="meter-name">⛽ Bensin</span>
-                            <span id="fuelText" class="meter-val">-</span>
-                        </div>
-                        <div class="meter-bar"><div id="fuelBar" class="meter-fill fill-green" style="width: 0%;"></div></div>
-                    </div>
-                    <div class="meter-row">
-                        <div class="meter-label">
-                            <span class="meter-name">🔧 Kondisi Mesin</span>
-                            <span id="condText" class="meter-val">-</span>
-                        </div>
-                        <div class="meter-bar"><div id="condBar" class="meter-fill fill-green" style="width: 0%;"></div></div>
-                    </div>
-                    <div class="meter-row">
-                        <div class="meter-label">
-                            <span class="meter-name">📶 Kuota HP</span>
-                            <span id="dataText" class="meter-val">-</span>
-                        </div>
-                        <div class="meter-bar"><div id="dataBar" class="meter-fill fill-green" style="width: 0%;"></div></div>
-                    </div>
-                </div>
-
-                <!-- Card 2: Kebutuhan Karakter -->
-                <div class="card">
-                    <div class="card-header">
-                        <div class="card-title">🍲 Kebutuhan Karakter</div>
-                        <span id="needsCardBadge" style="font-size: 11px; padding: 3px 9px; border-radius: 6px; font-weight: 600; border: 1px solid var(--border); background: rgba(15, 23, 42, 0.6); color: var(--text-muted);">Memuat...</span>
-                    </div>
-                    <div class="meter-row">
-                        <div class="meter-label">
-                            <span class="meter-name">🍲 Makan</span>
-                            <span id="makanText" class="meter-val">-</span>
-                        </div>
-                        <div class="meter-bar"><div id="makanBar" class="meter-fill fill-green" style="width: 0%;"></div></div>
-                    </div>
-                    <div class="meter-row">
-                        <div class="meter-label">
-                            <span class="meter-name">❤️ Kesehatan</span>
-                            <span id="kesehatanText" class="meter-val">-</span>
-                        </div>
-                        <div class="meter-bar"><div id="kesehatanBar" class="meter-fill fill-green" style="width: 0%;"></div></div>
-                    </div>
-                    <div class="meter-row">
-                        <div class="meter-label">
-                            <span class="meter-name">🥊 Fisik / Gym</span>
-                            <span id="fisikText" class="meter-val">-</span>
-                        </div>
-                        <div class="meter-bar"><div id="fisikBar" class="meter-fill fill-green" style="width: 0%;"></div></div>
-                    </div>
-                    <div class="meter-row">
-                        <div class="meter-label">
-                            <span class="meter-name">🎡 Rekreasi</span>
-                            <span id="rekreasiText" class="meter-val">-</span>
-                        </div>
-                        <div class="meter-bar"><div id="rekreasiBar" class="meter-fill fill-green" style="width: 0%;"></div></div>
-                    </div>
-                    <div class="meter-row">
-                        <div class="meter-label">
-                            <span class="meter-name">🧼 Kebersihan</span>
-                            <span id="kebersihanText" class="meter-val">-</span>
-                        </div>
-                        <div class="meter-bar"><div id="kebersihanBar" class="meter-fill fill-green" style="width: 0%;"></div></div>
-                    </div>
-                    <div class="meter-row">
-                        <div class="meter-label">
-                            <span class="meter-name">🚽 Buang Air (WC)</span>
-                            <span id="wcText" class="meter-val">-</span>
-                        </div>
-                        <div class="meter-bar"><div id="wcBar" class="meter-fill fill-green" style="width: 0%;"></div></div>
-                    </div>
-                    <div class="meter-row">
-                        <div class="meter-label">
-                            <span class="meter-name">✂️ Penampilan</span>
-                            <span id="penampilanText" class="meter-val">-</span>
-                        </div>
-                        <div class="meter-bar"><div id="penampilanBar" class="meter-fill fill-green" style="width: 0%;"></div></div>
-                    </div>
-                    <div class="meter-row">
-                        <div class="meter-label">
-                            <span class="meter-name">🏠 Kondisi Rumah</span>
-                            <span id="rumahText" class="meter-val">-</span>
-                        </div>
-                        <div class="meter-bar"><div id="rumahBar" class="meter-fill fill-green" style="width: 0%;"></div></div>
-                    </div>
-                </div>
-
-                <!-- Card 3: Extension & Mode Kendarai Info -->
-                <div class="card" style="grid-column: 1 / -1; border-color: rgba(59, 130, 246, 0.4); background: linear-gradient(135deg, rgba(30, 58, 138, 0.15), rgba(15, 23, 42, 0.8));">
-                    <div class="card-header">
-                        <div class="card-title">🧩 Ekstensi Chrome (Mode Kendarai Tanpa Batas 14 Jam & Radar)</div>
-                        <span style="background: rgba(16, 185, 129, 0.2); color: #34d399; font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 6px;">v2.2.0 Siap Pakai</span>
-                    </div>
-                    <p style="font-size: 13px; color: var(--text-muted); line-height: 1.6; margin-bottom: 14px;">
-                        Saat limit harian 14 jam (840 menit) di Mode Otomatis habis, Anda bisa melanjutkan narik order <b>TANPA BATAS</b> dengan menggunakan <b>Mode Kendarai</b> via Ekstensi Chrome resmi KampungSebelah Helper. Ekstensi ini juga dilengkapi dengan <b>Auto-Beli Kebutuhan</b> (Bensin SPBU, Bengkel, Kuota), <b>Anti-Cek Kilat (&gt;2.5s)</b>, <b>Radar Pusaka TPU Mbah Rukmi</b>, dan <b>Auto-Mancing Pro</b>.
-                    </p>
-                    <div style="display: flex; gap: 10px; flex-wrap: wrap;">
-                        <a href="/api/extension/download" class="btn btn-primary">📦 Download File ZIP Ekstensi</a>
-                        <button class="btn btn-secondary" onclick="openModal('extensionModal')">📖 Lihat Tutorial Pemasangan</button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Activity Log Card -->
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-title">📜 Log Aktivitas & Status</div>
-                    <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="refreshDashboard()">Refresh Log</button>
-                </div>
-                <div id="logConsole" class="log-box">Memuat aktivitas terbaru...</div>
-            </div>
-            </div> <!-- end #activeDashboardSection -->
         </div>
 
         <!-- TAB 2: AUTO & KEBUTUHAN -->
         <div id="tab-auto" class="tab-panel">
+            <div class="page-title"><div><h1>Pengaturan Auto</h1><p>Pilih aktivitas untuk akun yang sedang ditampilkan.</p></div></div>
             <div class="grid-2">
                 <div class="card">
                     <div class="card-header">
-                        <div class="card-title">⚡ Mode Ojol Web: Otomatis (Background Server)</div>
-                        <span style="background: rgba(16, 185, 129, 0.2); color: #34d399; font-size: 11px; font-weight: 600; padding: 3px 8px; border-radius: 6px;">Aktif (Paling Stabil)</span>
+                        <h2 class="card-title">Mode berkendara</h2>
                     </div>
                     <p style="font-size: 13px; color: var(--text-muted); line-height: 1.5; margin-bottom: 12px;">
-                        Web Dashboard khusus menjalankan <b>Mode Otomatis</b> di latar belakang server (hemat daya, bebas macet 3D, durasi & omzet optimal). Kuota narik: <b>14 jam / hari (840 menit)</b>.
+                        Kelola Auto Ojol dari Ringkasan. Kuota narik mengikuti aturan game.
                     </p>
-                    <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 8px; padding: 10px 12px; font-size: 12px; color: #cbd5e1;">
-                        <b style="color: #fbbf24;">Ingin Mode Kendarai (Tanpa Batas 14 Jam)?</b><br>
-                        Mode Kendarai dijalankan khusus via <b>Ekstensi Chrome</b> yang langsung menyetir di browser Anda.<br>
+                    <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 8px; padding: 10px 12px; font-size: 12px; color: var(--text-muted);">
+                        <strong>Ekstensi Chrome</strong><br>
+                        Gunakan ekstensi untuk mode berkendara di browser.<br>
                         <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
-                            <a href="/api/extension/download" class="btn btn-warning" style="font-size: 11px; padding: 5px 10px; background:#f59e0b; color:#0f172a; font-weight:700;">📦 Download Ekstensi (.ZIP)</a>
+                            <a href="/api/extension/download" class="btn btn-warning" style="font-size: 11px; padding: 5px 10px; background:#f59e0b; color:var(--bg); font-weight:700;">📦 Download Ekstensi (.ZIP)</a>
                             <button class="btn btn-secondary" style="font-size: 11px; padding: 5px 10px;" onclick="openModal('extensionModal')">📖 Tutorial Pasang</button>
                         </div>
                     </div>
@@ -1623,14 +711,14 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 </div>
 
                 <div class="card">
-                    <div class="card-header"><div class="card-title">📚 Auto Belajar (Study)</div></div>
+                    <div class="card-header"><h2 class="card-title">Auto Belajar</h2></div>
                     <div class="toggle-item">
                         <div class="toggle-info">
                             <span class="toggle-title">📖 Auto Perpustakaan (Gratis)</span>
                             <span class="toggle-desc">Menjalankan kuis belajar gratis di perpustakaan secara otomatis</span>
                         </div>
                         <label class="switch">
-                            <input type="checkbox" id="autoPerpusToggle" onchange="toggleAuto('perpus', this.checked)">
+                            <input type="checkbox" id="autoPerpusToggle" aria-label="Auto Perpustakaan" onchange="toggleAuto('perpus', this.checked)">
                             <span class="slider"></span>
                         </label>
                     </div>
@@ -1640,7 +728,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                             <span class="toggle-desc">Mengikuti kuliah otomatis di kampus (biaya koin) hingga level maksimal</span>
                         </div>
                         <label class="switch">
-                            <input type="checkbox" id="autoKuliahToggle" onchange="toggleAuto('kuliah', this.checked)">
+                            <input type="checkbox" id="autoKuliahToggle" aria-label="Auto Kuliah" onchange="toggleAuto('kuliah', this.checked)">
                             <span class="slider"></span>
                         </label>
                     </div>
@@ -1650,13 +738,13 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                             <span class="toggle-desc">Beralih ke bidang lain jika bidang saat ini sudah mencapai level maksimum</span>
                         </div>
                         <label class="switch">
-                            <input type="checkbox" id="studyRotateToggle" onchange="toggleAuto('auto_subject', this.checked)">
+                            <input type="checkbox" id="studyRotateToggle" aria-label="Rotasi bidang belajar" onchange="toggleAuto('auto_subject', this.checked)">
                             <span class="slider"></span>
                         </label>
                     </div>
                     <div style="margin-top: 14px;">
                         <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 6px;">Pilih Bidang Belajar:</label>
-                        <select id="studySubjectSelect" class="account-select" style="width: 100%;" onchange="setStudySubject(this.value)">
+                        <select id="studySubjectSelect" aria-label="Bidang belajar" class="account-select" style="width: 100%;" onchange="setStudySubject(this.value)">
                             <option value="auto">🔄 Auto (Pilih Otomatis yang Belum Maks)</option>
                             <option value="dagang">🛒 Dagang</option>
                             <option value="teknik">🔧 Teknik</option>
@@ -1674,82 +762,83 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             </div>
 
             <div class="card">
-                <div class="card-header"><div class="card-title">🍲 Pengaturan Auto Kebutuhan</div></div>
+                <div class="card-header"><h2 class="card-title">Kebutuhan karakter</h2></div>
                 <div class="toggle-item">
                     <div class="toggle-info">
                         <span class="toggle-title">Auto Makan</span>
                         <span class="toggle-desc">Membeli makanan paling bernilai saat lapar</span>
                     </div>
-                    <label class="switch"><input type="checkbox" id="autoMakan" onchange="toggleAuto('makan', this.checked)"><span class="slider"></span></label>
+                    <label class="switch"><input type="checkbox" id="autoMakan" aria-label="Auto Makan" onchange="toggleAuto('makan', this.checked)"><span class="slider"></span></label>
                 </div>
                 <div class="toggle-item">
                     <div class="toggle-info">
                         <span class="toggle-title">Auto Kesehatan (BPJS)</span>
                         <span class="toggle-desc">Periksa kesehatan & aktivasi BPJS jika kesehatan turun</span>
                     </div>
-                    <label class="switch"><input type="checkbox" id="autoKesehatan" onchange="toggleAuto('kesehatan', this.checked)"><span class="slider"></span></label>
+                    <label class="switch"><input type="checkbox" id="autoKesehatan" aria-label="Auto Kesehatan" onchange="toggleAuto('kesehatan', this.checked)"><span class="slider"></span></label>
                 </div>
                 <div class="toggle-item">
                     <div class="toggle-info">
                         <span class="toggle-title">Auto Fisik (Gym)</span>
                         <span class="toggle-desc">Latihan fisik di gym saat stamina mencukupi</span>
                     </div>
-                    <label class="switch"><input type="checkbox" id="autoFisik" onchange="toggleAuto('fisik', this.checked)"><span class="slider"></span></label>
+                    <label class="switch"><input type="checkbox" id="autoFisik" aria-label="Auto Fisik" onchange="toggleAuto('fisik', this.checked)"><span class="slider"></span></label>
                 </div>
                 <div class="toggle-item">
                     <div class="toggle-info">
                         <span class="toggle-title">Auto Rekreasi</span>
-                        <span class="toggle-desc">Piknik atau liburan saat rekreasi rendah</span>
+                        <span class="toggle-desc">Pulihkan rekreasi saat turun</span>
                     </div>
-                    <label class="switch"><input type="checkbox" id="autoRekreasi" onchange="toggleAuto('rekreasi', this.checked)"><span class="slider"></span></label>
+                    <label class="switch"><input type="checkbox" id="autoRekreasi" aria-label="Auto Rekreasi" onchange="toggleAuto('rekreasi', this.checked)"><span class="slider"></span></label>
                 </div>
                 <div class="toggle-item">
                     <div class="toggle-info">
                         <span class="toggle-title">Auto Kebersihan (Mandi / Laundry)</span>
                         <span class="toggle-desc">Menjaga kebersihan tubuh dan pakaian</span>
                     </div>
-                    <label class="switch"><input type="checkbox" id="autoKebersihan" onchange="toggleAuto('kebersihan', this.checked)"><span class="slider"></span></label>
+                    <label class="switch"><input type="checkbox" id="autoKebersihan" aria-label="Auto Kebersihan" onchange="toggleAuto('kebersihan', this.checked)"><span class="slider"></span></label>
                 </div>
                 <div class="toggle-item">
                     <div class="toggle-info">
                         <span class="toggle-title">Auto Buang Air (WC)</span>
-                        <span class="toggle-desc">Buang air di toilet umum saat kebelet</span>
+                        <span class="toggle-desc">Gunakan kloset saat kebutuhan turun</span>
                     </div>
-                    <label class="switch"><input type="checkbox" id="autoWc" onchange="toggleAuto('wc', this.checked)"><span class="slider"></span></label>
+                    <label class="switch"><input type="checkbox" id="autoWc" aria-label="Auto Buang Air" onchange="toggleAuto('wc', this.checked)"><span class="slider"></span></label>
                 </div>
                 <div class="toggle-item">
                     <div class="toggle-info">
                         <span class="toggle-title">Auto Penampilan</span>
                         <span class="toggle-desc">Pangkas rambut dan rapikan penampilan</span>
                     </div>
-                    <label class="switch"><input type="checkbox" id="autoPenampilan" onchange="toggleAuto('penampilan', this.checked)"><span class="slider"></span></label>
+                    <label class="switch"><input type="checkbox" id="autoPenampilan" aria-label="Auto Penampilan" onchange="toggleAuto('penampilan', this.checked)"><span class="slider"></span></label>
                 </div>
                 <div class="toggle-item">
                     <div class="toggle-info">
                         <span class="toggle-title">Auto Kondisi Rumah</span>
                         <span class="toggle-desc">Perbaiki dan rawat kondisi rumah</span>
                     </div>
-                    <label class="switch"><input type="checkbox" id="autoRumah" onchange="toggleAuto('rumah', this.checked)"><span class="slider"></span></label>
+                    <label class="switch"><input type="checkbox" id="autoRumah" aria-label="Auto Kondisi Rumah" onchange="toggleAuto('rumah', this.checked)"><span class="slider"></span></label>
                 </div>
                 <div class="toggle-item">
                     <div class="toggle-info">
                         <span class="toggle-title">Auto Kebun (Garden)</span>
                         <span class="toggle-desc">Siram, pupuk, dan panen tanaman kebun secara otomatis</span>
                     </div>
-                    <label class="switch"><input type="checkbox" id="autoGarden" onchange="toggleAuto('kebun', this.checked)"><span class="slider"></span></label>
+                    <label class="switch"><input type="checkbox" id="autoGarden" aria-label="Auto Kebun" onchange="toggleAuto('kebun', this.checked)"><span class="slider"></span></label>
                 </div>
             </div>
         </div>
 
         <!-- TAB 3: AKUN SAYA -->
         <div id="tab-accounts" class="tab-panel">
+            <div class="page-title"><div><h1>Akun game</h1><p>Hubungkan atau kelola akun armada.</p></div></div>
             <div class="card" style="margin-bottom: 24px;">
                 <div class="card-header">
-                    <div class="card-title">👥 Daftar Akun Game Saya</div>
+                    <h2 class="card-title">Daftar akun</h2>
                     <button class="btn btn-primary" onclick="openModal('addAccountModal')">+ Tambah Akun</button>
                 </div>
                 <div style="overflow-x: auto;">
-                    <table class="data-table">
+                    <table class="data-table accounts-table">
                         <thead>
                             <tr>
                                 <th>Nama Akun</th>
@@ -1769,12 +858,13 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
         <!-- TAB 4: NOTIFIKASI -->
         <div id="tab-notifications" class="tab-panel">
+            <div class="page-title"><div><h1>Notifikasi</h1><p>Pantau pesan dan peringatan aktivitas.</p></div></div>
             <div style="max-width: 900px; margin: 0 auto;">
                 {
         '''
                 <div class="notif-subnav" style="display: flex; gap: 10px; margin-bottom: 18px; border-bottom: 1px solid var(--border); padding-bottom: 12px;">
-                    <button id="btnSubNotifUser" class="btn btn-primary" style="font-size: 13px; padding: 6px 14px;" onclick="switchNotifTab('user')">🔔 Akun Aktif Saya</button>
-                    <button id="btnSubNotifAdmin" class="btn btn-secondary" style="font-size: 13px; padding: 6px 14px;" onclick="switchNotifTab('admin')">🛡️ Semua Notifikasi (Semua Akun & User)</button>
+                    <button id="btnSubNotifUser" class="btn btn-primary" style="font-size: 13px; padding: 6px 14px;" onclick="switchNotifTab('user')">Akun terpilih</button>
+                    <button id="btnSubNotifAdmin" class="btn btn-secondary" style="font-size: 13px; padding: 6px 14px;" onclick="switchNotifTab('admin')">Semua akun</button>
                 </div>
                 '''
         if user.get("role") == "admin"
@@ -1784,7 +874,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 <!-- Panel Notifikasi Akun Pribadi -->
                 <div id="panelNotifUser" class="card">
                     <div class="card-header">
-                        <div class="card-title">🔔 Feed Notifikasi Akun</div>
+                        <h2 class="card-title">Notifikasi akun terpilih</h2>
                         <div style="display: flex; gap: 8px;">
                             <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="loadNotifications()">Segarkan</button>
                             <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" onclick="markAllNotificationsRead()">Tandai Semua Dibaca</button>
@@ -1848,16 +938,17 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
         <!-- TAB 5: ADMIN PANEL -->
         <div id="tab-admin" class="tab-panel">
+            <div class="page-title"><div><h1>Administrasi</h1><p>Kelola pengguna dan pengaturan server.</p></div></div>
             <div class="card" style="margin-bottom: 24px;">
                 <div class="card-header">
-                    <div class="card-title">⏳ Pengajuan Pendaftaran Tertunda (Pending Approval)</div>
+                    <h2 class="card-title">Pengajuan tertunda</h2>
                     <div style="display: flex; gap: 8px;">
                         <button class="btn btn-utility" style="padding: 4px 10px; font-size: 11px;" onclick="showTab('tab-notifications'); switchNotifTab('admin');" title="Lihat notifikasi global semua akun dan user">🔔 Log Notifikasi Global</button>
                         <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="loadAdminData()">Refresh</button>
                     </div>
                 </div>
                 <div style="overflow-x: auto;">
-                    <table class="data-table">
+                    <table class="data-table admin-table">
                         <thead>
                             <tr>
                                 <th>ID</th>
@@ -1877,10 +968,10 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
             <div class="card">
                 <div class="card-header">
-                    <div class="card-title">👥 Manajemen Seluruh Pengguna</div>
+                    <h2 class="card-title">Pengguna web</h2>
                 </div>
                 <div style="overflow-x: auto;">
-                    <table class="data-table">
+                    <table class="data-table admin-table">
                         <thead>
                             <tr>
                                 <th>ID</th>
@@ -1903,7 +994,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             <div class="card" style="margin-top: 24px;">
                 <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
                     <div>
-                        <div class="card-title">⚙️ Pengaturan Global & Konfigurasi Sistem</div>
+                        <h2 class="card-title">Pengaturan server</h2>
                         <div style="font-size: 12px; color: var(--text-muted); margin-top: 2px;">
                             Kelola semua konfigurasi server, batas akun, otomatisasi, dan integrasi tanpa edit .env
                         </div>
@@ -1911,16 +1002,16 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     <button class="btn btn-primary" onclick="saveAdminSettings()" style="font-weight: 600;">💾 Simpan Pengaturan</button>
                 </div>
 
-                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; margin-top: 16px;">
+                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 20px; margin-top: 16px;">
                     <!-- Bagian 1: Otomatisasi & Game Play -->
-                    <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 10px; padding: 18px;">
-                        <h4 style="font-size: 14px; font-weight: 700; color: #f8fafc; margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+                    <div style="background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 18px;">
+                        <h4 style="font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
                             <span>🎮</span> Otomatisasi & Kebutuhan
                         </h4>
                         
                         <div style="margin-bottom: 12px;">
-                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Ambang Batas Kebutuhan (% Default)</label>
-                            <input type="number" id="setting_threshold" min="10" max="100" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <label for="setting_threshold" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Ambang Batas Kebutuhan (% Default)</label>
+                            <input type="number" id="setting_threshold" min="10" max="100" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
                             <span style="font-size: 11px; color: var(--text-muted);">Bot memulihkan kebutuhan saat nilai turun di bawah persentase ini.</span>
                         </div>
 
@@ -1929,27 +1020,27 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                                 <div style="font-size: 13px; font-weight: 600;">Smart Thresholds</div>
                                 <div style="font-size: 11px; color: var(--text-muted);">Gunakan batas pintar per kebutuhan</div>
                             </div>
-                            <label class="switch"><input type="checkbox" id="setting_smart_thresholds"><span class="slider"></span></label>
+                            <label class="switch"><input type="checkbox" id="setting_smart_thresholds" aria-label="Ambang pintar kebutuhan"><span class="slider"></span></label>
                         </div>
 
                         <div style="margin-bottom: 12px;">
-                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Cadangan Sumber Daya (%)</label>
-                            <input type="number" id="setting_resource_reserve_percent" min="0" max="50" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <label for="setting_resource_reserve_percent" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Cadangan Sumber Daya (%)</label>
+                            <input type="number" id="setting_resource_reserve_percent" min="0" max="50" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
                         </div>
 
                         <div style="margin-bottom: 12px;">
-                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Saldo Koin Minimal (Cadangan)</label>
-                            <input type="number" step="0.1" id="setting_min_balance" min="0" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <label for="setting_min_balance" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Saldo Koin Minimal (Cadangan)</label>
+                            <input type="number" step="0.1" id="setting_min_balance" min="0" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
                             <span style="font-size: 11px; color: var(--text-muted);">Koin minimal yang disisihkan sebelum belanja/kuliah.</span>
                         </div>
 
                         <div style="margin-bottom: 12px;">
-                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Interval Cek Polling Status (Detik)</label>
-                            <input type="number" id="setting_idle_poll_seconds" min="3" max="60" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <label for="setting_idle_poll_seconds" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Interval Cek Polling Status (Detik)</label>
+                            <input type="number" id="setting_idle_poll_seconds" min="3" max="60" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
                         </div>
 
                         <div style="margin-bottom: 12px;">
-                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Mode Ojol Default</label>
+                            <label for="setting_ojol_mode" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Mode Ojol Default</label>
                             <select id="setting_ojol_mode" class="account-select" style="width: 100%;">
                                 <option value="otomatis">Otomatis (HTTP Background Bot)</option>
                                 <option value="kendara">Kendara (Manual / Ekstensi Chrome)</option>
@@ -1958,34 +1049,34 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     </div>
 
                     <!-- Bagian 2: Batasan Shift & Kuota Akun -->
-                    <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 10px; padding: 18px;">
-                        <h4 style="font-size: 14px; font-weight: 700; color: #f8fafc; margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+                    <div style="background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 18px;">
+                        <h4 style="font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
                             <span>⏱️</span> Batasan Shift & Kuota Akun
                         </h4>
 
                         <div style="margin-bottom: 12px;">
-                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Maksimal Pengeluaran Koin (Opsional)</label>
-                            <input type="number" step="0.1" id="setting_max_spend" placeholder="Kosong = Tanpa batas" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <label for="setting_max_spend" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Maksimal Pengeluaran Koin (Opsional)</label>
+                            <input type="number" step="0.1" id="setting_max_spend" placeholder="Kosong = Tanpa batas" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
                         </div>
 
                         <div style="margin-bottom: 12px;">
-                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Batas Jumlah Order per Shift (Opsional)</label>
-                            <input type="number" id="setting_max_jobs" placeholder="Kosong = Tanpa batas" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <label for="setting_max_jobs" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Batas Jumlah Order per Shift (Opsional)</label>
+                            <input type="number" id="setting_max_jobs" placeholder="Kosong = Tanpa batas" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
                         </div>
 
                         <div style="margin-bottom: 12px;">
-                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Batas Durasi Shift (Menit, Opsional)</label>
-                            <input type="number" id="setting_max_minutes" placeholder="Kosong = Tanpa batas" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <label for="setting_max_minutes" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Batas Durasi Shift (Menit, Opsional)</label>
+                            <input type="number" id="setting_max_minutes" placeholder="Kosong = Tanpa batas" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
                         </div>
 
                         <div style="margin-bottom: 12px;">
-                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Maksimal Akun Game per User</label>
-                            <input type="number" id="setting_max_accounts_per_user" min="1" max="100" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <label for="setting_max_accounts_per_user" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Maksimal Akun Game per User</label>
+                            <input type="number" id="setting_max_accounts_per_user" min="1" max="100" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
                         </div>
 
                         <div style="margin-bottom: 12px;">
-                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Maksimal Worker Aktif Bersamaan</label>
-                            <input type="number" id="setting_max_active_workers" min="1" max="100" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <label for="setting_max_active_workers" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Maksimal Worker Aktif Bersamaan</label>
+                            <input type="number" id="setting_max_active_workers" min="1" max="100" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
                         </div>
 
                         <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
@@ -1993,19 +1084,19 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                                 <div style="font-size: 13px; font-weight: 600;">Auto-Start Worker</div>
                                 <div style="font-size: 11px; color: var(--text-muted);">Otomatis mulai akun saat server startup</div>
                             </div>
-                            <label class="switch"><input type="checkbox" id="setting_auto_start"><span class="slider"></span></label>
+                            <label class="switch"><input type="checkbox" id="setting_auto_start" aria-label="Jalankan otomatis saat server mulai"><span class="slider"></span></label>
                         </div>
                     </div>
 
                     <!-- Bagian 3: Domain, Jaringan & Integrasi -->
-                    <div style="background: rgba(15, 23, 42, 0.6); border: 1px solid var(--border); border-radius: 10px; padding: 18px;">
-                        <h4 style="font-size: 14px; font-weight: 700; color: #f8fafc; margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
+                    <div style="background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 18px;">
+                        <h4 style="font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
                             <span>🌐</span> Domain & Integrasi
                         </h4>
 
                         <div style="margin-bottom: 12px;">
-                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Domain Publik Dashboard (URL)</label>
-                            <input type="text" id="setting_login_public_url" placeholder="https://ojol.jnck.pl" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <label for="setting_login_public_url" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Domain Publik Dashboard (URL)</label>
+                            <input type="text" id="setting_login_public_url" placeholder="https://ojol.jnck.pl" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
                             <span style="font-size: 11px; color: var(--text-muted);">Alamat URL publik dashboard untuk akses dan redirect.</span>
                         </div>
 
@@ -2014,7 +1105,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                                 <div style="font-size: 13px; font-weight: 600;">Cloudflare Tunnel Bawaan</div>
                                 <div style="font-size: 11px; color: var(--text-muted);">Aktifkan jika tanpa reverse proxy Nginx/Caddy</div>
                             </div>
-                            <label class="switch"><input type="checkbox" id="setting_tunnel_enabled"><span class="slider"></span></label>
+                            <label class="switch"><input type="checkbox" id="setting_tunnel_enabled" aria-label="Aktifkan tunnel"><span class="slider"></span></label>
                         </div>
 
                         <div style="margin-bottom: 12px; display: flex; justify-content: space-between; align-items: center;">
@@ -2022,17 +1113,17 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                                 <div style="font-size: 13px; font-weight: 600;">Integrasi Telegram Bot</div>
                                 <div style="font-size: 11px; color: var(--text-muted);">Aktifkan jika ingin bot Telegram tetap hidup</div>
                             </div>
-                            <label class="switch"><input type="checkbox" id="setting_telegram_enabled"><span class="slider"></span></label>
+                            <label class="switch"><input type="checkbox" id="setting_telegram_enabled" aria-label="Aktifkan Telegram"><span class="slider"></span></label>
                         </div>
 
                         <div style="margin-bottom: 12px;">
-                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Telegram Bot Token</label>
-                            <input type="password" id="setting_telegram_bot_token" placeholder="Token dari @BotFather" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <label for="setting_telegram_bot_token" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Telegram Bot Token</label>
+                            <input type="password" id="setting_telegram_bot_token" placeholder="Token dari @BotFather" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
                         </div>
 
                         <div style="margin-bottom: 12px;">
-                            <label style="font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;">Admin Telegram Chat ID</label>
-                            <input type="number" id="setting_telegram_chat_id" placeholder="Contoh: 811190245" style="width: 100%; padding: 8px 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
+                            <label for="setting_telegram_chat_id" style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 4px;">Admin Telegram Chat ID</label>
+                            <input type="number" id="setting_telegram_chat_id" placeholder="Contoh: 811190245" style="width: 100%; padding: 8px 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; color: var(--text);">
                         </div>
                     </div>
                 </div>
@@ -2042,117 +1133,82 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 </div>
             </div>
         </div>
-    </div>
+    </main>
 
     <!-- MODAL: Import Cookie -->
-    <div id="cookieModal" class="modal">
+    <dialog id="cookieModal" class="modal" aria-labelledby="cookieModalTitle">
         <div class="modal-content">
             <div class="modal-header">
-                <h3 id="cookieModalTitle">🍪 Hubungkan Cookie Sesi Game</h3>
-                <button class="close-btn" onclick="closeModal('cookieModal')">&times;</button>
+                <h3 id="cookieModalTitle">Hubungkan cookie game</h3>
+                <button class="close-btn" type="button" aria-label="Tutup dialog" onclick="closeModal('cookieModal')">&times;</button>
             </div>
-            <div id="cookieTargetAccountLabel" style="display: none; padding: 7px 12px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 6px; font-size: 12px; font-weight: 600; color: #38bdf8; margin-bottom: 12px;"></div>
+            <div id="cookieTargetAccountLabel" style="display: none; padding: 7px 12px; background: rgba(56, 189, 248, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 6px; font-size: 12px; font-weight: 600; color: var(--primary); margin-bottom: 12px;"></div>
             <input type="hidden" id="cookieTargetAccountId" value="">
             <p style="font-size: 13px; color: var(--text-muted); margin-bottom: 12px; line-height: 1.5;">
                 Tempel cookie sesi KampungSebelah (format string cookie atau JSON sesi) di bawah ini:
             </p>
-            <textarea id="cookieInput" class="cookie-box" placeholder="vtW1tcmp4qCDI9cxOfOjr... atau JSON cookie"></textarea>
+            <textarea id="cookieInput" class="cookie-box" placeholder="Tempel nilai token atau JSON cookie" aria-label="Cookie sesi game" aria-describedby="cookieError" spellcheck="false" autocomplete="off" autofocus></textarea>
+            <p id="cookieError" class="form-error" role="alert" hidden></p>
             <div style="display: flex; justify-content: flex-end; align-items: center; gap: 10px; margin-top: 14px;">
-                <span id="cookieLoadingText" style="display: none; font-size: 13px; color: #fbbf24; margin-right: auto;">⏳ Memverifikasi cookie...</span>
+                <span id="cookieLoadingText" style="display: none; font-size: 13px; color: var(--warning); margin-right: auto;">⏳ Memverifikasi cookie...</span>
                 <button class="btn btn-secondary" onclick="closeModal('cookieModal')">Batal</button>
                 <button id="btnSubmitCookie" class="btn btn-primary" onclick="submitCookie()">Impor Sekarang</button>
             </div>
         </div>
-    </div>
+    </dialog>
 
     <!-- MODAL: Tambah Akun -->
-    <div id="addAccountModal" class="modal">
+    <dialog id="addAccountModal" class="modal" aria-labelledby="addAccountTitle">
         <div class="modal-content">
             <div class="modal-header">
-                <h3>➕ Tambah Akun Game Baru</h3>
-                <button class="close-btn" onclick="closeModal('addAccountModal')">&times;</button>
+                <h3 id="addAccountTitle">➕ Tambah Akun Game Baru</h3>
+                <button class="close-btn" type="button" aria-label="Tutup dialog" onclick="closeModal('addAccountModal')">&times;</button>
             </div>
             <div style="margin-bottom: 16px;">
                 <label style="font-size: 13px; color: var(--text-muted); display: block; margin-bottom: 6px;">Nama Akun (Opsional)</label>
-                <input type="text" id="newAccountName" placeholder="Contoh: Akun 2 (otomatis mengikuti game)" style="width: 100%; padding: 10px; background: #0f172a; border: 1px solid var(--border); border-radius: 8px; color: var(--text); outline: none;">
+                <input type="text" id="newAccountName" aria-label="Nama akun" maxlength="40" autofocus placeholder="Contoh: Akun 2 (otomatis mengikuti game)" style="width: 100%; padding: 10px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; color: var(--text); outline: none;">
             </div>
             <div style="display: flex; justify-content: flex-end; gap: 10px;">
                 <button class="btn btn-secondary" onclick="closeModal('addAccountModal')">Batal</button>
                 <button class="btn btn-primary" onclick="submitCreateAccount()">Buat Akun</button>
             </div>
         </div>
-    </div>
+    </dialog>
 
     <!-- MODAL: Panduan Ekstensi Chrome & Mode Kendarai -->
-    <div id="extensionModal" class="modal">
+    <dialog id="extensionModal" class="modal" aria-labelledby="extensionTitle">
         <div class="modal-content" style="max-width: 640px;">
             <div class="modal-header">
-                <h3>🧩 Panduan Pasang Ekstensi Chrome (Mode Kendarai)</h3>
-                <button class="close-btn" onclick="closeModal('extensionModal')">&times;</button>
+                <h3 id="extensionTitle">Pasang ekstensi Chrome</h3>
+                <button class="close-btn" type="button" aria-label="Tutup dialog" onclick="closeModal('extensionModal')">&times;</button>
             </div>
-            <div style="font-size: 13px; color: #cbd5e1; line-height: 1.6; max-height: 65vh; overflow-y: auto; padding-right: 6px;">
-                <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; padding: 12px; margin-bottom: 16px;">
-                    <b style="color: #fbbf24;">💡 Mengapa Mode Kendarai via Ekstensi?</b><br>
-                    Aturan server game KampungSebelah membatasi Mode Otomatis maksimal <b>14 jam / hari (840 menit)</b>. Setelah kuota habis, order otomatis akan terkunci. Tetapi di <b>Mode Kendarai</b>, game mengizinkan pengemudi narik <b>tanpa batas jam</b> (<code style="background:rgba(0,0,0,0.3); padding:1px 4px; border-radius:4px; color:#38bdf8;">kendara.tanpaBatas: true</code>).
-                </div>
-
-                <div style="margin-bottom: 14px; background: rgba(255,255,255,0.03); padding: 12px; border-radius: 8px; border: 1px solid var(--border);">
-                    <b style="color: #38bdf8; font-size: 14px;">1️⃣ Langkah 1: Download & Ekstrak File ZIP</b>
-                    <p style="margin-top: 4px; color: #94a3b8;">
-                        Klik tombol <b>Download Extension (.ZIP)</b> di bawah. Setelah terunduh, klik kanan file <code style="color:#e2e8f0;">kampungsebelah-extension.zip</code> lalu pilih <b>Extract All / Ekstrak di Sini</b> ke folder komputer Anda.
-                    </p>
-                </div>
-
-                <div style="margin-bottom: 14px; background: rgba(255,255,255,0.03); padding: 12px; border-radius: 8px; border: 1px solid var(--border);">
-                    <b style="color: #38bdf8; font-size: 14px;">2️⃣ Langkah 2: Buka Menu Extensions di Browser</b>
-                    <p style="margin-top: 4px; color: #94a3b8;">
-                        Buka Google Chrome (atau browser berbasis Chromium seperti Brave, Edge, Opera), buka tab baru, lalu ketik pada address bar:<br>
-                        <code style="display:inline-block; margin-top:4px; padding:4px 10px; background:#0f172a; border:1px solid var(--border); border-radius:6px; color:#38bdf8; font-weight:bold;">chrome://extensions</code>
-                    </p>
-                </div>
-
-                <div style="margin-bottom: 14px; background: rgba(255,255,255,0.03); padding: 12px; border-radius: 8px; border: 1px solid var(--border);">
-                    <b style="color: #38bdf8; font-size: 14px;">3️⃣ Langkah 3: Aktifkan Developer Mode (Mode Pengembang)</b>
-                    <p style="margin-top: 4px; color: #94a3b8;">
-                        Di pojok kanan atas halaman ekstensi, aktifkan toggle switch <b>Developer mode</b> (Mode Pengembang).
-                    </p>
-                </div>
-
-                <div style="margin-bottom: 14px; background: rgba(255,255,255,0.03); padding: 12px; border-radius: 8px; border: 1px solid var(--border);">
-                    <b style="color: #38bdf8; font-size: 14px;">4️⃣ Langkah 4: Muat Folder Ekstensi (Load Unpacked)</b>
-                    <p style="margin-top: 4px; color: #94a3b8;">
-                        Klik tombol <b>Load unpacked</b> (Muat yang belum dibongkar) di pojok kiri atas, lalu arahkan dan pilih folder <code style="color:#e2e8f0;">kampungsebelah-extension</code> hasil ekstrak tadi. Ekstensi langsung terpasang dan aktif!
-                    </p>
-                </div>
-
-                <div style="margin-bottom: 10px; background: rgba(255,255,255,0.03); padding: 12px; border-radius: 8px; border: 1px solid var(--border);">
-                    <b style="color: #38bdf8; font-size: 14px;">5️⃣ Langkah 5: Buka Game & Mulai Narik Mode Kendarai</b>
-                    <p style="margin-top: 4px; color: #94a3b8;">
-                        Buka website game <a href="https://www.kampungsebelah.com" target="_blank" style="color:#38bdf8; text-decoration:underline;">https://www.kampungsebelah.com</a>. Panel <b>Auto-Ojol Pro</b> akan otomatis muncul di pojok kanan bawah:<br>
-                        • Pilih tab <b>[🏍️ Kendarai]</b>.<br>
-                        • Centang checkbox <b>[x] Auto-Beli</b> agar bensin, servis motor, dan kuota HP otomatis terisi saat kritis.<br>
-                        • Klik <b>▶ MULAI AUTO-OJOL</b>. Ekstensi akan mencari order dengan tarif terbaik, menyetir 3D otomatis, memecahkan captcha cek SVG, dan mencairkan ongkos!
-                    </p>
-                </div>
-            </div>
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px;">
-                <a href="/api/extension/download" class="btn btn-warning" style="background:#f59e0b; color:#0f172a; font-weight:700;">📦 Download Extension (.ZIP)</a>
-                <button class="btn btn-secondary" onclick="closeModal('extensionModal')">Tutup</button>
+            <ol class="install-steps">
+                <li>Unduh ZIP dan ekstrak ke folder komputer.</li>
+                <li>Buka <code>chrome://extensions</code> di Chrome lalu aktifkan <strong>Developer mode</strong>.</li>
+                <li>Pilih <strong>Load unpacked</strong>, lalu pilih folder <code>kampungsebelah-extension</code> hasil ekstrak.</li>
+                <li>Buka KampungSebelah dan pilih tab <strong>Kendarai</strong> di panel ekstensi.</li>
+            </ol>
+            <div class="actions">
+                <a href="/api/extension/download" class="btn btn-primary">Unduh ZIP</a>
+                <button class="btn btn-utility" type="button" onclick="closeModal('extensionModal')">Tutup</button>
             </div>
         </div>
-    </div>
+    </dialog>
 
     <script>
         const currentUser = {user_json};
         let dashboardData = null;
 
         function showTab(tabId) {{
-            document.querySelectorAll('.nav-btn').forEach(b => b.classList.remove('active'));
+            document.querySelectorAll('.nav-btn').forEach(b => b.removeAttribute('aria-current'));
             document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
             const targetBtn = Array.from(document.querySelectorAll('.nav-btn')).find(b => b.getAttribute('onclick') && b.getAttribute('onclick').includes(tabId));
-            if (targetBtn) targetBtn.classList.add('active');
+            if (targetBtn) targetBtn.setAttribute('aria-current', 'page');
             const panel = document.getElementById(tabId);
-            if (panel) panel.classList.add('active');
+            if (panel) {{
+                panel.classList.add('active');
+                window.scrollTo(0, 0);
+            }}
 
             if (tabId === 'tab-accounts') loadAccounts();
             if (tabId === 'tab-notifications') {{
@@ -2166,11 +1222,12 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         }}
 
         function openModal(id) {{
-            document.getElementById(id).classList.add('open');
+            const dialog = document.getElementById(id);
+            if (!dialog.open) dialog.showModal();
         }}
 
         function closeModal(id) {{
-            document.getElementById(id).classList.remove('open');
+            document.getElementById(id).close();
         }}
 
         async function apiFetch(url, options = {{}}) {{
@@ -2188,26 +1245,20 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             return data;
         }}
 
+        function escapeHtml(value) {{
+            const entities = {{'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}};
+            return String(value ?? '').replace(/[&<>"']/g, char => entities[char]);
+        }}
+
         function openCookieModalFor(accId = '', accName = '') {{
             const hiddenId = document.getElementById('cookieTargetAccountId');
             const label = document.getElementById('cookieTargetAccountLabel');
-            const title = document.getElementById('cookieModalTitle');
-            if (hiddenId) hiddenId.value = accId || '';
-            if (label) {{
-                if (accName) {{
-                    label.style.display = 'block';
-                    label.innerText = '👤 Target Akun: ' + accName;
-                }} else if (dashboardData && dashboardData.account) {{
-                    label.style.display = 'block';
-                    label.innerText = '👤 Target Akun Aktif: ' + dashboardData.account.name;
-                }} else {{
-                    label.style.display = 'none';
-                    label.innerText = '';
-                }}
-            }}
-            if (title) {{
-                title.innerText = accId ? '🍪 Hubungkan / Ganti Cookie' : '🍪 Hubungkan Cookie Sesi Game';
-            }}
+            const name = accName || dashboardData?.account?.name;
+            hiddenId.value = accId || dashboardData?.account?.id || '';
+            label.style.display = name ? 'block' : 'none';
+            label.textContent = name ? 'Akun: ' + name : '';
+            document.getElementById('cookieInput').value = '';
+            document.getElementById('cookieError').hidden = true;
             openModal('cookieModal');
         }}
 
@@ -2226,11 +1277,11 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     if (!n.read) unreadCount++;
                     const bg = n.is_error ? 'rgba(239, 68, 68, 0.12)' : (n.read ? 'transparent' : 'rgba(59, 130, 246, 0.08)');
                     const border = n.is_error ? 'var(--danger)' : (n.read ? 'var(--border)' : 'var(--primary)');
-                    const text = (n.text || '').replace(/\\n/g, '<br>');
+                    const text = escapeHtml(n.text).replace(/\\n/g, '<br>');
                     return `
                     <div style="background: ${{bg}}; border: 1px solid ${{border}}; border-radius: 8px; padding: 14px; position: relative;">
                         <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 6px; display: flex; justify-content: space-between;">
-                            <span>${{n.time || ''}} ${{n.error_id ? '• ID: ' + n.error_id : ''}}</span>
+                            <span>${{escapeHtml(n.time)}} ${{n.error_id ? '• ID: ' + escapeHtml(n.error_id) : ''}}</span>
                             ${{!n.read ? '<span style="background: var(--primary); color: white; border-radius: 4px; padding: 1px 6px; font-size: 10px;">BARU</span>' : ''}}
                         </div>
                         <div style="font-size: 13px; line-height: 1.5; color: var(--text);">${{text}}</div>
@@ -2300,7 +1351,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 populateAdminNotifFilters(allAdminNotifications);
                 filterAdminNotifs();
             }} catch (e) {{
-                list.innerHTML = `<div style="text-align: center; color: var(--danger); padding: 24px;">⚠️ Gagal memuat notifikasi: ${{e.message}}</div>`;
+                list.innerHTML = `<div style="text-align: center; color: var(--danger); padding: 24px;">⚠️ Gagal memuat notifikasi: ${{escapeHtml(e.message)}}</div>`;
             }}
         }}
 
@@ -2329,9 +1380,9 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             }});
 
             userSelect.innerHTML = '<option value="">Semua User (' + users.size + ')</option>' +
-                Array.from(users.entries()).map(([k, v]) => `<option value="${{k}}">${{v}}</option>`).join('');
+                Array.from(users.entries()).map(([k, v]) => `<option value="${{escapeHtml(k)}}">${{escapeHtml(v)}}</option>`).join('');
             accountSelect.innerHTML = '<option value="">Semua Akun (' + accounts.size + ')</option>' +
-                Array.from(accounts.entries()).map(([k, v]) => `<option value="${{k}}">${{v}}</option>`).join('');
+                Array.from(accounts.entries()).map(([k, v]) => `<option value="${{escapeHtml(k)}}">${{escapeHtml(v)}}</option>`).join('');
 
             if (currentUserVal && users.has(currentUserVal)) userSelect.value = currentUserVal;
             if (currentAccountVal && accounts.has(currentAccountVal)) accountSelect.value = currentAccountVal;
@@ -2380,7 +1431,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 const isErr = !!n.is_error;
                 const bg = isErr ? 'rgba(239, 68, 68, 0.08)' : (n.read ? 'rgba(255, 255, 255, 0.02)' : 'rgba(59, 130, 246, 0.06)');
                 const border = isErr ? 'rgba(239, 68, 68, 0.35)' : (n.read ? 'var(--border)' : 'rgba(59, 130, 246, 0.35)');
-                const text = (n.text || '').replace(/\\n/g, '<br>');
+                const text = escapeHtml(n.text).replace(/\\n/g, '<br>');
                 const uLabel = n.user?.username ? `@${{n.user.username}}` : (n.user?.name || `User #${{n.owner || '?'}}`);
                 const accLabel = n.account_name || (n.account_id ? `Akun ${{String(n.account_id).slice(0, 8)}}` : 'Sistem');
 
@@ -2388,13 +1439,13 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 <div style="background: ${{bg}}; border: 1px solid ${{border}}; border-radius: 8px; padding: 14px; display: flex; flex-direction: column; gap: 8px;">
                     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 11px;">
                         <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                            <span style="background: rgba(168, 85, 247, 0.15); color: #c084fc; border: 1px solid rgba(168, 85, 247, 0.3); border-radius: 4px; padding: 2px 7px; font-weight: 600;">👤 ${{uLabel}}</span>
-                            <span style="background: rgba(56, 189, 248, 0.15); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 4px; padding: 2px 7px; font-weight: 600;">🏷️ ${{accLabel}}</span>
-                            ${{n.event ? `<span style="background: rgba(255, 255, 255, 0.06); color: var(--text-muted); border-radius: 4px; padding: 2px 6px;">⚡ ${{n.event}}</span>` : ''}}
-                            ${{n.error_id ? `<span style="background: rgba(239, 68, 68, 0.2); color: var(--danger); border-radius: 4px; padding: 2px 6px; font-weight: 700;">🚨 ${{n.error_id}}</span>` : ''}}
+                            <span style="background: rgba(168, 85, 247, 0.15); color: var(--accent-ink); border: 1px solid rgba(168, 85, 247, 0.3); border-radius: 4px; padding: 2px 7px; font-weight: 600;">👤 ${{escapeHtml(uLabel)}}</span>
+                            <span style="background: rgba(56, 189, 248, 0.15); color: var(--primary); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 4px; padding: 2px 7px; font-weight: 600;">🏷️ ${{escapeHtml(accLabel)}}</span>
+                            ${{n.event ? `<span style="background: rgba(255, 255, 255, 0.06); color: var(--text-muted); border-radius: 4px; padding: 2px 6px;">⚡ ${{escapeHtml(n.event)}}</span>` : ''}}
+                            ${{n.error_id ? `<span style="background: rgba(239, 68, 68, 0.2); color: var(--danger); border-radius: 4px; padding: 2px 6px; font-weight: 700;">🚨 ${{escapeHtml(n.error_id)}}</span>` : ''}}
                         </div>
                         <div style="color: var(--text-muted); display: flex; align-items: center; gap: 8px;">
-                            <span>🕒 ${{n.time || ''}}</span>
+                            <span>🕒 ${{escapeHtml(n.time)}}</span>
                             ${{!n.read ? '<span style="background: var(--primary); color: white; border-radius: 4px; padding: 1px 6px; font-size: 10px; font-weight: 600;">BARU</span>' : '<span style="color: var(--text-muted); font-size: 10px;">DIBACA</span>'}}
                         </div>
                     </div>
@@ -2438,22 +1489,35 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             }}
         }}, 1000);
 
+        let streamConnected = false;
+        let accountOptionsKey = '';
+        let accountListKey = '';
+        let pendingSelection = false;
+        const pendingControls = new Set();
+
+        function applyDashboard(data) {{
+            if (pendingSelection) return;
+            dashboardData = data;
+            renderDashboard(data);
+            const freshness = document.getElementById('dashboardFreshness');
+            const label = 'Status diperbarui ' +
+                new Date().toLocaleTimeString('id-ID', {{ hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta' }}) + ' WIB';
+            if (freshness.textContent !== label) freshness.textContent = label;
+        }}
+
         function startLiveStream() {{
             if (!window.EventSource) return;
-            try {{
-                const source = new EventSource('/api/dashboard/stream');
-                source.onmessage = function(event) {{
-                    try {{
-                        const data = JSON.parse(event.data);
-                        dashboardData = data;
-                        renderDashboard(data);
-                    }} catch (e) {{}}
-                }};
-                source.onerror = function() {{
-                    source.close();
-                    setTimeout(startLiveStream, 5000);
-                }};
-            }} catch (e) {{}}
+            const source = new EventSource('/api/dashboard/stream');
+            source.onmessage = event => {{
+                const data = JSON.parse(event.data);
+                streamConnected = true;
+                applyDashboard(data);
+            }};
+            source.onerror = () => {{
+                streamConnected = false;
+                source.close();
+                setTimeout(startLiveStream, 5000);
+            }};
         }}
 
         async function refreshDashboard() {{
@@ -2461,124 +1525,73 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 const res = await fetch('/api/dashboard');
                 if (res.status === 401) {{
                     window.location.href = '/login';
-                    return;
+                    return false;
                 }}
-                const data = await res.json();
-                dashboardData = data;
-                renderDashboard(data);
+                if (!res.ok) throw new Error('Gagal memuat dashboard');
+                applyDashboard(await res.json());
+                return true;
             }} catch (e) {{
-                console.error('Error fetching dashboard:', e);
+                document.getElementById('dashboardFreshness').textContent = 'Status gagal dimuat. Coba segarkan.';
+                return false;
             }}
         }}
 
+        const formatCoin = value => value == null ? '—'
+            : new Intl.NumberFormat('id-ID', {{ maximumFractionDigits: 3 }}).format(Number(value)) + ' koin';
+
         function renderDashboard(data) {{
-            // Toggle Onboarding Card vs Active Dashboard Section
-            const hasAccounts = Boolean(data.account || (data.accounts && data.accounts.length > 0));
-            const onboardingCard = document.getElementById('onboardingCard');
-            const activeDashboard = document.getElementById('activeDashboardSection');
-            if (onboardingCard) {{
-                onboardingCard.style.display = hasAccounts ? 'none' : 'block';
-            }}
-            if (activeDashboard) {{
-                activeDashboard.style.display = hasAccounts ? 'block' : 'none';
-            }}
+            const accounts = data.accounts || [];
+            const selected = data.account;
+            document.getElementById('onboardingCard').hidden = Boolean(selected);
+            document.getElementById('activeDashboardSection').hidden = !selected;
 
-            // Populate account selector
-            const sel = document.getElementById('accountDropdown');
-            sel.innerHTML = '';
-            if (data.accounts && data.accounts.length) {{
-                data.accounts.forEach(acc => {{
-                    const opt = document.createElement('option');
-                    opt.value = acc.id;
-                    opt.textContent = acc.name + (acc.is_selected ? ' (Aktif)' : '');
-                    if (acc.is_selected) opt.selected = true;
-                    sel.appendChild(opt);
+            const selector = document.getElementById('accountDropdown');
+            const optionsKey = JSON.stringify(accounts.map(acc => [acc.id, acc.name]));
+            if (accountOptionsKey !== optionsKey) {{
+                selector.replaceChildren(...(accounts.length
+                    ? accounts.map(acc => new Option(acc.name, acc.id))
+                    : [new Option('Belum ada akun', '')]));
+                selector.disabled = !accounts.length;
+                accountOptionsKey = optionsKey;
+            }}
+            if (selector.value !== (selected?.id ?? '')) selector.value = selected?.id ?? '';
+
+            const totals = data.all_accounts_summary || {{}};
+            document.getElementById('fleetTotalWallet').textContent = (totals.total_wallet ?? '0') + ' koin';
+            document.getElementById('fleetTotalIncome').textContent = (totals.total_income ?? '0') + ' koin';
+            document.getElementById('fleetTotalTrips').textContent = totals.total_trips ?? 0;
+            document.getElementById('fleetCountAccounts').textContent = accounts.length + ' akun';
+            document.getElementById('fleetCountWorkers').textContent = (totals.active_workers ?? 0) + ' dari ' + accounts.length;
+            document.getElementById('activeAccountBannerName').textContent = selected?.name ?? 'Akun terpilih';
+
+            const listKey = JSON.stringify(accounts.map(acc => [acc.id, acc.name, acc.status_text, acc.is_selected, acc.wallet, acc.has_cookie]));
+            if (accountListKey !== listKey) {{
+                const list = document.getElementById('fleetAccountsGrid');
+                const focused = list.contains(document.activeElement) ? document.activeElement.dataset.accountId : null;
+                const buttons = accounts.map(acc => {{
+                    const button = document.createElement('button');
+                    button.type = 'button';
+                    button.className = 'fleet-account';
+                    button.dataset.accountId = acc.id;
+                    button.setAttribute('aria-pressed', String(acc.is_selected));
+                    button.innerHTML = `<span><span class="fleet-name">${{escapeHtml(acc.name)}}</span>
+                        <small>${{escapeHtml(acc.status_text || 'Status belum tersedia')}}</small></span>
+                        <span class="fleet-amount">${{acc.wallet == null ? '—' : escapeHtml(acc.wallet + ' koin')}}
+                        <small>${{acc.is_selected ? 'Terpilih' : ''}}</small></span>`;
+                    button.addEventListener('click', () => switchAccount(acc.id));
+                    return button;
                 }});
-            }} else {{
-                sel.innerHTML = '<option value="">Belum ada akun</option>';
-            }}
-
-            // Render All Accounts Summary (Armada)
-            const sumAll = data.all_accounts_summary || {{}};
-            const totalW = document.getElementById('fleetTotalWallet');
-            if (totalW) totalW.innerText = (sumAll.total_wallet || '0') + ' koin';
-            const totalInc = document.getElementById('fleetTotalIncome');
-            if (totalInc) totalInc.innerText = '+' + (sumAll.total_income || '0') + ' koin';
-            const totalTr = document.getElementById('fleetTotalTrips');
-            if (totalTr) totalTr.innerText = (sumAll.total_trips || 0) + ' Trip';
-            const cntAcc = document.getElementById('fleetCountAccounts');
-            if (cntAcc) cntAcc.innerText = (sumAll.total_accounts || 0) + ' Akun';
-            const cntWrk = document.getElementById('fleetCountWorkers');
-            if (cntWrk) cntWrk.innerText = (sumAll.active_workers || 0) + ' / ' + (sumAll.total_accounts || 0) + ' Berjalan';
-            const runBdg = document.getElementById('fleetRunningBadge');
-            if (runBdg) runBdg.innerText = '⚡ ' + (sumAll.active_workers || 0) + ' Worker Aktif';
-            const totBdg = document.getElementById('fleetTotalAccountsBadge');
-            if (totBdg) totBdg.innerText = '👥 ' + (sumAll.total_accounts || 0) + ' Akun';
-
-            // Active Account Banner Name
-            const bannerName = document.getElementById('activeAccountBannerName');
-            if (bannerName) bannerName.innerText = data.account ? data.account.name : '-';
-
-            // Render Fleet Account Cards Grid
-            const gridElem = document.getElementById('fleetAccountsGrid');
-            if (gridElem) {{
-                gridElem.innerHTML = '';
-                if (data.accounts && data.accounts.length) {{
-                    data.accounts.forEach(acc => {{
-                        const isSel = !!acc.is_selected;
-                        const card = document.createElement('div');
-                        card.className = 'account-fleet-card' + (isSel ? ' is-active-account' : '');
-                        card.onclick = () => switchAccount(acc.id);
-
-                        const statusText = acc.status_text || (acc.is_running ? 'Aktif' : 'Standby');
-                        const statusIcon = acc.icon || (acc.is_running ? '🟢' : '⚪');
-                        const walletStr = acc.wallet ? (acc.wallet + ' koin') : '-';
-                        const tripsStr = (acc.trips !== undefined && acc.trips !== null) ? acc.trips : '0';
-                        const incomeStr = acc.today_income ? ('+' + acc.today_income + ' koin') : '-';
-
-                        card.innerHTML = `
-                            <div>
-                                <div class="afc-header">
-                                    <div class="afc-name-wrap">
-                                        <span>${{statusIcon}}</span>
-                                        <span>${{acc.name}}</span>
-                                    </div>
-                                    ${{isSel ? '<span class="afc-tag">● Aktif</span>' : '<span style="font-size:11px; color:#38bdf8; text-decoration:underline;">Pilih Akun Ini</span>'}}
-                                </div>
-                                <div class="afc-status" style="margin-top:6px;">
-                                    ${{statusText}}
-                                </div>
-                            </div>
-                            <div class="afc-metrics">
-                                <div class="afc-metric-item">
-                                    <span class="m-lbl">SALDO</span>
-                                    <span class="m-val" style="color:#fbbf24;">${{walletStr}}</span>
-                                </div>
-                                <div class="afc-metric-item">
-                                    <span class="m-lbl">TRIP</span>
-                                    <span class="m-val">${{tripsStr}}</span>
-                                </div>
-                                <div class="afc-metric-item">
-                                    <span class="m-lbl">HARI INI</span>
-                                    <span class="m-val" style="color:#34d399;">${{incomeStr}}</span>
-                                </div>
-                            </div>
-                        `;
-                        gridElem.appendChild(card);
-                    }});
-                }} else {{
-                    gridElem.innerHTML = '<div style="color:var(--text-muted); font-size:13px; grid-column:1/-1;">Belum ada akun yang terdaftar.</div>';
-                }}
+                list.replaceChildren(...buttons);
+                if (focused) buttons.find(button => button.dataset.accountId === focused)?.focus({{ preventScroll: true }});
+                accountListKey = listKey;
             }}
 
             const sum = data.summary || {{}};
             const snap = data.snapshot || {{}};
-            document.getElementById('statusIcon').innerText = sum.icon || '⚪';
-            document.getElementById('statusTitle').innerText = sum.status_text || 'Berhenti';
-            document.getElementById('statusSubtitle').innerText = data.account ? ('Akun: ' + data.account.name) : 'Silakan pilih/tambah akun game';
-            document.getElementById('walletVal').innerText = sum.wallet ? (sum.wallet + ' koin') : '-';
-            document.getElementById('tripsVal').innerText = (sum.trips !== undefined && sum.trips !== null) ? sum.trips : '-';
-            document.getElementById('presenceVal').innerText = sum.online ? '🟢 Online' : '⚪ Offline';
+            document.getElementById('statusTitle').textContent = sum.status_text || 'Status belum tersedia';
+            document.getElementById('walletVal').textContent = formatCoin(sum.wallet);
+            document.getElementById('tripsVal').textContent = sum.trips ?? '—';
+            document.getElementById('presenceVal').textContent = sum.online ? 'Online di game' : 'Offline di game';
 
             // Realtime Countdown State
             const oldPhase = currentPhase;
@@ -2599,13 +1612,15 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     const s = currentRemainingSeconds % 60;
                     cdElem.innerText = `${{m}}:${{s < 10 ? '0' : ''}}${{s}}`;
                 }} else if (currentPhase === 'searching') {{
-                    cdElem.innerText = '🔍 Mencari order...';
+                    cdElem.innerText = 'Mencari order…';
                 }} else if (currentPhase === 'sleeping') {{
-                    cdElem.innerText = '🌙 Karakter tidur';
+                    cdElem.innerText = 'Sedang tidur';
                 }} else if (currentRemainingSeconds === 0) {{
                     cdElem.innerText = 'Tiba / Selesai';
+                }} else if (currentPhase === 'idle' && sum.active) {{
+                    cdElem.innerText = 'Siaga';
                 }} else {{
-                    cdElem.innerText = '-';
+                    cdElem.innerText = '—';
                 }}
             }}
 
@@ -2622,16 +1637,23 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                     data.limit_reached ||
                     (sum && sum.shift_done) ||
                     (snap && snap.ojol_shift_done) ||
-                    (snap && snap.ojol_hours_left !== null && snap.ojol_hours_left <= 0) ||
+                    (snap.ojol_hours_left != null && snap.ojol_hours_left <= 0) ||
                     (sum && sum.status_text && (sum.status_text.includes('Batas narik') || sum.status_text.includes('14 jam') || sum.status_text.includes('8 jam')))
                 );
-                limitCard.style.display = isLimit ? 'block' : 'none';
+                limitCard.hidden = !isLimit;
             }}
 
             // Meters
             updateMeter('fuel', (sum && sum.fuel !== undefined) ? sum.fuel : (snap ? snap.fuel : null));
             updateMeter('cond', (sum && sum.condition !== undefined) ? sum.condition : (snap ? snap.condition : null));
             updateMeter('data', (sum && sum.data !== undefined) ? sum.data : (snap ? snap.data : null));
+            const spbuHint = document.getElementById('spbuWaitHint');
+            const waitingForSpbu = snap.ojol_min_fuel != null && (snap.ojol_fuel_blocked || Number(snap.fuel) < snap.ojol_min_fuel);
+            spbuHint.hidden = !waitingForSpbu;
+            if (waitingForSpbu) {{
+                const vehicle = snap.ojol_vehicle === 'mobil' ? 'mobil' : 'motor';
+                spbuHint.textContent = 'Bawa ' + vehicle + ' yang dipakai Ojol ke SPBU dan buka pompa.';
+            }}
 
             const needs = (snap && snap.needs) ? snap.needs : (snap || {{}});
             updateMeter('makan', needs.makan !== undefined ? needs.makan : (snap ? snap.makan : null));
@@ -2664,112 +1686,21 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 document.getElementById('studySubjectSelect').value = data.study_subject;
             }}
 
-            // Update active state in control toolbar buttons & badges
-            const isWorkerActive = Boolean(sum.active);
-            const isOjolActive = isWorkerActive && Boolean(flags.ojol);
-            const isNeedsActive = Boolean(flags.needs_active);
+            const cookie = document.getElementById('btnCookieToolbar');
+            const reconnect = sum.cookie_valid === false;
+            cookie.textContent = !selected?.has_cookie ? 'Hubungkan cookie' : reconnect ? 'Perbarui cookie' : 'Ganti cookie';
+            cookie.classList.toggle('btn-primary', !selected?.has_cookie || reconnect);
+            cookie.classList.toggle('btn-utility', Boolean(selected?.has_cookie && !reconnect));
 
-            const btnRun = document.getElementById('btnRunOjol');
-            const btnStop = document.getElementById('btnStopOjol');
-            const btnRunN = document.getElementById('btnRunNeeds');
-            const btnStopN = document.getElementById('btnStopNeeds');
-
-            if (btnRun && btnStop) {{
-                if (isOjolActive) {{
-                    btnRun.classList.add('active-run');
-                    btnStop.classList.remove('active-stop');
-                }} else {{
-                    btnRun.classList.remove('active-run');
-                    btnStop.classList.add('active-stop');
-                }}
-            }}
-
-            if (btnRunN && btnStopN) {{
-                if (isNeedsActive && isWorkerActive) {{
-                    btnRunN.classList.add('active-needs');
-                    btnStopN.classList.remove('active-stop');
-                }} else {{
-                    btnRunN.classList.remove('active-needs');
-                    btnStopN.classList.add('active-stop');
-                }}
-            }}
-
-            // Toolbar Needs Badge
-            const tbNeedsBadge = document.getElementById('toolbarNeedsBadge');
-            if (tbNeedsBadge) {{
-                if (isNeedsActive && isWorkerActive) {{
-                    tbNeedsBadge.style.display = 'inline-block';
-                    tbNeedsBadge.innerText = '● AKTIF';
-                    tbNeedsBadge.style.background = 'rgba(139, 92, 246, 0.2)';
-                    tbNeedsBadge.style.color = '#c084fc';
-                    tbNeedsBadge.style.border = '1px solid rgba(139, 92, 246, 0.4)';
-                }} else if (isNeedsActive && !isWorkerActive) {{
-                    tbNeedsBadge.style.display = 'inline-block';
-                    tbNeedsBadge.innerText = 'STANDBY';
-                    tbNeedsBadge.style.background = 'rgba(245, 158, 11, 0.15)';
-                    tbNeedsBadge.style.color = '#fbbf24';
-                    tbNeedsBadge.style.border = '1px solid rgba(245, 158, 11, 0.3)';
-                }} else {{
-                    tbNeedsBadge.style.display = 'inline-block';
-                    tbNeedsBadge.innerText = 'OFF';
-                    tbNeedsBadge.style.background = 'rgba(100, 116, 139, 0.15)';
-                    tbNeedsBadge.style.color = '#94a3b8';
-                    tbNeedsBadge.style.border = '1px solid rgba(100, 116, 139, 0.25)';
-                }}
-            }}
-
-            // Kebutuhan Card Header Badge
-            const needsCardBadge = document.getElementById('needsCardBadge');
-            if (needsCardBadge) {{
-                const count = flags.needs_count !== undefined ? flags.needs_count : 0;
-                const total = flags.total_needs || 8;
-                if (isWorkerActive && isNeedsActive) {{
-                    needsCardBadge.innerText = `● Auto Memantau (${{count}}/${{total}} Kebutuhan)`;
-                    needsCardBadge.style.background = 'rgba(16, 185, 129, 0.15)';
-                    needsCardBadge.style.color = '#34d399';
-                    needsCardBadge.style.border = '1px solid rgba(16, 185, 129, 0.3)';
-                }} else if (!isWorkerActive && isNeedsActive) {{
-                    needsCardBadge.innerText = `● Siap Memantau (${{count}}/${{total}} Kebutuhan)`;
-                    needsCardBadge.style.background = 'rgba(245, 158, 11, 0.15)';
-                    needsCardBadge.style.color = '#fbbf24';
-                    needsCardBadge.style.border = '1px solid rgba(245, 158, 11, 0.3)';
-                }} else {{
-                    needsCardBadge.innerText = '⚪ Auto Nonaktif';
-                    needsCardBadge.style.background = 'rgba(100, 116, 139, 0.15)';
-                    needsCardBadge.style.color = '#94a3b8';
-                    needsCardBadge.style.border = '1px solid rgba(100, 116, 139, 0.3)';
-                }}
-            }}
-
-            // Dynamic Cookie Toolbar Button Update
-            const btnCookieToolbar = document.getElementById('btnCookieToolbar');
-            if (btnCookieToolbar) {{
-                const hasCookie = Boolean(data.account && data.account.has_cookie);
-                if (!hasCookie) {{
-                    btnCookieToolbar.innerHTML = '🍪 Hubungkan Cookie';
-                    btnCookieToolbar.style.background = '#0284c7';
-                    btnCookieToolbar.style.borderColor = '#38bdf8';
-                    btnCookieToolbar.style.color = '#ffffff';
-                    btnCookieToolbar.style.fontWeight = '600';
-                    btnCookieToolbar.title = 'Akun belum memiliki cookie game. Klik untuk menghubungkan!';
-                }} else {{
-                    btnCookieToolbar.innerHTML = '🍪 Ganti Cookie';
-                    btnCookieToolbar.style.background = '#1e293b';
-                    btnCookieToolbar.style.borderColor = 'var(--border)';
-                    btnCookieToolbar.style.color = 'var(--text)';
-                    btnCookieToolbar.style.fontWeight = '500';
-                    btnCookieToolbar.title = 'Perbarui cookie game untuk akun ini';
-                }}
-            }}
+            renderAutomationControls(data);
+            const count = flags.needs_count ?? 0;
+            const total = flags.total_needs ?? 8;
+            document.getElementById('needsCardBadge').textContent = selected ? `${{count}} dari ${{total}} otomatis` : '—';
 
             // Logs
             const logBox = document.getElementById('logConsole');
-            if (data.logs && data.logs.length) {{
-                logBox.innerText = data.logs.join('\\n');
-                logBox.scrollTop = logBox.scrollHeight;
-            }} else {{
-                logBox.innerText = 'Belum ada log aktivitas.';
-            }}
+            const logs = data.logs?.length ? data.logs.join('\\n') : 'Belum ada aktivitas.';
+            if (logBox.textContent !== logs) logBox.textContent = logs;
         }}
 
         function updateMeter(id, val) {{
@@ -2777,7 +1708,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             const bar = document.getElementById(id + 'Bar');
             if (!txt || !bar) return;
             if (val === undefined || val === null) {{
-                txt.innerText = '-';
+                txt.textContent = '—';
                 bar.style.width = '0%';
                 return;
             }}
@@ -2797,7 +1728,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             if (!container) {{
                 container = document.createElement('div');
                 container.id = 'toastContainer';
-                container.className = 'toast-container';
+                container.className = 'toast-container';\n                container.setAttribute('role', 'status');
                 document.body.appendChild(container);
             }}
             const toast = document.createElement('div');
@@ -2817,81 +1748,76 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
             }}, 3500);
         }}
 
-        let isActionPending = false;
+        function renderAutomationControls(data) {{
+            const flags = data.auto_flags || {{}};
+            const sum = data.summary || {{}};
+            const isSleeping = sum.phase === 'sleeping';
+            for (const [feature, enabled, maintenance] of [
+                ['Ojol', flags.ojol === true || flags.ojol === 'maintenance', flags.ojol === 'maintenance' || data.snapshot?.ojol_maintenance],
+                ['Needs', Boolean(flags.needs_active), false],
+            ]) {{
+                const pending = pendingControls.has(feature);
+                const active = Boolean(sum.active && enabled);
+                const state = document.getElementById('toolbar' + feature + 'Badge');
+                let label = 'Nonaktif';
+                let tone = '';
+                if (pending) label = 'Memproses…';
+                else if (maintenance) {{ label = 'Dijeda untuk pemeliharaan'; tone = 'paused'; }}
+                else if (active && isSleeping) {{ label = 'Dijeda saat karakter tidur'; tone = 'paused'; }}
+                else if (active) {{ label = 'Sedang berjalan'; tone = 'active'; }}
+                else if (enabled) label = 'Siap dijalankan';
+                state.textContent = label;
+                state.dataset.tone = tone;
+                const canRun = Boolean(data.account && !pending && !active && !maintenance);
+                const run = document.getElementById('btnRun' + feature);
+                const stop = document.getElementById('btnStop' + feature);
+                run.hidden = active || maintenance;
+                run.disabled = !canRun;
+                stop.hidden = !enabled;
+                stop.disabled = !data.account || pending;
+            }}
+        }}
 
         async function controlAction(cmd) {{
-            if (isActionPending) return;
-
-            // Proactively check if active account has cookie connected
-            if ((cmd === 'run' || cmd === 'run-needs') && dashboardData && dashboardData.account && !dashboardData.account.has_cookie) {{
-                showToast('⚠️ Akun ini belum terhubung dengan cookie game. Silakan hubungkan cookie terlebih dahulu.', 'error');
-                openCookieModalFor(dashboardData.account.id, dashboardData.account.name);
+            const account = dashboardData?.account;
+            if (!account || pendingSelection) return;
+            const feature = cmd.endsWith('-needs') ? 'Needs' : 'Ojol';
+            if (pendingControls.has(feature)) return;
+            if (cmd.startsWith('run') && (!account.has_cookie || dashboardData.summary?.cookie_valid === false)) {{
+                openCookieModalFor(account.id, account.name);
                 return;
             }}
-
-            isActionPending = true;
-
-            const btnMap = {{
-                'run': document.getElementById('btnRunOjol'),
-                'stop': document.getElementById('btnStopOjol'),
-                'run-needs': document.getElementById('btnRunNeeds'),
-                'stop-needs': document.getElementById('btnStopNeeds')
-            }};
-
-            const targetBtn = btnMap[cmd];
-            let origHtml = '';
-            if (targetBtn) {{
-                origHtml = targetBtn.innerHTML;
-                targetBtn.classList.add('btn-loading');
-                targetBtn.innerHTML = '<span class="btn-spinner"></span> Sedang memproses...';
-            }}
-
-            // Disable all buttons in control-toolbar to prevent spam
-            const allActionBtns = document.querySelectorAll('.control-toolbar .btn, .action-bar .btn');
-            allActionBtns.forEach(b => {{
-                b.disabled = true;
-            }});
-
+            pendingControls.add(feature);
+            renderAutomationControls(dashboardData);
             try {{
-                const data = await apiFetch('/api/control/' + cmd, {{ method: 'POST' }});
-                showToast(data.message || 'Aksi diproses', 'info');
+                const data = await apiFetch('/api/control/' + cmd + '?account_id=' + encodeURIComponent(account.id), {{ method: 'POST' }});
+                showToast(data.message?.split('\\n\\n', 1)[0] || 'Aksi diproses', 'info');
                 await refreshDashboard();
             }} catch (e) {{
-                showToast('⚠️ Aksi gagal: ' + e.message, 'error');
+                showToast('Aksi gagal: ' + e.message, 'error');
             }} finally {{
-                if (targetBtn && origHtml) {{
-                    targetBtn.classList.remove('btn-loading');
-                    targetBtn.innerHTML = origHtml;
-                }}
-                allActionBtns.forEach(b => {{
-                    b.disabled = false;
-                }});
-                isActionPending = false;
+                pendingControls.delete(feature);
+                if (dashboardData) renderAutomationControls(dashboardData);
             }}
         }}
 
         async function manualRefreshDashboard() {{
-            const btn = document.getElementById('btnRefreshDash');
-            if (btn) {{
-                btn.disabled = true;
-                btn.innerHTML = '<span class="btn-spinner"></span> Memuat...';
-            }}
+            const button = document.getElementById('btnRefreshDash');
+            button.disabled = true;
+            button.textContent = 'Memuat…';
             try {{
                 await refreshDashboard();
-                showToast('🔄 Status dashboard diperbarui', 'info');
-            }} catch (e) {{
-                showToast('⚠️ Gagal refresh: ' + e.message, 'error');
             }} finally {{
-                if (btn) {{
-                    btn.disabled = false;
-                    btn.innerHTML = '🔄 Refresh';
-                }}
+                button.disabled = false;
+                button.textContent = 'Segarkan';
             }}
         }}
 
         async function toggleAuto(flag, enabled) {{
             try {{
-                const data = await apiFetch('/api/control/toggle-auto', {{
+                const accountId = dashboardData?.account?.id;
+                if (!accountId) throw new Error('Pilih akun terlebih dahulu.');
+                await apiFetch('/api/control/toggle-auto?account_id=' + encodeURIComponent(accountId), {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ flag, enabled }})
@@ -2921,7 +1847,9 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
         async function setStudySubject(subject) {{
             try {{
-                const data = await apiFetch('/api/control/study-subject', {{
+                const accountId = dashboardData?.account?.id;
+                if (!accountId) throw new Error('Pilih akun terlebih dahulu.');
+                await apiFetch('/api/control/study-subject?account_id=' + encodeURIComponent(accountId), {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ subject }})
@@ -2935,17 +1863,24 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         }}
 
         async function switchAccount(accountId) {{
-            if (!accountId) return;
+            if (!accountId || pendingSelection || dashboardData?.account?.id === accountId) return;
+            pendingSelection = true;
+            const selector = document.getElementById('accountDropdown');
+            selector.disabled = true;
             try {{
                 await apiFetch('/api/accounts/select', {{
                     method: 'POST',
                     headers: {{ 'Content-Type': 'application/json' }},
                     body: JSON.stringify({{ account_id: accountId }})
                 }});
-                showToast('✅ Akun aktif dialihkan', 'success');
-                await refreshDashboard();
             }} catch (e) {{
-                showToast('⚠️ Gagal mengganti akun: ' + e.message, 'error');
+                showToast('Gagal mengganti akun: ' + e.message, 'error');
+            }} finally {{
+                pendingSelection = false;
+                selector.disabled = false;
+                const applied = await refreshDashboard();
+                if (!applied && dashboardData?.account) selector.value = dashboardData.account.id;
+                if (document.getElementById('tab-accounts').classList.contains('active')) await loadAccounts();
             }}
         }}
 
@@ -3001,7 +1936,14 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
 
         async function submitCookie() {{
             const cookie = document.getElementById('cookieInput').value.trim();
-            if (!cookie) return alert('Silakan tempel cookie terlebih dahulu.');
+            const error = document.getElementById('cookieError');
+            error.hidden = true;
+            if (!cookie) {{
+                error.textContent = 'Tempel cookie sesi terlebih dahulu.';
+                error.hidden = false;
+                document.getElementById('cookieInput').focus();
+                return;
+            }}
             const targetAccountId = (document.getElementById('cookieTargetAccountId')?.value || '').trim();
             const btn = document.getElementById('btnSubmitCookie');
             const loading = document.getElementById('cookieLoadingText');
@@ -3025,7 +1967,8 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 await refreshDashboard();
                 await loadAccounts();
             }} catch (e) {{
-                showToast('⚠️ Import gagal: ' + e.message, 'error');
+                error.textContent = 'Gagal mengimpor cookie: ' + e.message;
+                error.hidden = false;
             }} finally {{
                 if (btn) btn.disabled = false;
                 if (loading) loading.style.display = 'none';
@@ -3044,17 +1987,22 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 data.accounts.forEach(acc => {{
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
-                        <td><strong>${{acc.name}}</strong> ${{acc.is_selected ? '<span style="color: var(--primary); font-size: 11px;">(Aktif)</span>' : ''}}</td>
-                        <td>${{acc.has_cookie ? '<span style="color: var(--success);">✅ Terhubung</span>' : '<span style="color: var(--danger);">❌ Belum ada</span>'}}</td>
-                        <td>${{acc.is_running ? '<span style="color: var(--success);">🟢 Berjalan</span>' : '<span style="color: var(--text-muted);">⚪ Berhenti</span>'}}</td>
-                        <td>${{acc.archived ? '<span style="color: var(--warning);">Diarsipkan</span>' : 'Aktif'}}</td>
+                        <td><strong>${{escapeHtml(acc.name)}}</strong> ${{acc.is_selected ? '<span style="color: var(--primary); font-size: 11px;">(Aktif)</span>' : ''}}</td>
+                        <td data-label="Cookie">${{acc.has_cookie ? '<span style="color: var(--success);">Terhubung</span>' : '<span style="color: var(--warning);">Belum ada</span>'}}</td>
+                        <td data-label="Worker">${{acc.is_running ? '<span style="color: var(--success);">Berjalan</span>' : '<span style="color: var(--text-muted);">Berhenti</span>'}}</td>
+                        <td data-label="Arsip">${{acc.archived ? '<span style="color: var(--warning);">Diarsipkan</span>' : 'Aktif'}}</td>
                         <td style="display: flex; gap: 4px; flex-wrap: wrap;">
-                            ${{!acc.is_selected ? `<button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="switchAccount('${{acc.id}}')">Pilih</button>` : ''}}
-                            <button class="btn ${{acc.has_cookie ? 'btn-secondary' : 'btn-primary'}}" style="padding: 4px 8px; font-size: 11px;" onclick="openCookieModalFor('${{acc.id}}', '${{acc.name}}')">${{acc.has_cookie ? '🍪 Ganti Cookie' : '🍪 Hubungkan Cookie'}}</button>
-                            <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="promptRename('${{acc.id}}', '${{acc.name}}')">Ubah Nama</button>
+                            ${{!acc.archived && !acc.is_selected ? `<button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="switchAccount('${{acc.id}}')">Pilih</button>` : ''}}
+                            ${{acc.archived ? '' : `
+                                <button data-action="cookie" class="btn ${{acc.has_cookie ? 'btn-secondary' : 'btn-primary'}}" style="padding: 4px 8px; font-size: 11px;">${{acc.has_cookie ? 'Ganti cookie' : 'Hubungkan cookie'}}</button>
+                                <button data-action="rename" class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;">Ubah Nama</button>`}}
                             <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="toggleArchive('${{acc.id}}', ${{!acc.archived}})">${{acc.archived ? 'Pulihkan' : 'Arsipkan'}}</button>
                         </td>
                     `;
+                    if (!acc.archived) {{
+                        tr.querySelector('[data-action="cookie"]').onclick = () => openCookieModalFor(acc.id, acc.name);
+                        tr.querySelector('[data-action="rename"]').onclick = () => promptRename(acc.id, acc.name);
+                    }}
                     tbody.appendChild(tr);
                 }});
             }} catch (e) {{
@@ -3116,11 +2064,11 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                         const tr = document.createElement('tr');
                         const dt = new Date(p.created_at * 1000).toLocaleString('id-ID');
                         tr.innerHTML = `
-                            <td>#${{p.id}}</td>
-                            <td><strong>${{p.username}}</strong></td>
-                            <td>${{p.name || '-'}}</td>
-                            <td>${{p.telegram_id || '-'}}</td>
-                            <td>${{dt}}</td>
+                            <td data-label="ID">#${{p.id}}</td>
+                            <td class="admin-user-name"><strong>${{escapeHtml(p.username)}}</strong></td>
+                            <td data-label="Nama">${{escapeHtml(p.name || '—')}}</td>
+                            <td data-label="Telegram">${{p.telegram_id || '—'}}</td>
+                            <td data-label="Daftar">${{dt}}</td>
                             <td>
                                 <button class="btn btn-success" style="padding: 4px 8px; font-size: 11px;" onclick="reviewUser(${{p.id}}, true)">✅ Setujui</button>
                                 <button class="btn btn-danger" style="padding: 4px 8px; font-size: 11px;" onclick="reviewUser(${{p.id}}, false)">❌ Tolak</button>
@@ -3135,12 +2083,12 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
                 users.forEach(u => {{
                     const tr = document.createElement('tr');
                     tr.innerHTML = `
-                        <td>#${{u.id}}</td>
-                        <td><strong>${{u.username}}</strong></td>
-                        <td>${{u.name || '-'}}</td>
-                        <td>${{u.telegram_id || '-'}}</td>
-                        <td><span style="padding: 2px 6px; border-radius: 4px; background: ${{u.role === 'admin' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.05)'}}; color: ${{u.role === 'admin' ? 'var(--primary)' : 'inherit'}};">${{u.role}}</span></td>
-                        <td><span style="color: ${{u.status === 'approved' ? 'var(--success)' : u.status === 'pending' ? 'var(--warning)' : 'var(--danger)'}};">${{u.status}}</span></td>
+                        <td data-label="ID">#${{u.id}}</td>
+                        <td class="admin-user-name"><strong>${{escapeHtml(u.username)}}</strong></td>
+                        <td data-label="Nama">${{escapeHtml(u.name || '—')}}</td>
+                        <td data-label="Telegram">${{u.telegram_id || '—'}}</td>
+                        <td data-label="Peran"><span style="padding: 2px 6px; border-radius: 4px; background: ${{u.role === 'admin' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.05)'}}; color: ${{u.role === 'admin' ? 'var(--primary)' : 'inherit'}};">${{u.role}}</span></td>
+                        <td data-label="Status"><span style="color: ${{u.status === 'approved' ? 'var(--success)' : u.status === 'pending' ? 'var(--warning)' : 'var(--danger)'}};">${{u.status}}</span></td>
                         <td>
                             ${{u.status === 'approved' ? `<button class="btn btn-danger" style="padding: 3px 6px; font-size: 10px;" onclick="reviewUser(${{u.id}}, false)">Nonaktifkan</button>` : `<button class="btn btn-success" style="padding: 3px 6px; font-size: 10px;" onclick="reviewUser(${{u.id}}, true)">Aktifkan</button>`}}
                         </td>
@@ -3256,7 +2204,7 @@ def dashboard_html(user: dict, bot_username: str = "") -> str:
         loadNotifications();
         refreshDashboard();
         startLiveStream();
-        setInterval(refreshDashboard, 5000);
+        setInterval(() => {{ if (!streamConnected) refreshDashboard(); }}, 5000);
     </script>
 </body>
 </html>

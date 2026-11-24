@@ -141,21 +141,24 @@ NEED_SHOPS_BY_VILLAGE = {
     },
 }
 
-# Plot IDs from the captured directory. Resolve the current business before buying.
-NEED_FALLBACK_PLOTS = {
-    "desa-utara": {
-        "makan": ("J23-U01", "restoran"),
-        "kesehatan": ("N39-U07", "toko-obat"),
-        "rekreasi": ("L38-U09", "coffee-shop"),
-        "penampilan": ("L21-U09", "barbershop"),
-        "rumah": ("L36-U09", "toko-bangunan"),
-    },
-    "kampung-sebelah": {
-        "makan": ("D01-U09", "restoran"),
-        "kesehatan": ("D02-U02", "toko-obat"),
-        "rekreasi": ("A02-U04", "coffee-shop"),
-        "penampilan": ("S09-U09", "barbershop"),
-    },
+FOOD_SHOPS = {
+    "coffee-shop",
+    "kedai-kopi",
+    "kios",
+    "lamongan",
+    "minimarket",
+    "restoran",
+    "rumah-makan",
+    "warung",
+    "warung-sembako",
+    "warnet",
+}
+NEED_SHOP_CATEGORIES = {
+    "makan": FOOD_SHOPS,
+    "kesehatan": FOOD_SHOPS | {"toko-obat"},
+    "rekreasi": FOOD_SHOPS,
+    "penampilan": {"barbershop"},
+    "rumah": {"toko-bangunan"},
 }
 
 STUDY_FACILITIES_BY_VILLAGE = {
