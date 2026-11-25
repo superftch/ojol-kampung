@@ -85,13 +85,19 @@ def _alert_html(kind: str, message: str) -> str:
     return f'<div class="alert alert-{kind}">{html.escape(message)}</div>'
 
 
-def login_html(error: str = "", success: str = "") -> str:
+def login_html(error: str = "", success: str = "", *, can_return_to_admin: bool = False) -> str:
     return _render_template(
         "login.html",
         {
             "__BRAND_MARK__": BRAND_MARK,
             "__ERROR_ALERT__": _alert_html("danger", error),
             "__SUCCESS_ALERT__": _alert_html("success", success),
+            "__ADMIN_RETURN__": (
+                '<form class="footer-links" method="post" action="/auth/impersonation/stop">'
+                '<button class="btn" type="submit">Kembali ke admin</button></form>'
+                if can_return_to_admin
+                else ""
+            ),
         },
     )
 
@@ -136,6 +142,7 @@ def meters_html(fields: Iterable[tuple[str, str]]) -> str:
 def dashboard_html(user: dict[str, Any]) -> str:
     is_admin = user.get("role") == "admin"
     user_json = json.dumps(user).replace("<", "\\u003c")
+    username = html.escape(str(user.get("username", "User")))
     fuel_meters = meters_html((("fuel", "Bensin"), ("cond", "Kondisi mesin"), ("data", "Kuota HP")))
     needs_meters = meters_html(
         (
@@ -153,7 +160,14 @@ def dashboard_html(user: dict[str, Any]) -> str:
         "dashboard.html",
         {
             "__BRAND_MARK__": BRAND_MARK,
-            "__USERNAME__": html.escape(str(user.get("username", "User"))),
+            "__USERNAME__": username,
+            "__IMPERSONATION_BANNER__": (
+                '<form class="notice admin-impersonation" method="post" action="/auth/impersonation/stop">'
+                f"<strong>Masuk sebagai @{username}</strong>"
+                '<button class="btn btn-utility" type="submit">Kembali ke admin</button></form>'
+                if user.get("impersonating")
+                else ""
+            ),
             "__ADMIN_TAB_DISPLAY__": "block" if is_admin else "none",
             "__ADMIN_OVERVIEW__": _load_template("admin_overview.html") if is_admin else "",
             "__FUEL_METERS__": fuel_meters,

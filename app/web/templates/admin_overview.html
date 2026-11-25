@@ -13,7 +13,15 @@
     <dl class="card fleet-stats admin-stat-strip" aria-label="Ringkasan operasional">
         <div><dt>Pengajuan tertunda</dt><dd id="adminPendingCount">&mdash;</dd></div>
         <div><dt>Pengguna disetujui</dt><dd id="adminApprovedCount">&mdash;</dd><span id="adminUserBreakdown" class="meta"></span></div>
-        <div><dt>Akun game terdaftar</dt><dd id="adminAccountCount">&mdash;</dd><span id="adminArchivedCount" class="meta"></span></div>
+        <div class="admin-account-stat">
+            <dt>Akun game terdaftar</dt>
+            <dd>
+                <span id="adminAccountCount">&mdash;</span>
+                <span id="adminArchivedCount" class="meta"></span>
+                <button class="admin-action" type="button" aria-label="Lihat detail akun game" aria-haspopup="dialog"
+                    aria-controls="adminGameAccountsDialog" onclick="openAdminGameAccounts(this)">Lihat detail</button>
+            </dd>
+        </div>
         <div><dt>Error belum dibaca</dt><dd id="adminUnreadErrors">&mdash;</dd><span id="adminNoticeScope" class="meta"></span></div>
     </dl>
 
@@ -51,3 +59,59 @@
         </section>
     </div>
 </div>
+
+<dialog id="adminGameAccountsDialog" class="modal admin-game-accounts" aria-labelledby="adminGameAccountsTitle">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 id="adminGameAccountsTitle" class="card-title">Akun game terdaftar</h2>
+            <button class="btn btn-utility" type="button" onclick="closeModal('adminGameAccountsDialog')">Tutup</button>
+        </div>
+        <fieldset id="adminGameAccountsFilters" class="admin-account-filters" disabled>
+            <label for="adminGameAccountsSearch">Cari akun atau pemilik
+                <input id="adminGameAccountsSearch" type="search" autocomplete="off" oninput="renderAdminGameAccounts()">
+            </label>
+            <label for="adminGameAccountsStatus">Status arsip
+                <select id="adminGameAccountsStatus" onchange="renderAdminGameAccounts()">
+                    <option value="all">Semua status</option>
+                    <option value="registered">Tidak diarsipkan</option>
+                    <option value="archived">Diarsipkan</option>
+                </select>
+            </label>
+        </fieldset>
+        <p id="adminGameAccountsMessage" class="meta admin-account-message" role="status"></p>
+        <button id="adminGameAccountsRetry" class="btn btn-utility" type="button" onclick="loadAdminGameAccounts()" hidden>Coba lagi</button>
+        <ul id="adminGameAccountsList" class="admin-overview-list"></ul>
+    </div>
+</dialog>
+
+<dialog id="adminUserLimitsDialog" class="modal admin-game-accounts" aria-labelledby="adminUserLimitsTitle">
+    <div class="modal-content">
+        <div class="modal-header">
+            <div>
+                <h2 id="adminUserLimitsTitle" class="card-title">Batas pengguna</h2>
+                <p id="adminUserLimitsUsername" class="meta"></p>
+            </div>
+            <button class="btn btn-utility" type="button" onclick="closeModal('adminUserLimitsDialog')">Tutup</button>
+        </div>
+        <form id="adminUserLimitsForm" onsubmit="saveAdminUserLimits(event)" hidden>
+            <fieldset class="admin-user-limit-inputs">
+                <label for="adminUserAccountLimit">Batas akun game
+                    <input id="adminUserAccountLimit" type="number" min="1" max="100" aria-describedby="adminUserAccountMode" oninput="renderAdminUserLimitModes()">
+                    <span id="adminUserAccountMode" class="meta"></span>
+                </label>
+                <label for="adminUserWorkerLimit">Batas worker bersamaan
+                    <input id="adminUserWorkerLimit" type="number" min="1" max="100" aria-describedby="adminUserWorkerMode" oninput="renderAdminUserLimitModes()">
+                    <span id="adminUserWorkerMode" class="meta"></span>
+                </label>
+            </fieldset>
+            <p class="meta">Kosongkan kolom untuk mengikuti pengaturan utama. Batas worker server tetap berlaku.</p>
+            <button id="adminUserLimitsSubmit" class="btn btn-primary" type="submit">Simpan batas</button>
+        </form>
+        <p id="adminUserLimitsMessage" class="meta admin-account-message" role="status"></p>
+        <section id="adminUserLimitsPreview" class="admin-user-limit-preview" aria-labelledby="adminUserLimitsPreviewTitle" hidden>
+            <h3 id="adminUserLimitsPreviewTitle" class="card-title">Akun yang belum diarsipkan</h3>
+            <p id="adminUserLimitsUsage" class="meta"></p>
+            <ul id="adminUserLimitsAccounts" class="admin-overview-list"></ul>
+        </section>
+    </div>
+</dialog>

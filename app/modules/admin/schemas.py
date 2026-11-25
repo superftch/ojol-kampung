@@ -15,6 +15,15 @@ class AccountLimit(BaseModel):
     maximum: int = Field(ge=1, le=100)
 
 
+class UserLimits(BaseModel):
+    account_limit: StrictInt | None = Field(ge=1, le=100)
+    worker_limit: StrictInt | None = Field(ge=1, le=100)
+
+
+class ImpersonateUser(BaseModel):
+    user_id: int = Field(gt=0)
+
+
 class MaintenanceChange(BaseModel):
     mode: Literal["off", "manual", "scheduled"]
     target: Literal["ojol", "all"] = "ojol"

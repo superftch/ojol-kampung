@@ -21,6 +21,7 @@ from app.core.locks import running
 from app.core.models import ROOT, Settings
 from app.core.storage import write_private
 from app.modules.accounts.repository import Accounts
+from app.modules.worker.capacity import worker_capacity_error
 from app.modules.worker.maintenance import SCHEDULE_FILE, held_window
 from app.modules.worker.settings import auto_flags
 
@@ -209,8 +210,12 @@ class WorkerService:
                     return {"ok": False, "maintenance": True, "message": maintenance.message()}
                 return {"ok": False, "error": maintenance.message()}
 
-            if self.active_worker_count() >= self.registry.value("max_active_workers"):
-                return {"ok": False, "error": "Slot worker penuh. Hentikan salah satu akun dulu."}
+            try:
+                owner = self.registry.get(acc_id)["owner"] if acc_id else None
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+            if error := worker_capacity_error(self.registry, owner, self.active_worker_count):
+                return {"ok": False, "capacity": True, "error": error}
 
             # Unlink STOP file if present
             (directory / "STOP").unlink(missing_ok=True)
@@ -269,15 +274,15 @@ class WorkerService:
 
         return {"ok": True, "message": "Worker dihentikan"}
 
-    def active_worker_count(self) -> int:
+    def active_worker_count(self, owner=None) -> int:
         count = 0
-        for acc in self.registry.list():
+        for acc in self.registry.list(owner):
             if not self.registry.allowed(acc["owner"]):
                 continue
-            scoped = self.registry.scoped_settings(acc)
+            directory = self.registry.runtime_directory(acc)
             acc_key = acc["id"]
             proc = self.workers.get(acc_key)
-            if (proc and proc.returncode is None) or running(scoped.runtime_dir):
+            if (proc and proc.returncode is None) or running(directory):
                 count += 1
         return count
 

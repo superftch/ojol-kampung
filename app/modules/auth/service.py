@@ -8,6 +8,10 @@ import time
 from app.core.security import hash_password, verify_password
 
 
+def web_owner_id(user):
+    return int(user["telegram_id"]) if user.get("telegram_id") else 10_000_000_000 + int(user["id"])
+
+
 class WebAuth:
     """Authentication and session manager for web interface."""
 
@@ -35,12 +39,22 @@ class WebAuth:
                 CREATE TABLE IF NOT EXISTS web_sessions (
                     token TEXT PRIMARY KEY,
                     user_id INTEGER NOT NULL REFERENCES web_users(id),
-                    expires_at REAL NOT NULL
+                    expires_at REAL NOT NULL,
+                    parent_token TEXT REFERENCES web_sessions(token) ON DELETE CASCADE
                 );
             """)
+            db.execute("BEGIN IMMEDIATE")
             with contextlib.suppress(Exception):
                 db.execute(
                     "ALTER TABLE web_users ADD COLUMN has_password INTEGER NOT NULL DEFAULT 1"
+                )
+            if not any(
+                col["name"] == "parent_token"
+                for col in db.execute("PRAGMA table_info(web_sessions)")
+            ):
+                db.execute(
+                    "ALTER TABLE web_sessions ADD COLUMN parent_token TEXT "
+                    "REFERENCES web_sessions(token) ON DELETE CASCADE"
                 )
 
     def validate_username(self, username: str) -> str:
@@ -136,10 +150,18 @@ class WebAuth:
         if not token or len(token) > 128:
             return None
         with self.accounts.db() as db:
+            current = time.time()
             row = db.execute(
-                "SELECT u.* FROM web_sessions s JOIN web_users u ON s.user_id = u.id "
-                "WHERE s.token = ? AND s.expires_at > ?",
-                (token, time.time()),
+                """SELECT u.*, s.parent_token IS NOT NULL AS impersonating
+                   FROM web_sessions s JOIN web_users u ON s.user_id = u.id
+                   WHERE s.token=? AND s.expires_at>? AND (
+                     s.parent_token IS NULL OR (u.status='approved' AND u.role='user' AND EXISTS (
+                       SELECT 1 FROM web_sessions parent JOIN web_users admin ON admin.id=parent.user_id
+                       WHERE parent.token=s.parent_token AND parent.expires_at>?
+                         AND admin.status='approved' AND admin.role='admin'
+                     ))
+                   )""",
+                (token, current, current),
             ).fetchone()
             if not row:
                 return None
@@ -147,7 +169,43 @@ class WebAuth:
             # Remove sensitive credentials
             user.pop("password_hash", None)
             user.pop("salt", None)
+            if not user.pop("impersonating"):
+                return user
+            user["impersonating"] = True
             return user
+
+    def issue_impersonation(self, parent_token: str, user_id: int) -> str:
+        token = secrets.token_urlsafe(32)
+        current = time.time()
+        with self.accounts.db() as db:
+            row = db.execute(
+                """INSERT INTO web_sessions(token, user_id, expires_at, parent_token)
+                   SELECT ?, target.id, MIN(parent.expires_at, ?), parent.token
+                   FROM web_sessions parent JOIN web_users admin ON admin.id=parent.user_id
+                   JOIN web_users target ON target.id=?
+                   WHERE parent.token=? AND parent.expires_at>? AND parent.parent_token IS NULL
+                     AND admin.status='approved' AND admin.role='admin'
+                     AND target.status='approved' AND target.role='user'""",
+                (token, current + 3600, user_id, parent_token, current),
+            )
+            if not row.rowcount:
+                raise ValueError("Hanya pengguna non-admin yang disetujui dapat dibuka.")
+        return token
+
+    def end_impersonation(self, token, parent_token) -> bool:
+        parent = self.get_user_by_session(parent_token)
+        if not parent or parent["role"] != "admin" or parent["status"] != "approved":
+            return False
+        with self.accounts.db() as db:
+            child = db.execute(
+                "SELECT parent_token FROM web_sessions WHERE token=?", (token,)
+            ).fetchone()
+            if child and child[0] != parent_token:
+                return False
+            db.execute(
+                "DELETE FROM web_sessions WHERE token=? AND parent_token=?", (token, parent_token)
+            )
+        return True
 
     def revoke_session(self, token: str):
         if not token:
@@ -200,7 +258,7 @@ class WebAuth:
     def get_owner_for_user(self, user: dict) -> int:
         if user.get("telegram_id"):
             return int(user["telegram_id"])
-        synthetic = 10_000_000_000 + int(user["id"])
+        synthetic = web_owner_id(user)
         with self.accounts.db() as db:
             db.execute(
                 "INSERT OR IGNORE INTO users(telegram_id, enabled, name, username) VALUES(?,1,?,?)",
@@ -231,6 +289,16 @@ class WebAuth:
             ).fetchall()
             return [dict(r) for r in rows]
 
+    def get_user(self, user_id: int) -> dict:
+        with self.accounts.db() as db:
+            row = db.execute(
+                "SELECT id, username, name, telegram_id, status, role FROM web_users WHERE id=?",
+                (user_id,),
+            ).fetchone()
+        if row is None:
+            raise ValueError("Pengguna tidak ditemukan.")
+        return dict(row)
+
     def list_pending(self) -> list[dict]:
         with self.accounts.db() as db:
             rows = db.execute(
@@ -244,7 +312,7 @@ class WebAuth:
             user = db.execute("SELECT * FROM web_users WHERE id=?", (user_id,)).fetchone()
             if user is None or user["status"] != "approved":
                 raise ValueError("Pengguna aktif tidak ditemukan.")
-            owner = user["telegram_id"] or 10_000_000_000 + user_id
+            owner = web_owner_id(dict(user))
             self.accounts.set_owner_access(owner, maximum=maximum, db=db)
 
     def review_user(self, user_id: int, admin_id: int, approve: bool) -> dict:
@@ -260,7 +328,7 @@ class WebAuth:
                 "UPDATE web_users SET status=?, decided_by=?, decided_at=? WHERE id=?",
                 (new_status, admin_id, time.time(), user_id),
             )
-            owner = user["telegram_id"] or 10_000_000_000 + user_id
+            owner = web_owner_id(user)
             self.accounts.set_owner_access(
                 owner, enabled=approve, name=user.get("name"), username=user.get("username"), db=db
             )

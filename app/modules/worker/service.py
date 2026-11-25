@@ -20,6 +20,7 @@ from app.modules.auth.import_access import LoginAccess
 from app.modules.gameplay.cleanup import find_unvisited, scan
 from app.modules.ledger.finance import WIB, report_date
 from app.modules.notifications.service import queue_error, queue_notice
+from app.modules.worker.capacity import WorkerCapacityError
 from app.modules.worker.maintenance import GAME_COMMANDS, SCHEDULE_FILE, held_window
 from app.modules.worker.settings import auto_flags, set_auto_flag
 from app.modules.worker.status import (
@@ -43,6 +44,8 @@ class ControlService:
         self.closing = False
         self.tasks = []
         self.lock = asyncio.Lock()
+        self.worker_start_lock = asyncio.Lock()
+        self.worker_capacity_error = None
         self.url_prefix = ""
         self.account_id = None
         self.auto_start_pending = False
@@ -432,36 +435,48 @@ class ControlService:
             )
             if worker_resp is not None:
                 if not worker_resp.get("ok"):
+                    if worker_resp.get("capacity"):
+                        if auto_start:
+                            self.auto_start_pending = True
+                        raise WorkerCapacityError(worker_resp["error"])
                     raise RuntimeError(worker_resp.get("error") or worker_resp["message"])
                 self.expected_stop = False
                 return self._started_message(is_ojol=is_ojol, label=label)
 
-            config_file = os.environ.get("OJOL_CONFIG_FILE")
-            args = [sys.executable, str(ROOT / "main.py")]
-            if config_file:
-                args += ["--env-file", config_file]
-            args += ["run", "--live"]
-            self.expected_stop = False
-            # Docker owns stdout rotation; journal and status remain persistent in the volume.
-            self.worker = await asyncio.create_subprocess_exec(
-                *args,
-                stderr=asyncio.subprocess.STDOUT,
-                start_new_session=True,
-                env={
-                    **os.environ,
-                    "OJOL_RUNTIME_DIR": str(self.settings.runtime_dir),
-                    "OJOL_ACCOUNT_NAME": self.settings.account_name,
-                    "OJOL_ACCOUNT_ID": self.account_id or "",
-                    "OJOL_WORKER_AUTO_START": "1" if auto_start else "0",
-                    "OJOL_MAINTENANCE_FILE": str(self.maintenance_file),
-                    **(
-                        {"OJOL_OJOL_MODE": mode}
-                        if (is_ojol and mode in {"kendara", "otomatis"})
-                        else {}
-                    ),
-                },
-            )
+            async with self.worker_start_lock:
+                if self.worker_capacity_error and (error := self.worker_capacity_error()):
+                    if auto_start:
+                        self.auto_start_pending = True
+                    raise WorkerCapacityError(error)
+                await self._spawn_local_worker(auto_start, is_ojol, mode)
             return self._started_message(is_ojol=is_ojol, label=label)
+
+    async def _spawn_local_worker(self, auto_start, is_ojol, mode):
+        config_file = os.environ.get("OJOL_CONFIG_FILE")
+        args = [sys.executable, str(ROOT / "main.py")]
+        if config_file:
+            args += ["--env-file", config_file]
+        args += ["run", "--live"]
+        self.expected_stop = False
+        # Docker owns stdout rotation; journal and status remain persistent in the volume.
+        self.worker = await asyncio.create_subprocess_exec(
+            *args,
+            stderr=asyncio.subprocess.STDOUT,
+            start_new_session=True,
+            env={
+                **os.environ,
+                "OJOL_RUNTIME_DIR": str(self.settings.runtime_dir),
+                "OJOL_ACCOUNT_NAME": self.settings.account_name,
+                "OJOL_ACCOUNT_ID": self.account_id or "",
+                "OJOL_WORKER_AUTO_START": "1" if auto_start else "0",
+                "OJOL_MAINTENANCE_FILE": str(self.maintenance_file),
+                **(
+                    {"OJOL_OJOL_MODE": mode}
+                    if (is_ojol and mode in {"kendara", "otomatis"})
+                    else {}
+                ),
+            },
+        )
 
     @staticmethod
     def _started_message(*, is_ojol: bool, label: str) -> str:

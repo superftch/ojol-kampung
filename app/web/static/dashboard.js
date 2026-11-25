@@ -1214,6 +1214,61 @@ const adminDate = new Intl.DateTimeFormat('id-ID', {
 });
 let adminLastChecked = null;
 let adminLoadVersion = 0;
+let adminGameAccounts = [];
+let adminGameAccountsRequest = 0;
+
+function openAdminGameAccounts(trigger) {
+    document.getElementById('adminGameAccountsSearch').value = '';
+    document.getElementById('adminGameAccountsStatus').value = 'all';
+    trigger?.focus();
+    openModal('adminGameAccountsDialog');
+    loadAdminGameAccounts();
+}
+
+async function loadAdminGameAccounts() {
+    const request = ++adminGameAccountsRequest;
+    const message = document.getElementById('adminGameAccountsMessage');
+    const filters = document.getElementById('adminGameAccountsFilters');
+    const retry = document.getElementById('adminGameAccountsRetry');
+    filters.disabled = true;
+    retry.hidden = true;
+    message.textContent = 'Memuat akun game…';
+    const list = document.getElementById('adminGameAccountsList');
+    list.replaceChildren();
+    try {
+        const data = await apiFetch('/api/admin/accounts');
+        if (request !== adminGameAccountsRequest) return;
+        adminGameAccounts = data.accounts;
+        filters.disabled = false;
+        renderAdminGameAccounts();
+    } catch (error) {
+        if (request !== adminGameAccountsRequest) return;
+        message.textContent = 'Daftar akun game gagal dimuat.';
+        retry.hidden = false;
+    }
+}
+
+function renderAdminGameAccounts() {
+    const query = document.getElementById('adminGameAccountsSearch').value.trim().toLowerCase().replace(/^@/, '');
+    const status = document.getElementById('adminGameAccountsStatus').value;
+    const matches = adminGameAccounts.filter(account => {
+        const statusMatches = status === 'all' || account.archived === (status === 'archived');
+        return statusMatches && [account.name, account.id, account.owner_name, account.owner_username]
+            .some(value => value?.toLowerCase().includes(query));
+    });
+    const message = document.getElementById('adminGameAccountsMessage');
+    message.textContent = matches.length
+        ? `${adminNumber.format(matches.length)} dari ${adminNumber.format(adminGameAccounts.length)} akun`
+        : adminGameAccounts.length ? 'Tidak ada akun yang cocok.' : 'Belum ada akun game terdaftar.';
+    document.getElementById('adminGameAccountsList').innerHTML = matches.map(account => {
+        const owner = [account.owner_name, account.owner_username && `@${account.owner_username}`].filter(Boolean).join(' · ');
+        const state = account.archived ? 'Diarsipkan' : 'Tidak diarsipkan';
+        return `<li><div><strong>${escapeHtml(account.name)}</strong>
+            <p class="meta">Pemilik ${escapeHtml(owner || 'tidak tercatat')}</p>
+            <p class="meta">ID <code>${escapeHtml(account.id)}</code></p></div>
+            <span class="admin-account-status${account.archived ? ' archived' : ''}">${state}</span></li>`;
+    }).join('');
+}
 
 function renderAdminOverview(overview, users, pending) {
     const { accounts, workers, maintenance, notifications } = overview;
@@ -1373,7 +1428,8 @@ function renderAdminUsers(users, pending) {
             <td data-label="Status"><span style="color: ${u.status === 'approved' ? 'var(--success)' : u.status === 'pending' ? 'var(--warning)' : 'var(--danger)'};">${u.status}</span></td>
             <td>
                 ${u.role === 'admin' ? '' : u.status === 'approved' ? `<button class="btn btn-danger" onclick="reviewUser(${u.id}, false)">Nonaktifkan</button>` : `<button class="btn btn-success" onclick="reviewUser(${u.id}, true)">Aktifkan</button>`}
-                ${u.status === 'approved' ? `<button class="btn btn-secondary" type="button" onclick="setAccountLimit(${u.id})">Batas akun</button>` : ''}
+                ${u.status === 'approved' ? `<button class="btn btn-secondary" type="button" onclick="openAdminUserLimits(${u.id}, this)">Batas pengguna</button>` : ''}
+                ${u.status === 'approved' && u.role !== 'admin' ? `<button class="btn btn-secondary" type="button" onclick="impersonateWebUser(${u.id}, this)">Masuk sebagai</button>` : ''}
             </td>
         `;
         uTbody.appendChild(tr);
@@ -1476,17 +1532,95 @@ async function saveMaintenance(event) {
     }
 }
 
-async function setAccountLimit(userId) {
-    const maximum = prompt('Batas akun baru (1–100)');
-    if (maximum === null) return;
+let adminUserLimitsState = null;
+let adminUserLimitsRequest = 0;
+
+async function openAdminUserLimits(userId, trigger) {
+    const request = ++adminUserLimitsRequest;
+    const form = document.getElementById('adminUserLimitsForm');
+    const preview = document.getElementById('adminUserLimitsPreview');
+    const username = document.getElementById('adminUserLimitsUsername');
+    const message = document.getElementById('adminUserLimitsMessage');
+    adminUserLimitsState = null;
+    form.hidden = true;
+    preview.hidden = true;
+    username.textContent = '';
+    message.textContent = 'Memuat pengaturan dan akun…';
+    trigger?.focus();
+    openModal('adminUserLimitsDialog');
     try {
-        await apiFetch('/api/admin/account-limit', {
+        const data = await apiFetch(`/api/admin/users/${userId}/limits`);
+        if (request !== adminUserLimitsRequest) return;
+        adminUserLimitsState = {userId, ...data};
+        const {limits, accounts} = data;
+        username.textContent = `@${data.username}`;
+        const account = document.getElementById('adminUserAccountLimit');
+        const worker = document.getElementById('adminUserWorkerLimit');
+        account.value = limits.account_override ?? '';
+        worker.value = limits.worker_override ?? '';
+        account.placeholder = limits.account_default;
+        worker.placeholder = limits.worker_default;
+        document.getElementById('adminUserLimitsAccounts').innerHTML = accounts.map(item => `
+            <li><strong>${escapeHtml(item.name)}</strong>
+            <span class="admin-account-status${item.running ? '' : ' archived'}">${item.running ? 'Worker berjalan' : 'Worker berhenti'}</span></li>
+        `).join('');
+        renderAdminUserLimitModes();
+        document.getElementById('adminUserLimitsSubmit').disabled = false;
+        message.textContent = '';
+        form.hidden = false;
+        preview.hidden = false;
+    } catch (error) {
+        if (request === adminUserLimitsRequest) message.textContent = error.message;
+    }
+}
+
+function renderAdminUserLimitModes() {
+    const account = document.getElementById('adminUserAccountLimit').value;
+    const worker = document.getElementById('adminUserWorkerLimit').value;
+    const {limits, accounts} = adminUserLimitsState;
+    document.getElementById('adminUserAccountMode').textContent = account
+        ? `Batas khusus · ${account} akun` : `Ikuti pengaturan utama · ${limits.account_default} akun`;
+    const effectiveWorker = Math.min(Number(worker || limits.worker_default), limits.worker_default);
+    document.getElementById('adminUserWorkerMode').textContent = worker
+        ? `Batas khusus · ${effectiveWorker} worker efektif` : `Ikuti pengaturan utama · ${effectiveWorker} worker`;
+    const running = accounts.filter(item => item.running).length;
+    document.getElementById('adminUserLimitsUsage').textContent = accounts.length
+        ? `${adminNumber.format(accounts.length)} akun · ${adminNumber.format(running)} worker berjalan`
+        : 'Pengguna belum punya akun yang belum diarsipkan.';
+}
+
+async function saveAdminUserLimits(event) {
+    event.preventDefault();
+    const request = adminUserLimitsRequest;
+    const {userId} = adminUserLimitsState;
+    const account = document.getElementById('adminUserAccountLimit').value;
+    const worker = document.getElementById('adminUserWorkerLimit').value;
+    const submit = document.getElementById('adminUserLimitsSubmit');
+    const message = document.getElementById('adminUserLimitsMessage');
+    submit.disabled = true;
+    try {
+        await apiFetch(`/api/admin/users/${userId}/limits`, {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({user_id: userId, maximum})
+            body: JSON.stringify({account_limit: account ? Number(account) : null, worker_limit: worker ? Number(worker) : null})
         });
-        showToast('Batas akun disimpan.', 'success');
+        if (request === adminUserLimitsRequest) message.textContent = 'Batas pengguna disimpan.';
+    } catch (error) {
+        if (request === adminUserLimitsRequest) message.textContent = error.message;
+    } finally {
+        if (request === adminUserLimitsRequest) submit.disabled = false;
+    }
+}
+
+async function impersonateWebUser(userId, button) {
+    button.disabled = true;
+    try {
+        await apiFetch('/api/admin/impersonate', {
+            method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({user_id: userId})
+        });
+        window.location.assign('/');
     } catch (error) {
         showToast(error.message, 'error');
+        button.disabled = false;
     }
 }
 

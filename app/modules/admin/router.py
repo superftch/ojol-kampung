@@ -9,7 +9,14 @@ from pydantic import ValidationError
 from app.core.locks import running
 from app.core.models import Settings, now
 from app.core.storage import write_private
-from app.modules.admin.schemas import AccountLimit, FleetLimit, MaintenanceChange, ReviewUser
+from app.modules.admin.schemas import (
+    AccountLimit,
+    FleetLimit,
+    MaintenanceChange,
+    ReviewUser,
+    UserLimits,
+)
+from app.modules.auth.service import web_owner_id
 from app.modules.notifications.repository import (
     list_all_admin_notifications,
     mark_all_admin_notifications_read,
@@ -82,6 +89,30 @@ def admin_overview(
     }
 
 
+@router.get("/api/admin/accounts")
+def admin_accounts(
+    user: Annotated[dict, Depends(require_admin)],
+    ctx: Annotated[WebContext, Depends(get_ctx)],
+):
+    registry = ctx.registry
+    registered = registry.list(archived=None)
+    owners = {row["owner"]: row for row in registry.users()}
+    owners.update({web_owner_id(row): row for row in registry.web.list_users()})
+    accounts = []
+    for row in registered:
+        owner = owners.get(row["owner"], {})
+        accounts.append(
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "archived": bool(row["archived"]),
+                "owner_name": owner.get("name"),
+                "owner_username": owner.get("username"),
+            }
+        )
+    return {"accounts": accounts}
+
+
 @router.get("/api/admin/notifications")
 async def admin_notifications(
     limit: int = ADMIN_NOTIFICATION_LIMIT,
@@ -142,6 +173,50 @@ async def admin_account_limit(
 ):
     try:
         ctx.registry.web.set_account_limit(body.user_id, body.maximum)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    return {"success": True}
+
+
+@router.get("/api/admin/users/{user_id}/limits")
+def admin_user_limits(
+    user_id: int,
+    user: Annotated[dict, Depends(require_admin)],
+    ctx: Annotated[WebContext, Depends(get_ctx)],
+):
+    registry = ctx.registry
+    try:
+        target = registry.web.get_user(user_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from None
+    owner = web_owner_id(target)
+    accounts = []
+    for row in registry.list(owner):
+        lock = registry.runtime_directory(row) / "run.lock"
+        active = (
+            ctx.manager.supervisor.account_running(row)
+            if ctx.manager
+            else lock.is_file() and running(lock.parent)
+        )
+        accounts.append({"name": row["name"], "running": active})
+    return {
+        "username": target["username"],
+        "limits": registry.user_limits(owner),
+        "accounts": accounts,
+    }
+
+
+@router.post("/api/admin/users/{user_id}/limits")
+def admin_set_user_limits(
+    user_id: int,
+    body: UserLimits,
+    user: Annotated[dict, Depends(require_admin)],
+    ctx: Annotated[WebContext, Depends(get_ctx)],
+):
+    registry = ctx.registry
+    try:
+        target = registry.web.get_user(user_id)
+        registry.set_user_limits(web_owner_id(target), body.account_limit, body.worker_limit)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     return {"success": True}

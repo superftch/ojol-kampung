@@ -365,6 +365,128 @@ def test_admin_overview_summarizes_fleet_and_restricts_access(admin_web):
     assert 'id="adminOverview"' not in client.get("/").text
 
 
+def test_admin_game_account_details_include_archived_accounts_from_other_owners(admin_web):
+    client, manager = admin_web
+    registry = manager.registry
+    admin = registry.web.list_users()[0]
+    credentials = {"username": "driver_lestari", "password": "fixture-password"}
+    member = registry.web.register(**credentials, name="Lestari")
+    registry.web.review_user(member["id"], admin["id"], approve=True)
+    owner = registry.owner_for_user(member)
+    registered = registry.create(owner, "Motor Pagi")
+    archived = registry.create(owner, "Motor Lama")
+    registry.archive(owner, archived["id"])
+
+    assert 'id="adminGameAccountsDialog"' in client.get("/").text
+    response = client.get("/api/admin/accounts")
+    assert response.is_success
+    assert response.json()["accounts"] == [
+        {
+            "id": account["id"],
+            "name": account["name"],
+            "archived": is_archived,
+            "owner_name": "Lestari",
+            "owner_username": "driver_lestari",
+        }
+        for account, is_archived in ((registered, False), (archived, True))
+    ]
+
+    client.post("/api/auth/logout")
+    assert client.get("/api/admin/accounts").status_code == 401
+    assert client.post("/api/auth/login", json=credentials).is_success
+    assert client.get("/api/admin/accounts").status_code == 403
+    assert 'id="adminGameAccountsDialog"' not in client.get("/").text
+
+
+@pytest.mark.parametrize("standalone", [True, False])
+def test_admin_worker_limit_preview_and_inheritance(admin_web, monkeypatch, standalone):
+    client, manager = admin_web
+    manager.settings.operator_authorized = True
+    registry = manager.registry
+    admin = registry.web.list_users()[0]
+    owner = registry.owner_for_user(admin)
+    registry.set_limit("max_active_workers", 3)
+    first, second, archived = [
+        registry.create(owner, name) for name in ("Motor Pagi", "Motor Sore", "Motor Lama")
+    ]
+    registry.archive(owner, archived["id"])
+    for account in (first, second):
+        directory = registry.runtime_directory(account)
+        directory.mkdir(parents=True, exist_ok=True)
+        write_private(directory / "http-session.json", parse_cookie_input(account["id"]))
+
+    daemon = WorkerService(manager.settings)
+    spawn = AsyncMock(return_value=SimpleNamespace(pid=1234, returncode=None))
+
+    async def dispatch(_directory, command, **_kwargs):
+        if standalone and command["action"] == "start":
+            return await daemon.handle_request(command)
+        return None
+
+    monkeypatch.setattr("app.modules.worker.supervisor.send_worker_command", dispatch)
+    monkeypatch.setattr("app.modules.worker.supervisor.asyncio.create_subprocess_exec", spawn)
+    url = f"/api/admin/users/{admin['id']}/limits"
+    assert client.get(url).json()["limits"]["worker_override"] is None
+    assert client.post(url, json={"account_limit": None, "worker_limit": 0}).status_code == 422
+    assert client.post(url, json={"account_limit": 4, "worker_limit": 1}).is_success
+    assert registry.quota(owner) == 4
+    start_url = "/api/control/run-needs"
+    assert client.post(start_url, params={"account_id": first["id"]}).is_success
+    with exclusive_lock(registry.runtime_directory(first)):
+        preview = client.get(url).json()
+    assert preview["accounts"] == [
+        {"name": "Motor Pagi", "running": True},
+        {"name": "Motor Sore", "running": False},
+    ]
+    assert preview["limits"]["worker_override"] == 1
+    blocked = client.post(start_url, params={"account_id": second["id"]})
+    assert blocked.status_code == 400 and "Batas worker pengguna" in blocked.json()["detail"]
+    assert client.post(url, json={"account_limit": None, "worker_limit": None}).is_success
+    registry.set_limit("max_active_workers", 1)
+    blocked = client.post(start_url, params={"account_id": second["id"]})
+    assert blocked.status_code == 400 and "Slot worker penuh" in blocked.json()["detail"]
+    registry.set_limit("max_active_workers", 2)
+    assert client.post(start_url, params={"account_id": second["id"]}).is_success
+    assert spawn.await_count == 2
+
+
+def test_admin_impersonation_uses_user_permissions_and_restores_admin(admin_web):
+    client, manager = admin_web
+    registry = manager.registry
+    admin = registry.web.list_users()[0]
+    member = registry.web.register("driver_preview", "driver-fixture-password")
+    url = "/api/admin/impersonate"
+    assert client.post(url, json={"user_id": admin["id"]}).status_code == 400
+    assert client.post(url, json={"user_id": member["id"]}).status_code == 400
+    registry.web.review_user(member["id"], admin["id"], approve=True)
+    with registry.db() as db:
+        db.execute("UPDATE web_users SET has_password=0 WHERE id=?", (member["id"],))
+    owner = registry.owner_for_user(member)
+    account = registry.create(owner, "Motor Lestari")
+    assert client.post(url, json={"user_id": member["id"]}).is_success
+    token = client.cookies["ojol_web_session"]
+    assert client.get("/api/auth/me").json()["user"]["id"] == member["id"]
+    assert "Masuk sebagai @driver_preview" in client.get("/").text
+    assert client.get("/api/admin/accounts").status_code == 403
+    assert client.get(f"/api/admin/users/{member['id']}/limits").status_code == 403
+    assert client.get("/api/accounts").json()["accounts"][0]["id"] == account["id"]
+    assert client.post(
+        "/api/accounts/rename", json={"name": "Motor Baru", "account_id": account["id"]}
+    ).is_success
+    assert client.post("/api/auth/setup-password", json={}).status_code == 403
+    assert client.post("/auth/impersonation/stop", follow_redirects=False).status_code == 303
+    assert registry.web.get_user_by_session(token) is None
+    assert client.get("/api/auth/me").json()["user"]["id"] == admin["id"]
+    assert client.get("/api/admin/accounts").is_success
+
+    assert client.post(url, json={"user_id": member["id"]}).is_success
+    registry.web.review_user(member["id"], admin["id"], approve=False)
+    assert client.get("/api/auth/me").status_code == 401
+    assert "Kembali ke admin" in client.get("/login").text
+    client.post("/auth/impersonation/stop", follow_redirects=False)
+    assert client.get("/api/auth/me").json()["user"]["id"] == admin["id"]
+
+
 def test_web_auth_form_redirect_and_validation_redacts_secrets(admin_web):
     client, _ = admin_web
     client.post("/api/auth/logout")

@@ -26,7 +26,7 @@ class Accounts:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS users (
                     telegram_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 1,
-                    max_accounts INTEGER, selected TEXT,
+                    max_accounts INTEGER, max_workers INTEGER, selected TEXT,
                     name TEXT, username TEXT
                 );
                 CREATE TABLE IF NOT EXISTS accounts (
@@ -36,7 +36,7 @@ class Accounts:
                 );
                 CREATE TABLE IF NOT EXISTS settings (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
             """)
-            for col in ("name TEXT", "username TEXT"):
+            for col in ("name TEXT", "username TEXT", "max_workers INTEGER"):
                 with suppress(sqlite3.OperationalError):
                     db.execute(f"ALTER TABLE users ADD COLUMN {col}")
         self.path.chmod(0o600)
@@ -230,6 +230,27 @@ class Accounts:
                 return self.quota(owner, connection)
         row = db.execute("SELECT max_accounts FROM users WHERE telegram_id=?", (owner,)).fetchone()
         return row[0] if row and row[0] is not None else self.value("max_accounts_per_user", db)
+
+    def user_limits(self, owner):
+        with self.db() as db:
+            row = db.execute(
+                "SELECT max_accounts, max_workers FROM users WHERE telegram_id=?", (owner,)
+            ).fetchone()
+            return {
+                "account_override": row[0] if row else None,
+                "worker_override": row[1] if row else None,
+                "account_default": self.value("max_accounts_per_user", db),
+                "worker_default": self.value("max_active_workers", db),
+            }
+
+    def set_user_limits(self, owner, account_limit, worker_limit):
+        with self.db() as db:
+            updated = db.execute(
+                "UPDATE users SET max_accounts=?, max_workers=? WHERE telegram_id=? AND enabled=1",
+                (account_limit, worker_limit, owner),
+            )
+            if not updated.rowcount:
+                raise ValueError("Akses pengguna belum aktif.")
 
     def set_owner_access(
         self, owner, enabled=True, maximum=None, name=None, username=None, db=None

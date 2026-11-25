@@ -26,6 +26,7 @@ class MultiAccountService:
         self.tunnel = CloudflaredTunnel()
         self.supervisor = FleetSupervisor(self)
         self.lock = asyncio.Lock()
+        self.worker_start_lock = asyncio.Lock()
         self.started = False
 
     def public_url(self):
@@ -49,6 +50,8 @@ class MultiAccountService:
             self.services[identifier] = service
         service = self.services[identifier]
         service.settings = self.registry.scoped_settings(account)
+        service.worker_start_lock = self.worker_start_lock
+        service.worker_capacity_error = lambda: self.supervisor.capacity_error(account["owner"])
         return service
 
     async def ensure_started(self, service):
