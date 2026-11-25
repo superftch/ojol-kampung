@@ -173,13 +173,23 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
         )
         assert dismiss_res.status_code == 200
 
-        # 9b. Extension zip endpoint is deprecated (410 Gone)
+        # 9b. Download extension zip endpoint
+        import io
+        import zipfile
+
         dl_res = client.get("/api/extension/download")
-        assert dl_res.status_code == 410
-        assert "deprecated" in dl_res.json()["detail"].lower()
+        assert dl_res.status_code == 200
+        assert dl_res.headers["content-type"] == "application/zip"
+        assert "kampungsebelah-extension.zip" in dl_res.headers["content-disposition"]
+        with zipfile.ZipFile(io.BytesIO(dl_res.content), "r") as zf:
+            namelist = zf.namelist()
+            assert "kampungsebelah-extension/manifest.json" in namelist
+            assert "kampungsebelah-extension/ojol.js" in namelist
+            assert "kampungsebelah-extension/mancing.js" in namelist
 
         dl_alias = client.get("/download/extension.zip")
-        assert dl_alias.status_code == 410
+        assert dl_alias.status_code == 200
+        assert dl_alias.headers["content-type"] == "application/zip"
 
         # 9c. CRX3, update.xml, and Enterprise Policy endpoints
         ext_info = client.get("/api/extension/info")

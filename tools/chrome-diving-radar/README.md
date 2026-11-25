@@ -168,17 +168,21 @@ Diving hanya dapat dimulai jika akun Anda berada di **Pulau Seberang** (`diPulau
 
 ## 🚀 Cara Memasang & Memperbarui di Chrome
 
-### Metode Rekomendasi: Distribusi CRX via Enterprise Policy (Auto-Update)
+### Metode Default: Load Unpacked (`.ZIP`)
 
-Server dashboard menyediakan distribusi `.crx` beserta manifest `update.xml` dan file policy siap pakai (`/api/extension/policy/*`):
+1. Unduh `.ZIP` dari dashboard (`/api/extension/download`), lalu ekstrak.
+2. Buka tab baru: `chrome://extensions`, aktifkan **Developer mode** di pojok kanan atas.
+3. Pilih **Load unpacked** -> pilih folder `kampungsebelah-extension` (atau klik **🔄 Reload** setelah mengganti file dengan ZIP terbaru).
 
-- **Windows**: Unduh `kampungsebelah-chrome-policy.reg` dari modal **Pasang via Policy** di dashboard, klik dua kali, lalu restart Chrome.
+### Opsi Auto-Update: Distribusi CRX via Enterprise Policy
+
+Server dashboard juga menyediakan distribusi `.crx` beserta manifest `update.xml` dan file policy siap pakai (`/api/extension/policy/*`):
+
+- **Windows**: Unduh `kampungsebelah-chrome-policy.reg` dari modal **Tutorial & Opsi CRX** di dashboard, klik dua kali, lalu restart Chrome.
 - **macOS**: Unduh `kampungsebelah-chrome-policy.mobileconfig` (atau gunakan `defaults write com.google.Chrome ExtensionInstallForcelist -array-add "<EXT_ID>;<UPDATE_XML_URL>"`), lalu restart Chrome.
 - **Linux**: Simpan `kampungsebelah-helper.json` ke `/etc/opt/chrome/policies/managed/`, lalu restart Chrome.
 
 Setiap kali `version` di `manifest.json` dinaikkan di server, Chrome akan otomatis mengunduh versi terbaru tanpa perlu ekstrak atau *Load unpacked* ulang.
-
-> **Catatan:** Distribusi manual `.ZIP` (*Load unpacked*) sudah dihentikan (*deprecated*). Gunakan distribusi CRX melalui Enterprise Policy di atas.
 
 Setelah terpasang, buka halaman game untuk memunculkan panel kontrol:
 - Untuk Auto-Ojol: `https://www.kampungsebelah.com/?narik=1` (atau buka desa langsung)

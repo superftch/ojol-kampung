@@ -12,6 +12,7 @@ from app.web.deps import WebContext, get_ctx, get_current_user, require_user
 from app.web.extension_crx import (
     EXTENSION_DIR,
     build_extension_crx3,
+    build_extension_zip,
     build_linux_policy_json,
     build_macos_mobileconfig,
     build_update_xml,
@@ -33,13 +34,20 @@ def _resolve_origin_for_request(request: Request, ctx: WebContext) -> str:
     return resolve_public_origin(str(request.base_url), headers, configured)
 
 
-@router.get("/api/extension/download", deprecated=True)
-@router.get("/download/extension.zip", deprecated=True)
+@router.get("/api/extension/download")
+@router.get("/download/extension.zip")
 async def download_extension_zip():
-    raise HTTPException(
-        410,
-        "Unduhan ekstensi versi ZIP sudah dihentikan (deprecated). "
-        "Gunakan distribusi CRX melalui Enterprise Policy.",
+    if not EXTENSION_DIR.is_dir():
+        raise HTTPException(404, "Direktori ekstensi tidak ditemukan")
+
+    content = await asyncio.to_thread(build_extension_zip, EXTENSION_DIR)
+    return Response(
+        content=content,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": 'attachment; filename="kampungsebelah-extension.zip"',
+            "Cache-Control": "no-cache",
+        },
     )
 
 
