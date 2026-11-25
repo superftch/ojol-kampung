@@ -360,6 +360,7 @@ class ControlService:
                     set_auto_flag(self.settings.runtime_dir, key, True)
             elif not auto_start:
                 set_auto_flag(self.settings.runtime_dir, "ojol", True)
+                set_auto_flag(self.settings.runtime_dir, "kerja", False)
 
             flags = auto_flags(self.settings.runtime_dir)
             is_ojol = False if needs_only else bool(flags.get("ojol"))

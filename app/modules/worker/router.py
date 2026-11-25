@@ -17,7 +17,9 @@ from app.modules.worker.schemas import (
     OjolModeChange,
     StudySubjectChange,
 )
-from app.modules.worker.settings import set_auto_flag
+from app.modules.worker.settings import auto_flags, set_auto_flag
+from app.modules.worker.status import status_record
+from app.web.dashboard_queries import dashboard_snapshot
 from app.web.deps import WebContext, get_ctx, require_user, resolve_account_service
 from app.web.payloads import read_json
 
@@ -143,7 +145,27 @@ async def toggle_auto_api(
                     set_subject(
                         cur_service.settings.runtime_dir, mode, "auto" if enabled else "dagang"
                     )
+        elif flag == "kerja":
+            if enabled:
+                flags = auto_flags(cur_service.settings.runtime_dir)
+                if flags.get("ojol"):
+                    raise HTTPException(
+                        400,
+                        "Matikan Auto Ojol terlebih dahulu sebelum mengaktifkan Auto Kerja.",
+                    )
+                status_data, _ = status_record(cur_service.settings.runtime_dir / "status.json")
+                snap = dashboard_snapshot(cur_service.settings.runtime_dir, status_data)
+                if snap.get("phase") in {"searching", "delivering", "complete"} or snap.get("trip"):
+                    raise HTTPException(
+                        400,
+                        "Selesaikan order Ojol yang sedang berjalan sebelum mengaktifkan Auto Kerja.",
+                    )
+                if not snap.get("job"):
+                    raise HTTPException(400, "Akun belum memiliki pekerjaan aktif.")
+            set_auto_flag(cur_service.settings.runtime_dir, "kerja", enabled)
         else:
+            if flag == "ojol" and enabled:
+                set_auto_flag(cur_service.settings.runtime_dir, "kerja", False)
             set_auto_flag(cur_service.settings.runtime_dir, flag, enabled)
         return {"success": True, "flag": flag, "enabled": enabled}
     except ValueError as exc:

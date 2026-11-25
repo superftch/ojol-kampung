@@ -510,6 +510,28 @@ function renderDashboard(data) {
     if (document.getElementById('autoPenampilan')) document.getElementById('autoPenampilan').checked = !!flags.penampilan;
     if (document.getElementById('autoRumah')) document.getElementById('autoRumah').checked = !!flags.rumah;
     if (document.getElementById('autoGarden')) document.getElementById('autoGarden').checked = !!(flags.kebun || flags.garden);
+    const kerjaEl = document.getElementById('autoKerja');
+    const kerjaDescEl = document.getElementById('autoKerjaDesc');
+    if (kerjaEl) {
+        const job = snap.job || null;
+        const isNgojol = ['searching', 'delivering', 'complete'].includes(snap.phase) || !!snap.trip;
+        const canWork = !flags.ojol && !isNgojol && !!job;
+        kerjaEl.checked = !!flags.kerja;
+        kerjaEl.disabled = !canWork && !flags.kerja;
+        if (kerjaDescEl) {
+            if (flags.ojol) {
+                kerjaDescEl.textContent = 'Nonaktif saat Auto Ojol menyala';
+            } else if (isNgojol) {
+                kerjaDescEl.textContent = 'Nonaktif saat sedang ngojol';
+            } else if (!job) {
+                kerjaDescEl.textContent = 'Belum punya pekerjaan aktif';
+            } else {
+                const place = job.facility || job.business || '';
+                const prof = job.profession || 'Pekerjaan aktif';
+                kerjaDescEl.textContent = place ? `Otomatis bekerja: ${prof} · ${place}` : `Otomatis bekerja: ${prof}`;
+            }
+        }
+    }
 
     if (data.study_subject && document.getElementById('studySubjectSelect')) {
         document.getElementById('studySubjectSelect').value = data.study_subject;
