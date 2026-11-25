@@ -5,8 +5,8 @@
   console.log("[DivingCompass] Content script v1.8.0 loaded");
 
   function injectMainScript() {
-    // diving-avoid.js dibaca saat tick auto-pilot, jadi urutan muat tidak penting.
-    for (const file of ["diving-avoid.js", "inject.js"]) {
+    // diving-avoid.js dan diving-human.js dibaca saat tick auto-pilot, jadi urutan muat tidak penting.
+    for (const file of ["diving-avoid.js", "diving-human.js", "inject.js"]) {
       try {
         const s = document.createElement("script");
         s.src = chrome.runtime.getURL(file);
@@ -210,7 +210,7 @@
     if (shouldChain) {
       setTimeout(() => {
         if (!isAutopilotRunning) {
-          const nextTarget = getNextNearestShell();
+          const nextTarget = getNextChainShell();
           if (nextTarget) {
             selectKerangTarget(nextTarget);
             const autoOpen = document.getElementById("ks-auto-open-check")?.checked ?? true;
@@ -223,7 +223,7 @@
             }
           }
         }
-      }, 4200);
+      }, chainGapMs());
     }
   });
 
@@ -246,7 +246,7 @@
       if (autoChain) {
         setTimeout(() => {
           if (isAutopilotRunning) return;
-          const nextTarget = getNextNearestShell();
+          const nextTarget = getNextChainShell();
           if (nextTarget) {
             selectKerangTarget(nextTarget);
             const autoOpen = document.getElementById("ks-auto-open-check")?.checked ?? true;
@@ -285,6 +285,34 @@
 
     candidates.sort((a, b) => Math.hypot(a.x - px, a.z - pz, a.d - pd) - Math.hypot(b.x - px, b.z - pz, b.d - pd));
     return candidates[0];
+  }
+
+  // Pilihan kerang untuk rantai otomatis: tidak selalu yang terdekat, dan 1-2 kerang
+  // dangkal (pasti kosong) per sesi pada urutan acak. Mode "all" tetap memakai semua kerang.
+  // Tombol "terdekat" di antarmuka tetap memakai getNextNearestShell yang deterministik.
+  const human = globalThis.__KS_DIVING_HUMAN ? globalThis.__KS_DIVING_HUMAN.createHuman() : null;
+
+  function getNextChainShell() {
+    if (!human) return getNextNearestShell();
+    const open = (k) => !openedSet.has(k.i) && !skippedSet.has(k.i);
+    let primary, shallow = [];
+    if (currentFilterMode === "langka") {
+      primary = allKerang.filter(k => open(k) && k.kategori === "langka");
+      shallow = allKerang.filter(k => open(k) && k.kategori === "kosong");
+    } else if (currentFilterMode === "potensial") {
+      primary = allKerang.filter(k => open(k) && (k.kategori === "biasa" || k.kategori === "langka"));
+      shallow = allKerang.filter(k => open(k) && k.kategori === "kosong");
+    } else {
+      primary = allKerang.filter(open);
+    }
+    return human.pickNext({
+      primary, shallow,
+      player: { x: livePlayer.x, z: livePlayer.z, d: livePlayer.kedalaman }
+    });
+  }
+
+  function chainGapMs() {
+    return human ? human.chainGapMs() : 4200;
   }
 
   // Helper: Membuat HUD dapat digeser secara bebas (Free Move / Draggable) dan posisinya disimpan

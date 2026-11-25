@@ -106,6 +106,12 @@ Ekstensi Chrome multi-fitur untuk minigame dan aktivitas di KampungSebelah:
      - Kerang tersembunyi di dalam/di balik batu: navigator mencari titik berdiri di luar zona batu yang masih dalam jangkauan buka (≤ 2,8 m), lalu menuju titik itu, bukan ke pusat kerang. Ini mencegah berputar-putar di atas batu. Bila tidak ada titik layak, jarak aman dilonggarkan bertahap, dan setelah 3 kali 9 detik tanpa mendekat ≥ 1 m auto-pilot berhenti dengan alasan `no_progress`.
      - Judul pill HUD berubah menjadi "🪨 Menghindari batu" atau "🛟 Lepas dari batu".
      - Belum diukur live: rasio laju naik/turun terhadap laju horizontal (diasumsikan 0.45). Dasar laut tidak memblokir pemain, hanya mengangkatnya.
+   - **🧍 Mode Manusia** (`diving-human.js`, v2.3.0): supaya rantai auto-pilot tidak berpola mesin. Ini meniru pola, bukan jaminan lolos deteksi: apa yang diperiksa server belum terbukti. Posisi 48 kerang sama untuk semua pemain pada hari yang sama; urutan "terdekat dulu" hanya pilihan ekstensi.
+     - **Pilihan kerang** (rantai otomatis saja; tombol "terdekat" di HUD tetap deterministik): acak di antara 3 kerang terdekat dengan peluang 60/25/15 %. Tiap sesi membuka 1-2 kerang dangkal (pasti kosong) terdekat, di posisi acak di antara kerang utama. Diam > 35 menit dianggap sesi baru. Tidak ada batas kerang per sesi atau per hari.
+     - **Jeda**: 0,4-2,2 detik setelah tiba sebelum membuka kerang (sebelumnya tetap 300 ms), 2,5-7 detik antar kerang (sebelumnya tetap 4200 ms), dan jeda 0,6-2,2 detik di jalan tiap 8-25 detik sambil menoleh.
+     - **Jalur**: arah bergoyang halus (maks. 0,1 rad) dan belok dibatasi 3 rad/detik. Semua ini hanya saat jalur tenang: tidak sedang menghindar atau pulih, tidak ada batu dalam 8 m, dan jarak ke kerang > 6 m. Saat menghindar batu, arah navigator dipakai apa adanya.
+     - **Aman terhadap anti-nyangkut**: jeda memanggil `hold()` di navigator, jadi diam sengaja tidak dihitung nyangkut maupun tanpa kemajuan.
+     - Batas: game tidak punya aturan hiu di ekstensi ini. Hiu berpatroli di kedalaman > 6 m dan kerang dangkal bisa berada di sana; tertangkap berarti rawat inap 12 jam.
 4. **Auto Buka Kerang & Auto-Chain Loop**:
    - Otomatis membuka kerang saat tiba ($\le 2,8$ meter), menandai sudah dibuka, lalu berlanjut ke kerang berpotensi terdekat berikutnya.
 5. **Emergency Stop (Override)**:

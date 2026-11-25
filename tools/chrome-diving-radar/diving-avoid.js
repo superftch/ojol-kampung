@@ -356,7 +356,15 @@
       };
     }
 
-    return { step, reset, get state() { return st; } };
+    // Dipanggil tiap tick saat karakter sengaja diam (jeda "manusia"): posisi yang tidak
+    // berubah bukan nyangkut, dan waktu jeda tidak dihitung sebagai tanpa kemajuan.
+    function hold(now) {
+      if (st.lastStepAt && st.bestAt) st.bestAt += Math.max(0, now - st.lastStepAt);
+      st.lastStepAt = now;
+      st.sampleAt = 0;
+    }
+
+    return { step, hold, reset, get state() { return st; } };
   }
 
   return {

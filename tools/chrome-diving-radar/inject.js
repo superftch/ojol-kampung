@@ -518,8 +518,32 @@
     return navigator;
   }
 
+  // Perilaku ala manusia (diving-human.js): goyang arah, jeda di jalan, jeda sebelum buka.
+  let human = null;
+  let motion = null;
+
+  function getHuman() {
+    if (!human && window.__KS_DIVING_HUMAN) human = window.__KS_DIVING_HUMAN.createHuman();
+    return human;
+  }
+
   function resetNav() {
     if (navigator) navigator.reset();
+    motion = null;
+  }
+
+  // Jarak permukaan batu terdekat dari pemain (meter); Infinity bila tidak ada batu.
+  function nearestRockGap(sc, px, py, pz) {
+    const rocks = sc.dunia && sc.dunia.batuBesar;
+    if (!Array.isArray(rocks)) return Infinity;
+    let best = Infinity;
+    for (let i = 0; i < rocks.length; i++) {
+      const r = rocks[i];
+      if (!r || typeof r.x !== "number") continue;
+      const g = Math.hypot(px - r.x, py - r.y, pz - r.z) - r.r;
+      if (g < best) best = g;
+    }
+    return best;
   }
 
   function reportAvoid(mode) {
@@ -610,7 +634,7 @@
           autoChain: autopilot.autoChain
         }
       }));
-    }, 300);
+    }, (getHuman() ? getHuman().arrivalDelayMs() : 300));
   }
 
   // Loop Navigasi Auto-Pilot (50ms)
@@ -645,6 +669,22 @@
       }
 
       const nv = getNavigator();
+      const hm = getHuman();
+      if (hm && !motion) motion = hm.createMotion();
+
+      // Jeda "manusia" di jalan: diam sebentar sambil menoleh. Navigator diberi tahu supaya
+      // diam ini tidak dihitung nyangkut atau tanpa kemajuan.
+      if (nv && motion && motion.paused(performance.now())) {
+        const nowH = performance.now();
+        nv.hold(nowH);
+        const lookYaw = motion.hold(nowH);
+        sc.yaw = lookYaw;
+        sc.hadap = lookYaw;
+        sc.setGerak(0, 0);
+        sc.setTegak(0);
+        reportAvoid("none");
+        return;
+      }
       if (!nv) {
         // Modul penghindar belum dimuat: berenang lurus seperti semula.
         sc.yaw = Math.atan2(dx, dz);
@@ -675,8 +715,33 @@
       }
 
       reportAvoid(out.mode);
-      sc.yaw = out.yaw;
-      sc.hadap = out.yaw;
+
+      // Arah ala manusia hanya saat jalur tenang: bukan menghindar/pulih, tidak ada batu
+      // dalam 8 m, dan tidak sedang dalam pemulihan nyangkut. Selain itu arah navigator
+      // dipakai apa adanya (perilaku keselamatan tidak diubah).
+      let yaw = out.yaw;
+      if (motion) {
+        const nowM = performance.now();
+        const calm = (out.mode === "none" || out.mode === "direct") &&
+          nv.state.stuckLevel === 0 && nowM >= nv.state.recoverUntil &&
+          nearestRockGap(sc, px, py, pz) > 8;
+        const mv = motion.step({
+          now: nowM,
+          desiredYaw: out.yaw,
+          calm,
+          canPause: calm,
+          nearTarget: dist3D < 6
+        });
+        if (mv.startPause) {
+          nv.hold(nowM);
+          sc.setGerak(0, 0);
+          sc.setTegak(0);
+          return;
+        }
+        yaw = mv.yaw;
+      }
+      sc.yaw = yaw;
+      sc.hadap = yaw;
 
       // Berenang maju + atur kedalaman
       sc.setGerak(out.gerak.x, out.gerak.y);
