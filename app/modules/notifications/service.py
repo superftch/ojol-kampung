@@ -117,6 +117,22 @@ def event_text(event, data):
         )
     if event == "bangun":
         return "☀️ Karakter sudah bangun. Bot melanjutkan aktivitas sesuai pengaturan Auto."
+    if event == "ojol_jitter_mulai":
+        until_text = data.get("until")
+        try:
+            until_wib = datetime.fromisoformat(str(until_text)).astimezone(WIB)
+            until_str = f"{until_wib:%H:%M} WIB"
+        except (TypeError, ValueError):
+            until_str = str(until_text or "-")
+        return (
+            f"⏸️ Jitter random Auto Ojol ({data.get('label', '-')})\n\n"
+            f"Akun dibuat offline sementara sampai {until_str}. Status worker tetap berjalan."
+        )
+    if event == "ojol_jitter_selesai":
+        return (
+            f"▶️ Jitter random Auto Ojol ({data.get('label', '-')}) selesai. "
+            "Bot melanjutkan aktivitas Ojol."
+        )
     return None
 
 

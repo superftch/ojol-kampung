@@ -11,7 +11,9 @@ from typing import TYPE_CHECKING
 from app.core.locks import running
 from app.core.storage import status_record
 from app.modules.notifications.service import queue_error, queue_notice
+from app.modules.worker.capacity import WorkerCapacityError, worker_capacity_error
 from app.modules.worker.maintenance import held_window
+from app.modules.worker.ojol_jitter import is_ojol_jitter_active
 from app.modules.worker.service import WORKER_SHUTDOWN
 from app.modules.worker.settings import auto_flags
 
@@ -26,14 +28,20 @@ class FleetSupervisor:
         self.tasks: list[asyncio.Task[None]] = []
         self._last_presence_mono = 0.0
 
-    def active_workers(self) -> int:
-        return sum(
-            bool(
-                (service.worker and service.worker.returncode is None)
-                or running(service.settings.runtime_dir)
-            )
-            for service in self.fleet.services.values()
+    def account_running(self, account) -> bool:
+        service = self.fleet.services.get(account["id"])
+        process = service.worker if service else None
+        directory = self.fleet.registry.runtime_directory(account)
+        return bool(
+            (process and process.returncode is None)
+            or ((directory / "run.lock").is_file() and running(directory))
         )
+
+    def active_workers(self, owner=None) -> int:
+        return sum(self.account_running(account) for account in self.fleet.registry.list(owner))
+
+    def capacity_error(self, owner):
+        return worker_capacity_error(self.fleet.registry, owner, self.active_workers)
 
     async def resume_workers(self) -> None:
         if (
@@ -61,8 +69,8 @@ class FleetSupervisor:
                 ):
                     service.auto_start_pending = False
                     continue
-                if self.active_workers() >= self.fleet.registry.value("max_active_workers"):
-                    return
+                if self.capacity_error(owners[service.account_id]):
+                    continue
                 service.auto_start_pending = False
                 action = "Tekan Import Cookie, lalu Jalankan Ojol."
                 try:
@@ -80,6 +88,8 @@ class FleetSupervisor:
                         else "Minta admin memeriksa izin operator dan status server, lalu tekan Jalankan Kebutuhan."
                     )
                     await service.command("run", auto_start=True)
+                except WorkerCapacityError:
+                    continue
                 except Exception as exc:
                     queue_error(
                         service.settings,
@@ -102,6 +112,8 @@ class FleetSupervisor:
             service = self.fleet.service(row["id"])
             directory = service.settings.runtime_dir
             if not (directory / "http-session.json").is_file():
+                continue
+            if is_ojol_jitter_active(directory):
                 continue
             _data, status_updated = status_record(directory / "status.json")
             _online_data, online_updated = status_record(directory / "online-status.json")

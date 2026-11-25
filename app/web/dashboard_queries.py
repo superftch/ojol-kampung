@@ -563,7 +563,7 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
         total_yesterday_income += acc_yest_income
         total_trips += acc_trips
         active_workers += int(is_active)
-        online_accounts += int(is_online or is_active)
+        online_accounts += int(is_online)
 
         acc_flags = auto_flags(r_dir) if r_dir else {}
         accounts_payload.append(

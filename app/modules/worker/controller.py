@@ -22,6 +22,12 @@ from app.modules.ledger.reconciliation import reconcile, wait_until_resolved
 from app.modules.ledger.repository import load_journal_snapshot
 from app.modules.notifications.service import event_text, queue_error, queue_notice, redact
 from app.modules.worker.maintenance import SCHEDULE_FILE, held_window
+from app.modules.worker.ojol_jitter import (
+    active_ojol_jitter,
+    finish_ojol_jitter,
+    mark_account_offline_for_jitter,
+    maybe_start_ojol_jitter,
+)
 from app.modules.worker.planner import is_sleeping, next_step, select_need, select_shop
 from app.modules.worker.settings import auto_flags, set_auto_flag
 
@@ -297,6 +303,64 @@ class Controller:
             )
             self.active_trip = None
             self.busy_since = None
+
+    async def run_ojol_jitter_break(self, jitter: dict) -> None:
+        """Hold Auto Ojol in a random offline break while keeping the worker active."""
+        until = jitter["until"]
+        kind = jitter["kind"]
+        label = jitter["label"]
+        mark_account_offline_for_jitter(self.settings.runtime_dir, kind=kind, until=until)
+        self.stage = "ojol.jitter_offline"
+        self.wait_until = until.isoformat()
+        self.report(
+            "ojol_jitter_mulai",
+            kind=kind,
+            label=label,
+            until=until.isoformat(),
+            count_60m=jitter.get("count_60m", 0),
+            count_30m=jitter.get("count_30m", 0),
+        )
+        last_status_touch = time.monotonic()
+        wake_file = self.settings.runtime_dir / "WAKE"
+        try:
+            while True:
+                self.check_cancel()
+                remaining = (until - now()).total_seconds()
+                if remaining <= 0:
+                    finish_ojol_jitter(self.settings.runtime_dir)
+                    self.wait_until = None
+                    self.report("ojol_jitter_selesai", kind=kind, label=label)
+                    return
+                if wake_file.is_file():
+                    with contextlib.suppress(OSError):
+                        wake_file.unlink(missing_ok=True)
+                    finish_ojol_jitter(self.settings.runtime_dir)
+                    self.wait_until = None
+                    self.report("ojol_jitter_selesai", kind=kind, label=label)
+                    return
+                window = held_window(self.maintenance_file)
+                if window is not None and getattr(window, "target", "all") == "all":
+                    await self.wait_for_maintenance()
+                    self.stage = "ojol.jitter_offline"
+                    self.wait_until = until.isoformat()
+                if auto_flags(self.settings.runtime_dir).get("ojol") is not True:
+                    finish_ojol_jitter(self.settings.runtime_dir)
+                    self.wait_until = None
+                    return
+                if time.monotonic() - last_status_touch >= 30:
+                    self.report(
+                        "ojol_jitter",
+                        kind=kind,
+                        label=label,
+                        until=until.isoformat(),
+                    )
+                    last_status_touch = time.monotonic()
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(
+                        self.cancel.wait(), timeout=min(0.25, max(0.0, remaining))
+                    )
+        finally:
+            self.wait_until = None
 
     async def purchase(self, before, resource):
         self.check_cancel()
@@ -708,6 +772,13 @@ class Controller:
             await self.wait_for_maintenance()
             self.check_cancel()
             flags = auto_flags(self.settings.runtime_dir)
+            if (
+                not dry_run
+                and flags.get("ojol") is True
+                and (ongoing_jitter := active_ojol_jitter(self.settings.runtime_dir))
+            ):
+                await self.run_ojol_jitter_break(ongoing_jitter)
+                continue
             previous = self.state
             previous_received_at = self.snapshot_received_at
             if not any(flags.values()) and (
@@ -879,6 +950,19 @@ class Controller:
                 if flags.get("ojol") and self.handle_ojol_failure(step.reason):
                     continue
                 raise RuntimeError(step.reason)
+            if (
+                not dry_run
+                and flags.get("ojol") is True
+                and not is_ojol_maint
+                and self.observed_state.phase == "idle"
+                and not is_sleeping(self.observed_state)
+                and not getattr(self.observed_state, "ojol_resting", False)
+                and not getattr(self.observed_state, "ojol_shift_done", False)
+                and not getattr(self.observed_state, "ojol_maintenance", False)
+                and held_window(self.maintenance_file) is None
+            ) and (jitter := maybe_start_ojol_jitter(self.settings.runtime_dir)):
+                await self.run_ojol_jitter_break(jitter)
+                continue
             if self.observed_state.phase == "idle" and (
                 step.action in {"search", "take"}
                 or (step.action == "wait" and step.resource == "fuel")

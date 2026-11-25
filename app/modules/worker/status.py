@@ -22,6 +22,7 @@ from app.modules.ledger.finance import WIB
 from app.modules.ledger.repository import Journal, unresolved_action
 from app.modules.notifications.service import redact
 from app.modules.worker.maintenance import held_window, read_window
+from app.modules.worker.ojol_jitter import active_ojol_jitter
 from app.modules.worker.settings import AUTO_LABELS, auto_flags
 
 
@@ -167,6 +168,12 @@ def format_ojol_status(
         )
     else:
         lines.extend([trip, "🕒 Update terakhir: belum ada data"])
+
+    if active and (active_jitter := active_ojol_jitter(directory, current_time=moment)):
+        until_wib = active_jitter["until"].astimezone(WIB)
+        lines.append(
+            f"⏸️ Jitter Offline Ojol • {active_jitter['label']} (sampai {until_wib:%H:%M} WIB) · worker tetap aktif"
+        )
 
     if data.get("event") in {"rekonsiliasi", "rekonsiliasi_otomatis"} and (active or starting):
         lines.append("Bot sedang mencocokkan hasil aksi terakhir dengan game.")
@@ -496,12 +503,16 @@ def build_account_summary(
         elif observed:
             rem = max(0, rem - int((current_time() - observed).total_seconds()))
 
+    active_jitter = active_ojol_jitter(directory, current_time=current_time()) if active else None
+
     if not has_cookie:
         status_text, icon = "Belum hubungkan cookie", "⚪"
     elif not cookie_valid:
         status_text, icon = "Sesi kedaluwarsa", "⚠️"
     elif active:
-        if phase == "delivering":
+        if active_jitter:
+            status_text = f"Jitter Ojol ({active_jitter['label']}) · Akun Offline"
+        elif phase == "delivering":
             time_str = f" ({rem // 60}:{rem % 60:02d})" if rem is not None else ""
             status_text = f"Mengantar order{time_str}"
         elif phase == "searching":
@@ -559,7 +570,7 @@ def build_account_summary(
         "data": state.get("data"),
         "shift_done": bool(state.get("ojol_shift_done")),
         "hours_left": state.get("ojol_hours_left"),
-        "online": is_online or active,
+        "online": False if active_jitter else (is_online or active),
         "online_updated": (
             datetime.fromtimestamp(online_updated / 1e9, tz=UTC).isoformat()
             if online_updated
