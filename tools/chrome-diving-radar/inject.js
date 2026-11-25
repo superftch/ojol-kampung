@@ -565,8 +565,10 @@
     }));
   }
 
-  // Keyboard cancel
+  // Keyboard cancel. Pintasan dengan Cmd/Ctrl/Alt (mis. Cmd+Opt+Panah untuk pindah tab)
+  // bukan kemudi manual, jadi tidak membatalkan auto-pilot.
   window.addEventListener("keydown", (e) => {
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
     if (autopilot.active && ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) {
       stopAutopilot("user_input");
     }

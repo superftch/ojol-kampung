@@ -241,27 +241,55 @@ describe("Diving navigator (kerang tersembunyi di batu)", () => {
     }
   });
 
-  it("nyangkut: pemulihan terjadwal lalu berhenti bila posisi tak berubah", () => {
+  it("nyangkut terus: pemulihan berulang tanpa berhenti 'stuck'; hanya watchdog target mustahil yang berhenti", () => {
     const nav = avoid.createNavigator();
     const tgt = { i: 2, x: 0, z: 40, d: 10 };
     const pos = { x: 0, y: -10.35, z: 0 };
-    let stop = null, recovered = false;
-    for (let t = 0; t < 60000 && !stop; t += 50) {
+    let stop = null, recovered = false, stopAt = 0;
+    for (let t = 0; t < 120000 && !stop; t += 50) {
       const out = nav.step({ now: t + 1, pos, target: tgt, rocks: [] });
       if (out.mode === "recover") recovered = true;
-      stop = out.stop;
+      stop = out.stop; stopAt = t;
     }
     assert.equal(recovered, true);
-    assert.ok(stop === "stuck" || stop === "no_progress");
+    assert.equal(stop, "no_progress");
+    assert.ok(stopAt >= 30000, `berhenti terlalu cepat: ${stopAt} ms`);
+  });
+
+  it("tab di latar belakang (tick jarang, posisi diam): tidak dianggap nyangkut dan tidak berhenti", () => {
+    const nav = avoid.createNavigator();
+    const tgt = { i: 3, x: 0, z: 40, d: 10 };
+    const pos = { x: 0, y: -10.35, z: 0 };
+    for (let k = 0; k < 200; k++) {
+      const out = nav.step({ now: 1 + k * 1000, pos, target: tgt, rocks: [] });
+      assert.equal(out.stop, null, `berhenti di tick ${k}`);
+      assert.notEqual(out.mode, "recover");
+    }
+    assert.equal(nav.state.stuckLevel, 0);
+  });
+
+  it("berenang pelan tapi maju: penghitung nyangkut tidak menumpuk sampai berhenti", () => {
+    const nav = avoid.createNavigator();
+    const tgt = { i: 4, x: 0, z: 400, d: 10 };
+    const pos = { x: 0, y: -10.35, z: 0 };
+    let stop = null;
+    for (let t = 0; t < 120000 && !stop; t += 50) {
+      pos.z += 0.5 * 0.05 * 1.6; // 0.8 m/s: >0.35 m per 700 ms, <1.05 m
+      const out = nav.step({ now: t + 1, pos, target: tgt, rocks: [] });
+      stop = out.stop;
+    }
+    assert.equal(stop, null);
+    assert.equal(nav.state.stuckLevel, 0);
   });
 
   it("ganti target mereset status navigator", () => {
     const nav = avoid.createNavigator();
     const pos = { x: 0, y: -10, z: 0 };
-    nav.step({ now: 1, pos, target: { i: 1, x: 0, z: 30, d: 9.65 }, rocks: [] });
-    nav.step({ now: 900, pos, target: { i: 1, x: 0, z: 30, d: 9.65 }, rocks: [] });
+    for (let t = 1; t <= 900; t += 50) {
+      nav.step({ now: t, pos, target: { i: 1, x: 0, z: 30, d: 9.65 }, rocks: [] });
+    }
     assert.ok(nav.state.stuckLevel >= 1);
-    nav.step({ now: 950, pos, target: { i: 2, x: 5, z: 30, d: 9.65 }, rocks: [] });
+    nav.step({ now: 951, pos, target: { i: 2, x: 5, z: 30, d: 9.65 }, rocks: [] });
     assert.equal(nav.state.stuckLevel, 0);
   });
 });

@@ -225,8 +225,9 @@
     nearDist: 8,           // di bawah jarak ini margin diperkecil
     stuckWindowMs: 700,
     stuckMinMove: 0.35,
-    stuckMaxLevel: 5,
-    noProgressMs: 9000,    // tidak mendekat >= noProgressGain selama ini -> naik tingkat pelonggaran
+    stuckMaxLevel: 5,      // batas tingkat pemulihan (tidak menghentikan auto-pilot)
+    gapMs: 500,            // jeda antar tick di atas ini dianggap tab di latar belakang
+    noProgressMs: 12000,    // tidak mendekat >= noProgressGain selama ini -> naik tingkat pelonggaran
     noProgressGain: 1.0,
     maxRelax: 3
   };
@@ -236,7 +237,7 @@
    * pemulihan, dan watchdog kemajuan. `step()` dipanggil tiap tick (50 ms).
    * Hasil: { yaw, tegak, gerak: {x,y}, mode, stop }
    *   mode: none | avoid | blocked | recover | direct
-   *   stop: null | "stuck" | "no_progress"
+   *   stop: null | "no_progress" (hanya bila target tidak mendekat lama)
    * Tingkat pelonggaran (relax): 0 normal, 1 margin kecil, 2 berenang lurus (tabrakan
    * game hanya menggeser pemain di permukaan batu), 3 berhenti "no_progress".
    */
@@ -248,6 +249,7 @@
         targetId: null, wp: undefined,
         prevOffset: 0,
         sampleAt: 0, sx: 0, sy: 0, sz: 0,
+        lastStepAt: 0,
         stuckLevel: 0, recoverUntil: 0, recoverStart: 0, recoverSide: 1,
         bestDist: Infinity, bestAt: 0, relax: 0
       };
@@ -269,6 +271,15 @@
         reset();
         st.targetId = target.i;
       }
+
+      // Jeda panjang antar tick = tab di latar belakang (timer ditahan, game berhenti
+      // menggerakkan karakter). Posisi yang diam saat itu bukan nyangkut: ukur ulang.
+      if (st.lastStepAt && now - st.lastStepAt > nc.gapMs) {
+        st.sampleAt = 0;
+        st.bestAt = 0;
+        st.recoverUntil = 0;
+      }
+      st.lastStepAt = now;
 
       // Watchdog kemajuan: tidak mendekat -> longgarkan, akhirnya berhenti (oksigen terbatas).
       if (st.bestAt === 0 || dist3d < st.bestDist - nc.noProgressGain) {
@@ -300,15 +311,14 @@
       } else if (now - st.sampleAt >= nc.stuckWindowMs) {
         const moved = Math.hypot(pos.x - st.sx, pos.y - st.sy, pos.z - st.sz);
         if (moved < nc.stuckMinMove) {
-          st.stuckLevel++;
-          if (st.stuckLevel > nc.stuckMaxLevel) {
-            return { yaw: bearing, tegak: 0, gerak: { x: 0, y: 0 }, mode: "none", stop: "stuck", relax: st.relax };
-          }
+          // Tidak pernah berhenti sendiri karena nyangkut: pemulihan makin lama dan
+          // berganti sisi. Yang berhenti hanya watchdog kemajuan (target mustahil).
+          st.stuckLevel = Math.min(st.stuckLevel + 1, nc.stuckMaxLevel);
           st.recoverSide = st.recoverSide > 0 ? -1 : 1;
           st.prevOffset = st.recoverSide * 0.8;
           st.recoverStart = now;
-          st.recoverUntil = now + 1400;
-        } else if (moved > nc.stuckMinMove * 3) {
+          st.recoverUntil = now + 1400 + 400 * (st.stuckLevel - 1);
+        } else {
           st.stuckLevel = 0;
         }
         st.sampleAt = now; st.sx = pos.x; st.sy = pos.y; st.sz = pos.z;
