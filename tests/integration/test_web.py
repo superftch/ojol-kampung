@@ -1134,6 +1134,90 @@ def test_web_dashboard_study_history(admin_web):
     assert "Riwayat Belajar Lengkap" in html_res.text
 
 
+def test_web_dashboard_study_history_preserves_historical_levels(admin_web):
+    import json
+    from datetime import UTC, datetime, timedelta
+
+    from app.modules.gameplay.study import save_skills
+    from app.modules.ledger.repository import Journal
+
+    client, manager = admin_web
+    create_res = client.post("/api/accounts/create", json={"name": "Akun Dagang Lv5"})
+    assert create_res.status_code == 200
+    account = create_res.json()["account"]
+
+    r_dir = manager.registry.scoped_settings(account).runtime_dir
+    r_dir.mkdir(parents=True, exist_ok=True)
+    save_skills(
+        r_dir,
+        [{"id": "dagang", "name": "Dagang", "level": 5, "next": {"level": 6, "library": False}}],
+    )
+
+    now_utc = datetime.now(UTC)
+    j = Journal(r_dir)
+    with j.db:
+        j.db.execute(
+            "INSERT INTO runs(id,started,outcome,settings) VALUES (1, ?, 'ok', '{}')",
+            (now_utc.isoformat(),),
+        )
+        # 3 sesi dagang berturut-turut tanpa skill_level eksplisit (legacy), plus 1 sesi dengan skill_level eksplisit
+        sessions_spec = [
+            (10, 11, "perpus", "Perpustakaan desa", "0", 3, None, timedelta(days=2)),
+            (20, 21, "kuliah", "Universitas", "4000", 5, None, timedelta(days=1)),
+            (30, 31, "perpus", "Perpustakaan desa", "0", 3, None, timedelta(hours=1)),
+        ]
+        for st_id, qz_id, mode, shop, price, total, explicit_lvl, age in sessions_spec:
+            visit_id = f"visit-{st_id}"
+            j.db.execute(
+                "INSERT INTO actions(id,run_id,created,kind,status,before_state,payload,after_state) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    st_id,
+                    1,
+                    (now_utc - age).isoformat(),
+                    "study",
+                    "verified",
+                    "{}",
+                    json.dumps(
+                        {
+                            "mode": mode,
+                            "track": "dagang",
+                            "shop": shop,
+                            "product": {"name": mode, "price": price},
+                            "receipt": {"id": visit_id},
+                        }
+                    ),
+                    "{}",
+                ),
+            )
+            qz_payload = {
+                "mode": mode,
+                "track": "dagang",
+                "visit_id": visit_id,
+                "receipt": {"benar": total, "total": total, "bonus": 1},
+            }
+            if explicit_lvl is not None:
+                qz_payload["skill_level"] = explicit_lvl
+            j.db.execute(
+                "INSERT INTO actions(id,run_id,created,kind,status,before_state,payload,after_state) VALUES (?,?,?,?,?,?,?,?)",
+                (
+                    qz_id,
+                    1,
+                    (now_utc - age + timedelta(minutes=5)).isoformat(),
+                    "study_quiz",
+                    "verified",
+                    "{}",
+                    json.dumps(qz_payload),
+                    "{}",
+                ),
+            )
+    j.close()
+
+    dash_res = client.get("/api/dashboard")
+    assert dash_res.status_code == 200
+    history = dash_res.json()["study_history"]
+    assert [item["level_display"] for item in history] == ["Lv. 5", "Lv. 4", "Lv. 3"]
+
+
 def test_accounts_and_dashboard_include_auto_ojol_state_and_toggle(admin_web):
     client, _manager = admin_web
     create_res = client.post("/api/accounts/create", json={"name": "Akun State Ojol"})

@@ -369,3 +369,39 @@ async def test_run_learning_auto_mode_defers_when_all_tracks_max(settings, state
         c.state = state
         assert not await run_learning(c)
         ui.study_start.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_run_learning_records_updated_skill_level_in_quiz_payload(settings, state):
+    from app.modules.gameplay.study import save_skills
+
+    set_subject(settings.runtime_dir, "perpus", "administrasi")
+    set_auto_flag(settings.runtime_dir, "perpus", True)
+    ui, status, _ = study_ui(state, "perpus", quiz_available=True)
+    status["tracks"] = [
+        {"id": "administrasi", "level": 2, "next": {"level": 3, "library": True}, "pending": None}
+    ]
+
+    async def snapshot_after_quiz():
+        save_skills(
+            settings.runtime_dir,
+            [
+                {
+                    "id": "administrasi",
+                    "level": 3,
+                    "next": {"level": 4, "library": True},
+                    "pending": None,
+                }
+            ],
+        )
+        return state
+
+    ui.snapshot = AsyncMock(side_effect=snapshot_after_quiz)
+    with closing(Journal(settings.runtime_dir)) as journal:
+        c = Controller(ui, settings, journal, journal.start(settings))
+        c.state = state
+        c.wait = AsyncMock()
+        assert await run_learning(c)
+        action = journal.history()["actions"][0]
+        assert action["kind"] == "study_quiz"
+        assert json.loads(action["payload"])["skill_level"] == 3

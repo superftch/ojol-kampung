@@ -245,11 +245,18 @@ def get_account_study_history(directory: Path | None, limit: int = 50) -> list[d
                     else (Decimal(0) if mode == "perpus" else Decimal(4000))
                 )
                 created_raw = matching_quiz["created"] if matching_quiz else st["created"]
-                cur_level = current_skills.get(track, {}).get("level")
                 if matching_quiz:
-                    skill_gain = _format_study_gain(matching_quiz["payload"].get("receipt") or {})
+                    qz_payload = matching_quiz["payload"]
+                    qz_receipt = qz_payload.get("receipt") or {}
+                    recorded_level = qz_payload.get("skill_level")
+                    if recorded_level is None:
+                        recorded_level = st_payload.get("skill_level")
+                    bonus = _safe_int(qz_receipt.get("bonus"), 0)
+                    skill_gain = _format_study_gain(qz_receipt)
                     status_text = "Selesai"
                 else:
+                    recorded_level = st_payload.get("skill_level")
+                    bonus = 0
                     skill_gain = "Kunjungan terdaftar (menunggu kuis)"
                     status_text = "Menunggu kuis"
 
@@ -261,7 +268,8 @@ def get_account_study_history(directory: Path | None, limit: int = 50) -> list[d
                         shop=shop,
                         track=track,
                         cost_num=cost_num,
-                        cur_level=cur_level,
+                        recorded_level=recorded_level,
+                        bonus=bonus,
                         skill_gain=skill_gain,
                         status_text=status_text,
                     )
@@ -271,13 +279,13 @@ def get_account_study_history(directory: Path | None, limit: int = 50) -> list[d
                 if qz["id"] in matched_quiz_ids:
                     continue
                 qz_payload = qz["payload"]
+                qz_receipt = qz_payload.get("receipt") or {}
                 mode = qz_payload.get("mode") or "perpus"
                 track = qz_payload.get("track") or "dagang"
                 shop = qz_payload.get("shop") or (
                     "Perpustakaan Desa" if mode == "perpus" else "Universitas Terbuka"
                 )
                 cost_num = Decimal(0) if mode == "perpus" else Decimal(4000)
-                cur_level = current_skills.get(track, {}).get("level")
                 sessions.append(
                     _study_session_entry(
                         entry_id=f"quiz_{qz['id']}",
@@ -286,8 +294,9 @@ def get_account_study_history(directory: Path | None, limit: int = 50) -> list[d
                         shop=shop,
                         track=track,
                         cost_num=cost_num,
-                        cur_level=cur_level,
-                        skill_gain=_format_study_gain(qz_payload.get("receipt") or {}),
+                        recorded_level=qz_payload.get("skill_level"),
+                        bonus=_safe_int(qz_receipt.get("bonus"), 0),
+                        skill_gain=_format_study_gain(qz_receipt),
                         status_text="Selesai",
                     )
                 )
@@ -312,13 +321,14 @@ def get_account_study_history(directory: Path | None, limit: int = 50) -> list[d
                     track = edata.get("track") or "dagang"
                     cost_val = parse_coins(edata.get("cost", 0))
                     shop = "Perpustakaan Desa" if mode == "perpus" else "Universitas Terbuka"
-                    cur_level = current_skills.get(track, {}).get("level")
                     if erow["event"] == "kuis_belajar_selesai":
                         gain = _format_study_gain(edata)
                         st_text = "Selesai"
+                        bonus = _safe_int(edata.get("bonus"), 0)
                     else:
                         gain = "Kunjungan dimulai"
                         st_text = "Menunggu kuis"
+                        bonus = 0
                     sessions.append(
                         _study_session_entry(
                             entry_id=f"event_{erow['id']}",
@@ -327,7 +337,8 @@ def get_account_study_history(directory: Path | None, limit: int = 50) -> list[d
                             shop=shop,
                             track=track,
                             cost_num=cost_val,
-                            cur_level=cur_level,
+                            recorded_level=edata.get("skill_level"),
+                            bonus=bonus,
                             skill_gain=gain,
                             status_text=st_text,
                         )
@@ -336,7 +347,42 @@ def get_account_study_history(directory: Path | None, limit: int = 50) -> list[d
         return []
 
     sessions.sort(key=lambda item: item.get("created") or "", reverse=True)
+    _resolve_study_levels(sessions, current_skills)
     return sessions[:limit]
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    if isinstance(value, bool):
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_study_levels(
+    sessions: list[dict[str, Any]],
+    current_skills: dict[str, dict[str, Any]],
+) -> None:
+    """Resolve historical skill levels per track from recorded payloads or reverse-walk."""
+    inferred_by_track: dict[str, int] = {
+        track_id: skill["level"]
+        for track_id, skill in current_skills.items()
+        if isinstance(skill.get("level"), int) and not isinstance(skill.get("level"), bool)
+    }
+    for item in sessions:
+        track = item.get("track_id") or ""
+        recorded = item.pop("_recorded_level", None)
+        bonus = item.pop("_bonus", 0)
+        if isinstance(recorded, int) and not isinstance(recorded, bool):
+            level: int | None = recorded
+            inferred_by_track[track] = max(0, recorded - bonus) if bonus > 0 else recorded
+        else:
+            level = inferred_by_track.get(track)
+            if level is not None and bonus > 0:
+                inferred_by_track[track] = max(0, level - bonus)
+        item["skill_level"] = level
+        item["level_display"] = f"Lv. {level}" if level is not None else ""
 
 
 def _study_session_entry(
@@ -347,7 +393,8 @@ def _study_session_entry(
     shop: str,
     track: str,
     cost_num: Decimal,
-    cur_level: Any,
+    recorded_level: Any,
+    bonus: int,
     skill_gain: str,
     status_text: str,
 ) -> dict[str, Any]:
@@ -363,10 +410,12 @@ def _study_session_entry(
         "track_name": track_name,
         "cost": _format_study_cost(cost_num),
         "cost_num": float(cost_num),
-        "skill_level": cur_level,
-        "level_display": f"Lv. {cur_level}" if cur_level is not None else "",
+        "skill_level": None,
+        "level_display": "",
         "skill_gain": skill_gain,
         "status": status_text,
+        "_recorded_level": recorded_level,
+        "_bonus": bonus,
     }
 
 

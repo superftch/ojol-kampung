@@ -206,6 +206,10 @@ async def run_learning(controller):
             if quiz_due:
                 await c.wait(6)
                 kind = "study_quiz"
+                skill = next(
+                    (t for t in status["tracks"] if isinstance(t, dict) and t.get("id") == track),
+                    None,
+                )
                 payload = {
                     "mode": mode,
                     "track": track,
@@ -214,6 +218,11 @@ async def run_learning(controller):
                     "shop": facility.get("title"),
                     "resource": mode,
                     "next_at": facility.get("nextAt"),
+                    **(
+                        {"skill_level": skill["level"]}
+                        if skill and isinstance(skill.get("level"), int)
+                        else {}
+                    ),
                 }
                 price = Decimal(0)
             else:
@@ -259,6 +268,11 @@ async def run_learning(controller):
                     "shop": facility["title"],
                     "product": {"name": service["label"], "price": str(price)},
                     "retry_after": (c.state.observed_at + timedelta(days=1)).isoformat(),
+                    **(
+                        {"skill_level": skill["level"]}
+                        if isinstance(skill.get("level"), int)
+                        else {}
+                    ),
                     **c.ui.prepare_action("study"),
                 }
         except HttpCoreError as exc:
@@ -285,6 +299,24 @@ async def run_learning(controller):
                     "UPDATE actions SET payload=? WHERE id=?", (json.dumps(payload), action)
                 )
             after = await c.read_snapshot()
+            after_skill = next(
+                (
+                    t
+                    for t in cached_skills(c.settings.runtime_dir)
+                    if isinstance(t, dict) and t.get("id") == track
+                ),
+                None,
+            )
+            if (
+                after_skill
+                and isinstance(after_skill.get("level"), int)
+                and after_skill["level"] != payload.get("skill_level")
+            ):
+                payload["skill_level"] = after_skill["level"]
+                with c.journal.db:
+                    c.journal.db.execute(
+                        "UPDATE actions SET payload=? WHERE id=?", (json.dumps(payload), action)
+                    )
         except (HttpCoreError, StopRequested) as exc:
             if isinstance(exc, HttpCoreError) and exc.category in {
                 "rejected",
@@ -309,6 +341,7 @@ async def run_learning(controller):
             mode=mode,
             track=SUBJECTS[track],
             cost=str(price),
+            **({"skill_level": payload["skill_level"]} if "skill_level" in payload else {}),
             **(
                 {key: result[key] for key in ("benar", "total", "bonus")}
                 if kind == "study_quiz"
