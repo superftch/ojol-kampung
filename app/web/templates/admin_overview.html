@@ -1,0 +1,53 @@
+<div class="page-title admin-page-title">
+    <div>
+        <h1>Dashboard admin</h1>
+        <p>Operasional seluruh pengguna dan akun Kampung Ojol.</p>
+    </div>
+    <div class="page-title-actions">
+        <span id="adminFreshness" class="freshness" role="status">Memuat ringkasan…</span>
+        <button id="adminRefresh" class="btn btn-utility" type="button" onclick="loadAdminData()">Segarkan</button>
+    </div>
+</div>
+
+<div id="adminOverview" class="admin-overview" aria-busy="true">
+    <dl class="card fleet-stats admin-stat-strip" aria-label="Ringkasan operasional">
+        <div><dt>Pengajuan tertunda</dt><dd id="adminPendingCount">&mdash;</dd></div>
+        <div><dt>Pengguna disetujui</dt><dd id="adminApprovedCount">&mdash;</dd><span id="adminUserBreakdown" class="meta"></span></div>
+        <div><dt>Akun game terdaftar</dt><dd id="adminAccountCount">&mdash;</dd><span id="adminArchivedCount" class="meta"></span></div>
+        <div><dt>Error belum dibaca</dt><dd id="adminUnreadErrors">&mdash;</dd><span id="adminNoticeScope" class="meta"></span></div>
+    </dl>
+
+    <div class="admin-overview-grid">
+        <section class="card admin-priorities" aria-labelledby="adminPrioritiesTitle">
+            <h2 id="adminPrioritiesTitle" class="card-title">Rekomendasi tindakan</h2>
+            <p id="adminPrioritiesEmpty" class="admin-empty meta">Menunggu data operasional.</p>
+            <ul id="adminPriorities" class="admin-overview-list" hidden></ul>
+        </section>
+
+        <section class="card admin-workload" aria-labelledby="adminWorkloadTitle">
+            <h2 id="adminWorkloadTitle" class="card-title">Kapasitas worker</h2>
+            <div class="admin-slot-readout">
+                <p><strong id="adminWorkerCount">&mdash;</strong> <span id="adminWorkerLimit" class="meta"></span></p>
+                <a class="admin-action" href="#admin-server-settings">Pengaturan worker</a>
+            </div>
+            <div class="admin-slot-track" aria-hidden="true"><div id="adminWorkerFill"></div></div>
+            <p id="adminWorkerAvailable" class="meta">Slot worker tersedia setelah data dimuat.</p>
+            <div class="admin-maintenance-summary">
+                <div>
+                    <h3>Maintenance</h3>
+                    <p id="adminMaintenanceSummary" class="meta">Menunggu status maintenance.</p>
+                </div>
+                <a class="admin-action" href="#admin-maintenance">Kelola jadwal</a>
+            </div>
+        </section>
+
+        <section class="card admin-recent" aria-labelledby="adminActivityTitle">
+            <div class="card-header">
+                <h2 id="adminActivityTitle" class="card-title">Aktivitas global terbaru</h2>
+                <button class="admin-action" type="button" onclick="openAdminFeed()">Buka log global</button>
+            </div>
+            <p id="adminActivityEmpty" class="admin-empty meta">Menunggu notifikasi global.</p>
+            <ul id="adminActivity" class="admin-overview-list" hidden></ul>
+        </section>
+    </div>
+</div>

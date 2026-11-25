@@ -464,14 +464,10 @@ __ADMIN_NOTIF_PANEL__
 
         <!-- TAB 5: ADMIN PANEL -->
         <div id="tab-admin" class="tab-panel">
-            <div class="page-title"><div><h1>Administrasi</h1><p>Kelola pengguna dan pengaturan server.</p></div></div>
-            <div class="card" style="margin-bottom: 24px;">
+            __ADMIN_OVERVIEW__
+            <div id="admin-pending" class="card admin-anchor" style="margin-bottom: 24px;" tabindex="-1">
                 <div class="card-header">
                     <h2 class="card-title">Pengajuan tertunda</h2>
-                    <div style="display: flex; gap: 8px;">
-                        <button class="btn btn-utility" style="padding: 4px 10px; font-size: 11px;" onclick="showTab('tab-notifications'); switchNotifTab('admin');" title="Lihat notifikasi global semua akun dan user">🔔 Log Notifikasi Global</button>
-                        <button class="btn btn-secondary" style="padding: 4px 8px; font-size: 11px;" onclick="loadAdminData()">Refresh</button>
-                    </div>
                 </div>
                 <div style="overflow-x: auto;">
                     <table class="data-table admin-table">
@@ -485,7 +481,7 @@ __ADMIN_NOTIF_PANEL__
                             </tr>
                         </thead>
                         <tbody id="pendingTableBody">
-                            <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Tidak ada pengajuan tertunda.</td></tr>
+                            <tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Memuat pengajuan…</td></tr>
                         </tbody>
                     </table>
                 </div>
@@ -514,7 +510,7 @@ __ADMIN_NOTIF_PANEL__
                 </div>
             </div>
 
-            <section class="card" style="margin-top: 24px;">
+            <section id="admin-maintenance" class="card admin-anchor" style="margin-top: 24px;" tabindex="-1">
                 <div class="card-header"><h2 class="card-title">Maintenance</h2></div>
                 <p id="maintenanceStatus" aria-live="polite">Memuat jadwal…</p>
                 <form onsubmit="saveMaintenance(event)">
@@ -538,7 +534,7 @@ __ADMIN_NOTIF_PANEL__
             </section>
 
             <!-- CARD 3: PENGATURAN ADMIN & GLOBAL -->
-            <div class="card" style="margin-top: 24px;">
+            <div id="admin-server-settings" class="card admin-anchor" style="margin-top: 24px;" tabindex="-1">
                 <div class="card-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px;">
                     <div>
                         <h2 class="card-title">Pengaturan server</h2>
@@ -546,14 +542,15 @@ __ADMIN_NOTIF_PANEL__
                             Kelola semua konfigurasi server, batas akun, otomatisasi, dan integrasi tanpa edit .env
                         </div>
                     </div>
-                    <button class="btn btn-primary" onclick="saveAdminSettings()" style="font-weight: 600;">💾 Simpan Pengaturan</button>
+                    <button class="btn btn-primary" onclick="saveAdminSettings()" style="font-weight: 600;">Simpan pengaturan</button>
                 </div>
+                <p id="adminSettingsStatus" class="form-error" role="status" hidden>Gagal memuat pengaturan. Pilih Segarkan untuk mencoba lagi.</p>
 
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: 20px; margin-top: 16px;">
                     <!-- Bagian 1: Otomatisasi & Game Play -->
                     <div style="background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 18px;">
                         <h4 style="font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
-                            <span>🎮</span> Otomatisasi & Kebutuhan
+                            Otomatisasi & kebutuhan
                         </h4>
 
                         <div style="margin-bottom: 12px;">
@@ -598,7 +595,7 @@ __ADMIN_NOTIF_PANEL__
                     <!-- Bagian 2: Batasan Shift & Kuota Akun -->
                     <div style="background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 18px;">
                         <h4 style="font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
-                            <span>⏱️</span> Batasan Shift & Kuota Akun
+                            Batasan shift & kuota akun
                         </h4>
 
                         <div style="margin-bottom: 12px;">
@@ -638,7 +635,7 @@ __ADMIN_NOTIF_PANEL__
                     <!-- Bagian 3: Domain, Jaringan & Integrasi -->
                     <div style="background: var(--raised); border: 1px solid var(--border); border-radius: 10px; padding: 18px;">
                         <h4 style="font-size: 14px; font-weight: 700; color: var(--text); margin-bottom: 14px; display: flex; align-items: center; gap: 8px;">
-                            <span>🌐</span> Domain & Integrasi
+                            Domain & integrasi
                         </h4>
 
                         <div style="margin-bottom: 12px;">
@@ -659,7 +656,7 @@ __ADMIN_NOTIF_PANEL__
                 </div>
 
                 <div style="margin-top: 20px; display: flex; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 16px;">
-                    <button class="btn btn-primary" onclick="saveAdminSettings()" style="padding: 10px 24px; font-size: 14px; font-weight: 700;">💾 Simpan & Terapkan Pengaturan</button>
+                    <button class="btn btn-primary" onclick="saveAdminSettings()" style="padding: 10px 24px; font-size: 14px; font-weight: 700;">Simpan dan terapkan pengaturan</button>
                 </div>
             </div>
         </div>

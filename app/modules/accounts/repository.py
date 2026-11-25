@@ -261,9 +261,9 @@ class Accounts:
             return [
                 dict(row)
                 for row in db.execute(
-                    "SELECT id,owner,name,archived,legacy FROM accounts WHERE archived=? "
+                    "SELECT id,owner,name,archived,legacy FROM accounts WHERE (? IS NULL OR archived=?) "
                     "AND (? IS NULL OR owner=?) ORDER BY rowid",
-                    (int(archived), owner, owner),
+                    (archived, archived, owner, owner),
                 )
             ]
 
@@ -350,12 +350,15 @@ class Accounts:
             db.execute("UPDATE accounts SET archived=? WHERE id=?", (int(archived), identifier))
             db.execute("UPDATE users SET selected=NULL WHERE selected=?", (identifier,))
 
-    def scoped_settings(self, account):
-        directory = (
+    def runtime_directory(self, account):
+        return (
             self.settings.runtime_dir
             if account["legacy"]
             else self.settings.runtime_dir / "accounts" / account["id"]
         )
+
+    def scoped_settings(self, account):
+        directory = self.runtime_directory(account)
         profile = cached_profile(directory)
         if profile and profile["nickname"] != account["name"]:
             with self.db() as db:

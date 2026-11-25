@@ -1,17 +1,21 @@
 import json
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from starlette.testclient import TestClient
 
+from app.core.locks import exclusive_lock
+from app.core.models import now
 from app.core.security import hash_password, verify_password
+from app.core.storage import write_private
 from app.integrations.kampung.identity import save_profile
 from app.integrations.kampung.session_transfer import parse_cookie_input
 from app.main import create_app
 from app.modules.accounts.repository import Accounts
 from app.modules.worker.fleet import MultiAccountService
-from app.modules.worker.maintenance import MaintenanceWindow
+from app.modules.worker.maintenance import SCHEDULE_FILE, MaintenanceWindow
 from app.modules.worker.supervisor import WorkerService
 
 
@@ -303,6 +307,62 @@ def admin_web(settings):
         )
         assert client.post("/api/auth/login", json=credentials).status_code == 200
         yield client, app.state.manager
+
+
+def test_admin_overview_summarizes_fleet_and_restricts_access(admin_web):
+    from app.modules.notifications.service import queue_notice
+
+    client, manager = admin_web
+    registry = manager.registry
+    admin = registry.web.list_users()[0]
+    owner = registry.owner_for_user(admin)
+    account = registry.create(owner, "Motor Pagi")
+    archived = registry.create(owner, "Motor Lama")
+    registry.archive(owner, archived["id"], True)
+    registry.set_limit("max_active_workers", 1)
+    queue_notice(manager.settings, "Ordinary fixture", {"event": "trip_finished"})
+    queue_notice(manager.settings, "Runtime error fixture", {"stage": "worker"})
+
+    assert 'id="adminOverview"' in client.get("/").text
+    with exclusive_lock(registry.runtime_directory(account)):
+        overview = client.get("/api/admin/overview").json()
+    assert overview["accounts"] == {"registered": 2, "archived": 1}
+    assert overview["workers"] == {"used": 1, "limit": 1}
+    assert overview["maintenance"]["state"] == "off"
+    notices = overview["notifications"]
+    assert notices["reviewed"] == 2 and notices["unread_errors"] == 1
+    assert {item["text"] for item in notices["recent"]} == {
+        "Ordinary fixture",
+        "Runtime error fixture",
+    }
+    assert client.post("/api/admin/notifications/read").status_code == 200
+    overview = client.get("/api/admin/overview").json()
+    assert overview["workers"]["used"] == 0
+    assert overview["notifications"]["unread_errors"] == 0
+
+    assert client.post(
+        "/api/admin/maintenance", json={"mode": "manual", "target": "all"}
+    ).is_success
+    maintenance = client.get("/api/admin/overview").json()["maintenance"]
+    assert maintenance["state"] == "active" and maintenance["target"] == "all"
+    current = now()
+    schedule = manager.settings.runtime_dir / SCHEDULE_FILE
+    for start, end, state in ((10, 20, "scheduled"), (-20, -10, "ended")):
+        window = MaintenanceWindow(
+            current + timedelta(minutes=start), current + timedelta(minutes=end)
+        )
+        write_private(schedule, window.payload())
+        assert client.get("/api/admin/overview").json()["maintenance"]["state"] == state
+
+    member = registry.web.register("driver_fixture", "fixture-password")
+    registry.web.review_user(member["id"], admin["id"], approve=True)
+    client.post("/api/auth/logout")
+    assert client.get("/api/admin/overview").status_code == 401
+    assert client.post(
+        "/api/auth/login", json={"username": "driver_fixture", "password": "fixture-password"}
+    ).is_success
+    assert client.get("/api/admin/overview").status_code == 403
+    assert 'id="adminOverview"' not in client.get("/").text
 
 
 def test_web_auth_form_redirect_and_validation_redacts_secrets(admin_web):

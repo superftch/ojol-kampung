@@ -315,7 +315,88 @@ select.account-select { max-width: 100%; }
 .install-steps li + li { margin-top: 8px; }
 .install-steps code { overflow-wrap: anywhere; }
 
+.admin-page-title h1 { font-size: 26px; }
+.admin-overview { margin-bottom: var(--gap); }
+.admin-overview .meta { font-size: 13px; }
+.admin-stat-strip { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.admin-stat-strip > div { padding: 14px 16px; }
+.admin-stat-strip dd { font-size: 24px; line-height: 1.2; }
+.admin-stat-strip > div:first-child dd { font-size: 32px; color: var(--accent-ink); }
+.admin-stat-strip .meta { display: block; margin-top: 4px; }
+
+/* Main column and capacity rail share the KPI strip's edges with one shell gutter. */
+.admin-overview-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(300px, 1fr);
+    gap: var(--gap);
+}
+.admin-overview-grid > .card { padding: 16px; }
+.admin-recent { grid-column: 1 / -1; }
+.admin-recent .card-header { margin-bottom: 4px; }
+.admin-slot-readout, .admin-maintenance-summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 12px;
+    flex-wrap: wrap;
+}
+.admin-slot-readout { margin-top: 8px; }
+.admin-slot-readout strong { font-size: 30px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.admin-slot-track { height: 8px; margin: 5px 0 8px; border-radius: 4px; background: var(--accent-soft); overflow: hidden; }
+.admin-slot-track > div { width: 0; height: 100%; background: var(--primary); }
+.admin-maintenance-summary { margin-top: 16px; padding: 8px 12px; background: var(--accent-soft); border-radius: 6px; }
+.admin-maintenance-summary h3 { font-size: 14px; font-weight: 600; }
+.admin-action {
+    display: inline-flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 4px 0;
+    border: 0;
+    background: transparent;
+    color: var(--accent-ink);
+    font-size: 13px;
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 3px;
+    cursor: pointer;
+}
+.admin-action:hover { color: var(--primary-hover); text-decoration-thickness: 2px; }
+.admin-overview-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.admin-overview-list li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 0;
+    border-top: 1px solid var(--border);
+}
+.admin-overview-list li:last-child { padding-bottom: 0; }
+.admin-overview-list strong { font-weight: 600; overflow-wrap: anywhere; }
+.admin-overview-list .meta { margin-top: 2px; }
+.admin-priorities .admin-action { white-space: nowrap; }
+.admin-priorities li p { max-width: 52ch; }
+.admin-log-entry strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-log-entry p { overflow-wrap: anywhere; }
+.admin-log-time { text-align: right; font-variant-numeric: tabular-nums; }
+.admin-error-label { color: var(--danger); }
+.admin-overview-grid .admin-empty { margin-top: 12px; padding: 9px 10px; border: 1px dashed var(--border); border-radius: 6px; }
+.admin-anchor { scroll-margin-top: calc(var(--header) + 20px); }
+
+@media (max-width: 1120px) {
+    .admin-anchor { scroll-margin-top: calc(var(--header) + 68px); }
+}
+@media (max-width: 760px) {
+    .admin-overview-grid { grid-template-columns: minmax(0, 1fr); }
+    .admin-stat-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .admin-stat-strip > div:nth-child(odd) { border-left: 0; }
+    .admin-stat-strip > div:nth-child(n+3) { border-top: 1px solid var(--border); }
+}
 @media (max-width: 600px) {
+    .container:has(> #tab-admin.active) { padding-inline: 16px; }
+    .admin-page-title h1 { font-size: 24px; }
+    .admin-page-title { gap: 6px; }
+    .admin-stat-strip > div { padding: 10px 12px; }
+    .admin-action { min-height: 44px; }
     .admin-table, .admin-table tbody, .admin-table tr { display: block; }
     .admin-table thead { position: absolute; clip-path: inset(50%); width: 1px; height: 1px; overflow: hidden; }
     .admin-table tr { display: flex; flex-wrap: wrap; padding: 8px 0; border-top: 1px solid var(--border); }

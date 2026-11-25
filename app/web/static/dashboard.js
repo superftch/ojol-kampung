@@ -9,16 +9,14 @@ function showTab(tabId) {
     if (panel) {
         panel.classList.add('active');
         window.scrollTo(0, 0);
+        const navigation = targetBtn?.parentElement;
+        if (navigation && navigation.scrollWidth > navigation.clientWidth) {
+            targetBtn.scrollIntoView({block: 'nearest', inline: 'nearest'});
+        }
     }
 
     if (tabId === 'tab-accounts') loadAccounts();
-    if (tabId === 'tab-notifications') {
-        if (currentNotifTab === 'admin' && typeof loadAdminNotifications === 'function') {
-            loadAdminNotifications();
-        } else {
-            loadNotifications();
-        }
-    }
+    if (tabId === 'tab-notifications') switchNotifTab(currentNotifTab);
     if (tabId === 'tab-admin') loadAdminData();
     if (tabId === 'tab-bank-angka') loadBankAngka();
 }
@@ -119,6 +117,16 @@ function updateBadge(count) {
 
 let currentNotifTab = 'user';
 let allAdminNotifications = [];
+
+function openAdminFeed(errorsOnly = false) {
+    document.getElementById('searchAdminNotif').value = '';
+    document.getElementById('filterAdminNotifUser').value = '';
+    document.getElementById('filterAdminNotifAccount').value = '';
+    document.getElementById('filterAdminNotifErrorOnly').checked = errorsOnly;
+    currentNotifTab = 'admin';
+    showTab('tab-notifications');
+    document.getElementById('btnSubNotifAdmin').focus();
+}
 
 function switchNotifTab(tab) {
     currentNotifTab = tab;
@@ -1199,63 +1207,177 @@ async function toggleArchive(accId, archived) {
     }
 }
 
-async function loadAdminData() {
-    try {
-        const [pRes, uRes, sRes, maintenance] = await Promise.all([
-            fetch('/api/admin/pending'),
-            fetch('/api/admin/users'),
-            fetch('/api/admin/settings'),
-            apiFetch('/api/admin/maintenance')
-        ]);
-        const pending = await pRes.json();
-        const users = await uRes.json();
-        const settings = await sRes.json();
+const adminNumber = new Intl.NumberFormat('id-ID');
+const adminDate = new Intl.DateTimeFormat('id-ID', {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+    timeZone: 'Asia/Jakarta', timeZoneName: 'short',
+});
+let adminLastChecked = null;
+let adminLoadVersion = 0;
 
-        renderAdminSettings(settings);
-        document.getElementById('maintenanceStatus').textContent = maintenance.description || 'Nonaktif';
+function renderAdminOverview(overview, users, pending) {
+    const { accounts, workers, maintenance, notifications } = overview;
+    const format = value => adminNumber.format(value);
+    const setText = (id, value) => { document.getElementById(id).textContent = value; };
+    const maintenanceLabels = { active: 'Aktif', scheduled: 'Terjadwal', ended: 'Selesai', off: 'Nonaktif' };
+    const target = maintenance.target === 'all' ? 'Semua aktivitas' : 'Auto Ojol';
+    const maintenanceStatus = maintenance.target
+        ? `${maintenanceLabels[maintenance.state]} · ${target}${maintenance.manual ? ' · Jeda manual' : ''}`
+        : maintenanceLabels[maintenance.state];
+    const capacityFull = workers.used >= workers.limit;
 
-        const pTbody = document.getElementById('pendingTableBody');
-        pTbody.innerHTML = '';
-        if (!pending.length) {
-            pTbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Tidak ada pengajuan tertunda.</td></tr>';
-        } else {
-            pending.forEach(p => {
-                const tr = document.createElement('tr');
-                const dt = new Date(p.created_at * 1000).toLocaleString('id-ID');
-                tr.innerHTML = `
-                    <td data-label="ID">#${p.id}</td>
-                    <td class="admin-user-name"><strong>${escapeHtml(p.username)}</strong></td>
-                    <td data-label="Nama">${escapeHtml(p.name || '—')}</td>
-                    <td data-label="Daftar">${dt}</td>
-                    <td>
-                        <button class="btn btn-success" style="padding: 4px 8px; font-size: 11px;" onclick="reviewUser(${p.id}, true)">✅ Setujui</button>
-                        <button class="btn btn-danger" style="padding: 4px 8px; font-size: 11px;" onclick="reviewUser(${p.id}, false)">❌ Tolak</button>
-                    </td>
-                `;
-                pTbody.appendChild(tr);
-            });
+    setText('adminPendingCount', format(pending.length));
+    setText('adminApprovedCount', format(users.filter(user => user.status === 'approved').length));
+    setText('adminUserBreakdown', `${format(users.length)} total · ${format(users.filter(user => user.status === 'rejected').length)} ditolak/nonaktif`);
+    setText('adminAccountCount', format(accounts.registered));
+    setText('adminArchivedCount', `${format(accounts.archived)} diarsipkan`);
+    setText('adminUnreadErrors', format(notifications.unread_errors));
+    setText('adminNoticeScope', `Dari ${format(notifications.reviewed)} notifikasi terbaru`);
+    setText('adminWorkerCount', format(workers.used));
+    setText('adminWorkerLimit', `dari ${format(workers.limit)} slot terpakai`);
+    setText('adminWorkerAvailable', capacityFull
+        ? 'Kapasitas worker penuh.'
+        : `${format(workers.limit - workers.used)} slot masih tersedia.`);
+    document.getElementById('adminWorkerFill').style.width = `${Math.min(workers.used / workers.limit, 1) * 100}%`;
+    setText('adminMaintenanceSummary', maintenanceStatus);
+
+    const recommendations = [];
+    if (maintenance.state === 'active') {
+        recommendations.push(['Tinjau maintenance aktif', `${target} sedang dijeda. Periksa kapan aktivitas bisa dilanjutkan.`, '<a class="admin-action" href="#admin-maintenance">Lihat jadwal</a>']);
+    }
+    if (notifications.unread_errors > 0) {
+        recommendations.push(['Periksa error runtime', `${format(notifications.unread_errors)} error belum dibaca di log global.`, '<button class="admin-action" type="button" onclick="openAdminFeed(true)">Lihat error</button>']);
+    }
+    if (pending.length > 0) {
+        recommendations.push(['Tinjau pendaftaran', `${format(pending.length)} pengajuan menunggu keputusan.`, '<a class="admin-action" href="#admin-pending">Buka antrean</a>']);
+    }
+    if (capacityFull) {
+        recommendations.push(['Periksa kapasitas worker', 'Tinjau batas sebelum menjalankan worker tambahan.', '<a class="admin-action" href="#admin-server-settings">Lihat batas</a>']);
+    }
+    if (maintenance.state === 'scheduled') {
+        recommendations.push(['Periksa jadwal maintenance', maintenance.description, '<a class="admin-action" href="#admin-maintenance">Lihat jadwal</a>']);
+    }
+
+    const priorities = document.getElementById('adminPriorities');
+    priorities.innerHTML = recommendations.map(([title, description, action]) => `
+        <li><div><strong>${title}</strong><p class="meta">${escapeHtml(description)}</p></div>${action}</li>
+    `).join('');
+    priorities.hidden = recommendations.length === 0;
+    const emptyPriorities = document.getElementById('adminPrioritiesEmpty');
+    emptyPriorities.textContent = 'Tidak ada tindakan yang disarankan dari data ringkasan.';
+    emptyPriorities.hidden = !priorities.hidden;
+
+    const activity = document.getElementById('adminActivity');
+    activity.innerHTML = notifications.recent.map(notice => {
+        const title = String(notice.text || '').split('\n', 1)[0].trim();
+        const date = new Date(notice.time);
+        const when = Number.isNaN(date.getTime()) ? notice.time : adminDate.format(date);
+        return `<li><div class="admin-log-entry"><strong>${escapeHtml(title || 'Notifikasi')}</strong>
+            <p class="meta">${notice.is_error ? '<span class="admin-error-label">Error</span> · ' : ''}${escapeHtml(notice.account_name)}</p></div>
+            <span class="meta admin-log-time">${escapeHtml(when)}</span></li>`;
+    }).join('');
+    activity.hidden = notifications.recent.length === 0;
+    const emptyActivity = document.getElementById('adminActivityEmpty');
+    emptyActivity.textContent = 'Belum ada notifikasi global.';
+    emptyActivity.hidden = !activity.hidden;
+}
+
+async function loadAdminData(refreshSettings = true) {
+    const overview = document.getElementById('adminOverview');
+    if (!overview) return;
+    const version = ++adminLoadVersion;
+    const freshness = document.getElementById('adminFreshness');
+    const refresh = document.getElementById('adminRefresh');
+    const settingsStatus = document.getElementById('adminSettingsStatus');
+    overview.setAttribute('aria-busy', 'true');
+    refresh.disabled = true;
+    freshness.textContent = adminLastChecked ? 'Menyegarkan ringkasan…' : 'Memuat ringkasan…';
+
+    const [fleet, users, settings] = await Promise.allSettled([
+        apiFetch('/api/admin/overview'),
+        apiFetch('/api/admin/users'),
+        refreshSettings && apiFetch('/api/admin/settings'),
+    ]);
+    if (version !== adminLoadVersion) return;
+
+    if (settings.status === 'fulfilled' && settings.value) {
+        renderAdminSettings(settings.value);
+        settingsStatus.hidden = true;
+    } else if (settings.status === 'rejected') {
+        settingsStatus.hidden = false;
+    }
+
+    const maintenanceStatus = document.getElementById('maintenanceStatus');
+    if (fleet.status === 'fulfilled') {
+        maintenanceStatus.textContent = fleet.value.maintenance.description || 'Nonaktif';
+    } else if (!adminLastChecked) {
+        maintenanceStatus.textContent = 'Gagal memuat jadwal.';
+    }
+
+    if (users.status === 'fulfilled') {
+        const pending = users.value.filter(user => user.status === 'pending').reverse();
+        renderAdminUsers(users.value, pending);
+        if (fleet.status === 'fulfilled') {
+            renderAdminOverview(fleet.value, users.value, pending);
+            adminLastChecked = adminDate.format(new Date(fleet.value.checked_at));
         }
+    } else {
+        document.getElementById('pendingTableBody').innerHTML = '<tr><td colspan="5">Gagal memuat pengajuan. Pilih Segarkan untuk mencoba lagi.</td></tr>';
+        document.getElementById('usersTableBody').innerHTML = '<tr><td colspan="6">Gagal memuat pengguna. Pilih Segarkan untuk mencoba lagi.</td></tr>';
+    }
+    const loaded = fleet.status === 'fulfilled' && users.status === 'fulfilled';
+    freshness.textContent = loaded ? `Diperbarui ${adminLastChecked}` : adminLastChecked
+        ? `Gagal menyegarkan · data ${adminLastChecked}` : 'Ringkasan gagal dimuat';
+    if (!loaded && !adminLastChecked) {
+        document.getElementById('adminPrioritiesEmpty').textContent = 'Rekomendasi belum tersedia.';
+        document.getElementById('adminActivityEmpty').textContent = 'Aktivitas global belum tersedia.';
+        document.getElementById('adminWorkerAvailable').textContent = 'Kapasitas worker belum tersedia.';
+        document.getElementById('adminMaintenanceSummary').textContent = 'Status maintenance belum tersedia.';
+    }
+    overview.setAttribute('aria-busy', 'false');
+    refresh.disabled = false;
+}
 
-        const uTbody = document.getElementById('usersTableBody');
-        uTbody.innerHTML = '';
-        users.forEach(u => {
+function renderAdminUsers(users, pending) {
+    const pTbody = document.getElementById('pendingTableBody');
+    pTbody.innerHTML = '';
+    if (!pending.length) {
+        pTbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Tidak ada pengajuan tertunda.</td></tr>';
+    } else {
+        pending.forEach(p => {
             const tr = document.createElement('tr');
+            const dt = new Date(p.created_at * 1000).toLocaleString('id-ID');
             tr.innerHTML = `
-                <td data-label="ID">#${u.id}</td>
-                <td class="admin-user-name"><strong>${escapeHtml(u.username)}</strong></td>
-                <td data-label="Nama">${escapeHtml(u.name || '—')}</td>
-                <td data-label="Peran"><span style="padding: 2px 6px; border-radius: 4px; background: ${u.role === 'admin' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.05)'}; color: ${u.role === 'admin' ? 'var(--primary)' : 'inherit'};">${u.role}</span></td>
-                <td data-label="Status"><span style="color: ${u.status === 'approved' ? 'var(--success)' : u.status === 'pending' ? 'var(--warning)' : 'var(--danger)'};">${u.status}</span></td>
+                <td data-label="ID">#${p.id}</td>
+                <td class="admin-user-name"><strong>${escapeHtml(p.username)}</strong></td>
+                <td data-label="Nama">${escapeHtml(p.name || '—')}</td>
+                <td data-label="Daftar">${dt}</td>
                 <td>
-                    ${u.role === 'admin' ? '' : u.status === 'approved' ? `<button class="btn btn-danger" style="padding: 3px 6px; font-size: 10px;" onclick="reviewUser(${u.id}, false)">Nonaktifkan</button>` : `<button class="btn btn-success" style="padding: 3px 6px; font-size: 10px;" onclick="reviewUser(${u.id}, true)">Aktifkan</button>`}
-                    ${u.status === 'approved' ? `<button class="btn btn-secondary" type="button" onclick="setAccountLimit(${u.id})">Batas akun</button>` : ''}
+                    <button class="btn btn-success" onclick="reviewUser(${p.id}, true)">Setujui</button>
+                    <button class="btn btn-danger" onclick="reviewUser(${p.id}, false)">Tolak</button>
                 </td>
             `;
-            uTbody.appendChild(tr);
+            pTbody.appendChild(tr);
         });
-    } catch (e) {
-        console.error('Admin load error:', e);
     }
+
+    const uTbody = document.getElementById('usersTableBody');
+    uTbody.innerHTML = '';
+    users.forEach(u => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+            <td data-label="ID">#${u.id}</td>
+            <td class="admin-user-name"><strong>${escapeHtml(u.username)}</strong></td>
+            <td data-label="Nama">${escapeHtml(u.name || '—')}</td>
+            <td data-label="Peran"><span style="padding: 2px 6px; border-radius: 4px; background: ${u.role === 'admin' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.05)'}; color: ${u.role === 'admin' ? 'var(--primary)' : 'inherit'};">${u.role}</span></td>
+            <td data-label="Status"><span style="color: ${u.status === 'approved' ? 'var(--success)' : u.status === 'pending' ? 'var(--warning)' : 'var(--danger)'};">${u.status}</span></td>
+            <td>
+                ${u.role === 'admin' ? '' : u.status === 'approved' ? `<button class="btn btn-danger" onclick="reviewUser(${u.id}, false)">Nonaktifkan</button>` : `<button class="btn btn-success" onclick="reviewUser(${u.id}, true)">Aktifkan</button>`}
+                ${u.status === 'approved' ? `<button class="btn btn-secondary" type="button" onclick="setAccountLimit(${u.id})">Batas akun</button>` : ''}
+            </td>
+        `;
+        uTbody.appendChild(tr);
+    });
 }
 
 function renderAdminSettings(s) {
@@ -1324,6 +1446,7 @@ async function saveAdminSettings() {
         const data = await res.json();
         if (!res.ok) throw new Error(data.detail || data.message || 'Gagal menyimpan pengaturan');
         renderAdminSettings(data.settings);
+        loadAdminData(false);
         alert('✅ Pengaturan admin berhasil disimpan dan diterapkan!');
         refreshDashboard();
     } catch (e) {
@@ -1346,6 +1469,7 @@ async function saveMaintenance(event) {
             })
         });
         document.getElementById('maintenanceStatus').textContent = data.description || 'Nonaktif';
+        loadAdminData(false);
         await refreshDashboard();
     } catch (error) {
         showToast(error.message, 'error');
@@ -1374,7 +1498,7 @@ async function reviewUser(userId, approve) {
             body: JSON.stringify({ user_id: userId, approve })
         });
         if (!res.ok) throw new Error('Gagal memproses review');
-        loadAdminData();
+        loadAdminData(false);
     } catch (e) {
         alert(e.message);
     }

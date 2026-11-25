@@ -6,7 +6,8 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import ValidationError
 
-from app.core.models import Settings
+from app.core.locks import running
+from app.core.models import Settings, now
 from app.core.storage import write_private
 from app.modules.admin.schemas import AccountLimit, FleetLimit, MaintenanceChange, ReviewUser
 from app.modules.notifications.repository import (
@@ -18,11 +19,72 @@ from app.web.deps import WebContext, get_ctx, public_user, require_admin
 from app.web.payloads import read_json
 
 router = APIRouter()
+ADMIN_NOTIFICATION_LIMIT = 200
+
+
+@router.get("/api/admin/overview")
+def admin_overview(
+    user: Annotated[dict, Depends(require_admin)],
+    ctx: Annotated[WebContext, Depends(get_ctx)],
+):
+    registry = ctx.registry
+    accounts = registry.list(archived=None)
+    worker_slots = 0
+    archived = 0
+    for account in accounts:
+        if account["archived"]:
+            archived += 1
+            continue
+        directory = registry.runtime_directory(account)
+        service = ctx.manager.services.get(account["id"]) if ctx.manager else ctx.service
+        process = service.worker if service and service.settings.runtime_dir == directory else None
+        if (process and process.returncode is None) or (
+            (directory / "run.lock").is_file() and running(directory)
+        ):
+            worker_slots += 1
+
+    checked_at = now()
+    window = read_window(ctx.settings.runtime_dir / SCHEDULE_FILE)
+    maintenance = {
+        "state": "off",
+        "description": None,
+        "manual": False,
+        "target": None,
+    }
+    if window:
+        if window.held(checked_at):
+            state = "active"
+        else:
+            state = "scheduled" if checked_at < window.start else "ended"
+        maintenance = {
+            "state": state,
+            "description": window.description(),
+            "manual": window.manual,
+            "target": window.target,
+        }
+
+    notices = list_all_admin_notifications(
+        ctx.settings, registry=registry, limit=ADMIN_NOTIFICATION_LIMIT
+    )
+    return {
+        "checked_at": checked_at,
+        "accounts": {"registered": len(accounts), "archived": archived},
+        "workers": {"used": worker_slots, "limit": registry.value("max_active_workers")},
+        "maintenance": maintenance,
+        "notifications": {
+            "reviewed": len(notices),
+            "unread_errors": sum(n["is_error"] and not n["read"] for n in notices),
+            "recent": [
+                {key: notice[key] for key in ("text", "time", "account_name", "is_error")}
+                for notice in notices[:4]
+            ],
+        },
+    }
 
 
 @router.get("/api/admin/notifications")
 async def admin_notifications(
-    limit: int = 200,
+    limit: int = ADMIN_NOTIFICATION_LIMIT,
     *,
     user: Annotated[dict, Depends(require_admin)],
     ctx: Annotated[WebContext, Depends(get_ctx)],

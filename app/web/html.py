@@ -155,6 +155,7 @@ def dashboard_html(user: dict[str, Any]) -> str:
             "__BRAND_MARK__": BRAND_MARK,
             "__USERNAME__": html.escape(str(user.get("username", "User"))),
             "__ADMIN_TAB_DISPLAY__": "block" if is_admin else "none",
+            "__ADMIN_OVERVIEW__": _load_template("admin_overview.html") if is_admin else "",
             "__FUEL_METERS__": fuel_meters,
             "__NEEDS_METERS__": needs_meters,
             "__ADMIN_NOTIF_SUBNAV__": _ADMIN_NOTIF_SUBNAV_HTML if is_admin else "",
