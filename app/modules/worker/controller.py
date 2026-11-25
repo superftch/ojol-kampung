@@ -568,7 +568,12 @@ class Controller:
             self.stage = f"job.{kind}.click"
             # Update #53 (20 Nov 2026): tunggu sebentar di tujuan; klaim < 2 detik
             # dianggap bot oleh server. Retry 409 turun di adapter sudah menangani jendela 8 dtk.
-            await self.human_pause(3.0, 6.0)
+            # Update #204 (25 Nov 2026): pengemudi yang hampir selalu terima ongkos < 10 detik
+            # dicek di setiap order, jadi jeda klaim ongkos dibuat > 10 detik - 1 menit dengan human jitter.
+            if kind == "complete":
+                await self.human_pause(10.5, 60.0)
+            else:
+                await self.human_pause(2.5, 5.5)
             await self.ui.job_click(labels[0])
             self.stage = f"job.{kind}.verify"
             if kind == "complete":

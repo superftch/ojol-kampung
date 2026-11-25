@@ -1452,3 +1452,39 @@ async def test_observation_transport_failure_exceeding_limit_raises(settings, st
         assert controller.observation_failures == 4
     finally:
         journal.close()
+
+
+async def test_job_action_complete_waits_over_10s_human_jitter(settings, state):
+    complete_state = state.model_copy(
+        update={
+            "phase": "complete",
+            "trip_id": "trip-jitter-1",
+            "buttons": ["✅ Sampai! Terima ongkos"],
+            "history": [],
+        }
+    )
+    after_state = state.model_copy(
+        update={
+            "phase": "idle",
+            "trip_id": None,
+            "buttons": ["📲 Cari order"],
+            "history": ["17.20 A → B · +1,000"],
+            "receipts": [{"id": "trip-jitter-1", "amount": "1.000"}],
+        }
+    )
+    ui = SimpleNamespace(
+        job_click=AsyncMock(),
+        snapshot=AsyncMock(return_value=after_state),
+    )
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.human_pause = AsyncMock()
+        await controller.job_action(complete_state, "complete")
+        assert controller.human_pause.await_count >= 1
+        low, high = controller.human_pause.await_args_list[0].args
+        assert low > 10.0
+        assert high <= 60.0
+        assert high > low
+    finally:
+        journal.close()

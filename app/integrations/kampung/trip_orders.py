@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import random
 from typing import TYPE_CHECKING
 
 from app.core.exceptions import HttpCoreError
@@ -51,6 +53,9 @@ class TripOrders:
         )
         pilihan = tawar_res.get("pilihan") if isinstance(tawar_res, dict) else []
         if pilihan:
+            wait_mult = getattr(self.api, "minigame_wait_multiplier", 1.0)
+            if wait_mult > 0:
+                await asyncio.sleep(random.uniform(0.9, 2.3) * wait_mult)  # noqa: S311 - timing only
             chosen = max(
                 pilihan,
                 key=lambda o: (
