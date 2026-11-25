@@ -130,6 +130,7 @@
   let today = getTodayWIB();
   let allKerang = generateKerangFallback(today);
   let openedSet = new Set();
+  const skippedSet = new Set(); // kerang tak terjangkau di sesi ini (tidak disimpan)
   let selectedKerang = null;
   let isAutopilotRunning = false;
   let currentFilterMode = "langka"; // "langka" (300 koin), "potensial" (100 & 300 koin), "all" (semua)
@@ -231,6 +232,29 @@
     isAutopilotRunning = !!st.active;
     if (!st.active) autopilotAvoidMode = "none";
     updateAutopilotUI(st);
+
+    // Kerang yang tidak bisa didekati (terkurung batu): lewati dan lanjut ke kerang
+    // berikutnya, jangan biarkan rantai auto-pilot putus. Hanya berlaku di sesi ini.
+    if (!st.active && st.reason === "no_progress" && st.target && typeof st.target.i === "number") {
+      skippedSet.add(st.target.i);
+      const titleEl = document.getElementById("ks-compass-title");
+      if (titleEl) {
+        titleEl.textContent = `⏭️ Kerang #${st.target.i} tidak terjangkau, lanjut berikutnya...`;
+        titleEl.style.color = "#fbbf24";
+      }
+      const autoChain = document.getElementById("ks-auto-chain-check")?.checked ?? true;
+      if (autoChain) {
+        setTimeout(() => {
+          if (isAutopilotRunning) return;
+          const nextTarget = getNextNearestShell();
+          if (nextTarget) {
+            selectKerangTarget(nextTarget);
+            const autoOpen = document.getElementById("ks-auto-open-check")?.checked ?? true;
+            sendAutopilotCommand("start", nextTarget, autoOpen, autoChain);
+          }
+        }, 800);
+      }
+    }
   });
 
   // Mode anti-nyangkut dari inject.js: none | avoid | blocked | recover
@@ -250,11 +274,11 @@
     let candidates = [];
 
     if (currentFilterMode === "langka") {
-      candidates = allKerang.filter(k => !openedSet.has(k.i) && k.kategori === "langka");
+      candidates = allKerang.filter(k => !openedSet.has(k.i) && !skippedSet.has(k.i) && k.kategori === "langka");
     } else if (currentFilterMode === "potensial") {
-      candidates = allKerang.filter(k => !openedSet.has(k.i) && (k.kategori === "biasa" || k.kategori === "langka"));
+      candidates = allKerang.filter(k => !openedSet.has(k.i) && !skippedSet.has(k.i) && (k.kategori === "biasa" || k.kategori === "langka"));
     } else {
-      candidates = allKerang.filter(k => !openedSet.has(k.i));
+      candidates = allKerang.filter(k => !openedSet.has(k.i) && !skippedSet.has(k.i));
     }
 
     if (candidates.length === 0) return null;

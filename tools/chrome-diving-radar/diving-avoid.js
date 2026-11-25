@@ -60,10 +60,11 @@
     return m / d;
   }
 
-  function baseTegak(pos, target) {
+  function baseTegak(pos, target, band) {
+    const b = typeof band === "number" ? band : 1.0;
     const dd = target.y - pos.y; // y dunia: lebih besar = lebih dangkal
-    if (dd < -1.0) return -1;    // target lebih dalam -> turun
-    if (dd > 1.0) return 1;      // target lebih dangkal -> naik
+    if (dd < -b) return -1;      // target lebih dalam -> turun
+    if (dd > b) return 1;        // target lebih dangkal -> naik
     return 0;
   }
 
@@ -108,7 +109,7 @@
     const bearing = Math.atan2(target.x - pos.x, target.z - pos.z);
     const distXZ = Math.hypot(target.x - pos.x, target.z - pos.z);
     const prevOffset = cfg.prevOffset || 0;
-    const t0 = baseTegak(pos, target);
+    const t0 = baseTegak(pos, target, cfg.vBand);
     const drift = pitchDrift(cfg.pitch);
 
     const reach = Math.max(2, Math.min(cfg.lookahead, distXZ + 0.3));
@@ -186,16 +187,17 @@
     );
     if (around.length === 0) return null;
 
-    const rings = [1.5, 2.0, 2.4, cfg.arriveR - 0.1];
-    const elevs = [0, 0.35, -0.35, 0.7, -0.7];
+    const rings = [0.8, 1.3, 1.8, 2.2, 2.5, cfg.arriveR - 0.1];
+    const elevs = [0, 0.4, -0.4, 0.8, -0.8, 1.2, -1.2];
+    const AZ = 24;
     // Margin normal dulu; bila tidak ada titik layak (kerang menempel dalam di batu),
     // coba margin nyaris nol: berdiri tepat di permukaan tabrakan masih dalam jangkauan buka.
     for (const margin of [cfg.wpMargin, 0.05]) {
       let best = null;
       for (const rho of rings) {
         for (const el of elevs) {
-          for (let k = 0; k < 16; k++) {
-            const az = (k / 16) * 2 * Math.PI;
+          for (let k = 0; k < AZ; k++) {
+            const az = (k / AZ) * 2 * Math.PI;
             const q = {
               x: target.x + rho * Math.cos(el) * Math.sin(az),
               y: target.y + rho * Math.sin(el),
@@ -208,7 +210,7 @@
               if (dist3(q.x, q.y, q.z, r) < r.r + PLAYER_R + margin) { ok = false; break; }
             }
             if (!ok) continue;
-            const cost = dist3(q.x, q.y, q.z, pos) + rho * 0.5;
+            const cost = dist3(q.x, q.y, q.z, pos) + rho * 1.5;
             if (!best || cost < best.cost) best = { cost, x: q.x, y: q.y, z: q.z };
           }
         }
@@ -261,8 +263,12 @@
       const tp = { x: target.x, y: -(target.d + 0.35), z: target.z };
       const dist3d = dist3(pos.x, pos.y, pos.z, tp);
       const bearing = Math.atan2(tp.x - pos.x, tp.z - pos.z);
-      const t0 = baseTegak(pos, tp);
+      // Dekat target pita kedalaman dipersempit: pita 1 m + titik berdiri 2.7 m bisa
+      // membuat jarak 3D tetap > 2.8 m dan karakter diam di luar jangkauan buka.
+      const vBand = dist3d < nc.nearDist ? 0.3 : 1.0;
+      const t0 = baseTegak(pos, tp, vBand);
       const planOpts = {
+        vBand,
         pitch: inp.pitch, surfaceY: inp.surfaceY, floorFn: inp.floorFn,
         arriveR: nc.arriveR, wpMargin: nc.wpMargin
       };
