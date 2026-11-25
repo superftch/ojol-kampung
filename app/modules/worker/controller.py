@@ -15,6 +15,7 @@ from app.core.exceptions import HttpCoreError, StopRequested
 from app.core.models import NEEDS, Resource, Snapshot, Step, now
 from app.modules.gameplay.garden import run_garden
 from app.modules.gameplay.gym import run_gym
+from app.modules.gameplay.kerja import run_kerja
 from app.modules.gameplay.study import run_learning
 from app.modules.ledger.finance import completion_evidence
 from app.modules.ledger.reconciliation import reconcile, wait_until_resolved
@@ -925,6 +926,8 @@ class Controller:
             if self.observed_state.phase == "idle" and await run_learning(self):
                 continue
             if self.observed_state.phase == "idle" and await run_garden(self):
+                continue
+            if self.observed_state.phase == "idle" and await run_kerja(self):
                 continue
             if step.action == "wait":
                 if self.observed_state.phase in {"idle", "sleeping"}:

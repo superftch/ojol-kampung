@@ -375,6 +375,7 @@ def snapshot_from_api(
         trip_jemput=trip.get("jemput") if trip else None,
         kondisi=needs.get("kondisi") or {},
         bersih=needs.get("bersih") or {},
+        job=me.get("job") if isinstance(me.get("job"), dict) else None,
     )
 
 

@@ -14,6 +14,7 @@ AUTO_LABELS = {
     "penampilan": "Penampilan",
     "rumah": "Kondisi rumah",
     "kebun": "Kebun & kolam",
+    "kerja": "Auto Kerja",
     **STUDY_LABELS,
 }
 FILENAME = "auto-settings.json"
@@ -35,7 +36,10 @@ def auto_flags(directory):
         for key, enabled in saved.items()
     ):
         raise ValueError("Pengaturan Auto akun tidak valid.")
-    return {key: saved.get(key, key not in STUDY_LABELS) for key in AUTO_LABELS}
+    return {
+        key: saved.get(key, key not in STUDY_LABELS and key != "kerja")
+        for key in AUTO_LABELS
+    }
 
 
 def set_auto_flag(directory, key, enabled):

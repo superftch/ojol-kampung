@@ -410,3 +410,16 @@ Inspeksi chunk `1j_v3n6k6p7js.js`, rules game `2p8n67a_wffd0.js` (modul `239710`
 4. **Patroli Hiu & Zona Aman**:
    - Hiu berpatroli tiap 8 menit selama 70–100 detik di kedalaman $> 6$ meter (`laju: 2.5` m/s, `sergap: 4.4` m/s).
    - Kedalaman $< 6$ meter (`aman_m: 6.0`) adalah zona aman mutlak di mana hiu tidak mengejar. Tertangkap hiu memicu rawat rumah sakit 12 jam.
+
+## Bukti Pekerjaan Kantor & Pekerjaan Umum (25 November 2026)
+
+Inspeksi bundle client 25 November 2026 (`29ahj9dqnlzgc.js`, `3eqd4os9qi5gk.js` modul `860242`, `45bq3-5un6s2w.js` modul `947981`) dan verifikasi live terotorisasi pada akun `baelz` (`Kepala wilayah bank`, Bank desa):
+1. **Pekerjaan Kantor / Fasum / Usaha (`POST /api/kantor`)**:
+   - `{"action": "detak"}` (HTTP 200 live): mengembalikan status `kantor` berisi `jam`, `fase`, `buka`, `libur`, `kerja` (`status`, `poin`, `target: 30`, `bonusBps`, `tabunganMilli`), `paket` (`berbayar`, `perPaket: 5`, `perHari: 3`, `lunas`, `menuju`, `hadiahMilli`), `kejadian[]`, `bersama[]`, `urusan`, `jedaUrusanDetik` (`3`), dan `bersamaDetik` (`15`).
+   - `{"action": "urusan-mulai", "requestId": uuid}` (HTTP 200 live): memulai satu urusan berisi `id`, `mulai`, dan `langkah[]`.
+   - `{"action": "urusan-selesai", "id": urusanId, "jawab": [...]}` (HTTP 200 live): mengirim jawaban setelah jeda `E(langkah)` = $\sum (0{,}8 \cdot \text{detik jika aksi=proses} + 1{,}2)$ detik + 0,4 detik. Untuk langkah yang memiliki `pilihan[]` dan `kunci`, indeks jawaban benar memenuhi hash FNV-1a 32-bit `fnv1a("{urusanId}:{stepIndex}:{choiceIndex}") == kunci`. Setiap urusan memberi poin kinerja; tiap 5 urusan melunasi 1 paket tugas (+2 koin, maks 3x/hari).
+   - `{"action": "kejadian", "idx": int}`: menangani insiden kantor aktif (`oleh: null`) setelah jeda `detik` (memberi poin kinerja, misal +3 poin).
+   - `{"action": "bersama", "id": str}`: mengikuti kegiatan bersama aktif (`ikut: false`) setelah `bersamaDetik` (memberi +2 poin).
+2. **Pekerjaan Umum / Kerja Malam (`GET/POST /api/kerja-malam`)**:
+   - Verifikasi statis bundle `29ahj9dqnlzgc.js`: `GET /api/kerja-malam` mengembalikan status `enabled`, `buka`, `siang` (`enabled`, `buka`, `rumah`, `maks`), `lampuMati[]`, `patroli`, dan `bersihku`.
+   - `POST /api/kerja-malam` mendukung `{"action": "mulai"}`, `{"action": "lampu", "key": str}`, `{"action": "bersih", "plotId": str}`, `{"action": "bersih-selesai", "tangkap": int}`, `{"action": "patroli"}`, dan `{"action": "titik", "putaran": int, "titik": int}`.

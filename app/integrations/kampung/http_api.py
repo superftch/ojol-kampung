@@ -300,6 +300,8 @@ class OjolHttpApi:
                 "/api/rumah/interior",
                 "/api/diving",
                 "/api/diving/realtime",
+                "/api/kantor",
+                "/api/kerja-malam",
             }
             or re.fullmatch(
                 r"/api/world/plots\?v=2&blocks=[A-Z][0-9]{2}(?:,[A-Z][0-9]{2}){0,23}", path
@@ -672,3 +674,15 @@ class OjolHttpApi:
 
     async def garden_action(self, garden_id: str, action: str):
         return await self._facilities.garden_action(garden_id, action)
+
+    async def kantor_action(self, action: str, **fields):
+        """Send an action payload to /api/kantor."""
+        return await self.request("/api/kantor", {"action": action, **fields})
+
+    async def kerja_malam_status(self):
+        """Fetch public/night job status from /api/kerja-malam."""
+        return await self.request("/api/kerja-malam")
+
+    async def kerja_malam_action(self, action: str, **fields):
+        """Send an action payload to /api/kerja-malam."""
+        return await self.request("/api/kerja-malam", {"action": action, **fields})

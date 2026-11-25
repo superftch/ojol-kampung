@@ -211,6 +211,7 @@ class Snapshot(Model):
     trip_jemput: bool | None = None
     kondisi: dict[str, Any] = Field(default_factory=dict)
     bersih: dict[str, Any] = Field(default_factory=dict)
+    job: dict[str, Any] | None = None
 
     def resource_value(self, resource: Resource | Need):
         return self.needs.get(resource) if resource in NEEDS else getattr(self, resource)
