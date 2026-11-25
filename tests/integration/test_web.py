@@ -173,23 +173,52 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
         )
         assert dismiss_res.status_code == 200
 
-        # 9b. Download extension zip endpoint
-        import io
-        import zipfile
-
+        # 9b. Extension zip endpoint is deprecated (410 Gone)
         dl_res = client.get("/api/extension/download")
-        assert dl_res.status_code == 200
-        assert dl_res.headers["content-type"] == "application/zip"
-        assert "kampungsebelah-extension.zip" in dl_res.headers["content-disposition"]
-        with zipfile.ZipFile(io.BytesIO(dl_res.content), "r") as zf:
-            namelist = zf.namelist()
-            assert "kampungsebelah-extension/manifest.json" in namelist
-            assert "kampungsebelah-extension/ojol.js" in namelist
-            assert "kampungsebelah-extension/mancing.js" in namelist
+        assert dl_res.status_code == 410
+        assert "deprecated" in dl_res.json()["detail"].lower()
 
         dl_alias = client.get("/download/extension.zip")
-        assert dl_alias.status_code == 200
-        assert dl_alias.headers["content-type"] == "application/zip"
+        assert dl_alias.status_code == 410
+
+        # 9c. CRX3, update.xml, and Enterprise Policy endpoints
+        ext_info = client.get("/api/extension/info")
+        assert ext_info.status_code == 200
+        info_json = ext_info.json()
+        assert len(info_json["extension_id"]) == 32
+        assert info_json["version"]
+        assert info_json["policy_value"] == f"{info_json['extension_id']};{info_json['update_url']}"
+
+        crx_res = client.get("/api/extension/download.crx")
+        assert crx_res.status_code == 200
+        assert crx_res.headers["content-type"] == "application/x-chrome-extension"
+        assert crx_res.content[:4] == b"Cr24"
+
+        crx_alias = client.get("/download/extension.crx")
+        assert crx_alias.status_code == 200
+        assert crx_alias.content == crx_res.content
+
+        xml_res = client.get("/api/extension/update.xml")
+        assert xml_res.status_code == 200
+        assert "application/xml" in xml_res.headers["content-type"]
+        assert info_json["extension_id"] in xml_res.text
+        assert info_json["crx_url"] in xml_res.text
+
+        xml_alias = client.get("/download/extension-update.xml")
+        assert xml_alias.status_code == 200
+        assert xml_alias.text == xml_res.text
+
+        win_reg = client.get("/api/extension/policy/windows.reg")
+        assert win_reg.status_code == 200
+        assert info_json["policy_value"] in win_reg.text
+
+        mac_cfg = client.get("/api/extension/policy/macos.mobileconfig")
+        assert mac_cfg.status_code == 200
+        assert info_json["policy_value"] in mac_cfg.text
+
+        linux_cfg = client.get("/api/extension/policy/linux.json")
+        assert linux_cfg.status_code == 200
+        assert linux_cfg.json()["ExtensionInstallForcelist"] == [info_json["policy_value"]]
 
         # 10. Create account via Web API
         create_acc = client.post("/api/accounts/create", json={"name": "Akun Agus 1"})

@@ -1601,6 +1601,36 @@ async function submitManualGlyph() {
     }
 }
 
+let cachedExtensionInfo = null;
+
+async function openExtensionModal() {
+    openModal('extensionModal');
+    try {
+        const info = await apiFetch('/api/extension/info');
+        cachedExtensionInfo = info;
+        document.getElementById('extInfoVersion').textContent = `v${info.version}`;
+        document.getElementById('extInfoId').textContent = info.extension_id;
+        document.getElementById('extInfoPolicy').textContent = info.policy_value;
+        document.getElementById('extMacCmd').textContent =
+            `defaults write com.google.Chrome ExtensionInstallForcelist -array-add "${info.policy_value}"`;
+    } catch (e) {
+        document.getElementById('extInfoVersion').textContent = 'gagal memuat';
+        document.getElementById('extInfoId').textContent = '-';
+        document.getElementById('extInfoPolicy').textContent = e.message || 'gagal memuat';
+    }
+}
+
+async function copyExtensionPolicy() {
+    const text = cachedExtensionInfo?.policy_value || document.getElementById('extInfoPolicy')?.textContent || '';
+    if (!text || text === 'memuat...') return;
+    try {
+        await navigator.clipboard.writeText(text);
+        showToast('Policy string disalin ke clipboard.', 'success');
+    } catch (_) {
+        showToast('Salin manual dari kotak Policy.', 'info');
+    }
+}
+
 // Initial setup
 loadNotifications();
 refreshDashboard();

@@ -223,11 +223,11 @@
                         Kelola status Auto Ojol akun dari switch di atas atau tombol Jalankan/Hentikan di Ringkasan. Kuota narik mengikuti aturan game.
                     </p>
                     <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.25); border-radius: 8px; padding: 10px 12px; font-size: 12px; color: var(--text-muted);">
-                        <strong>Ekstensi Chrome</strong><br>
-                        Gunakan ekstensi untuk mode berkendara di browser.<br>
+                        <strong>Ekstensi Chrome (CRX &amp; Enterprise Policy)</strong><br>
+                        Pasang sekali via Enterprise Policy agar update ekstensi otomatis dari server.<br>
                         <div style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap;">
-                            <a href="/api/extension/download" class="btn btn-warning" style="font-size: 11px; padding: 5px 10px; background:#f59e0b; color:var(--bg); font-weight:700;">📦 Download Ekstensi (.ZIP)</a>
-                            <button class="btn btn-secondary" style="font-size: 11px; padding: 5px 10px;" onclick="openModal('extensionModal')">📖 Tutorial Pasang</button>
+                            <button class="btn btn-warning" style="font-size: 11px; padding: 5px 10px; background:#f59e0b; color:var(--bg); font-weight:700;" onclick="openExtensionModal()">🏢 Pasang via Policy (Auto-Update)</button>
+                            <a href="/api/extension/download.crx" class="btn btn-secondary" style="font-size: 11px; padding: 5px 10px;">📦 .CRX</a>
                         </div>
                     </div>
                     <input type="checkbox" id="modeOjolToggle" style="display: none;">
@@ -706,21 +706,46 @@ __ADMIN_NOTIF_PANEL__
         </div>
     </dialog>
 
-    <!-- MODAL: Panduan Ekstensi Chrome & Mode Kendarai -->
+    <!-- MODAL: Panduan Ekstensi Chrome (Enterprise Policy CRX & ZIP) -->
     <dialog id="extensionModal" class="modal" aria-labelledby="extensionTitle">
-        <div class="modal-content" style="max-width: 640px;">
+        <div class="modal-content" style="max-width: 680px;">
             <div class="modal-header">
-                <h3 id="extensionTitle">Pasang ekstensi Chrome</h3>
+                <h3 id="extensionTitle">Pasang Ekstensi Chrome (Enterprise Policy CRX)</h3>
                 <button class="close-btn" type="button" aria-label="Tutup dialog" onclick="closeModal('extensionModal')">&times;</button>
             </div>
-            <ol class="install-steps">
-                <li>Unduh ZIP dan ekstrak ke folder komputer.</li>
-                <li>Buka <code>chrome://extensions</code> di Chrome lalu aktifkan <strong>Developer mode</strong>.</li>
-                <li>Pilih <strong>Load unpacked</strong>, lalu pilih folder <code>kampungsebelah-extension</code> hasil ekstrak.</li>
-                <li>Buka KampungSebelah dan pilih tab <strong>Kendarai</strong> di panel ekstensi.</li>
-            </ol>
+            <div style="background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 12px; font-size: 12px;">
+                <div style="display: flex; justify-content: space-between; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;">
+                    <span><strong>Versi:</strong> <code id="extInfoVersion">memuat...</code></span>
+                    <span><strong>Extension ID:</strong> <code id="extInfoId">memuat...</code></span>
+                </div>
+                <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+                    <span style="color: var(--text-muted);">Policy:</span>
+                    <code id="extInfoPolicy" style="flex: 1; word-break: break-all;">memuat...</code>
+                    <button class="btn btn-secondary" type="button" style="font-size: 11px; padding: 4px 8px;" onclick="copyExtensionPolicy()">Salin Policy</button>
+                </div>
+            </div>
+
+            <div style="margin-bottom: 14px;">
+                <h4 style="font-size: 14px; margin: 0 0 6px;">1. Metode Rekomendasi: Enterprise Policy (Auto-Update)</h4>
+                <p style="font-size: 12px; color: var(--text-muted); margin: 0 0 8px; line-height: 1.5;">
+                    Chrome akan memasang <code>.crx</code> langsung dari server ini dan memperbarui otomatis setiap ada versi baru tanpa perlu ekstrak ulang.
+                </p>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;">
+                    <a href="/api/extension/policy/windows.reg" class="btn btn-primary" style="font-size: 12px;">🪟 Windows (.reg)</a>
+                    <a href="/api/extension/policy/macos.mobileconfig" class="btn btn-secondary" style="font-size: 12px;">🍎 macOS (.mobileconfig)</a>
+                    <a href="/api/extension/policy/linux.json" class="btn btn-secondary" style="font-size: 12px;">🐧 Linux (.json)</a>
+                    <a href="/api/extension/download.crx" class="btn btn-secondary" style="font-size: 12px;">📦 Unduh .CRX</a>
+                </div>
+                <ol class="install-steps" style="font-size: 12px; margin: 0;">
+                    <li><strong>Windows:</strong> Unduh <code>.reg</code>, klik dua kali &rarr; pilih <em>Yes</em> (Administrator), lalu restart Chrome.</li>
+                    <li><strong>macOS:</strong> Unduh <code>.mobileconfig</code> dan install di <em>System Settings &rarr; Profiles</em>, atau jalankan di Terminal:<br><code id="extMacCmd" style="word-break: break-all;">defaults write com.google.Chrome ExtensionInstallForcelist -array-add "..."</code></li>
+                    <li><strong>Linux:</strong> Simpan <code>kampungsebelah-helper.json</code> ke <code>/etc/opt/chrome/policies/managed/</code> lalu restart Chrome.</li>
+                    <li>Cek status di <code>chrome://policy</code> (klik <em>Reload policies</em> jika perlu), lalu buka KampungSebelah.</li>
+                </ol>
+            </div>
+
             <div class="actions">
-                <a href="/api/extension/download" class="btn btn-primary">Unduh ZIP</a>
+                <a href="/api/extension/update.xml" target="_blank" rel="noopener" class="btn btn-secondary">Lihat update.xml</a>
                 <button class="btn btn-utility" type="button" onclick="closeModal('extensionModal')">Tutup</button>
             </div>
         </div>

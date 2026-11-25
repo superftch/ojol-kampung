@@ -166,13 +166,21 @@ Diving hanya dapat dimulai jika akun Anda berada di **Pulau Seberang** (`diPulau
 
 ---
 
-## 🚀 Cara Memperbarui di Chrome:
+## 🚀 Cara Memasang & Memperbarui di Chrome
 
-1. Buka tab baru: `chrome://extensions`.
-2. Aktifkan **Developer mode** di pojok kanan atas.
-3. Klik tombol **🔄 Reload (Perbarui)** pada kartu ekstensi **KampungSebelah Helper**.
-4. Buka halaman game:
-   - Untuk Auto-Ojol: `https://www.kampungsebelah.com/?narik=1` (atau buka desa langsung)
-   - Untuk Diving: `https://www.kampungsebelah.com/diving`
-   - Untuk Mancing: `https://www.kampungsebelah.com/mancing`
-5. Panel kontrol otomatis muncul di layar game masing-masing!
+### Metode Rekomendasi: Distribusi CRX via Enterprise Policy (Auto-Update)
+
+Server dashboard menyediakan distribusi `.crx` beserta manifest `update.xml` dan file policy siap pakai (`/api/extension/policy/*`):
+
+- **Windows**: Unduh `kampungsebelah-chrome-policy.reg` dari modal **Pasang via Policy** di dashboard, klik dua kali, lalu restart Chrome.
+- **macOS**: Unduh `kampungsebelah-chrome-policy.mobileconfig` (atau gunakan `defaults write com.google.Chrome ExtensionInstallForcelist -array-add "<EXT_ID>;<UPDATE_XML_URL>"`), lalu restart Chrome.
+- **Linux**: Simpan `kampungsebelah-helper.json` ke `/etc/opt/chrome/policies/managed/`, lalu restart Chrome.
+
+Setiap kali `version` di `manifest.json` dinaikkan di server, Chrome akan otomatis mengunduh versi terbaru tanpa perlu ekstrak atau *Load unpacked* ulang.
+
+> **Catatan:** Distribusi manual `.ZIP` (*Load unpacked*) sudah dihentikan (*deprecated*). Gunakan distribusi CRX melalui Enterprise Policy di atas.
+
+Setelah terpasang, buka halaman game untuk memunculkan panel kontrol:
+- Untuk Auto-Ojol: `https://www.kampungsebelah.com/?narik=1` (atau buka desa langsung)
+- Untuk Diving: `https://www.kampungsebelah.com/diving`
+- Untuk Mancing: `https://www.kampungsebelah.com/mancing`
