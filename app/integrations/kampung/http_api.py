@@ -278,8 +278,12 @@ class OjolHttpApi:
         ojol_cek_image = bool(
             re.fullmatch(r"/api/ojol/cek\?t=[A-Za-z0-9-]{1,64}&a=[0-9TZ:.+-]+&m=[0-9]{1,3}", path)
         )
+        manusia_cek_image = bool(
+            re.fullmatch(r"/api/cek-manusia\?k=[A-Za-z0-9_%.~:-]{1,160}&m=[0-9]{1,3}", path)
+        )
         allowed = (
             ojol_cek_image
+            or manusia_cek_image
             or path
             in {
                 "/api/ojol",
@@ -323,7 +327,14 @@ class OjolHttpApi:
             or "//" in path
             or (
                 payload is not None
-                and path not in {"/api/ojol", "/api/rumah/kamar-mandi", "/api/diving"}
+                and path
+                not in {
+                    "/api/ojol",
+                    "/api/rumah/kamar-mandi",
+                    "/api/diving",
+                    "/api/kantor",
+                    "/api/kerja-malam",
+                }
                 and not garden_action
                 and not re.fullmatch(r"/api/spbu/[A-Z0-9-]+", path)
                 and not path.endswith(("/buy", "/use", "/kuis", "/bayar", "/kegiatan", "/minigame"))
@@ -366,6 +377,10 @@ class OjolHttpApi:
                             "Respons API bukan JSON valid", recoverable=payload is None
                         ) from None
                 if payload is not None:
+                    if response.status_code == 428:
+                        answered = await self._answer_manusia(response, path, payload)
+                        if answered is not None:
+                            return answered
                     raise HttpCoreError(
                         f"Transaksi ditolak HTTP{response.status_code}; tidak diulang",
                         category="uncertain",
@@ -388,6 +403,61 @@ class OjolHttpApi:
         )
 
     valid_cursor = staticmethod(valid_cursor)
+
+    async def _answer_manusia(self, response, path, payload):
+        """428 CEK_MANUSIA: pecahkan gambar 2 angka lalu ulangi POST sekali dengan cekManusia.
+
+        None berarti bukan CEK_MANUSIA atau tidak terpecahkan; pemanggil melaporkan status asli.
+        """
+        from app.modules.captcha import learn_polyline, solve_polyline_captcha, solve_svg_captcha
+
+        try:
+            error = (response.json() or {}).get("error") or {}
+        except ValueError:
+            return None
+        if error.get("code") != "CEK_MANUSIA":
+            return None
+        cek = error.get("cek") or {}
+        kunci = cek.get("kunci") if isinstance(cek.get("kunci"), str) else ""
+        if cek.get("siteKey") and not kunci:
+            return None  # Turnstile: harus diselesaikan manusia di game
+        for attempt in range(1, 4):
+            image = await self.request(f"/api/cek-manusia?k={kunci}&m={attempt}", text=True)
+            svg = image.strip() if isinstance(image, str) else ""
+            if not svg.startswith("<"):
+                continue
+            polyline = "<polyline" in svg
+            try:
+                kode = (
+                    solve_polyline_captcha(svg, self.directory)
+                    if polyline
+                    else solve_svg_captcha(svg)
+                )
+            except Exception as exc:  # gambar muat ulang
+                logger.debug("Gagal pecahkan gambar cek manusia: %s", exc)
+                continue
+            if not (len(kode) == 2 and kode.isdigit()):
+                continue
+            retry = await self._session_client().request(
+                "POST",
+                path,
+                json={**payload, "cekManusia": {"kode": kode}},
+                headers=self.browser_headers(path, "POST"),
+            )
+            if retry.is_success:
+                if polyline:
+                    with contextlib.suppress(OSError, ValueError):
+                        learn_polyline(self.directory, svg, kode)
+                with contextlib.suppress(ValueError):
+                    return retry.json()
+                return None
+            if retry.status_code != 428:
+                return None
+            # 428 lagi: kunci baru dari respons, ulangi dengan gambar lain
+            with contextlib.suppress(ValueError):
+                cek = ((retry.json() or {}).get("error") or {}).get("cek") or {}
+                kunci = cek.get("kunci") if isinstance(cek.get("kunci"), str) else ""
+        return None
 
     async def daily_wallet(self, day: date | str) -> WalletReport:
         return await read_daily_wallet(self.request, day, now())

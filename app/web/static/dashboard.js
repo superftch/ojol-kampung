@@ -495,7 +495,23 @@ function renderDashboard(data) {
 
     // Auto toggles
     const flags = data.auto_flags || {};
-    if (document.getElementById('autoOjolToggle')) document.getElementById('autoOjolToggle').checked = !!flags.ojol;
+    const ojolToggleEl = document.getElementById('autoOjolToggle');
+    const ojolDescEl = document.getElementById('autoOjolDesc');
+    if (ojolToggleEl) {
+        const hasJob = Boolean(snap.job);
+        const notMitra = snap.ojol_mitra === false;
+        ojolToggleEl.checked = !!flags.ojol;
+        ojolToggleEl.disabled = !selected || hasJob || notMitra;
+        if (ojolDescEl) {
+            if (hasJob) {
+                ojolDescEl.textContent = 'Nonaktif karena akun sudah memiliki pekerjaan aktif.';
+            } else if (notMitra) {
+                ojolDescEl.textContent = 'Belum menjadi mitra Ojol — daftar mitra dulu di game.';
+            } else {
+                ojolDescEl.textContent = 'Mengambil dan mengantar order ojol otomatis sesuai kuota akun';
+            }
+        }
+    }
     if (document.getElementById('modeOjolToggle')) document.getElementById('modeOjolToggle').checked = (data.ojol_mode === 'kendara');
     if (document.getElementById('autoPerpusToggle')) document.getElementById('autoPerpusToggle').checked = !!flags.perpus;
     if (document.getElementById('autoKuliahToggle')) document.getElementById('autoKuliahToggle').checked = !!flags.kuliah;
@@ -510,28 +526,6 @@ function renderDashboard(data) {
     if (document.getElementById('autoPenampilan')) document.getElementById('autoPenampilan').checked = !!flags.penampilan;
     if (document.getElementById('autoRumah')) document.getElementById('autoRumah').checked = !!flags.rumah;
     if (document.getElementById('autoGarden')) document.getElementById('autoGarden').checked = !!(flags.kebun || flags.garden);
-    const kerjaEl = document.getElementById('autoKerja');
-    const kerjaDescEl = document.getElementById('autoKerjaDesc');
-    if (kerjaEl) {
-        const job = snap.job || null;
-        const isNgojol = ['searching', 'delivering', 'complete'].includes(snap.phase) || !!snap.trip;
-        const canWork = !flags.ojol && !isNgojol && !!job;
-        kerjaEl.checked = !!flags.kerja;
-        kerjaEl.disabled = !canWork && !flags.kerja;
-        if (kerjaDescEl) {
-            if (flags.ojol) {
-                kerjaDescEl.textContent = 'Nonaktif saat Auto Ojol menyala';
-            } else if (isNgojol) {
-                kerjaDescEl.textContent = 'Nonaktif saat sedang ngojol';
-            } else if (!job) {
-                kerjaDescEl.textContent = 'Belum punya pekerjaan aktif';
-            } else {
-                const place = job.facility || job.business || '';
-                const prof = job.profession || 'Pekerjaan aktif';
-                kerjaDescEl.textContent = place ? `Otomatis bekerja: ${prof} · ${place}` : `Otomatis bekerja: ${prof}`;
-            }
-        }
-    }
 
     if (data.study_subject && document.getElementById('studySubjectSelect')) {
         document.getElementById('studySubjectSelect').value = data.study_subject;
@@ -732,10 +726,33 @@ function showToast(msg, type = 'info') {
 function renderAutomationControls(data) {
     const flags = data.auto_flags || {};
     const sum = data.summary || {};
+    const snap = data.snapshot || {};
     const isSleeping = sum.phase === 'sleeping';
-    for (const [feature, enabled, maintenance] of [
-        ['Ojol', flags.ojol === true || flags.ojol === 'maintenance', flags.ojol === 'maintenance' || data.snapshot?.ojol_maintenance],
-        ['Needs', Boolean(flags.needs_active), false],
+    const hasJob = Boolean(snap.job);
+    const isKantorJob = hasJob && (snap.job.kantor != null || ['PUBLIC', 'BUSINESS'].includes(snap.job.employerType));
+    const notMitra = snap.ojol_mitra === false;
+    const isNgojol = ['searching', 'delivering', 'complete'].includes(snap.phase) || Boolean(snap.trip);
+
+    let ojolBlockedReason = '';
+    if (data.account) {
+        if (hasJob) ojolBlockedReason = 'Akun sudah memiliki pekerjaan aktif — Auto Ojol dinonaktifkan.';
+        else if (notMitra) ojolBlockedReason = 'Belum menjadi mitra Ojol — daftar mitra dulu di game.';
+    }
+
+    const ojolRunning = Boolean(sum.active && (flags.ojol === true || flags.ojol === 'maintenance'));
+
+    let kerjaBlockedReason = '';
+    if (data.account) {
+        if (!hasJob) kerjaBlockedReason = 'Belum punya pekerjaan — ambil kerja kantor dulu di game.';
+        else if (!isKantorJob) kerjaBlockedReason = 'Auto Kantor hanya untuk pekerjaan kantor/fasum/usaha.';
+        else if (ojolRunning) kerjaBlockedReason = 'Nonaktif saat Auto Ojol berjalan.';
+        else if (isNgojol) kerjaBlockedReason = 'Nonaktif saat sedang ngojol.';
+    }
+
+    for (const [feature, enabled, maintenance, blockedReason] of [
+        ['Ojol', flags.ojol === true || flags.ojol === 'maintenance', flags.ojol === 'maintenance' || snap.ojol_maintenance, ojolBlockedReason],
+        ['Kerja', Boolean(flags.kerja), false, kerjaBlockedReason],
+        ['Needs', Boolean(flags.needs_active), false, ''],
     ]) {
         const pending = pendingControls.has(feature);
         const active = Boolean(sum.active && enabled);
@@ -747,22 +764,83 @@ function renderAutomationControls(data) {
         else if (active && isSleeping) { label = 'Dijeda saat karakter tidur'; tone = 'paused'; }
         else if (active) { label = 'Sedang berjalan'; tone = 'active'; }
         else if (enabled) label = 'Siap dijalankan';
-        state.textContent = label;
-        state.dataset.tone = tone;
-        const canRun = Boolean(data.account && !pending && !active && !maintenance);
+        else if (feature === 'Ojol' && notMitra && !hasJob) label = 'Belum mitra';
+        else if (feature === 'Ojol' && hasJob) label = 'Punya kerja';
+        else if (feature === 'Kerja' && data.account && !hasJob) label = 'Belum kerja';
+        else if (feature === 'Kerja' && data.account && !isKantorJob) label = 'Bukan kantor';
+        if (state) {
+            state.textContent = label;
+            state.dataset.tone = tone;
+        }
+        const canRun = Boolean(data.account && !pending && !active && !maintenance && !blockedReason);
         const run = document.getElementById('btnRun' + feature);
         const stop = document.getElementById('btnStop' + feature);
-        run.hidden = active || maintenance;
-        run.disabled = !canRun;
-        stop.hidden = !enabled;
-        stop.disabled = !data.account || pending;
+        if (run) {
+            run.hidden = active || maintenance;
+            run.disabled = !canRun;
+        }
+        if (stop) {
+            stop.hidden = !enabled;
+            stop.disabled = !data.account || pending;
+        }
+    }
+
+    const ojolHint = document.getElementById('toolbarOjolHint');
+    if (ojolHint) {
+        ojolHint.textContent = ojolBlockedReason;
+        ojolHint.style.color = ojolBlockedReason ? '#f59e0b' : '';
+        ojolHint.style.display = ojolBlockedReason ? 'block' : 'none';
+    }
+
+    const kerjaHint = document.getElementById('toolbarKerjaHint');
+    if (kerjaHint) {
+        if (kerjaBlockedReason) {
+            kerjaHint.textContent = kerjaBlockedReason;
+            kerjaHint.style.color = '#f59e0b';
+            kerjaHint.style.display = 'block';
+        } else if (hasJob) {
+            const job = snap.job;
+            const place = job.facility || job.business || '';
+            const prof = job.profession || 'Pekerjaan aktif';
+            kerjaHint.textContent = place ? `${prof} · ${place}` : prof;
+            kerjaHint.style.color = '';
+            kerjaHint.style.display = 'block';
+        } else {
+            kerjaHint.textContent = '';
+            kerjaHint.style.display = 'none';
+        }
+    }
+
+    const kerjaRtEl = document.getElementById('autoKerjaRealtime');
+    if (kerjaRtEl) {
+        const ks = data.kerja_status || null;
+        if (ks && ks.kind === 'kantor') {
+            const parts = [];
+            if (ks.state) parts.push(`Status: ${ks.state}`);
+            if (typeof ks.lunas === 'number' && typeof ks.per_hari === 'number') {
+                parts.push(`Tugas: ${ks.lunas}/${ks.per_hari} lunas (${ks.menuju ?? 0}/${ks.per_paket ?? 5} urusan)`);
+            }
+            if (typeof ks.poin === 'number' && typeof ks.target === 'number') {
+                parts.push(`Kerja penuh: ${ks.poin}/${ks.target} poin`);
+            }
+            if (ks.last_message) parts.push(ks.last_message);
+            kerjaRtEl.textContent = parts.join(' · ');
+            kerjaRtEl.style.display = parts.length ? 'block' : 'none';
+        } else if (snap.job && snap.job.kantor) {
+            const k = snap.job.kantor;
+            kerjaRtEl.textContent = `Kerja penuh: ${k.poin ?? 0}/${k.target ?? 30} poin · Status: ${k.status || '-'}`;
+            kerjaRtEl.style.display = 'block';
+        } else {
+            kerjaRtEl.textContent = '';
+            kerjaRtEl.style.display = 'none';
+        }
     }
 }
 
 async function controlAction(cmd) {
     const account = dashboardData?.account;
     if (!account || pendingSelection) return;
-    const feature = cmd.endsWith('-needs') ? 'Needs' : 'Ojol';
+    const feature = cmd.endsWith('-needs') ? 'Needs' : cmd.endsWith('-kerja') ? 'Kerja' : 'Ojol';
     if (pendingControls.has(feature)) return;
     if (cmd.startsWith('run') && (!account.has_cookie || dashboardData.summary?.cookie_valid === false)) {
         openCookieModalFor(account.id, account.name);

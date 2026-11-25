@@ -75,6 +75,15 @@ class HttpUI:
     async def study_status(self, mode):
         return await self.api.study_status(mode)
 
+    async def kantor_action(self, action, **fields):
+        return await self.api.kantor_action(action, **fields)
+
+    async def kerja_malam_status(self):
+        return await self.api.kerja_malam_status()
+
+    async def kerja_malam_action(self, action, **fields):
+        return await self.api.kerja_malam_action(action, **fields)
+
     async def study_start(self, mode, track, expected_price, expected_wallet, min_balance):
         return await self.api.study_start(
             mode,

@@ -140,10 +140,24 @@
                             </dl>
                             <div class="control-toolbar" aria-label="Kontrol otomatisasi">
                                 <div class="control-group">
-                                    <div><span class="control-group-title">Auto Ojol</span><span id="toolbarOjolBadge" class="control-state">—</span></div>
+                                    <div>
+                                        <div><span class="control-group-title">Auto Ojol</span><span id="toolbarOjolBadge" class="control-state">—</span></div>
+                                        <div id="toolbarOjolHint" class="meta" style="display:none;margin-top:3px;font-size:12px;"></div>
+                                    </div>
                                     <div class="btn-segment-group">
                                         <button id="btnRunOjol" class="btn btn-primary" type="button" onclick="controlAction('run')" aria-label="Jalankan Auto Ojol">Jalankan</button>
                                         <button id="btnStopOjol" class="btn btn-stop" type="button" onclick="controlAction('stop')" aria-label="Hentikan Auto Ojol">Hentikan</button>
+                                    </div>
+                                </div>
+                                <div class="control-group">
+                                    <div>
+                                        <div><span class="control-group-title">Auto Kantor</span><span id="toolbarKerjaBadge" class="control-state">—</span></div>
+                                        <div id="toolbarKerjaHint" class="meta" style="display:none;margin-top:3px;font-size:12px;"></div>
+                                        <div id="autoKerjaRealtime" class="meta" style="display:none;margin-top:3px;font-size:12px;color:var(--accent,#0f766e);"></div>
+                                    </div>
+                                    <div class="btn-segment-group">
+                                        <button id="btnRunKerja" class="btn btn-primary" type="button" onclick="controlAction('run-kerja')" aria-label="Jalankan Auto Kantor">Jalankan</button>
+                                        <button id="btnStopKerja" class="btn btn-stop" type="button" onclick="controlAction('stop-kerja')" aria-label="Hentikan Auto Kantor">Hentikan</button>
                                     </div>
                                 </div>
                                 <div class="control-group">
@@ -212,7 +226,7 @@
                     <div class="toggle-item" style="margin-bottom: 12px;">
                         <div class="toggle-info">
                             <span class="toggle-title">🛵 Auto Ojol</span>
-                            <span class="toggle-desc">Mengambil dan mengantar order ojol otomatis sesuai kuota akun</span>
+                            <span class="toggle-desc" id="autoOjolDesc">Mengambil dan mengantar order ojol otomatis sesuai kuota akun</span>
                         </div>
                         <label class="switch">
                             <input type="checkbox" id="autoOjolToggle" aria-label="Auto Ojol" onchange="toggleAuto('ojol', this.checked)">
@@ -359,13 +373,6 @@
                         <span class="toggle-desc">Siram, pupuk, dan panen tanaman kebun secara otomatis</span>
                     </div>
                     <label class="switch"><input type="checkbox" id="autoGarden" aria-label="Auto Kebun" onchange="toggleAuto('kebun', this.checked)"><span class="slider"></span></label>
-                </div>
-                <div class="toggle-item">
-                    <div class="toggle-info">
-                        <span class="toggle-title">Auto Kerja</span>
-                        <span class="toggle-desc" id="autoKerjaDesc">Bekerja otomatis (hanya saat Auto Ojol mati, tidak sedang ngojol, dan punya pekerjaan)</span>
-                    </div>
-                    <label class="switch"><input type="checkbox" id="autoKerja" aria-label="Auto Kerja" onchange="toggleAuto('kerja', this.checked)"><span class="slider"></span></label>
                 </div>
             </div>
         </div>

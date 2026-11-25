@@ -736,7 +736,7 @@ def test_shared_bank_angka_and_crowdsourced_contribution(admin_web):
     err_dir.mkdir(parents=True, exist_ok=True)
     import json
 
-    dummy_glyph = [[[0.86, 1.0], [0.86, 0.0], [0.0, 0.74]]]
+    dummy_glyph = [[[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]]]  # bentuk "V", belum ada di bank
     sample_error = {
         "error_id": "OJL-998877665544",
         "category": "SvgCaptchaSolverError",
@@ -1328,3 +1328,98 @@ def test_web_admin_sets_maintenance_and_revokes_access(admin_web):
         client.post("/api/admin/review", json={"user_id": me["id"], "approve": False}).status_code
         == 400
     )
+
+
+def test_dashboard_auto_kerja_location_and_dynamic_ojol_guards(admin_web):
+    from app.core.storage import write_private
+
+    client, manager = admin_web
+    user = client.get("/api/auth/me").json()["user"]
+    owner = manager.registry.owner_for_user(user)
+    acc = manager.registry.create(owner, "Kerja Dynamic")
+    acc_id = acc["id"]
+    service = manager.service(acc_id)
+    service.command = AsyncMock(return_value="ok")
+
+    # 1. Dashboard HTML has Auto Kantor in toolbar, NOT in Auto Kebutuhan
+    html = client.get("/").text
+    assert 'Auto Kantor' in html
+    assert 'id="btnRunKerja"' in html
+    assert 'id="toolbarKerjaHint"' in html
+    assert 'id="toolbarOjolHint"' in html
+    assert 'id="autoKerja"' not in html
+
+    # 2. Not mitra and no job -> both Auto Ojol and Auto Kerja rejected
+    write_private(
+        service.settings.runtime_dir / "status.json",
+        {"snapshot": {"ojol_mitra": False, "job": None, "phase": "idle"}},
+    )
+    res_no_mitra = client.post(f"/api/control/run?account_id={acc_id}")
+    assert res_no_mitra.status_code == 400
+    assert "mitra" in res_no_mitra.json()["detail"].lower()
+
+    res_no_job = client.post(f"/api/control/run-kerja?account_id={acc_id}")
+    assert res_no_job.status_code == 400
+    assert "pekerjaan" in res_no_job.json()["detail"].lower()
+
+    # 3. Registered mitra and no job -> Auto Ojol allowed, Auto Kerja still rejected
+    write_private(
+        service.settings.runtime_dir / "status.json",
+        {"snapshot": {"ojol_mitra": True, "job": None, "phase": "idle"}},
+    )
+    res_mitra_ok = client.post(f"/api/control/run?account_id={acc_id}")
+    assert res_mitra_ok.status_code == 200
+    assert (
+        client.post(f"/api/control/run-kerja?account_id={acc_id}").status_code == 400
+    )
+
+    # 3b. Non-kantor job (GENERAL) -> Auto Kantor rejected
+    write_private(
+        service.settings.runtime_dir / "status.json",
+        {
+            "snapshot": {
+                "ojol_mitra": True,
+                "job": {"id": "g1", "profession": "Penjaga pos ronda", "employerType": "GENERAL"},
+                "phase": "idle",
+            }
+        },
+    )
+    res_non_kantor = client.post(f"/api/control/run-kerja?account_id={acc_id}")
+    assert res_non_kantor.status_code == 400
+    assert "kantor" in res_non_kantor.json()["detail"].lower()
+
+    # 4. Has kantor job -> Auto Ojol rejected (both /run and toggle-auto), Auto Kantor allowed
+    write_private(
+        service.settings.runtime_dir / "status.json",
+        {
+            "snapshot": {
+                "ojol_mitra": True,
+                "job": {"id": "j1", "profession": "Kepala wilayah bank", "employerType": "PUBLIC"},
+                "phase": "idle",
+            }
+        },
+    )
+    res_has_job_ojol = client.post(f"/api/control/run?account_id={acc_id}")
+    assert res_has_job_ojol.status_code == 400
+    assert "pekerjaan" in res_has_job_ojol.json()["detail"].lower()
+
+    res_has_job_toggle = client.post(
+        f"/api/control/toggle-auto?account_id={acc_id}",
+        json={"flag": "ojol", "enabled": True},
+    )
+    assert res_has_job_toggle.status_code == 400
+
+    assert (
+        client.post(
+            f"/api/control/toggle-auto?account_id={acc_id}",
+            json={"flag": "ojol", "enabled": False},
+        ).status_code
+        == 200
+    )
+    res_kerja_ok = client.post(f"/api/control/run-kerja?account_id={acc_id}")
+    assert res_kerja_ok.status_code == 200
+    service.command.assert_awaited_with("run_kerja")
+
+    res_kerja_stop = client.post(f"/api/control/stop-kerja?account_id={acc_id}")
+    assert res_kerja_stop.status_code == 200
+    service.command.assert_awaited_with("stop_kerja")

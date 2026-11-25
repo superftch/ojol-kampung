@@ -2763,3 +2763,42 @@ async def test_ojol_failure_continues_auto_kebutuhan(api, world, settings):
         assert any(p.get("aksi") == "wc" for p in km_posted)
         actions = journal.history()["actions"]
         assert any(a["kind"] == "purchase" and a["status"] == "verified" for a in actions)
+
+
+async def test_cek_manusia_428_is_solved_and_retried_once(settings, monkeypatch):
+    """428 CEK_MANUSIA: pecahkan gambar angka, ulangi POST dengan cekManusia."""
+    posts = []
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg"><g>'
+        '<polyline points="1,1 5,9"/><polyline points="9,1 3,7"/></g></svg>'
+    )
+
+    def handle(request):
+        if request.url.path == "/api/cek-manusia":
+            assert request.url.params["k"] == "kunci-1"
+            return httpx.Response(200, text=svg, headers={"content-type": "image/svg+xml"})
+        body = json.loads(request.content)
+        posts.append(body)
+        if "cekManusia" not in body:
+            return httpx.Response(
+                428,
+                json={
+                    "error": {
+                        "code": "CEK_MANUSIA",
+                        "message": "Cek sebentar: ketik angka di gambar.",
+                        "cek": {"kunci": "kunci-1", "siteKey": None},
+                    }
+                },
+            )
+        return httpx.Response(200, json={"ok": True, "poin": 3})
+
+    monkeypatch.setattr("app.modules.captcha.solve_polyline_captcha", lambda *a, **k: "12")
+    async with httpx.AsyncClient(base_url=ORIGIN, transport=httpx.MockTransport(handle)) as client:
+        api = OjolHttpApi(settings.runtime_dir, client=client)
+        out = await api.kantor_action("urusan-mulai", requestId="r1")
+
+    assert out == {"ok": True, "poin": 3}
+    assert posts == [
+        {"action": "urusan-mulai", "requestId": "r1"},
+        {"action": "urusan-mulai", "requestId": "r1", "cekManusia": {"kode": "12"}},
+    ]

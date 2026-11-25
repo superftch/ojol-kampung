@@ -141,23 +141,16 @@ async def test_run_kerja_kantor_solves_urusan(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_kerja_malam_turns_on_lamp(tmp_path):
+async def test_run_kerja_skips_non_kantor_job(tmp_path):
     set_auto_flag(tmp_path, "ojol", False)
     set_auto_flag(tmp_path, "kerja", True)
 
-    calls = []
-    events = []
-
     class FakeUi:
         async def kantor_action(self, action, **fields):
-            raise AssertionError("Should not call kantor_action for general job")
+            raise AssertionError("Should not call kantor_action for non-kantor job")
 
         async def kerja_malam_status(self):
-            return {"enabled": True, "buka": True, "lampuMati": ["lamp-1"]}
-
-        async def kerja_malam_action(self, action, **fields):
-            calls.append((action, fields))
-            return {"upahMilli": 500}
+            raise AssertionError("Should not call kerja_malam_status when focused on kantor only")
 
     c = SimpleNamespace(
         ui=FakeUi(),
@@ -165,10 +158,8 @@ async def test_run_kerja_malam_turns_on_lamp(tmp_path):
         observed_state=_snapshot(
             job={"id": "gen-1", "profession": "Penjaga pos ronda", "employerType": "GENERAL"}
         ),
-        record_event=lambda kind, msg: events.append((kind, msg)),
+        record_event=lambda kind, msg: None,
     )
 
-    did_work = await run_kerja(c)
-    assert did_work is True
-    assert calls == [("lampu", {"key": "lamp-1"})]
-    assert events and "0.5 koin" in events[0][1]
+    assert can_run_kerja(c) is False
+    assert await run_kerja(c) is False

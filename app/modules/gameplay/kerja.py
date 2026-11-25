@@ -7,12 +7,25 @@ from datetime import UTC, datetime
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from app.core.storage import write_private
 from app.integrations.kampung.http_api import HttpCoreError, timestamp
 from app.modules.worker.settings import auto_flags
 
 logger = logging.getLogger(__name__)
 WIB = ZoneInfo("Asia/Jakarta")
 MIN_STEP_SECONDS = 1.2
+KERJA_STATUS_FILE = "kerja-status.json"
+
+
+def _save_kerja_status(runtime_dir, payload: dict) -> None:
+    try:
+        runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        write_private(
+            runtime_dir / KERJA_STATUS_FILE,
+            {**payload, "updated_at": datetime.now(UTC).isoformat()},
+        )
+    except OSError:
+        pass
 
 
 def fnv1a_32(text: str) -> int:
@@ -89,7 +102,7 @@ def _is_kantor_job(job: dict) -> bool:
 
 
 def can_run_kerja(c) -> bool:
-    """Return True only when Auto Ojol is off, not currently ngojol, and account has a job."""
+    """Return True only when Auto Ojol is off, not currently ngojol, and account has a kantor job."""
     flags = auto_flags(c.settings.runtime_dir)
     if not flags.get("kerja", False):
         return False
@@ -98,7 +111,7 @@ def can_run_kerja(c) -> bool:
     state = getattr(c, "observed_state", None)
     if state is None or state.phase != "idle" or state.trip or state.trip_id:
         return False
-    return bool(state.job)
+    return isinstance(state.job, dict) and _is_kantor_job(state.job)
 
 
 async def _run_kantor(c) -> bool:
@@ -119,6 +132,18 @@ async def _run_kantor(c) -> bool:
         return False
 
     if kantor.get("libur") or not kantor.get("buka"):
+        _save_kerja_status(
+            c.settings.runtime_dir,
+            {
+                "kind": "kantor",
+                "facility": kantor.get("nama"),
+                "profession": (kantor.get("saya") or {}).get("profesi"),
+                "buka": False,
+                "libur": bool(kantor.get("libur")),
+                "state": "Libur" if kantor.get("libur") else "Tutup",
+                "last_message": kantor.get("alasan") or "Kantor sedang tutup/libur",
+            },
+        )
         c.kerja_retry_at = time.monotonic() + 300
         return False
 
@@ -167,6 +192,22 @@ async def _run_kantor(c) -> bool:
     paket = kantor.get("paket") or {}
     paket_done = not paket.get("berbayar") or int(paket.get("lunas") or 0) >= int(paket.get("perHari") or 0)
     poin_done = kerja.get("status") == "tercapai" or int(kerja.get("poin") or 0) >= int(kerja.get("target") or 30)
+    status_snapshot = {
+        "kind": "kantor",
+        "facility": kantor.get("nama"),
+        "profession": (kantor.get("saya") or {}).get("profesi"),
+        "buka": True,
+        "libur": False,
+        "fase": kantor.get("fase"),
+        "lunas": int(paket.get("lunas") or 0),
+        "per_hari": int(paket.get("perHari") or 3),
+        "menuju": int(paket.get("menuju") or 0),
+        "per_paket": int(paket.get("perPaket") or 5),
+        "poin": int(kerja.get("poin") or 0),
+        "target": int(kerja.get("target") or 30),
+        "state": "Selesai hari ini" if (paket_done and poin_done) else "Aktif",
+    }
+    _save_kerja_status(c.settings.runtime_dir, status_snapshot)
     if paket_done and poin_done:
         c.kerja_retry_at = time.monotonic() + 1800
         return False
@@ -179,6 +220,17 @@ async def _run_kantor(c) -> bool:
         except HttpCoreError as exc:
             if exc.category == "auth":
                 raise
+            if "428" in str(exc):
+                # request() sudah mencoba memecahkan gambar angka via bank; sampai di sini
+                # berarti gagal (atau server minta Turnstile) -> manusia di game.
+                status_snapshot["state"] = "Perlu verifikasi"
+                status_snapshot["last_message"] = (
+                    "Cek manusia otomatis gagal; selesaikan verifikasi di game"
+                )
+                _save_kerja_status(c.settings.runtime_dir, status_snapshot)
+                c.record_event("kerja", "Kerja tertahan: verifikasi manusia belum terpecahkan")
+                c.kerja_retry_at = time.monotonic() + 300
+                return False
             c.kerja_retry_at = time.monotonic() + 60
             return False
 
@@ -202,15 +254,22 @@ async def _run_kantor(c) -> bool:
     if isinstance(done, dict) and done.get("ok"):
         paket_res = done.get("paket")
         if isinstance(paket_res, dict):
-            c.record_event(
-                "kerja",
-                f"Tugas kantor ke-{paket_res.get('nomor', '?')} lunas (+{int(paket_res.get('rewardMilli') or 0) / 1000:g} koin)",
+            msg = (
+                f"Tugas kantor ke-{paket_res.get('nomor', '?')} lunas "
+                f"(+{int(paket_res.get('rewardMilli') or 0) / 1000:g} koin)"
             )
+            c.record_event("kerja", msg)
+            status_snapshot["lunas"] = int(paket_res.get("nomor") or status_snapshot["lunas"])
+            status_snapshot["menuju"] = 0
         else:
-            c.record_event(
-                "kerja",
-                f"Urusan kantor selesai: {urusan.get('judul', 'Tugas')} (+{done.get('poin', 0)} poin)",
+            msg = f"Urusan selesai: {urusan.get('judul', 'Tugas')} (+{done.get('poin', 0)} poin)"
+            c.record_event("kerja", msg)
+            status_snapshot["menuju"] = min(
+                status_snapshot["menuju"] + 1, status_snapshot["per_paket"]
             )
+        status_snapshot["poin"] = status_snapshot["poin"] + int(done.get("poin") or 0)
+        status_snapshot["last_message"] = msg
+        _save_kerja_status(c.settings.runtime_dir, status_snapshot)
     jeda = float(kantor.get("jedaUrusanDetik") or 3)
     c.kerja_retry_at = time.monotonic() + jeda
     return True
@@ -272,7 +331,7 @@ async def _run_kerja_malam(c) -> bool:
 
 
 async def run_kerja(c) -> bool:
-    """Execute one automated work step if eligible."""
+    """Execute one automated kantor work step if eligible."""
     if not hasattr(c.ui, "kantor_action"):
         return False
     if not can_run_kerja(c):
@@ -280,7 +339,4 @@ async def run_kerja(c) -> bool:
     if time.monotonic() < getattr(c, "kerja_retry_at", 0):
         return False
 
-    job = c.observed_state.job or {}
-    if _is_kantor_job(job):
-        return await _run_kantor(c)
-    return await _run_kerja_malam(c)
+    return await _run_kantor(c)

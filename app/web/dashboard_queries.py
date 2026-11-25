@@ -665,6 +665,7 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
     directory = cur_service.settings.runtime_dir
     data, _ = status_record(directory / "status.json")
     state = dashboard_snapshot(directory, data)
+    kerja_status, _ = status_record(directory / "kerja-status.json")
 
     flags = auto_flags(directory)
     subj_dict = subjects(directory)
@@ -709,6 +710,7 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
         "skills": cached_skills(directory),
         "summary": summary,
         "snapshot": state,
+        "kerja_status": kerja_status or None,
         "auto_flags": flags_payload,
         "study_subject": cur_subj,
         "ojol_mode": getattr(cur_service.settings, "ojol_mode", "otomatis"),

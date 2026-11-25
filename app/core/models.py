@@ -207,6 +207,7 @@ class Snapshot(Model):
     ojol_shift_done: bool = False
     ojol_hours_left: float | None = None
     ojol_maintenance: bool = False
+    ojol_mitra: bool | None = None
     ojol_mode: str | None = None
     trip_jemput: bool | None = None
     kondisi: dict[str, Any] = Field(default_factory=dict)

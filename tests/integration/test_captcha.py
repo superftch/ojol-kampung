@@ -41,7 +41,7 @@ def test_seed_shapes_solve_and_reversed_strokes_still_match():
 
 
 def test_unknown_glyph_raises_instead_of_guessing():
-    svg = '<svg><polyline points="0,0 3,3 6,0 9,9 12,3 15,15"/></svg>'
+    svg = '<svg><polyline points="10,10 25,45 40,10"/></svg>'  # bentuk "V"
     with pytest.raises(SvgCaptchaSolverError):
         solve_polyline_captcha(svg)
 
@@ -86,7 +86,7 @@ def test_get_pending_reviews_discovers_error_files():
         sample_error = {
             "error_id": "OJL-DF67EFD4AB5D",
             "category": "SvgCaptchaSolverError",
-            "message": "Gagal memecahkan gambar cek: Glyph cek belum dikenali: [[[0.86, 1.0], [0.86, 0.0], [0.0, 0.74]]]",
+            "message": "Gagal memecahkan gambar cek: Glyph cek belum dikenali: [[[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]]]",
             "time": "2026-11-24T08:00:00Z",
         }
         (err_dir / "OJL-DF67EFD4AB5D.json").write_text(json.dumps(sample_error))
@@ -94,11 +94,11 @@ def test_get_pending_reviews_discovers_error_files():
         pending = get_pending_reviews(tmp)
         assert len(pending) == 1
         assert pending[0]["error_id"] == "OJL-DF67EFD4AB5D"
-        assert pending[0]["glyph"] == [[[0.86, 1.0], [0.86, 0.0], [0.0, 0.74]]]
+        assert pending[0]["glyph"] == [[[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]]]
 
         # Test resolving error
         resolve_review(
-            tmp, "OJL-DF67EFD4AB5D", digit="4", glyph=[[[0.86, 1.0], [0.86, 0.0], [0.0, 0.74]]]
+            tmp, "OJL-DF67EFD4AB5D", digit="4", glyph=[[[0.0, 0.0], [0.5, 1.0], [1.0, 0.0]]]
         )
         # After resolve, it should no longer be pending
         assert len(get_pending_reviews(tmp)) == 0
@@ -297,3 +297,32 @@ def test_bank_recognition_auto_clears_pending_reviews():
 
         # After learning, get_pending_reviews must automatically filter it out
         assert len(get_pending_reviews(tmp)) == 0
+
+
+def test_digit_four_from_live_human_check_samples():
+    """Dua sampel live cek manusia kantor (25 Nov 2026) berangka 44."""
+    svg = (
+        '<svg><polyline points="34.2,41.2 32.1,5.8 17.4,30.6 38.6,32.3"/>'
+        '<polyline points="90.5,42.5 87.7,11.7 73.2,33.2 93.3,32.9"/></svg>'
+    )
+    assert solve_polyline_captcha(svg) == "44"
+
+
+@pytest.mark.parametrize(
+    ("points", "kode"),
+    [
+        # sampel 4 resolusi lain (68x68, garis 4px) - tetap harus terbaca
+        (
+            "44.8,56.0 45.2,49.8 45.7,43.6 46.1,37.4 46.6,31.2 47.0,25.1 47.4,18.9 "
+            "47.9,12.7 45.5,12.0 40.7,16.0 35.9,20.0 31.1,24.0 26.3,28.0 21.6,32.0 "
+            "16.8,36.0 12.0,40.1 12.2,42.1 18.5,41.7 24.7,41.4 31.0,41.0 37.2,40.7 "
+            "43.5,40.3 49.7,39.9 56.0,39.6",
+            "4",
+        ),
+        ("38,12 26,24 34,24 34,52", "1"),
+        ("12,10 55,10 25,55", "7"),
+        ("50,30 22,30 22,14 50,13 47,32 10,55", "9"),
+    ],
+)
+def test_four_and_one_are_not_confused(points, kode):
+    assert solve_polyline_captcha(f'<svg><polyline points="{points}"/></svg>') == kode

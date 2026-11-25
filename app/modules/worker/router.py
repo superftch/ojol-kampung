@@ -45,6 +45,51 @@ async def _run_worker_command(
         raise HTTPException(400, str(exc)) from None
 
 
+def _account_snapshot(cur_service) -> dict:
+    status_data, _ = status_record(cur_service.settings.runtime_dir / "status.json")
+    return dashboard_snapshot(cur_service.settings.runtime_dir, status_data)
+
+
+def _validate_ojol_eligible(cur_service) -> None:
+    snap = _account_snapshot(cur_service)
+    if snap.get("ojol_mitra") is False:
+        raise HTTPException(
+            400,
+            "Akun belum menjadi mitra Ojol. Daftar mitra terlebih dahulu di game.",
+        )
+    if snap.get("job"):
+        raise HTTPException(
+            400,
+            "Auto Ojol dinonaktifkan karena akun sudah memiliki pekerjaan aktif.",
+        )
+
+
+def _validate_kerja_eligible(cur_service, *, allow_ojol_switch: bool = False) -> None:
+    snap = _account_snapshot(cur_service)
+    job = snap.get("job")
+    if not isinstance(job, dict) or not job:
+        raise HTTPException(
+            400,
+            "Akun belum memiliki pekerjaan aktif. Ambil kerja kantor dulu di game.",
+        )
+    if job.get("kantor") is None and job.get("employerType") not in {"PUBLIC", "BUSINESS"}:
+        raise HTTPException(
+            400,
+            "Auto Kantor hanya untuk pekerjaan kantor/fasum/usaha.",
+        )
+    flags = auto_flags(cur_service.settings.runtime_dir)
+    if not allow_ojol_switch and flags.get("ojol"):
+        raise HTTPException(
+            400,
+            "Matikan Auto Ojol terlebih dahulu sebelum mengaktifkan Auto Kantor.",
+        )
+    if snap.get("phase") in {"searching", "delivering", "complete"} or snap.get("trip"):
+        raise HTTPException(
+            400,
+            "Selesaikan order Ojol yang sedang berjalan sebelum mengaktifkan Auto Kantor.",
+        )
+
+
 @router.post("/api/control/run")
 async def run_ojol(
     request: Request,
@@ -52,6 +97,7 @@ async def run_ojol(
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
     cur_service = _require_account_service(ctx, user, request)
+    _validate_ojol_eligible(cur_service)
     mode = getattr(cur_service.settings, "ojol_mode", "otomatis")
     try:
         res = await cur_service.command("run", mode=mode)
@@ -121,6 +167,26 @@ async def stop_needs(
     return await _run_worker_command(ctx, user, request, "stop_kebutuhan")
 
 
+@router.post("/api/control/run-kerja")
+async def run_kerja_cmd(
+    request: Request,
+    user: Annotated[dict, Depends(require_user)],
+    ctx: Annotated[WebContext, Depends(get_ctx)],
+):
+    cur_service = _require_account_service(ctx, user, request)
+    _validate_kerja_eligible(cur_service, allow_ojol_switch=True)
+    return await _run_worker_command(ctx, user, request, "run_kerja")
+
+
+@router.post("/api/control/stop-kerja")
+async def stop_kerja_cmd(
+    request: Request,
+    user: Annotated[dict, Depends(require_user)],
+    ctx: Annotated[WebContext, Depends(get_ctx)],
+):
+    return await _run_worker_command(ctx, user, request, "stop_kerja")
+
+
 @router.post("/api/control/toggle-auto")
 async def toggle_auto_api(
     request: Request,
@@ -147,24 +213,11 @@ async def toggle_auto_api(
                     )
         elif flag == "kerja":
             if enabled:
-                flags = auto_flags(cur_service.settings.runtime_dir)
-                if flags.get("ojol"):
-                    raise HTTPException(
-                        400,
-                        "Matikan Auto Ojol terlebih dahulu sebelum mengaktifkan Auto Kerja.",
-                    )
-                status_data, _ = status_record(cur_service.settings.runtime_dir / "status.json")
-                snap = dashboard_snapshot(cur_service.settings.runtime_dir, status_data)
-                if snap.get("phase") in {"searching", "delivering", "complete"} or snap.get("trip"):
-                    raise HTTPException(
-                        400,
-                        "Selesaikan order Ojol yang sedang berjalan sebelum mengaktifkan Auto Kerja.",
-                    )
-                if not snap.get("job"):
-                    raise HTTPException(400, "Akun belum memiliki pekerjaan aktif.")
+                _validate_kerja_eligible(cur_service)
             set_auto_flag(cur_service.settings.runtime_dir, "kerja", enabled)
         else:
             if flag == "ojol" and enabled:
+                _validate_ojol_eligible(cur_service)
                 set_auto_flag(cur_service.settings.runtime_dir, "kerja", False)
             set_auto_flag(cur_service.settings.runtime_dir, flag, enabled)
         return {"success": True, "flag": flag, "enabled": enabled}

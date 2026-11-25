@@ -371,6 +371,7 @@ def snapshot_from_api(
         ojol_shift_done=is_shift_done,
         ojol_hours_left=hours_left,
         ojol_maintenance=is_ojol_maintenance,
+        ojol_mitra=bool(ojol.get("mitra")) if "mitra" in ojol else None,
         ojol_mode=trip.get("mode") if trip else None,
         trip_jemput=trip.get("jemput") if trip else None,
         kondisi=needs.get("kondisi") or {},

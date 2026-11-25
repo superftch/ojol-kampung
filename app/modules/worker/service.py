@@ -339,6 +339,24 @@ class ControlService:
                 )
             await self.stop_worker()
             return "⏹ Aktivitas akun sudah dihentikan.\n\nTekan Jalankan Ojol atau Jalankan Kebutuhan jika ingin melanjutkan."
+        if command == "stop_kerja":
+            set_auto_flag(self.settings.runtime_dir, "kerja", False)
+            flags = auto_flags(self.settings.runtime_dir)
+            active = (self.worker and self.worker.returncode is None) or running(
+                self.settings.runtime_dir
+            )
+            if active and (flags.get("ojol") or any(flags.get(k) for k in NEEDS)):
+                return "⏹ Auto Kantor dihentikan. Aktivitas auto lain tetap berjalan."
+            await self.stop_worker()
+            return "⏹ Auto Kantor dan worker dihentikan."
+        if command == "run_kerja":
+            set_auto_flag(self.settings.runtime_dir, "ojol", False)
+            set_auto_flag(self.settings.runtime_dir, "kerja", True)
+            if (self.worker and self.worker.returncode is None) or running(
+                self.settings.runtime_dir
+            ):
+                return "🟢 Auto Kantor aktif. Bot sedang menjalankan pekerjaan kantor."
+            return await self._start_worker(auto_start=True, needs_only=False)
         if command == "stop":
             await self.stop_worker()
             return "⏹ Aktivitas akun sudah dihentikan.\n\nTekan Jalankan Ojol atau Jalankan Kebutuhan jika ingin melanjutkan."

@@ -289,3 +289,20 @@ async def test_fatal_control_error_stops_every_account_not_only_admin(managed, m
         json.loads((manager.control_settings.runtime_dir / "last-error.json").read_text())["stage"]
         == "management.supervise"
     )
+
+
+async def test_http_ui_forwards_kantor_and_kerja_malam(settings):
+    """Auto Kerja hanya jalan bila HttpUI meneruskan kantor_action (guard hasattr)."""
+    api = SimpleNamespace(
+        kantor_action=AsyncMock(return_value={"kantor": {"nama": "Bank desa"}}),
+        kerja_malam_status=AsyncMock(return_value={"enabled": True}),
+        kerja_malam_action=AsyncMock(return_value={"ok": True}),
+    )
+    ui = HttpUI(settings, api=api)
+    assert await ui.kantor_action("detak") == {"kantor": {"nama": "Bank desa"}}
+    api.kantor_action.assert_awaited_once_with("detak")
+    await ui.kantor_action("kejadian", idx=2)
+    api.kantor_action.assert_awaited_with("kejadian", idx=2)
+    assert await ui.kerja_malam_status() == {"enabled": True}
+    assert await ui.kerja_malam_action("lampu", key="L1") == {"ok": True}
+    api.kerja_malam_action.assert_awaited_once_with("lampu", key="L1")
