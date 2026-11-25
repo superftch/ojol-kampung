@@ -84,6 +84,12 @@ class HttpUI:
     async def kerja_malam_action(self, action, **fields):
         return await self.api.kerja_malam_action(action, **fields)
 
+    async def game_skill_state(self):
+        return await self.api.game_skill_state()
+
+    async def take_skill_course(self, track):
+        return await self.api.take_skill_course(track)
+
     async def study_start(self, mode, track, expected_price, expected_wallet, min_balance):
         return await self.api.study_start(
             mode,

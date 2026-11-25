@@ -306,6 +306,7 @@ class OjolHttpApi:
                 "/api/diving/realtime",
                 "/api/kantor",
                 "/api/kerja-malam",
+                "/api/skills",
             }
             or re.fullmatch(
                 r"/api/world/plots\?v=2&blocks=[A-Z][0-9]{2}(?:,[A-Z][0-9]{2}){0,23}", path
@@ -334,6 +335,7 @@ class OjolHttpApi:
                     "/api/diving",
                     "/api/kantor",
                     "/api/kerja-malam",
+                    "/api/skills",
                 }
                 and not garden_action
                 and not re.fullmatch(r"/api/spbu/[A-Z0-9-]+", path)
@@ -756,3 +758,16 @@ class OjolHttpApi:
     async def kerja_malam_action(self, action: str, **fields):
         """Send an action payload to /api/kerja-malam."""
         return await self.request("/api/kerja-malam", {"action": action, **fields})
+
+    async def game_skill_state(self) -> tuple[int, dict]:
+        """Fetch current balanceMilli and skill state from /api/game/me."""
+        me = await self.request("/api/game/me")
+        if not isinstance(me, dict):
+            return 0, {}
+        return int(me.get("balanceMilli") or 0), me.get("skill") or {}
+
+    async def take_skill_course(self, track: str):
+        """Start a skill course on /api/skills for the given track."""
+        from uuid import uuid4
+
+        return await self.request("/api/skills", {"requestId": str(uuid4()), "track": track})

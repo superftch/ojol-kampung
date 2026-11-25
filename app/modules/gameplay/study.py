@@ -1,7 +1,9 @@
 """Per-account study choices and one daily study/quiz attempt per facility mode."""
 
 import ast
+import contextlib
 import json
+import random
 import re
 import time
 from datetime import timedelta
@@ -10,6 +12,8 @@ from uuid import uuid4
 from app.core.exceptions import StopRequested
 from app.core.models import AUTO_SUBJECT, STUDY_LABELS, SUBJECTS, now
 from app.core.storage import write_private
+from app.integrations.kampung.http_api import HttpCoreError, timestamp
+from app.modules.worker.settings import auto_flags, set_auto_flag
 
 
 def pick_auto_track(tracks, mode, study_tracks=None):
@@ -350,3 +354,164 @@ async def run_learning(controller):
         )
         return True
     return False
+
+
+KURSUS_SETTINGS_FILE = "kursus-settings.json"
+KURSUS_STATUS_FILE = "kursus-status.json"
+
+
+def kursus_subject(directory) -> str | None:
+    path = directory / KURSUS_SETTINGS_FILE
+    if not path.is_file():
+        return None
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError, TypeError):
+        return None
+    track = data.get("track") if isinstance(data, dict) else None
+    return track if track in SUBJECTS else None
+
+
+def set_kursus_subject(directory, track: str) -> None:
+    if track not in SUBJECTS:
+        raise ValueError("Pilih bidang kursus yang valid (wajib memilih salah satu bidang).")
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    write_private(directory / KURSUS_SETTINGS_FILE, {"track": track})
+
+
+def kursus_cost_info(skills: list, track: str | None) -> dict | None:
+    if not track or track not in SUBJECTS:
+        return None
+    info = next((t for t in (skills or []) if isinstance(t, dict) and t.get("id") == track), None)
+    if not isinstance(info, dict):
+        return {"track": track, "label": SUBJECTS[track], "cost_milli": None}
+    next_info = info.get("next") if isinstance(info.get("next"), dict) else None
+    pending = info.get("pending") if isinstance(info.get("pending"), dict) else None
+    return {
+        "track": track,
+        "label": SUBJECTS[track],
+        "level": info.get("level"),
+        "next_level": next_info.get("level") if next_info else None,
+        "cost_milli": int(next_info["courseMilli"]) if next_info and next_info.get("courseMilli") is not None else None,
+        "hours": next_info.get("hours") if next_info else None,
+        "pending": bool(pending),
+        "ready_at": pending.get("readyAt") if pending else None,
+        "rush_milli": pending.get("rushMilli") if pending else None,
+        "is_max": next_info is None,
+    }
+
+
+def _save_kursus_status(directory, payload: dict) -> None:
+    try:
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        write_private(directory / KURSUS_STATUS_FILE, {**payload, "updated_at": now().isoformat()})
+    except OSError:
+        pass
+
+
+async def run_kursus(c) -> bool:
+    """Take one paid skill course (/api/skills) when Auto Kursus is enabled and eligible."""
+    if not hasattr(c.ui, "take_skill_course") or not hasattr(c.ui, "game_skill_state"):
+        return False
+    flags = auto_flags(c.settings.runtime_dir)
+    if not flags.get("kursus"):
+        return False
+    track = kursus_subject(c.settings.runtime_dir)
+    if not track:
+        return False
+    if time.monotonic() < getattr(c, "kursus_retry_at", 0):
+        return False
+
+    try:
+        balance_milli, skill = await c.ui.game_skill_state()
+    except HttpCoreError as exc:
+        if exc.category == "auth":
+            raise
+        c.kursus_retry_at = time.monotonic() + 120
+        return False
+
+    tracks = skill.get("tracks") or []
+    if isinstance(tracks, list) and tracks:
+        save_skills(c.settings.runtime_dir, tracks)
+
+    track_info = next((t for t in tracks if isinstance(t, dict) and t.get("id") == track), None)
+    if not isinstance(track_info, dict) or not isinstance(track_info.get("next"), dict):
+        _save_kursus_status(
+            c.settings.runtime_dir,
+            {"track": track, "label": SUBJECTS[track], "state": "Maksimal"},
+        )
+        set_auto_flag(c.settings.runtime_dir, "kursus", False)
+        c.record_event("kursus", f"Kursus {SUBJECTS[track]} sudah level maksimal; Auto Kursus dimatikan.")
+        return False
+
+    pending = track_info.get("pending")
+    if isinstance(pending, dict):
+        wait_s = 300.0
+        if isinstance(pending.get("readyAt"), str):
+            with contextlib.suppress(ValueError, TypeError):
+                wait_s = max(10.0, (timestamp(pending["readyAt"]) - now()).total_seconds())
+        _save_kursus_status(
+            c.settings.runtime_dir,
+            {
+                "track": track,
+                "label": SUBJECTS[track],
+                "state": "Pending",
+                "ready_at": pending.get("readyAt"),
+            },
+        )
+        c.kursus_retry_at = time.monotonic() + min(wait_s, 3600.0) + random.uniform(2.0, 10.0)  # noqa: S311
+        return False
+
+    course = skill.get("course") or {}
+    used = int(course.get("usedToday") or 0)
+    daily_max = int(course.get("dailyMax") or 3)
+    if used >= daily_max:
+        _save_kursus_status(
+            c.settings.runtime_dir,
+            {"track": track, "label": SUBJECTS[track], "state": f"Kuota habis ({used}/{daily_max})"},
+        )
+        c.kursus_retry_at = time.monotonic() + 1800 + random.uniform(5.0, 30.0)  # noqa: S311
+        return False
+
+    next_info = track_info["next"]
+    cost_milli = int(next_info.get("courseMilli") or course.get("priceMilli") or 5000)
+    if int(balance_milli or 0) < cost_milli:
+        _save_kursus_status(
+            c.settings.runtime_dir,
+            {
+                "track": track,
+                "label": SUBJECTS[track],
+                "state": f"Saldo kurang (butuh {cost_milli / 1000:g} koin)",
+                "cost_milli": cost_milli,
+            },
+        )
+        c.kursus_retry_at = time.monotonic() + 300
+        return False
+
+    try:
+        res = await c.ui.take_skill_course(track)
+    except HttpCoreError as exc:
+        if exc.category == "auth":
+            raise
+        c.kursus_retry_at = time.monotonic() + 120
+        return False
+
+    ready_at = res.get("readyAt") if isinstance(res, dict) else None
+    _save_kursus_status(
+        c.settings.runtime_dir,
+        {
+            "track": track,
+            "label": SUBJECTS[track],
+            "state": "Berjalan",
+            "level": track_info.get("level"),
+            "next_level": next_info.get("level"),
+            "cost_milli": cost_milli,
+            "ready_at": ready_at,
+        },
+    )
+    c.record_event(
+        "kursus",
+        f"🎓 Kursus {SUBJECTS[track]} (Lv {next_info.get('level')}) dimulai · Biaya {cost_milli / 1000:g} koin",
+    )
+    c.kursus_retry_at = time.monotonic() + 5 + random.uniform(2.0, 5.0)  # noqa: S311
+    return True

@@ -163,3 +163,145 @@ async def test_run_kerja_skips_non_kantor_job(tmp_path):
 
     assert can_run_kerja(c) is False
     assert await run_kerja(c) is False
+
+
+@pytest.mark.asyncio
+async def test_run_kerja_kantor_caps_status_to_max_and_adds_jitter(tmp_path, monkeypatch):
+    import json
+    import time
+
+    set_auto_flag(tmp_path, "ojol", False)
+    set_auto_flag(tmp_path, "kerja", True)
+
+    sleeps = []
+    jitter_calls = []
+
+    async def record_sleep(seconds):
+        sleeps.append(seconds)
+
+    def fake_jitter(low=2.0, high=4.0):
+        jitter_calls.append((low, high))
+        assert low >= 2.0
+        return low
+
+    monkeypatch.setattr("app.modules.gameplay.kerja.asyncio.sleep", record_sleep)
+    monkeypatch.setattr("app.modules.gameplay.kerja._jitter", fake_jitter)
+
+    class FakeUi:
+        async def kantor_action(self, action, **fields):
+            if action == "detak":
+                return {
+                    "kantor": {
+                        "buka": True,
+                        "libur": False,
+                        "sekarang": "2026-11-25T05:00:00.000Z",
+                        "kerja": {"status": "penuh", "poin": 29, "target": 30},
+                        "paket": {"berbayar": True, "lunas": 3, "perHari": 3, "menuju": 2, "perPaket": 5},
+                        "bersama": [],
+                        "kejadian": [],
+                        "urusan": None,
+                        "jedaUrusanDetik": 3,
+                    }
+                }
+            if action == "urusan-mulai":
+                return {"id": "u1", "judul": "Tinjau", "langkah": [{"aksi": "sapa"}]}
+            if action == "urusan-selesai":
+                return {"ok": True, "poin": 3, "paket": None}
+            raise AssertionError(f"Unexpected action: {action}")
+
+    c = SimpleNamespace(
+        ui=FakeUi(),
+        settings=SimpleNamespace(runtime_dir=tmp_path),
+        observed_state=_snapshot(),
+        record_event=lambda kind, msg: None,
+    )
+
+    assert await run_kerja(c) is True
+    assert sleeps and sleeps[0] >= 3.7  # base 1.7 + jitter >= 2.0
+    assert jitter_calls
+    saved = json.loads((tmp_path / "kerja-status.json").read_text())
+    assert saved["poin"] == 30
+    assert saved["target"] == 30
+    assert saved["lunas"] == 3
+    assert saved["menuju"] == 0
+    assert saved["state"] == "Selesai hari ini"
+    assert saved["completed_date"] == "2026-11-25"
+    # Remains armed for tomorrow, but paused until next WIB day
+    assert auto_flags(tmp_path)["kerja"] is True
+    assert c.kerja_retry_at > time.monotonic() + 3600
+
+
+@pytest.mark.asyncio
+async def test_run_kerja_kantor_pauses_until_tomorrow_and_resumes_next_day(tmp_path):
+    import json
+    import time
+
+    set_auto_flag(tmp_path, "ojol", False)
+    set_auto_flag(tmp_path, "kerja", True)
+
+    calls = []
+
+    class FakeUi:
+        async def kantor_action(self, action, **fields):
+            calls.append(action)
+            if action == "detak":
+                return {
+                    "kantor": {
+                        "buka": True,
+                        "libur": False,
+                        "sekarang": "2026-11-25T05:00:00.000Z",
+                        "kerja": {"status": "tercapai", "poin": 30, "target": 30},
+                        "paket": {"berbayar": True, "lunas": 3, "perHari": 3, "menuju": 0, "perPaket": 5},
+                        "bersama": [{"id": "b1", "dari": 0, "sampai": 1440, "ikut": False}],
+                        "kejadian": [{"idx": 0, "dari": 0, "sampai": 1440, "oleh": None}],
+                        "urusan": None,
+                    }
+                }
+            raise AssertionError(f"Should not call {action} when already max")
+
+    c = SimpleNamespace(
+        ui=FakeUi(),
+        settings=SimpleNamespace(runtime_dir=tmp_path),
+        observed_state=_snapshot(),
+        record_event=lambda kind, msg: None,
+    )
+
+    assert await run_kerja(c) is False
+    assert calls == ["detak"]
+    assert auto_flags(tmp_path)["kerja"] is True
+    assert c.kerja_retry_at > time.monotonic() + 3600
+
+    # Even if retry_at is cleared (e.g. worker restart) on the same day, detak is not called again
+    c.kerja_retry_at = 0
+    saved = json.loads((tmp_path / "kerja-status.json").read_text())
+    saved["completed_date"] = datetime.now().astimezone().date().isoformat()
+    (tmp_path / "kerja-status.json").write_text(json.dumps(saved))
+    assert await run_kerja(c) is False
+    assert calls == ["detak"]
+
+    # Next day (completed_date is yesterday) -> resumes calling detak
+    c.kerja_retry_at = 0
+    saved["completed_date"] = "2020-01-01"
+    (tmp_path / "kerja-status.json").write_text(json.dumps(saved))
+    assert await run_kerja(c) is False
+    assert calls == ["detak", "detak"]
+
+
+def test_seconds_until_next_open_respects_jam_kerja():
+    from app.modules.gameplay.kerja import _seconds_until_next_open
+
+    jam = {"from": "08:00", "to": "16:00", "istirahat": {"from": "11:30", "to": "12:30"}}
+
+    # 06:30 WIB (23:30 UTC prev day) -> 1.5h until 08:00 WIB
+    assert _seconds_until_next_open(jam, "2026-11-24T23:30:00.000Z") == pytest.approx(5400.0)
+
+    # 12:00 WIB (05:00 UTC) during break -> 30m until 12:30 WIB
+    assert _seconds_until_next_open(jam, "2026-11-25T05:00:00.000Z") == pytest.approx(1800.0)
+
+    # 17:00 WIB (10:00 UTC) after close -> 15h until 08:00 WIB tomorrow
+    assert _seconds_until_next_open(jam, "2026-11-25T10:00:00.000Z") == pytest.approx(54000.0)
+
+    # 12:00 WIB (05:00 UTC) with force_tomorrow -> 20h until 08:00 WIB tomorrow (not midnight)
+    assert _seconds_until_next_open(
+        jam, "2026-11-25T05:00:00.000Z", force_tomorrow=True
+    ) == pytest.approx(72000.0)

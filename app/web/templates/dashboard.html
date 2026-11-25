@@ -293,6 +293,36 @@
                             <option value="keamanan">🛡️ Keamanan</option>
                             <option value="boga">🍳 Tata Boga</option>
                             <option value="penerbangan">✈️ Penerbangan</option>
+                            <option value="media">📰 Media</option>
+                        </select>
+                    </div>
+
+                    <div style="margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px;">
+                        <div class="toggle-item" style="margin-bottom: 8px;">
+                            <div class="toggle-info">
+                                <span class="toggle-title">⚡ Auto Kursus Keahlian (Berbayar)</span>
+                                <span class="toggle-desc" id="autoKursusDesc">Otomatis ambil kursus (/api/skills) sesuai kuota harian. Wajib pilih bidang terlebih dahulu.</span>
+                                <span class="toggle-desc" id="kursusCostInfo" style="margin-top:4px;font-size:12px;color:var(--accent,#0f766e);display:none;"></span>
+                            </div>
+                            <label class="switch">
+                                <input type="checkbox" id="autoKursusToggle" aria-label="Auto Kursus" onchange="toggleAuto('kursus', this.checked)">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                        <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 6px;">Pilih Bidang Kursus (Wajib):</label>
+                        <select id="kursusSubjectSelect" aria-label="Bidang kursus" class="account-select" style="width: 100%;" onchange="setKursusSubject(this.value)">
+                            <option value="">-- Pilih Bidang Kursus (Wajib) --</option>
+                            <option value="dagang">🛒 Dagang</option>
+                            <option value="teknik">🔧 Teknik</option>
+                            <option value="administrasi">📋 Administrasi</option>
+                            <option value="kesehatan">🏥 Kesehatan</option>
+                            <option value="mengajar">👨‍🏫 Mengajar</option>
+                            <option value="rawat">🏡 Rawat Desa</option>
+                            <option value="konveksi">👕 Konveksi</option>
+                            <option value="keamanan">🛡️ Keamanan</option>
+                            <option value="boga">🍳 Tata Boga</option>
+                            <option value="penerbangan">✈️ Penerbangan</option>
+                            <option value="media">📰 Media</option>
                         </select>
                     </div>
 

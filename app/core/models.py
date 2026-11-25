@@ -30,6 +30,7 @@ SUBJECTS: dict[str, str] = {
     "teknik": "Teknik",
     "boga": "Tata boga",
     "penerbangan": "Penerbangan",
+    "media": "Media",
 }
 
 

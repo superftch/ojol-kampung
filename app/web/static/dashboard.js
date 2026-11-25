@@ -531,6 +531,49 @@ function renderDashboard(data) {
         document.getElementById('studySubjectSelect').value = data.study_subject;
     }
 
+    const kursusToggle = document.getElementById('autoKursusToggle');
+    const kursusSelect = document.getElementById('kursusSubjectSelect');
+    const kursusCostEl = document.getElementById('kursusCostInfo');
+    if (kursusSelect) {
+        kursusSelect.value = data.kursus_subject || '';
+    }
+    if (kursusToggle) {
+        const hasKursusSubject = Boolean(data.kursus_subject);
+        kursusToggle.checked = !!flags.kursus;
+        kursusToggle.disabled = !selected || (!hasKursusSubject && !flags.kursus);
+    }
+    if (kursusCostEl) {
+        const kc = data.kursus_cost || null;
+        const ks = data.kursus_status || null;
+        if (!data.kursus_subject) {
+            kursusCostEl.textContent = 'Wajib pilih bidang kursus untuk melihat biaya & mengaktifkan.';
+            kursusCostEl.style.color = '#f59e0b';
+            kursusCostEl.style.display = 'block';
+        } else if (kc) {
+            const parts = [];
+            if (kc.is_max) {
+                parts.push(`${kc.label}: Sudah level maksimal (Lv ${kc.level ?? 10})`);
+            } else {
+                const lvl = (typeof kc.level === 'number' && typeof kc.next_level === 'number')
+                    ? `Lv ${kc.level} → Lv ${kc.next_level}`
+                    : '';
+                const costStr = typeof kc.cost_milli === 'number' ? `${kc.cost_milli / 1000} koin` : 'cek saat jalan';
+                const durStr = typeof kc.hours === 'number' ? `${kc.hours} jam` : '';
+                parts.push(`${kc.label}${lvl ? ` (${lvl})` : ''} · Biaya: ${costStr}${durStr ? ` · Durasi: ${durStr}` : ''}`);
+                if (kc.pending) {
+                    parts.push(`Pending${kc.rush_milli ? ` (Percepat: ${kc.rush_milli / 1000} koin)` : ''}`);
+                }
+            }
+            if (ks && ks.state) parts.push(`Status: ${ks.state}`);
+            kursusCostEl.textContent = parts.join(' · ');
+            kursusCostEl.style.color = 'var(--accent,#0f766e)';
+            kursusCostEl.style.display = 'block';
+        } else {
+            kursusCostEl.textContent = '';
+            kursusCostEl.style.display = 'none';
+        }
+    }
+
     const cookie = document.getElementById('btnCookieToolbar');
     const reconnect = sum.cookie_valid === false;
     cookie.textContent = !selected?.has_cookie ? 'Hubungkan cookie' : reconnect ? 'Perbarui cookie' : 'Ganti cookie';
@@ -762,6 +805,10 @@ function renderAutomationControls(data) {
         if (pending) label = 'Memproses…';
         else if (maintenance) { label = 'Dijeda untuk pemeliharaan'; tone = 'paused'; }
         else if (active && isSleeping) { label = 'Dijeda saat karakter tidur'; tone = 'paused'; }
+        else if (active && feature === 'Kerja' && data.kerja_status?.state === 'Selesai hari ini') {
+            label = 'Selesai hari ini · Lanjut besok';
+            tone = 'paused';
+        }
         else if (active) { label = 'Sedang berjalan'; tone = 'active'; }
         else if (enabled) label = 'Siap dijalankan';
         else if (feature === 'Ojol' && notMitra && !hasJob) label = 'Belum mitra';
@@ -818,17 +865,24 @@ function renderAutomationControls(data) {
             const parts = [];
             if (ks.state) parts.push(`Status: ${ks.state}`);
             if (typeof ks.lunas === 'number' && typeof ks.per_hari === 'number') {
-                parts.push(`Tugas: ${ks.lunas}/${ks.per_hari} lunas (${ks.menuju ?? 0}/${ks.per_paket ?? 5} urusan)`);
+                const lunas = Math.min(ks.lunas, ks.per_hari);
+                parts.push(
+                    lunas >= ks.per_hari
+                        ? `Tugas: ${lunas}/${ks.per_hari} lunas`
+                        : `Tugas: ${lunas}/${ks.per_hari} lunas (${ks.menuju ?? 0}/${ks.per_paket ?? 5} urusan)`
+                );
             }
             if (typeof ks.poin === 'number' && typeof ks.target === 'number') {
-                parts.push(`Kerja penuh: ${ks.poin}/${ks.target} poin`);
+                parts.push(`Kerja penuh: ${Math.min(ks.poin, ks.target)}/${ks.target} poin`);
             }
             if (ks.last_message) parts.push(ks.last_message);
             kerjaRtEl.textContent = parts.join(' · ');
             kerjaRtEl.style.display = parts.length ? 'block' : 'none';
         } else if (snap.job && snap.job.kantor) {
             const k = snap.job.kantor;
-            kerjaRtEl.textContent = `Kerja penuh: ${k.poin ?? 0}/${k.target ?? 30} poin · Status: ${k.status || '-'}`;
+            const target = k.target ?? 30;
+            const poin = Math.min(k.poin ?? 0, target);
+            kerjaRtEl.textContent = `Kerja penuh: ${poin}/${target} poin · Status: ${k.status || '-'}`;
             kerjaRtEl.style.display = 'block';
         } else {
             kerjaRtEl.textContent = '';
@@ -939,6 +993,24 @@ async function setStudySubject(subject) {
             body: JSON.stringify({ subject })
         });
         showToast('Bidang belajar: ' + subject.toUpperCase(), 'info');
+        await refreshDashboard();
+    } catch (e) {
+        showToast('⚠️ Gagal: ' + e.message, 'error');
+        await refreshDashboard();
+    }
+}
+
+async function setKursusSubject(subject) {
+    try {
+        const accountId = dashboardData?.account?.id;
+        if (!accountId) throw new Error('Pilih akun terlebih dahulu.');
+        if (!subject) throw new Error('Wajib pilih bidang kursus.');
+        await apiFetch('/api/control/study-subject?account_id=' + encodeURIComponent(accountId), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ subject, mode: 'kursus' })
+        });
+        showToast('Bidang kursus: ' + subject.toUpperCase(), 'info');
         await refreshDashboard();
     } catch (e) {
         showToast('⚠️ Gagal: ' + e.message, 'error');

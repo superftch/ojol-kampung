@@ -13,7 +13,7 @@ from app.core.formatting import format_coins, parse_coins
 from app.core.models import NEEDS, SUBJECTS
 from app.core.storage import status_record, status_timestamp
 from app.modules.captcha import get_all_pending_reviews
-from app.modules.gameplay.study import cached_skills, subjects
+from app.modules.gameplay.study import cached_skills, kursus_cost_info, kursus_subject, subjects
 from app.modules.ledger.finance import WIB, day_bounds, report_date
 from app.modules.notifications.repository import list_notifications
 from app.modules.worker.settings import auto_flags
@@ -666,6 +666,9 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
     data, _ = status_record(directory / "status.json")
     state = dashboard_snapshot(directory, data)
     kerja_status, _ = status_record(directory / "kerja-status.json")
+    kursus_status, _ = status_record(directory / "kursus-status.json")
+    skills_list = cached_skills(directory)
+    selected_kursus = kursus_subject(directory)
 
     flags = auto_flags(directory)
     subj_dict = subjects(directory)
@@ -707,10 +710,13 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
         "all_accounts_summary": all_accounts_summary,
         "finance": finance_payload,
         "study_history": get_account_study_history(directory, limit=50),
-        "skills": cached_skills(directory),
+        "skills": skills_list,
         "summary": summary,
         "snapshot": state,
         "kerja_status": kerja_status or None,
+        "kursus_subject": selected_kursus,
+        "kursus_cost": kursus_cost_info(skills_list, selected_kursus),
+        "kursus_status": kursus_status or None,
         "auto_flags": flags_payload,
         "study_subject": cur_subj,
         "ojol_mode": getattr(cur_service.settings, "ojol_mode", "otomatis"),

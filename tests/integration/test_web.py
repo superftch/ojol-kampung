@@ -1423,3 +1423,102 @@ def test_dashboard_auto_kerja_location_and_dynamic_ojol_guards(admin_web):
     res_kerja_stop = client.post(f"/api/control/stop-kerja?account_id={acc_id}")
     assert res_kerja_stop.status_code == 200
     service.command.assert_awaited_with("stop_kerja")
+
+
+@pytest.mark.asyncio
+async def test_auto_kursus_requires_subject_shows_cost_and_runs(admin_web):
+    from types import SimpleNamespace
+
+    from app.modules.gameplay.study import run_kursus, save_skills
+
+    client, manager = admin_web
+    user = client.get("/api/auth/me").json()["user"]
+    owner = manager.registry.owner_for_user(user)
+    acc = manager.registry.create(owner, "Kursus Account")
+    acc_id = acc["id"]
+    service = manager.service(acc_id)
+
+    # HTML has Auto Kursus controls
+    html = client.get("/").text
+    assert 'id="autoKursusToggle"' in html
+    assert 'id="kursusSubjectSelect"' in html
+    assert 'id="kursusCostInfo"' in html
+
+    # Cannot enable Auto Kursus before picking a track
+    res_no_track = client.post(
+        f"/api/control/toggle-auto?account_id={acc_id}",
+        json={"flag": "kursus", "enabled": True},
+    )
+    assert res_no_track.status_code == 400
+    assert "bidang" in res_no_track.json()["detail"].lower()
+
+    # Cannot set "auto" as kursus subject
+    res_auto = client.post(
+        f"/api/control/study-subject?account_id={acc_id}",
+        json={"subject": "auto", "mode": "kursus"},
+    )
+    assert res_auto.status_code == 400
+
+    # Save cached skills and select "mengajar"
+    save_skills(
+        service.settings.runtime_dir,
+        [
+            {
+                "id": "mengajar",
+                "name": "Mengajar",
+                "level": 5,
+                "pending": None,
+                "next": {"level": 6, "hours": 48, "courseMilli": 10000},
+            }
+        ],
+    )
+    res_pick = client.post(
+        f"/api/control/study-subject?account_id={acc_id}",
+        json={"subject": "mengajar", "mode": "kursus"},
+    )
+    assert res_pick.status_code == 200
+
+    # Dashboard exposes kursus_subject and kursus_cost
+    dash = client.get(f"/api/dashboard?account_id={acc_id}").json()
+    assert dash["kursus_subject"] == "mengajar"
+    assert dash["kursus_cost"]["cost_milli"] == 10000
+    assert dash["kursus_cost"]["level"] == 5
+    assert dash["kursus_cost"]["next_level"] == 6
+
+    # Now enabling Auto Kursus succeeds
+    res_enable = client.post(
+        f"/api/control/toggle-auto?account_id={acc_id}",
+        json={"flag": "kursus", "enabled": True},
+    )
+    assert res_enable.status_code == 200
+
+    # Worker run_kursus calls take_skill_course("mengajar")
+    taken = []
+    events = []
+
+    class FakeUi:
+        async def game_skill_state(self):
+            return 50000, {
+                "course": {"priceMilli": 5000, "dailyMax": 3, "usedToday": 0},
+                "tracks": [
+                    {
+                        "id": "mengajar",
+                        "level": 5,
+                        "pending": None,
+                        "next": {"level": 6, "hours": 48, "courseMilli": 10000},
+                    }
+                ],
+            }
+
+        async def take_skill_course(self, track):
+            taken.append(track)
+            return {"track": track, "level": 6, "readyAt": "2026-11-27T08:17:33.546Z"}
+
+    c = SimpleNamespace(
+        ui=FakeUi(),
+        settings=SimpleNamespace(runtime_dir=service.settings.runtime_dir),
+        record_event=lambda kind, msg: events.append((kind, msg)),
+    )
+    assert await run_kursus(c) is True
+    assert taken == ["mengajar"]
+    assert events and "10 koin" in events[0][1]
