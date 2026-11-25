@@ -24,7 +24,7 @@
   ],
   "web_accessible_resources": [
     {
-      "resources": ["inject.js"],
+      "resources": ["inject.js", "diving-avoid.js"],
       "matches": [
         "https://www.kampungsebelah.com/*",
         "https://kampungsebelah.com/*"

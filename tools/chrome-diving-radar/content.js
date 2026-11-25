@@ -5,15 +5,18 @@
   console.log("[DivingCompass] Content script v1.8.0 loaded");
 
   function injectMainScript() {
-    try {
-      const s = document.createElement("script");
-      s.src = chrome.runtime.getURL("inject.js");
-      s.onload = function () {
-        this.remove();
-      };
-      (document.head || document.documentElement).appendChild(s);
-    } catch (e) {
-      console.warn("[DivingCompass] Injection error:", e);
+    // diving-avoid.js dibaca saat tick auto-pilot, jadi urutan muat tidak penting.
+    for (const file of ["diving-avoid.js", "inject.js"]) {
+      try {
+        const s = document.createElement("script");
+        s.src = chrome.runtime.getURL(file);
+        s.onload = function () {
+          this.remove();
+        };
+        (document.head || document.documentElement).appendChild(s);
+      } catch (e) {
+        console.warn("[DivingCompass] Injection error:", file, e);
+      }
     }
   }
   injectMainScript();
@@ -226,7 +229,14 @@
   window.addEventListener("ks_autopilot_status", (e) => {
     const st = e.detail;
     isAutopilotRunning = !!st.active;
+    if (!st.active) autopilotAvoidMode = "none";
     updateAutopilotUI(st);
+  });
+
+  // Mode anti-nyangkut dari inject.js: none | avoid | blocked | recover
+  let autopilotAvoidMode = "none";
+  window.addEventListener("ks_autopilot_avoid", (e) => {
+    autopilotAvoidMode = (e.detail && e.detail.mode) || "none";
   });
 
   function sendAutopilotCommand(action, target, autoOpen = true, autoChain = true) {
@@ -678,8 +688,16 @@
 
       if (titleEl) {
         if (isAutopilotRunning) {
-          titleEl.textContent = `🚀 Auto Berenang ke Kerang #${selectedKerang.i}...`;
-          titleEl.style.color = "#38bdf8";
+          if (autopilotAvoidMode === "recover") {
+            titleEl.textContent = `🛟 Lepas dari batu → Kerang #${selectedKerang.i}`;
+            titleEl.style.color = "#fbbf24";
+          } else if (autopilotAvoidMode === "avoid" || autopilotAvoidMode === "blocked") {
+            titleEl.textContent = `🪨 Menghindari batu → Kerang #${selectedKerang.i}`;
+            titleEl.style.color = "#fbbf24";
+          } else {
+            titleEl.textContent = `🚀 Auto Berenang ke Kerang #${selectedKerang.i}...`;
+            titleEl.style.color = "#38bdf8";
+          }
         } else if (dist3D <= 3.2) {
           titleEl.textContent = `🎯 SIAP BUKA! Kerang #${selectedKerang.i}`;
           titleEl.style.color = "#22c55e";

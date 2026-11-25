@@ -505,6 +505,29 @@
     autoChain: true
   };
 
+  // Navigator anti-nyangkut (diving-avoid.js): hindari batu, waypoint bila kerang
+  // terkurung batu, pemulihan nyangkut, dan watchdog kemajuan. Dimuat terpisah,
+  // jadi dibuat saat pertama dipakai.
+  let navigator = null;
+  let lastAvoidMode = "none";
+
+  function getNavigator() {
+    if (!navigator && window.__KS_DIVING_AVOID) {
+      navigator = window.__KS_DIVING_AVOID.createNavigator();
+    }
+    return navigator;
+  }
+
+  function resetNav() {
+    if (navigator) navigator.reset();
+  }
+
+  function reportAvoid(mode) {
+    if (lastAvoidMode === mode) return;
+    lastAvoidMode = mode;
+    window.dispatchEvent(new CustomEvent("ks_autopilot_avoid", { detail: { mode } }));
+  }
+
   window.addEventListener("ks_autopilot_command", (e) => {
     const cmd = e.detail;
     if (cmd.action === "start") {
@@ -512,6 +535,7 @@
       autopilot.target = cmd.target;
       autopilot.autoOpen = cmd.autoOpen !== false;
       autopilot.autoChain = cmd.autoChain !== false;
+      resetNav();
       console.log("[DivingAutopilot] Start towards kerang #", cmd.target.i);
       window.dispatchEvent(new CustomEvent("ks_autopilot_status", {
         detail: { active: true, target: cmd.target }
@@ -534,6 +558,7 @@
       } catch (e) {}
     }
 
+    reportAvoid("none");
     console.log("[DivingAutopilot] Stopped:", reason);
     window.dispatchEvent(new CustomEvent("ks_autopilot_status", {
       detail: { active: false, reason, target: lastTarget }
@@ -617,24 +642,45 @@
         return;
       }
 
-      // 1. Arahkan hadap pemain dan yaw kamera langsung ke kerang target
-      const targetBearing = Math.atan2(dx, dz);
-      sc.yaw = targetBearing;
-      sc.hadap = targetBearing;
-
-      // 2. Berenang maju
-      sc.setGerak(0, 1);
-
-      // 3. Atur kedalaman renang
-      if (dd > 1.0) {
-        sc.setTegak(-1); // turun lebih dalam
-      } else if (dd < -1.0) {
-        sc.setTegak(1);  // naik lebih cetek
-      } else {
-        sc.setTegak(0);
+      const nv = getNavigator();
+      if (!nv) {
+        // Modul penghindar belum dimuat: berenang lurus seperti semula.
+        sc.yaw = Math.atan2(dx, dz);
+        sc.hadap = sc.yaw;
+        sc.setGerak(0, 1);
+        sc.setTegak(dd > 1.0 ? -1 : (dd < -1.0 ? 1 : 0));
+        return;
       }
 
-      // 4. Highlight mesh kerang target agar selalu kelihatan dan berkilau di Three.js!
+      // Navigator: hindari batu, waypoint bila kerang terkurung batu, pulihkan bila nyangkut.
+      const out = nv.step({
+        now: performance.now(),
+        pos: { x: px, y: py, z: pz },
+        target,
+        rocks: sc.dunia && sc.dunia.batuBesar,
+        pitch: sc.pitch,
+        surfaceY: sc.pen && typeof sc.pen.apung === "number" ? sc.pen.apung : undefined,
+        floorFn: sc.dunia && typeof sc.dunia.tinggi === "function" ? (x, z) => sc.dunia.tinggi(x, z) : undefined
+      });
+
+      if (out.stop) {
+        console.warn("[DivingAutopilot] Berhenti:", out.stop);
+        stopAutopilot(out.stop);
+        return;
+      }
+      if (out.mode === "recover" && lastAvoidMode !== "recover") {
+        console.warn("[DivingAutopilot] Stuck level", nv.state.stuckLevel, "- recovering");
+      }
+
+      reportAvoid(out.mode);
+      sc.yaw = out.yaw;
+      sc.hadap = out.yaw;
+
+      // Berenang maju + atur kedalaman
+      sc.setGerak(out.gerak.x, out.gerak.y);
+      sc.setTegak(out.tegak);
+
+      // Highlight mesh kerang target agar selalu kelihatan dan berkilau di Three.js!
       if (Array.isArray(sc.kerang) && sc.kerang[target.i]) {
         const item = sc.kerang[target.i];
         if (item.m && item.m.g) {
