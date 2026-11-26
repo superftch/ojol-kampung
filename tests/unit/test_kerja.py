@@ -359,3 +359,125 @@ async def test_controller_record_event_with_run_kerja(tmp_path):
     notices = list((tmp_path / "notifications").glob("*.json"))
     assert len(notices) == 1
     assert "Target kantor hari ini maksimal" in json.loads(notices[0].read_text())["text"]
+
+
+@pytest.mark.asyncio
+async def test_run_kerja_auto_sesi_absen_after_urusan_and_from_detak(tmp_path, monkeypatch):
+    set_auto_flag(tmp_path, "ojol", False)
+    set_auto_flag(tmp_path, "kerja", True)
+
+    async def fast_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("app.modules.gameplay.kerja.asyncio.sleep", fast_sleep)
+
+    calls = []
+    events = []
+
+    class FakeUiAfterUrusan:
+        async def kantor_action(self, action, **fields):
+            calls.append(action)
+            if action == "detak":
+                return {
+                    "kantor": {
+                        "nama": "Bank desa",
+                        "buka": True,
+                        "libur": False,
+                        "sekarang": "2026-11-26T02:00:00.000Z",
+                        "jam": {"from": "08:00", "to": "16:00"},
+                        "kerja": {"poin": 0, "target": 30, "status": "penuh"},
+                        "paket": {"berbayar": False},
+                        "sesi": {
+                            "ke": 1,
+                            "jumlah": 6,
+                            "urusan": 3,
+                            "absen": True,
+                            "absenSetelah": 1,
+                            "jadwal": [{"ke": 1, "u": 0, "absen": False, "beres": False}],
+                        },
+                        "kegiatan": [],
+                        "kejadian": None,
+                        "urusan": None,
+                    }
+                }
+            if action == "urusan-mulai":
+                return {
+                    "id": "u-sesi-1",
+                    "mulai": "2026-11-26T02:00:00.000Z",
+                    "langkah": [{"aksi": "proses", "detik": 0}],
+                }
+            if action == "urusan-selesai":
+                return {
+                    "ok": True,
+                    "poin": 2,
+                    "sesi": {"ke": 1, "u": 1, "absen": False, "beres": False, "baru": False},
+                }
+            if action == "sesi-absen":
+                return {
+                    "sesi": {"ke": 1, "u": 1, "absen": True, "beres": False, "baru": False}
+                }
+            raise AssertionError(f"Unexpected action: {action}")
+
+    c = SimpleNamespace(
+        ui=FakeUiAfterUrusan(),
+        settings=SimpleNamespace(runtime_dir=tmp_path),
+        observed_state=_snapshot(),
+        record_event=lambda kind, msg: events.append((kind, msg)),
+    )
+    assert await run_kerja(c) is True
+    assert calls == ["detak", "urusan-mulai", "urusan-selesai", "sesi-absen"]
+    assert any("Absen sesi 1 tercatat" in msg for _, msg in events)
+
+    # Also test when detak already shows u >= absenSetelah and absen=False -> calls sesi-absen directly
+    detak_calls = []
+
+    class FakeUiFromDetak:
+        async def kantor_action(self, action, **fields):
+            detak_calls.append(action)
+            if action == "detak":
+                return {
+                    "kantor": {
+                        "nama": "Bank desa",
+                        "buka": True,
+                        "libur": False,
+                        "sekarang": "2026-11-26T02:05:00.000Z",
+                        "jam": {"from": "08:00", "to": "16:00"},
+                        "kerja": {"poin": 6, "target": 30, "status": "penuh"},
+                        "paket": {"berbayar": False},
+                        "sesi": {
+                            "ke": 1,
+                            "jumlah": 6,
+                            "urusan": 3,
+                            "absen": True,
+                            "absenSetelah": 1,
+                            "jadwal": [{"ke": 1, "u": 3, "absen": False, "beres": False}],
+                        },
+                        "kegiatan": [],
+                        "kejadian": None,
+                        "urusan": None,
+                    }
+                }
+            if action == "sesi-absen":
+                return {
+                    "sesi": {
+                        "ke": 1,
+                        "u": 3,
+                        "absen": True,
+                        "beres": True,
+                        "baru": True,
+                        "jumlahBeres": 1,
+                        "bonusMilli": 2200,
+                    }
+                }
+            raise AssertionError(f"Should not call {action}")
+
+    events2 = []
+    c2 = SimpleNamespace(
+        ui=FakeUiFromDetak(),
+        settings=SimpleNamespace(runtime_dir=tmp_path),
+        observed_state=_snapshot(),
+        record_event=lambda kind, msg: events2.append((kind, msg)),
+    )
+    assert await run_kerja(c2) is True
+    assert detak_calls == ["detak", "sesi-absen"]
+    assert any("Sesi 1 beres! (1/6 sesi)" in msg for _, msg in events2)

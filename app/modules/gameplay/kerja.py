@@ -203,6 +203,69 @@ def _is_kantor_job(job: dict) -> bool:
     return job.get("employerType") in {"PUBLIC", "BUSINESS"}
 
 
+def _current_sesi_entry(sesi_config: dict | None) -> dict | None:
+    if not isinstance(sesi_config, dict):
+        return None
+    ke = sesi_config.get("ke")
+    if ke is None:
+        return None
+    for entry in sesi_config.get("jadwal") or []:
+        if isinstance(entry, dict) and entry.get("ke") == ke:
+            return entry
+    return None
+
+
+def _sesi_needs_absen(sesi_config: dict | None, sesi_state: dict | None) -> bool:
+    if not isinstance(sesi_config, dict) or not sesi_config.get("absen"):
+        return False
+    if not isinstance(sesi_state, dict):
+        return False
+    if sesi_state.get("baru") or sesi_state.get("absen") or sesi_state.get("beres"):
+        return False
+    urusan_req = int(sesi_config.get("urusan") or 3)
+    absen_setelah = min(int(sesi_config.get("absenSetelah") or 1), urusan_req)
+    return int(sesi_state.get("u") or 0) >= absen_setelah
+
+
+async def _perform_sesi_absen(
+    c, sesi_config: dict, status_snapshot: dict, *, delay: float = 1.6
+) -> bool:
+    await asyncio.sleep(delay + _jitter(0.4, 1.4))
+    try:
+        res = await c.ui.kantor_action("sesi-absen")
+    except HttpCoreError as exc:
+        if exc.category == "auth":
+            raise
+        if "428" in str(exc) or "angka" in str(exc).lower() or "cek" in str(exc).lower():
+            status_snapshot["state"] = "Perlu verifikasi"
+            status_snapshot["last_message"] = (
+                "Absen sesi tertahan: verifikasi angka belum terpecahkan"
+            )
+            _save_kerja_status(c.settings.runtime_dir, status_snapshot)
+            c.record_event("kerja", "Absen sesi tertahan: verifikasi manusia belum terpecahkan")
+            c.kerja_retry_at = time.monotonic() + 300 + _jitter(2.0, 25.0)
+            return False
+        c.kerja_retry_at = time.monotonic() + 30 + _jitter(2.0, 10.0)
+        return False
+
+    sesi_out = (res or {}).get("sesi") if isinstance(res, dict) else None
+    if not isinstance(sesi_out, dict):
+        return False
+    ke = sesi_out.get("ke") or sesi_config.get("ke")
+    jumlah = int(sesi_config.get("jumlah") or 6)
+    if sesi_out.get("baru"):
+        bonus_milli = int(sesi_out.get("bonusMilli") or 0)
+        beres_count = sesi_out.get("jumlahBeres", "?")
+        bonus_txt = f" (+{bonus_milli / 1000:g} koin ditabung)" if bonus_milli > 0 else ""
+        msg = f"Sesi {ke} beres! ({beres_count}/{jumlah} sesi){bonus_txt}"
+    else:
+        msg = f"Absen sesi {ke} tercatat"
+    status_snapshot["last_message"] = msg
+    _save_kerja_status(c.settings.runtime_dir, status_snapshot)
+    c.record_event("kerja", msg)
+    return True
+
+
 def can_run_kerja(c) -> bool:
     """Return True only when Auto Ojol is off, not currently ngojol, and account has a kantor job."""
     flags = auto_flags(c.settings.runtime_dir)
@@ -335,6 +398,15 @@ async def _run_kantor(c) -> bool:
                     raise
                 break
 
+    # 3b. Absen sesi if current session already qualifies
+    sesi = kantor.get("sesi")
+    cur_sesi = _current_sesi_entry(sesi)
+    if _sesi_needs_absen(sesi, cur_sesi):
+        if await _perform_sesi_absen(c, sesi, status_snapshot, delay=1.0):
+            c.kerja_retry_at = time.monotonic() + 3 + _jitter(1.5, 3.5)
+            return True
+        return False
+
     # 4. Serve active or new urusan
     urusan = kantor.get("urusan")
     if not isinstance(urusan, dict):
@@ -410,6 +482,23 @@ async def _run_kantor(c) -> bool:
         if reached_max:
             _pause_until_tomorrow(c, jam, kantor.get("sekarang"))
             return True
+        done_sesi = done.get("sesi")
+        if isinstance(done_sesi, dict):
+            if done_sesi.get("baru"):
+                ke = done_sesi.get("ke") or (sesi or {}).get("ke")
+                jumlah = int((sesi or {}).get("jumlah") or 6)
+                bonus_milli = int(done_sesi.get("bonusMilli") or 0)
+                bonus_txt = f" (+{bonus_milli / 1000:g} koin ditabung)" if bonus_milli > 0 else ""
+                c.record_event(
+                    "kerja",
+                    f"Sesi {ke} beres! ({done_sesi.get('jumlahBeres', '?')}/{jumlah} sesi){bonus_txt}",
+                )
+            elif (
+                isinstance(sesi, dict)
+                and done_sesi.get("ke") == sesi.get("ke")
+                and _sesi_needs_absen(sesi, done_sesi)
+            ):
+                await _perform_sesi_absen(c, sesi, status_snapshot, delay=1.6)
     jeda = float(kantor.get("jedaUrusanDetik") or 3) + _jitter(2.0, 4.5)
     c.kerja_retry_at = time.monotonic() + jeda
     return True

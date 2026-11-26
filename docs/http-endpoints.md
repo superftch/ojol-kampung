@@ -420,7 +420,10 @@ Inspeksi bundle client 25 November 2026 (`29ahj9dqnlzgc.js`, `3eqd4os9qi5gk.js` 
    - `{"action": "urusan-mulai", "requestId": uuid}` (HTTP 200 live): memulai satu urusan berisi `id`, `mulai`, dan `langkah[]`.
    - `{"action": "urusan-selesai", "id": urusanId, "jawab": [...]}` (HTTP 200 live): mengirim jawaban setelah jeda `E(langkah)` = $\sum (0{,}8 \cdot \text{detik jika aksi=proses} + 1{,}2)$ detik + 0,4 detik. Untuk langkah yang memiliki `pilihan[]` dan `kunci`, indeks jawaban benar memenuhi hash FNV-1a 32-bit `fnv1a("{urusanId}:{stepIndex}:{choiceIndex}") == kunci`. Setiap urusan memberi poin kinerja; tiap 5 urusan melunasi 1 paket tugas (+2 koin, maks 3x/hari).
    - `{"action": "kejadian", "idx": int}`: menangani insiden kantor aktif (`oleh: null`) setelah jeda `detik` (memberi poin kinerja, misal +3 poin).
-   - `{"action": "bersama", "id": str}`: mengikuti kegiatan bersama aktif (`ikut: false`) setelah `bersamaDetik` (memberi +2 poin).
+4. **`{"action": "bersama", "id": str}`**: mengikuti kegiatan bersama aktif (`ikut: false`) setelah `bersamaDetik` (memberi +2 poin).
+5. **Pembaruan Kerja per Sesi (26 November 2026, inspeksi bundle `22ai5c8c88qza.js` & `24pb4f98gf3ex.js`)**:
+   - `detak` & `urusan-selesai` menyertakan objek `sesi` (`ke`, `jumlah`: `6`, `urusan`: `3`, `absen`: `bool`, `absenSetelah`: `int | null`, `jadwal[]` berisi `{ke, u, absen, beres}`).
+   - `{"action": "sesi-absen"}` (dapat memicu cek manusia 2 angka `428`): mencatat absen sesi aktif bila `!ev.absen && !ev.beres && ev.u >= min(absenSetelah ?? 1, urusan)`, mengembalikan `{sesi: {ke, u, absen, beres, baru, semua, bonusMilli, jumlahBeres}}`.
 2. **Pekerjaan Umum / Kerja Malam (`GET/POST /api/kerja-malam`)**:
    - Verifikasi statis bundle `29ahj9dqnlzgc.js`: `GET /api/kerja-malam` mengembalikan status `enabled`, `buka`, `siang` (`enabled`, `buka`, `rumah`, `maks`), `lampuMati[]`, `patroli`, dan `bersihku`.
    - `POST /api/kerja-malam` mendukung `{"action": "mulai"}`, `{"action": "lampu", "key": str}`, `{"action": "bersih", "plotId": str}`, `{"action": "bersih-selesai", "tangkap": int}`, `{"action": "patroli"}`, dan `{"action": "titik", "putaran": int, "titik": int}`.

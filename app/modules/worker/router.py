@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core.models import STUDY_LABELS
 from app.integrations.kampung import session_transfer
-from app.modules.gameplay.study import kursus_subject, set_kursus_subject, set_subject
+from app.modules.gameplay.study import set_subject
 from app.modules.ledger.finance import report_date
 from app.modules.worker.maintenance import held_window
 from app.modules.worker.schemas import (
@@ -216,12 +216,12 @@ async def toggle_auto_api(
                 _validate_kerja_eligible(cur_service)
             set_auto_flag(cur_service.settings.runtime_dir, "kerja", enabled)
         elif flag == "kursus":
-            if enabled and not kursus_subject(cur_service.settings.runtime_dir):
+            if enabled:
                 raise HTTPException(
                     400,
-                    "Pilih bidang kursus terlebih dahulu sebelum mengaktifkan Auto Kursus.",
+                    "Fitur Auto Kursus sedang dinonaktifkan.",
                 )
-            set_auto_flag(cur_service.settings.runtime_dir, "kursus", enabled)
+            set_auto_flag(cur_service.settings.runtime_dir, "kursus", False)
         else:
             if flag == "ojol" and enabled:
                 _validate_ojol_eligible(cur_service)
@@ -259,7 +259,7 @@ async def set_study_subject_api(
     cur_service = _require_account_service(ctx, user, request)
     try:
         if mode == "kursus":
-            set_kursus_subject(cur_service.settings.runtime_dir, subject)
+            raise HTTPException(400, "Fitur Auto Kursus sedang dinonaktifkan.")
         elif mode and mode in STUDY_LABELS:
             set_subject(cur_service.settings.runtime_dir, mode, subject)
         else:
