@@ -638,7 +638,7 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
         if (availableButtons.jual) return "JUAL_SAMPAH";
       }
 
-      const isHighValue = sellPrice >= 1.40;
+      const isHighValue = sellPrice >= 1.00;
       const isLowValue = sellPrice < 1.00;
       const sisaTotal = sisaJual + sisaTas;
       const hasSafeReserve = saldoKoin >= 5.0 || stokUmpan >= 5;
@@ -691,7 +691,14 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
       "SIMPAN"
     );
 
-    // 3. Ikan besar/raksasa (2.65 koin) with sell quota -> JUAL immediately
+    // 3. Ikan besar/raksasa (1.23 koin Lemadang or 2.65 koin Kuwe) with sell quota -> JUAL immediately (never wait for bag full!)
+    assert.equal(
+      decideSmartLootAction({
+        isTrash: false, sellPrice: 1.23, baitCost: 0.50, sisaJual: 20, sisaTas: 20,
+        saldoKoin: 25, stokUmpan: 10, config: baseConfig, availableButtons: allBtns
+      }),
+      "JUAL"
+    );
     assert.equal(
       decideSmartLootAction({
         isTrash: false, sellPrice: 2.65, baitCost: 0.50, sisaJual: 12, sisaTas: 20,
@@ -834,5 +841,78 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
       useLempar: false,
       minDepth: 30
     });
+
+    function canStartWithStrategy({ loaded, strategiUmpan }) {
+      if (!loaded) return { startDisabled: true, reason: "LOADING" };
+      if (!strategiUmpan) return { startDisabled: true, reason: "PICK_STRATEGY" };
+      return { startDisabled: false, reason: "READY" };
+    }
+    assert.deepEqual(canStartWithStrategy({ loaded: true, strategiUmpan: "" }), {
+      startDisabled: true,
+      reason: "PICK_STRATEGY"
+    });
+    assert.deepEqual(canStartWithStrategy({ loaded: true, strategiUmpan: "ternak-ikan" }), {
+      startDisabled: false,
+      reason: "READY"
+    });
+
+    // Skip buying bait if active bait or any existing bait stock > 0
+    function decideShopOrSail({ activeStok, umpanList, targetPref }) {
+      if (activeStok > 0) return { action: "SAIL_NO_BUY", equip: null };
+      const ikan = umpanList.find(u => u.id === "umpan-ikan");
+      if (ikan && ikan.stok > 0) return { action: "EQUIP_EXISTING", equip: "umpan-ikan" };
+      const pref = umpanList.find(u => u.id === targetPref);
+      if (pref && pref.stok > 0) return { action: "EQUIP_EXISTING", equip: targetPref };
+      const any = umpanList.find(u => u.stok > 0);
+      if (any) return { action: "EQUIP_EXISTING", equip: any.id };
+      return { action: "BUY_NEW", equip: targetPref };
+    }
+
+    assert.equal(
+      decideShopOrSail({ activeStok: 5, umpanList: [{ id: "umpan-cumi", stok: 5 }], targetPref: "umpan-cumi" }).action,
+      "SAIL_NO_BUY"
+    );
+    assert.deepEqual(
+      decideShopOrSail({ activeStok: 0, umpanList: [{ id: "umpan-cacing", stok: 4 }, { id: "umpan-cumi", stok: 0 }], targetPref: "umpan-cumi" }),
+      { action: "EQUIP_EXISTING", equip: "umpan-cacing" }
+    );
+    assert.deepEqual(
+      decideShopOrSail({ activeStok: 0, umpanList: [{ id: "umpan-cumi", stok: 0 }], targetPref: "umpan-cumi" }),
+      { action: "BUY_NEW", equip: "umpan-cumi" }
+    );
+
+    // Batching: collect min(5, sisaSlot) umpan-ikan before switching and sailing to >=30m
+    function shouldSwitchToUmpanIkan({ strategiUmpan, equipped, umpanIkanStok, sisaSlot }) {
+      if (strategiUmpan !== "ternak-ikan" || equipped !== "umpan-cacing") return false;
+      const batchTarget = Math.min(5, Math.max(1, sisaSlot));
+      return umpanIkanStok >= batchTarget;
+    }
+
+    assert.equal(shouldSwitchToUmpanIkan({ strategiUmpan: "ternak-ikan", equipped: "umpan-cacing", umpanIkanStok: 2, sisaSlot: 20 }), false);
+    assert.equal(shouldSwitchToUmpanIkan({ strategiUmpan: "ternak-ikan", equipped: "umpan-cacing", umpanIkanStok: 5, sisaSlot: 20 }), true);
+    assert.equal(shouldSwitchToUmpanIkan({ strategiUmpan: "ternak-ikan", equipped: "umpan-cacing", umpanIkanStok: 3, sisaSlot: 3 }), true);
+
+    // Area ranking: Tier 3 (depth >= minDepth AND kaya >= 0.45 Ramai) beats shallow Ramai or deep Lumayan
+    const RAMAI_MIN_KAYA = 0.45;
+    function rankAreas(spots, minDepth) {
+      return spots
+        .map(s => {
+          const meetsDepth = s.depth >= minDepth;
+          const isRamai = s.kaya >= RAMAI_MIN_KAYA;
+          const tier = (meetsDepth && isRamai) ? 3 : meetsDepth ? 2 : isRamai ? 1 : 0;
+          const score = (tier * 1000) + (s.kaya * 400) + (s.depth >= 30 ? 120 : s.depth) - (s.dist * 0.05);
+          return { ...s, tier, score };
+        })
+        .sort((a, b) => b.score - a.score);
+    }
+
+    const ranked = rankAreas([
+      { id: "shallow_ramai", depth: 10, kaya: 0.90, dist: 50 },
+      { id: "deep_lumayan", depth: 33, kaya: 0.35, dist: 200 },
+      { id: "deep_ramai", depth: 32, kaya: 0.55, dist: 450 }
+    ], 30);
+    assert.equal(ranked[0].id, "deep_ramai");
+    assert.equal(ranked[0].tier, 3);
+    assert.equal(ranked[1].id, "deep_lumayan");
   });
 });
