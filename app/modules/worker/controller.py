@@ -186,6 +186,12 @@ class Controller:
         if text:
             queue_notice(self.settings, redact(text), {"event": event, "run_id": self.run_id})
 
+    def record_event(self, event, message="", **data):
+        payload = {"message": message, **data}
+        self.report(event, **payload)
+        if message and not event_text(event, payload):
+            queue_notice(self.settings, redact(message), {"event": event, "run_id": self.run_id})
+
     async def wait(self, seconds):
         if self.state and self.state.sleep_schedule and self.snapshot_read_at is not None:
             boundary = self.state.sleep_schedule.next_transition(self.state.observed_at)

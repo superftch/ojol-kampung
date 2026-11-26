@@ -422,6 +422,7 @@ async def run_kursus(c) -> bool:
     if time.monotonic() < getattr(c, "kursus_retry_at", 0):
         return False
 
+    c.stage = "study.kursus"
     try:
         balance_milli, skill = await c.ui.game_skill_state()
     except HttpCoreError as exc:

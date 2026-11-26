@@ -495,4 +495,5 @@ async def run_kerja(c) -> bool:
         c.kerja_retry_at = time.monotonic() + wait_open + _jitter(2.0, 10.0)
         return False
 
+    c.stage = "kerja.kantor"
     return await _run_kantor(c)

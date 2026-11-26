@@ -305,3 +305,57 @@ def test_seconds_until_next_open_respects_jam_kerja():
     assert _seconds_until_next_open(
         jam, "2026-11-25T05:00:00.000Z", force_tomorrow=True
     ) == pytest.approx(72000.0)
+
+
+@pytest.mark.asyncio
+async def test_controller_record_event_with_run_kerja(tmp_path):
+    import json
+
+    from app.modules.worker.controller import Controller
+
+    set_auto_flag(tmp_path, "ojol", False)
+    set_auto_flag(tmp_path, "kerja", True)
+
+    recorded = []
+
+    class FakeJournal:
+        def event(self, run_id, name, data):
+            recorded.append((run_id, name, data))
+
+        def profit(self, run_id=None):
+            return "0"
+
+    class FakeUi:
+        async def kantor_action(self, action, **fields):
+            assert action == "detak"
+            return {
+                "kantor": {
+                    "nama": "Puskesmas",
+                    "buka": True,
+                    "libur": False,
+                    "sekarang": "2026-11-25T02:00:00.000Z",
+                    "jam": {"from": "08:00", "to": "16:00"},
+                    "saya": {"profesi": "Dokter"},
+                    "kerja": {"poin": 30, "target": 30, "status": "tercapai"},
+                    "kegiatan": [],
+                    "kejadian": None,
+                    "urusan": {"tersedia": False},
+                }
+            }
+
+    c = Controller(
+        ui=FakeUi(),
+        settings=SimpleNamespace(runtime_dir=tmp_path, max_minutes=None),
+        journal=FakeJournal(),
+        run_id="run-1",
+    )
+    c.state = _snapshot()
+    c.stage = "study.preview.kuliah"
+
+    assert await run_kerja(c) is False
+    assert c.stage == "kerja.kantor"
+    assert recorded and recorded[0][1] == "kerja"
+    assert "Target kantor hari ini maksimal" in recorded[0][2]["message"]
+    notices = list((tmp_path / "notifications").glob("*.json"))
+    assert len(notices) == 1
+    assert "Target kantor hari ini maksimal" in json.loads(notices[0].read_text())["text"]
