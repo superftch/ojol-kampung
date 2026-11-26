@@ -411,7 +411,12 @@ class OjolHttpApi:
 
         None berarti bukan CEK_MANUSIA atau tidak terpecahkan; pemanggil melaporkan status asli.
         """
-        from app.modules.captcha import learn_polyline, solve_polyline_captcha, solve_svg_captcha
+        from app.modules.captcha import (
+            learn_polyline,
+            record_captcha_review,
+            solve_polyline_captcha,
+            solve_svg_captcha,
+        )
 
         try:
             error = (response.json() or {}).get("error") or {}
@@ -423,23 +428,34 @@ class OjolHttpApi:
         kunci = cek.get("kunci") if isinstance(cek.get("kunci"), str) else ""
         if cek.get("siteKey") and not kunci:
             return None  # Turnstile: harus diselesaikan manusia di game
-        for attempt in range(1, 4):
-            image = await self.request(f"/api/cek-manusia?k={kunci}&m={attempt}", text=True)
-            svg = image.strip() if isinstance(image, str) else ""
-            if not svg.startswith("<"):
+        last_svg, last_polyline = "", False
+        for _ in range(3):
+            # Angka per kunci tetap; gambar cuma digambar ulang. Baca 3 gambar lalu
+            # kirim suara terbanyak supaya salah baca tidak dikirim 3x berturut-turut.
+            votes: dict[str, tuple[str, bool]] = {}
+            for attempt in range(1, 4):
+                image = await self.request(f"/api/cek-manusia?k={kunci}&m={attempt}", text=True)
+                svg = image.strip() if isinstance(image, str) else ""
+                if not svg.startswith("<"):
+                    continue
+                polyline = "<polyline" in svg
+                last_svg, last_polyline = svg, polyline
+                try:
+                    kode = (
+                        solve_polyline_captcha(svg, self.directory)
+                        if polyline
+                        else solve_svg_captcha(svg)
+                    )
+                except Exception as exc:  # gambar muat ulang
+                    logger.debug("Gagal pecahkan gambar cek manusia: %s", exc)
+                    continue
+                if not (len(kode) == 2 and kode.isdigit()):
+                    continue
+                votes[kode] = ((votes[kode][0] + 1) if kode in votes else 1, svg)
+            if not votes:
                 continue
-            polyline = "<polyline" in svg
-            try:
-                kode = (
-                    solve_polyline_captcha(svg, self.directory)
-                    if polyline
-                    else solve_svg_captcha(svg)
-                )
-            except Exception as exc:  # gambar muat ulang
-                logger.debug("Gagal pecahkan gambar cek manusia: %s", exc)
-                continue
-            if not (len(kode) == 2 and kode.isdigit()):
-                continue
+            kode = max(votes, key=lambda k: votes[k][0])
+            svg, polyline = votes[kode][1], "<polyline" in votes[kode][1]
             retry = await self._session_client().request(
                 "POST",
                 path,
@@ -459,6 +475,13 @@ class OjolHttpApi:
             with contextlib.suppress(ValueError):
                 cek = ((retry.json() or {}).get("error") or {}).get("cek") or {}
                 kunci = cek.get("kunci") if isinstance(cek.get("kunci"), str) else ""
+        # Gagal total: antrekan gambar terakhir ke Bank Angka supaya bisa dikontribusi operator.
+        if last_polyline:
+            with contextlib.suppress(OSError, ValueError):
+                (self.directory / "cek-samples").mkdir(parents=True, exist_ok=True)
+                (self.directory / "cek-samples" / f"{kunci or 'cek'}.svg").write_text(last_svg)
+            with contextlib.suppress(OSError, ValueError):
+                record_captcha_review(self.directory, last_svg, trip_id=kunci)
         return None
 
     async def daily_wallet(self, day: date | str) -> WalletReport:

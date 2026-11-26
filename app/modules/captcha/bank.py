@@ -172,8 +172,12 @@ def delete_template_from_bank(directory, digit: str, index: int):
     return bank
 
 
-def record_unknown_glyph(directory, glyph, normalized, trip_id=None, svg_text=None):
-    """Store an unrecognized glyph into the review queue without creating duplicates."""
+def record_unknown_glyph(directory, glyph, normalized, trip_id=None, svg_text=None, force=False):
+    """Store an unrecognized glyph into the review queue without creating duplicates.
+
+    force=True tetap mengantre walau bank sudah "mengenali" bentuk itu: salah baca
+    tidak pernah melempar error, jadi tanpa force glyph-nya tak pernah tampil di Bank Angka.
+    """
     if not directory:
         return None
     try:
@@ -199,8 +203,13 @@ def record_unknown_glyph(directory, glyph, normalized, trip_id=None, svg_text=No
                                 ex_min_x = min(x for stroke in ex_raw for x, _ in stroke)
                         if cur_min_x is not None and ex_min_x is not None:
                             if abs(cur_min_x - ex_min_x) < 5:
+                                touched = force and not ex_data.get("force")
+                                if touched:
+                                    ex_data["force"] = True
                                 if svg_text and not ex_data.get("svg_text"):
                                     ex_data["svg_text"] = svg_text
+                                    touched = True
+                                if touched:
                                     existing_file.write_text(json.dumps(ex_data, indent=2))
                                 return ex_data.get("id") or existing_file.stem
                         else:
@@ -225,10 +234,34 @@ def record_unknown_glyph(directory, glyph, normalized, trip_id=None, svg_text=No
         }
         if svg_text:
             data["svg_text"] = svg_text
+        if force:
+            data["force"] = True
         (rev_dir / f"{rev_id}.json").write_text(json.dumps(data, indent=2))
         return rev_id
     except OSError:
         return None
+
+
+def record_captcha_review(directory, svg_text, trip_id=None):
+    """Antrekan semua glyph dari satu gambar cek yang gagal dipecahkan ke Bank Angka."""
+    if not directory or not isinstance(svg_text, str) or "<polyline" not in svg_text:
+        return []
+    try:
+        glyphs = _glyphs(svg_text)
+    except (SvgCaptchaSolverError, ValueError, TypeError):
+        return []
+    ids = []
+    for glyph in glyphs:
+        try:
+            normalized = _normalize(glyph)
+        except (ValueError, TypeError, ZeroDivisionError):
+            continue
+        rid = record_unknown_glyph(
+            directory, glyph, normalized, trip_id=trip_id, svg_text=svg_text, force=True
+        )
+        if rid:
+            ids.append(rid)
+    return ids
 
 
 def _is_closed_glyph(norm_g) -> bool:
@@ -320,7 +353,7 @@ def get_pending_reviews(directory, account_name: str | None = None) -> list[dict
                     continue
                 glyph = data.get("normalized_glyph") or data.get("raw_glyph")
                 if glyph and rid not in seen_ids:
-                    if is_already_recognized_by_bank(glyph):
+                    if not data.get("force") and is_already_recognized_by_bank(glyph):
                         resolved_ids.add(file.stem)
                         resolved_ids.add(rid)
                         continue

@@ -2802,3 +2802,81 @@ async def test_cek_manusia_428_is_solved_and_retried_once(settings, monkeypatch)
         {"action": "urusan-mulai", "requestId": "r1"},
         {"action": "urusan-mulai", "requestId": "r1", "cekManusia": {"kode": "12"}},
     ]
+
+
+async def test_cek_manusia_votes_out_a_misread(settings, monkeypatch):
+    """Salah baca satu gambar tidak dikirim: jawaban diambil dari suara terbanyak."""
+    posts = []
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg"><g>'
+        '<polyline points="1,1 5,9"/><polyline points="9,1 3,7"/></g></svg>'
+    )
+    reads = iter(["12", "12", "17"])
+
+    def handle(request):
+        if request.url.path == "/api/cek-manusia":
+            return httpx.Response(200, text=svg, headers={"content-type": "image/svg+xml"})
+        body = json.loads(request.content)
+        posts.append(body)
+        if "cekManusia" not in body:
+            return httpx.Response(
+                428,
+                json={
+                    "error": {
+                        "code": "CEK_MANUSIA",
+                        "message": "Cek sebentar: ketik angka di gambar.",
+                        "cek": {"kunci": "kunci-1", "siteKey": None},
+                    }
+                },
+            )
+        assert body["cekManusia"]["kode"] == "12"
+        return httpx.Response(200, json={"ok": True})
+
+    monkeypatch.setattr("app.modules.captcha.solve_polyline_captcha", lambda *a, **k: next(reads))
+    async with httpx.AsyncClient(base_url=ORIGIN, transport=httpx.MockTransport(handle)) as client:
+        api = OjolHttpApi(settings.runtime_dir, client=client)
+        out = await api.kantor_action("urusan-mulai", requestId="r1")
+
+    assert out == {"ok": True}
+    assert [p.get("cekManusia") for p in posts] == [
+        None,
+        {"kode": "12"},
+    ]
+
+
+async def test_cek_manusia_unsolved_goes_to_bank_angka(settings, monkeypatch):
+    """Gagal pecahkan 428: gambar terakhir diantrekan ke Bank Angka, bukan hilang."""
+    from app.modules.captcha import get_pending_reviews
+
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg"><g>'
+        '<polyline points="10,1 20,9"/><polyline points="70,1 90,7"/></g></svg>'
+    )
+
+    def handle(request):
+        if request.url.path == "/api/cek-manusia":
+            return httpx.Response(200, text=svg, headers={"content-type": "image/svg+xml"})
+        return httpx.Response(
+            428,
+            json={
+                "error": {
+                    "code": "CEK_MANUSIA",
+                    "message": "Cek sebentar: ketik angka di gambar.",
+                    "cek": {"kunci": "kunci-1", "siteKey": None},
+                }
+            },
+        )
+
+    def boom(*a, **k):
+        raise ValueError("bentuk asing")
+
+    monkeypatch.setattr("app.modules.captcha.solve_polyline_captcha", boom)
+    async with httpx.AsyncClient(base_url=ORIGIN, transport=httpx.MockTransport(handle)) as client:
+        api = OjolHttpApi(settings.runtime_dir, client=client)
+        with pytest.raises(HttpCoreError):
+            await api.kantor_action("urusan-mulai", requestId="r1")
+
+    reviews = get_pending_reviews(settings.runtime_dir)
+    assert len(reviews) == 2
+    assert all(r["trip_id"] == "kunci-1" and r["svg_text"] == svg for r in reviews)
+    assert (settings.runtime_dir / "cek-samples" / "kunci-1.svg").read_text() == svg
