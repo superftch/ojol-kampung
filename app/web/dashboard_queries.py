@@ -13,7 +13,7 @@ from app.core.formatting import format_coins, parse_coins
 from app.core.models import NEEDS, SUBJECTS
 from app.core.storage import status_record, status_timestamp
 from app.modules.captcha import get_all_pending_reviews
-from app.modules.gameplay.kerja import kerja_target_poin
+from app.modules.gameplay.kerja import is_work_active_now, kerja_target_poin
 from app.modules.gameplay.study import cached_skills, kursus_cost_info, kursus_subject, subjects
 from app.modules.ledger.finance import WIB, day_bounds, report_date
 from app.modules.notifications.repository import list_notifications
@@ -716,6 +716,12 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
         "snapshot": state,
         "kerja_status": kerja_status or None,
         "kerja_target_poin": kerja_target_poin(directory),
+        "ojol_waiting_kerja": bool(
+            flags.get("ojol") is True
+            and is_work_active_now(
+                directory, state, flags=flags, kerja_status=kerja_status
+            )
+        ),
         "kursus_subject": selected_kursus,
         "kursus_cost": kursus_cost_info(skills_list, selected_kursus),
         "kursus_status": kursus_status or None,

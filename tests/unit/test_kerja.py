@@ -61,11 +61,11 @@ def test_can_run_kerja_enforces_all_guards(tmp_path):
     assert auto_flags(tmp_path)["kerja"] is False
     assert can_run_kerja(c) is False
 
-    # Enable kerja, but ojol is True by default
+    # Enable kerja: eligible even when ojol is True (ojol waits until kerja finishes)
     set_auto_flag(tmp_path, "kerja", True)
-    assert can_run_kerja(c) is False
+    assert can_run_kerja(c) is True
 
-    # Turn off ojol -> now eligible
+    # Turn off ojol -> still eligible
     set_auto_flag(tmp_path, "ojol", False)
     assert can_run_kerja(c) is True
 
@@ -76,6 +76,58 @@ def test_can_run_kerja_enforces_all_guards(tmp_path):
     # Idle but no job -> blocked
     c.observed_state = _snapshot(phase="idle", trip=None, job=None)
     assert can_run_kerja(c) is False
+
+
+def test_is_work_active_now_transitions_on_pulang_and_selesai(tmp_path):
+    from app.core.storage import write_private
+    from app.modules.gameplay.kerja import is_work_active_now
+
+    # 10:00 WIB == 03:00 UTC
+    in_hours_utc = datetime(2026, 11, 26, 3, 0, tzinfo=UTC)
+    # 16:05 WIB == 09:05 UTC (sudah pulang)
+    after_hours_utc = datetime(2026, 11, 26, 9, 5, tzinfo=UTC)
+
+    job_with_hours = {
+        "id": "job-1",
+        "profession": "Kepala wilayah bank",
+        "employerType": "PUBLIC",
+        "jam": {"from": "08:00", "to": "16:00"},
+    }
+
+    # kerja=False, ojol=True, inside jam -> waiting for work to finish
+    set_auto_flag(tmp_path, "ojol", True)
+    set_auto_flag(tmp_path, "kerja", False)
+    assert is_work_active_now(tmp_path, _snapshot(job=job_with_hours, observed_at=in_hours_utc)) is True
+    # After jam.to (pulang) -> ready for ojol
+    assert is_work_active_now(tmp_path, _snapshot(job=job_with_hours, observed_at=after_hours_utc)) is False
+
+    # kerja=True, state=Aktif inside jam -> waiting
+    set_auto_flag(tmp_path, "kerja", True)
+    write_private(
+        tmp_path / "kerja-status.json",
+        {"kind": "kantor", "state": "Aktif", "poin": 10, "target": 30},
+    )
+    assert is_work_active_now(tmp_path, _snapshot(job=job_with_hours, observed_at=in_hours_utc)) is True
+
+    # kerja=True, state=Selesai hari ini for today -> kerja done, ojol can start!
+    write_private(
+        tmp_path / "kerja-status.json",
+        {
+            "kind": "kantor",
+            "state": "Selesai hari ini",
+            "completed_date": "2026-11-26",
+            "poin": 30,
+            "target": 30,
+        },
+    )
+    assert is_work_active_now(tmp_path, _snapshot(job=job_with_hours, observed_at=in_hours_utc)) is False
+
+    # kerja=True, state=Libur -> ojol can start!
+    write_private(
+        tmp_path / "kerja-status.json",
+        {"kind": "kantor", "state": "Libur"},
+    )
+    assert is_work_active_now(tmp_path, _snapshot(job=job_with_hours, observed_at=in_hours_utc)) is False
 
 
 @pytest.mark.asyncio
@@ -695,4 +747,88 @@ async def test_run_kerja_records_sesi_jadwal_and_absen_failure_visibility(tmp_pa
     assert len(saved["sesi_jadwal"]) == 2
     assert saved["sesi_jadwal"][1] == {"ke": 2, "u": 1, "absen": False, "beres": False}
     assert c.kerja_retry_at > time.monotonic() + 200
+
+
+@pytest.mark.asyncio
+async def test_controller_ojol_waits_for_kerja_then_starts_automatically(tmp_path, monkeypatch):
+    import asyncio
+
+    from app.core.exceptions import StopRequested
+    from app.core.models import Settings
+    from app.modules.ledger.repository import Journal
+    from app.modules.worker.controller import Controller
+
+    settings = Settings(runtime_dir=tmp_path, idle_poll_seconds=3)
+    set_auto_flag(tmp_path, "ojol", True)
+    set_auto_flag(tmp_path, "kerja", True)
+
+    cancel = asyncio.Event()
+    job_clicks = []
+    kantor_calls = []
+
+    class FakeUi:
+        def __init__(self):
+            self.step = 0
+
+        async def snapshot(self):
+            self.step += 1
+            if self.step >= 5:
+                cancel.set()
+            return _snapshot(
+                observed_at=datetime(2026, 11, 26, 3, 0, tzinfo=UTC),
+                job={
+                    "id": "job-1",
+                    "profession": "Kepala wilayah bank",
+                    "employerType": "PUBLIC",
+                    "jam": {"from": "08:00", "to": "16:00"},
+                },
+                buttons=["Cari order"],
+            )
+
+        async def kantor_action(self, action, **fields):
+            kantor_calls.append(action)
+            # First detak: finish kerja for today ("Selesai hari ini")
+            return {
+                "kantor": {
+                    "nama": "Bank desa",
+                    "buka": True,
+                    "libur": False,
+                    "sekarang": "2026-11-26T03:00:00.000Z",
+                    "jam": {"from": "08:00", "to": "16:00"},
+                    "kerja": {"poin": 30, "target": 30, "status": "tercapai"},
+                    "paket": {"berbayar": False},
+                    "kegiatan": [],
+                    "kejadian": None,
+                    "urusan": None,
+                }
+            }
+
+        async def job_click(self, label):
+            job_clicks.append(label)
+            cancel.set()
+
+    async def fast_sleep(_seconds):
+        return None
+
+    async def fast_human_pause(_low, _high):
+        return None
+
+    monkeypatch.setattr("app.modules.gameplay.kerja.asyncio.sleep", fast_sleep)
+
+    journal = Journal(tmp_path)
+    c = Controller(
+        FakeUi(),
+        settings,
+        journal,
+        journal.start(settings),
+        cancel=cancel,
+    )
+    c.wait = fast_sleep
+    c.human_pause = fast_human_pause
+    with pytest.raises(StopRequested):
+        await c.run()
+
+    assert "detak" in kantor_calls
+    assert job_clicks == ["Cari order"]
+
 

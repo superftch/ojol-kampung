@@ -18,6 +18,7 @@ from app.integrations.cloudflared import CloudflaredTunnel
 from app.integrations.kampung.http_api import HttpCoreError, OjolHttpApi
 from app.modules.auth.import_access import LoginAccess
 from app.modules.gameplay.cleanup import find_unvisited, scan
+from app.modules.gameplay.kerja import is_work_active_now
 from app.modules.ledger.finance import WIB, report_date
 from app.modules.notifications.service import queue_error, queue_notice
 from app.modules.worker.capacity import WorkerCapacityError
@@ -29,6 +30,7 @@ from app.modules.worker.status import (
     format_needs_status,
     format_ojol_status,
     format_profit_report,
+    status_record,
 )
 
 WORKER_SHUTDOWN = "worker-shutdown"
@@ -353,7 +355,6 @@ class ControlService:
             await self.stop_worker()
             return "⏹ Auto Kantor dan worker dihentikan."
         if command == "run_kerja":
-            set_auto_flag(self.settings.runtime_dir, "ojol", False)
             set_auto_flag(self.settings.runtime_dir, "kerja", True)
             if (self.worker and self.worker.returncode is None) or running(
                 self.settings.runtime_dir
@@ -381,11 +382,17 @@ class ControlService:
                     set_auto_flag(self.settings.runtime_dir, key, True)
             elif not auto_start:
                 set_auto_flag(self.settings.runtime_dir, "ojol", True)
-                set_auto_flag(self.settings.runtime_dir, "kerja", False)
 
             flags = auto_flags(self.settings.runtime_dir)
             is_ojol = False if needs_only else bool(flags.get("ojol"))
             label = "Berkendara" if mode == "kendara" else "Otomatis" if mode == "otomatis" else ""
+            status_data, _ = status_record(self.settings.runtime_dir / "status.json")
+            snap = status_data.get("snapshot") if isinstance(status_data, dict) else None
+            waiting_kerja = bool(
+                is_ojol
+                and flags.get("ojol") is True
+                and is_work_active_now(self.settings.runtime_dir, snap, flags=flags)
+            )
 
             if (self.worker and self.worker.returncode is None) or running(
                 self.settings.runtime_dir
@@ -394,6 +401,11 @@ class ControlService:
                     return (
                         "🟢 Auto kebutuhan aktif. Bot sedang memantau dan mengisi kebutuhan karakter.\n\n"
                         "Tekan Status untuk melihat perkembangannya."
+                    )
+                if waiting_kerja:
+                    return (
+                        "⏳ Auto Ojol diaktifkan (menunggu kerja selesai).\n\n"
+                        "Auto Ojol akan berjalan otomatis setelah kerjaan selesai atau pulang."
                     )
                 return (
                     "🟢 Bot sudah aktif untuk akun ini. Auto Ojol diaktifkan"
@@ -441,7 +453,9 @@ class ControlService:
                         raise WorkerCapacityError(worker_resp["error"])
                     raise RuntimeError(worker_resp.get("error") or worker_resp["message"])
                 self.expected_stop = False
-                return self._started_message(is_ojol=is_ojol, label=label)
+                return self._started_message(
+                    is_ojol=is_ojol, label=label, waiting_kerja=waiting_kerja
+                )
 
             async with self.worker_start_lock:
                 if self.worker_capacity_error and (error := self.worker_capacity_error()):
@@ -449,7 +463,9 @@ class ControlService:
                         self.auto_start_pending = True
                     raise WorkerCapacityError(error)
                 await self._spawn_local_worker(auto_start, is_ojol, mode)
-            return self._started_message(is_ojol=is_ojol, label=label)
+            return self._started_message(
+                is_ojol=is_ojol, label=label, waiting_kerja=waiting_kerja
+            )
 
     async def _spawn_local_worker(self, auto_start, is_ojol, mode):
         config_file = os.environ.get("OJOL_CONFIG_FILE")
@@ -479,11 +495,17 @@ class ControlService:
         )
 
     @staticmethod
-    def _started_message(*, is_ojol: bool, label: str) -> str:
+    def _started_message(*, is_ojol: bool, label: str, waiting_kerja: bool = False) -> str:
         if not is_ojol:
             return (
                 "▶️ Bot sedang memulai (Auto Kebutuhan)\n\n"
                 "Bot akan memantau dan mengisi kebutuhan karakter secara otomatis. "
+                "Tekan Status untuk melihat perkembangannya."
+            )
+        if waiting_kerja:
+            return (
+                "⏳ Bot sedang memulai (Auto Ojol menunggu kerja selesai)\n\n"
+                "Auto Ojol akan berjalan otomatis setelah kerjaan selesai atau pulang. "
                 "Tekan Status untuk melihat perkembangannya."
             )
         return (

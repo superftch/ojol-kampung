@@ -138,13 +138,37 @@ def _jitter(low: float = 2.0, high: float = 4.0) -> float:
     return random.uniform(low, high)  # noqa: S311 - timing only
 
 
-def _wib_now(server_now_raw: str | None = None) -> datetime:
+def _wib_now(server_now_raw: str | datetime | None = None) -> datetime:
+    if isinstance(server_now_raw, datetime):
+        dt = server_now_raw if server_now_raw.tzinfo else server_now_raw.replace(tzinfo=UTC)
+        return dt.astimezone(WIB)
     if isinstance(server_now_raw, str):
         try:
             return timestamp(server_now_raw).astimezone(WIB)
         except (ValueError, TypeError):
             pass
     return datetime.now(WIB)
+
+
+def _is_within_work_hours(
+    jam: dict | None,
+    server_now_raw: str | datetime | None = None,
+) -> bool | None:
+    """Return True if now (WIB) is inside jam.from..jam.to, False if outside, or None if jam is unknown."""
+    if not isinstance(jam, dict):
+        return None
+    open_hm = _parse_hhmm(jam.get("from"))
+    close_hm = _parse_hhmm(jam.get("to"))
+    if open_hm is None or close_hm is None:
+        return None
+    now_wib = _wib_now(server_now_raw)
+    open_dt = _at_wib_time(now_wib, open_hm)
+    close_dt = _at_wib_time(now_wib, close_hm)
+    if open_hm < close_hm:
+        return open_dt <= now_wib < close_dt
+    if open_hm > close_hm:
+        return not (close_dt <= now_wib < open_dt)
+    return False
 
 
 def _wib_minutes(server_now_raw: str | None) -> int:
@@ -378,12 +402,76 @@ async def _perform_sesi_absen(
     return True
 
 
+def _snap_attr(snapshot, name: str, default=None):
+    if snapshot is None:
+        return default
+    if isinstance(snapshot, dict):
+        return snapshot.get(name, default)
+    return getattr(snapshot, name, default)
+
+
+def _is_kerja_done_today(
+    runtime_dir, saved: dict, server_now_raw: str | datetime | None = None
+) -> bool:
+    if not isinstance(saved, dict) or saved.get("state") != "Selesai hari ini":
+        return False
+    today_wib = _wib_now(server_now_raw).date().isoformat()
+    if saved.get("completed_date") != today_wib:
+        return False
+    custom_target = kerja_target_poin(runtime_dir)
+    target_met = custom_target is None or int(saved.get("poin") or 0) >= custom_target
+    sesi_jumlah = saved.get("sesi_jumlah")
+    sesi_met = True
+    if isinstance(sesi_jumlah, int) and sesi_jumlah > 0:
+        sesi_met = int(saved.get("sesi_beres") or 0) >= sesi_jumlah and (
+            not saved.get("sesi_absen_enabled")
+            or int(saved.get("sesi_absen") or 0) >= sesi_jumlah
+        )
+    return target_met and sesi_met
+
+
+def is_work_active_now(
+    runtime_dir,
+    snapshot,
+    *,
+    flags: dict | None = None,
+    kerja_status: dict | None = None,
+) -> bool:
+    """Return True when the account is currently working (not yet finished/pulang for the day)."""
+    cur_flags = flags if flags is not None else auto_flags(runtime_dir)
+    job = _snap_attr(snapshot, "job")
+    has_job = isinstance(job, dict) and bool(job)
+    kerja_flag = bool(cur_flags.get("kerja"))
+    if not has_job and not kerja_flag:
+        return False
+
+    saved = kerja_status if kerja_status is not None else _load_kerja_status(runtime_dir)
+    server_now_raw = _snap_attr(snapshot, "observed_at")
+    jam = (job.get("jam") if isinstance(job, dict) and isinstance(job.get("jam"), dict) else None) or (
+        saved.get("jam") if isinstance(saved, dict) and isinstance(saved.get("jam"), dict) else None
+    )
+    in_hours = _is_within_work_hours(jam, server_now_raw)
+
+    if _is_kerja_done_today(runtime_dir, saved, server_now_raw):
+        return False
+
+    saved_state = saved.get("state") if isinstance(saved, dict) else None
+    if saved_state == "Libur":
+        return False
+    if saved_state == "Tutup" and in_hours is not True:
+        return False
+
+    if kerja_flag:
+        return in_hours is not False
+
+    # kerja_flag is False, but account has a job in game: wait only during known work hours.
+    return in_hours is True
+
+
 def can_run_kerja(c) -> bool:
-    """Return True only when Auto Ojol is off, not currently ngojol, and account has a kantor job."""
+    """Return True when Auto Kerja is enabled, not currently ngojol, and account has a kantor job."""
     flags = auto_flags(c.settings.runtime_dir)
     if not flags.get("kerja", False):
-        return False
-    if flags.get("ojol"):
         return False
     state = getattr(c, "observed_state", None)
     if state is None or state.phase != "idle" or state.trip or state.trip_id:
@@ -765,17 +853,18 @@ async def run_kerja(c) -> bool:
             not saved.get("sesi_absen_enabled")
             or int(saved.get("sesi_absen") or 0) >= sesi_jumlah
         )
+    server_now_raw = getattr(c.observed_state, "observed_at", None)
     if (
         saved.get("state") == "Selesai hari ini"
-        and saved.get("completed_date") == _wib_now().date().isoformat()
+        and saved.get("completed_date") == _wib_now(server_now_raw).date().isoformat()
         and target_met
         and sesi_met
     ):
-        wait_s = _seconds_until_next_open(jam, force_tomorrow=True) or 3600.0
+        wait_s = _seconds_until_next_open(jam, server_now_raw, force_tomorrow=True) or 3600.0
         c.kerja_retry_at = time.monotonic() + wait_s + _jitter(5.0, 30.0)
         return False
 
-    wait_open = _seconds_until_next_open(jam)
+    wait_open = _seconds_until_next_open(jam, server_now_raw)
     if wait_open is not None and wait_open > 5.0:
         c.kerja_retry_at = time.monotonic() + wait_open + _jitter(2.0, 10.0)
         return False

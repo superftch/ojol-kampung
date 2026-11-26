@@ -524,13 +524,16 @@ function renderDashboard(data) {
     if (ojolToggleEl) {
         const hasJob = Boolean(snap.job);
         const notMitra = snap.ojol_mitra === false;
+        const waitingKerja = Boolean(data.ojol_waiting_kerja);
         ojolToggleEl.checked = !!flags.ojol;
-        ojolToggleEl.disabled = !selected || hasJob || notMitra;
+        ojolToggleEl.disabled = !selected || notMitra;
         if (ojolDescEl) {
-            if (hasJob) {
-                ojolDescEl.textContent = 'Nonaktif karena akun sudah memiliki pekerjaan aktif.';
-            } else if (notMitra) {
+            if (notMitra) {
                 ojolDescEl.textContent = 'Belum menjadi mitra Ojol — daftar mitra dulu di game.';
+            } else if (waitingKerja) {
+                ojolDescEl.textContent = 'Menunggu kerja selesai — akan jalan otomatis setelah kerjaan pulang.';
+            } else if (hasJob) {
+                ojolDescEl.textContent = 'Bisa diaktifkan saat bekerja; akan menunggu kerja selesai/pulang lalu jalan otomatis.';
             } else {
                 ojolDescEl.textContent = 'Mengambil dan mengantar order ojol otomatis sesuai kuota akun';
             }
@@ -802,11 +805,11 @@ function renderAutomationControls(data) {
 
     let ojolBlockedReason = '';
     if (data.account) {
-        if (hasJob) ojolBlockedReason = 'Akun sudah memiliki pekerjaan aktif — Auto Ojol dinonaktifkan.';
-        else if (notMitra) ojolBlockedReason = 'Belum menjadi mitra Ojol — daftar mitra dulu di game.';
+        if (notMitra) ojolBlockedReason = 'Belum menjadi mitra Ojol — daftar mitra dulu di game.';
     }
 
-    const ojolRunning = Boolean(sum.active && (flags.ojol === true || flags.ojol === 'maintenance'));
+    const ojolWaitingKerja = Boolean(data.ojol_waiting_kerja);
+    const ojolRunning = Boolean(sum.active && (flags.ojol === true || flags.ojol === 'maintenance') && !ojolWaitingKerja);
 
     let kerjaBlockedReason = '';
     if (data.account) {
@@ -828,6 +831,7 @@ function renderAutomationControls(data) {
         let tone = '';
         if (pending) label = 'Memproses…';
         else if (maintenance) { label = 'Dijeda untuk pemeliharaan'; tone = 'paused'; }
+        else if (feature === 'Ojol' && enabled && ojolWaitingKerja) { label = 'Menunggu kerja selesai'; tone = 'paused'; }
         else if (active && isSleeping) { label = 'Dijeda saat karakter tidur'; tone = 'paused'; }
         else if (active && feature === 'Kerja' && data.kerja_status?.state === 'Selesai hari ini') {
             label = 'Selesai hari ini · Lanjut besok';
@@ -835,7 +839,7 @@ function renderAutomationControls(data) {
         }
         else if (active) { label = 'Sedang berjalan'; tone = 'active'; }
         else if (enabled) label = 'Siap dijalankan';
-        else if (feature === 'Ojol' && notMitra && !hasJob) label = 'Belum mitra';
+        else if (feature === 'Ojol' && notMitra) label = 'Belum mitra';
         else if (feature === 'Ojol' && hasJob) label = 'Punya kerja';
         else if (feature === 'Kerja' && data.account && !hasJob) label = 'Belum kerja';
         else if (feature === 'Kerja' && data.account && !isKantorJob) label = 'Bukan kantor';
@@ -858,9 +862,18 @@ function renderAutomationControls(data) {
 
     const ojolHint = document.getElementById('toolbarOjolHint');
     if (ojolHint) {
-        ojolHint.textContent = ojolBlockedReason;
-        ojolHint.style.color = ojolBlockedReason ? '#f59e0b' : '';
-        ojolHint.style.display = ojolBlockedReason ? 'block' : 'none';
+        if (ojolBlockedReason) {
+            ojolHint.textContent = ojolBlockedReason;
+            ojolHint.style.color = '#f59e0b';
+            ojolHint.style.display = 'block';
+        } else if (ojolWaitingKerja) {
+            ojolHint.textContent = 'Menunggu kerja selesai — Auto Ojol akan jalan otomatis setelah kerjaan pulang.';
+            ojolHint.style.color = '#f59e0b';
+            ojolHint.style.display = 'block';
+        } else {
+            ojolHint.textContent = '';
+            ojolHint.style.display = 'none';
+        }
     }
 
     const kerjaHint = document.getElementById('toolbarKerjaHint');

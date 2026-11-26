@@ -19,7 +19,7 @@ from app.modules.worker.schemas import (
     OjolModeChange,
     StudySubjectChange,
 )
-from app.modules.worker.settings import auto_flags, set_auto_flag
+from app.modules.worker.settings import set_auto_flag
 from app.modules.worker.status import status_record
 from app.web.dashboard_queries import dashboard_snapshot
 from app.web.deps import WebContext, get_ctx, require_user, resolve_account_service
@@ -59,11 +59,6 @@ def _validate_ojol_eligible(cur_service) -> None:
             400,
             "Akun belum menjadi mitra Ojol. Daftar mitra terlebih dahulu di game.",
         )
-    if snap.get("job"):
-        raise HTTPException(
-            400,
-            "Auto Ojol dinonaktifkan karena akun sudah memiliki pekerjaan aktif.",
-        )
 
 
 def _validate_kerja_eligible(cur_service, *, allow_ojol_switch: bool = False) -> None:
@@ -78,12 +73,6 @@ def _validate_kerja_eligible(cur_service, *, allow_ojol_switch: bool = False) ->
         raise HTTPException(
             400,
             "Auto Kantor hanya untuk pekerjaan kantor/fasum/usaha.",
-        )
-    flags = auto_flags(cur_service.settings.runtime_dir)
-    if not allow_ojol_switch and flags.get("ojol"):
-        raise HTTPException(
-            400,
-            "Matikan Auto Ojol terlebih dahulu sebelum mengaktifkan Auto Kantor.",
         )
     if snap.get("phase") in {"searching", "delivering", "complete"} or snap.get("trip"):
         raise HTTPException(
@@ -227,7 +216,6 @@ async def toggle_auto_api(
         else:
             if flag == "ojol" and enabled:
                 _validate_ojol_eligible(cur_service)
-                set_auto_flag(cur_service.settings.runtime_dir, "kerja", False)
             set_auto_flag(cur_service.settings.runtime_dir, flag, enabled)
         return {"success": True, "flag": flag, "enabled": enabled}
     except ValueError as exc:

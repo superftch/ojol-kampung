@@ -1614,26 +1614,33 @@ def test_dashboard_auto_kerja_location_and_dynamic_ojol_guards(admin_web):
     assert res_non_kantor.status_code == 400
     assert "kantor" in res_non_kantor.json()["detail"].lower()
 
-    # 4. Has kantor job -> Auto Ojol rejected (both /run and toggle-auto), Auto Kantor allowed
+    # 4. Has kantor job -> Auto Ojol allowed (waits for kerja to finish), Auto Kantor allowed
     write_private(
         service.settings.runtime_dir / "status.json",
         {
             "snapshot": {
                 "ojol_mitra": True,
-                "job": {"id": "j1", "profession": "Kepala wilayah bank", "employerType": "PUBLIC"},
+                "job": {
+                    "id": "j1",
+                    "profession": "Kepala wilayah bank",
+                    "employerType": "PUBLIC",
+                    "jam": {"from": "00:00", "to": "23:59"},
+                },
                 "phase": "idle",
             }
         },
     )
     res_has_job_ojol = client.post(f"/api/control/run?account_id={acc_id}")
-    assert res_has_job_ojol.status_code == 400
-    assert "pekerjaan" in res_has_job_ojol.json()["detail"].lower()
+    assert res_has_job_ojol.status_code == 200
 
     res_has_job_toggle = client.post(
         f"/api/control/toggle-auto?account_id={acc_id}",
         json={"flag": "ojol", "enabled": True},
     )
-    assert res_has_job_toggle.status_code == 400
+    assert res_has_job_toggle.status_code == 200
+
+    dash_waiting = client.get(f"/api/dashboard?account_id={acc_id}").json()
+    assert dash_waiting["ojol_waiting_kerja"] is True
 
     assert (
         client.post(
@@ -1645,6 +1652,26 @@ def test_dashboard_auto_kerja_location_and_dynamic_ojol_guards(admin_web):
     res_kerja_ok = client.post(f"/api/control/run-kerja?account_id={acc_id}")
     assert res_kerja_ok.status_code == 200
     service.command.assert_awaited_with("run_kerja")
+
+    # Enabling ojol via toggle-auto keeps kerja enabled and reports waiting_kerja
+    assert (
+        client.post(
+            f"/api/control/toggle-auto?account_id={acc_id}",
+            json={"flag": "kerja", "enabled": True},
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            f"/api/control/toggle-auto?account_id={acc_id}",
+            json={"flag": "ojol", "enabled": True},
+        ).status_code
+        == 200
+    )
+    dash_both = client.get(f"/api/dashboard?account_id={acc_id}").json()
+    assert dash_both["auto_flags"]["kerja"] is True
+    assert dash_both["auto_flags"]["ojol"] is True
+    assert dash_both["ojol_waiting_kerja"] is True
 
     res_kerja_stop = client.post(f"/api/control/stop-kerja?account_id={acc_id}")
     assert res_kerja_stop.status_code == 200

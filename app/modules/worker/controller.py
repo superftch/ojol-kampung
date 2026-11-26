@@ -15,7 +15,7 @@ from app.core.exceptions import HttpCoreError, StopRequested
 from app.core.models import NEEDS, Resource, Snapshot, Step, now
 from app.modules.gameplay.garden import run_garden
 from app.modules.gameplay.gym import run_gym
-from app.modules.gameplay.kerja import run_kerja
+from app.modules.gameplay.kerja import is_work_active_now, run_kerja
 from app.modules.gameplay.study import run_learning
 from app.modules.ledger.finance import completion_evidence
 from app.modules.ledger.reconciliation import reconcile, wait_until_resolved
@@ -879,13 +879,33 @@ class Controller:
                 or flags.get("ojol") == "maintenance"
                 or bool(window)
             )
+            is_ojol_waiting_kerja = bool(
+                flags.get("ojol") is True
+                and not is_ojol_maint
+                and is_work_active_now(
+                    self.settings.runtime_dir,
+                    self.observed_state,
+                    flags=flags,
+                )
+            )
+            was_waiting_kerja = getattr(self, "_was_ojol_waiting_kerja", False)
+            if is_ojol_waiting_kerja and not was_waiting_kerja:
+                self.record_event("ojol", "Auto Ojol menunggu kerja selesai.")
+            elif not is_ojol_waiting_kerja and was_waiting_kerja and flags.get("ojol") is True and not is_ojol_maint:
+                self.record_event("ojol", "Kerja selesai/pulang; Auto Ojol mulai berjalan otomatis.")
+            self._was_ojol_waiting_kerja = is_ojol_waiting_kerja
             if (
-                not flags["ojol"] or flags.get("ojol") == "maintenance" or is_ojol_maint
+                not flags["ojol"]
+                or flags.get("ojol") == "maintenance"
+                or is_ojol_maint
+                or is_ojol_waiting_kerja
             ) and self.observed_state.phase in {"idle", "sleeping"}:
                 step = Step(
                     action="wait",
                     reason="Fitur Auto Ojol sedang maintenance."
                     if (flags.get("ojol") == "maintenance" or is_ojol_maint)
+                    else "Auto Ojol menunggu kerja selesai."
+                    if is_ojol_waiting_kerja
                     else "Auto Ojol nonaktif.",
                     wait_seconds=self.settings.idle_poll_seconds,
                 )
@@ -911,6 +931,7 @@ class Controller:
                 continue
             if (
                 flags["ojol"] is True
+                and not is_ojol_waiting_kerja
                 and self.observed_state.phase == "idle"
                 and self.observed_state.ojol_min_fuel is not None
                 and self.observed_state.fuel < self.settings.threshold_for("fuel")
@@ -920,7 +941,9 @@ class Controller:
                     self.spbu_reminded_vehicle = vehicle
                     self.report("spbu_perlu_isi", vehicle=vehicle, fuel=self.observed_state.fuel)
             elif (
-                self.observed_state.fuel >= self.settings.threshold_for("fuel") or not flags["ojol"]
+                self.observed_state.fuel >= self.settings.threshold_for("fuel")
+                or not flags["ojol"]
+                or is_ojol_waiting_kerja
             ):
                 self.spbu_reminded_vehicle = None
             if auto_start and step.action != "stop":
@@ -932,6 +955,7 @@ class Controller:
             if (
                 flags["ojol"]
                 and not is_ojol_maint
+                and not is_ojol_waiting_kerja
                 and self.settings.max_jobs is not None
                 and self.completed >= self.settings.max_jobs
             ):
@@ -968,6 +992,7 @@ class Controller:
                 not dry_run
                 and flags.get("ojol") is True
                 and not is_ojol_maint
+                and not is_ojol_waiting_kerja
                 and self.observed_state.phase == "idle"
                 and not is_sleeping(self.observed_state)
                 and not getattr(self.observed_state, "ojol_resting", False)
@@ -983,6 +1008,7 @@ class Controller:
                 or not flags["ojol"]
                 or flags.get("ojol") == "maintenance"
                 or is_ojol_maint
+                or is_ojol_waiting_kerja
                 or getattr(self.observed_state, "ojol_resting", False)
                 or getattr(self.observed_state, "ojol_shift_done", False)
                 or getattr(self.observed_state, "ojol_maintenance", False)
@@ -1003,6 +1029,7 @@ class Controller:
                         and time.monotonic() >= self.need_retry_at.get(need, 0)
                         and (
                             not flags["ojol"]
+                            or is_ojol_waiting_kerja
                             or self.observed_state.wallet >= Decimal(20)
                             or need
                             in {"fisik", "kesehatan", "makan", "kebersihan", "wc", "penampilan"}
