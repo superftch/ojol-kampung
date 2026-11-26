@@ -645,8 +645,8 @@ class OjolHttpApi:
                 await self.request(
                     "/api/ojol", {"action": "lacak", "x": to_pos["x"], "y": to_pos["y"]}
                 )
-            # ponytail: jitter kecil (client kirim tiap 5 dtk; lacak basi 45 dtk).
-            await asyncio.sleep(random.uniform(1.6, 2.6))  # noqa: S311 - timing only
+            # Sesuaikan ritme lacak dengan client (lacak_detik: 5 dtk; lacak basi 45 dtk).
+            await asyncio.sleep(random.uniform(4.2, 5.8))  # noqa: S311 - timing only
 
     async def raw_trip(self):
         return await self._trips.raw_trip()

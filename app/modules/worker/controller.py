@@ -644,7 +644,8 @@ class Controller:
             if kind == "complete":
                 await self.human_pause(10.5, 60.0)
             else:
-                await self.human_pause(2.5, 5.5)
+                # Audit 25 Nov 2026: jeda ambil order berikutnya 4-8 dtk terdeteksi pola bot.
+                await self.human_pause(10.5, 28.0)
             await self.ui.job_click(labels[0])
             self.stage = f"job.{kind}.verify"
             if kind == "complete":

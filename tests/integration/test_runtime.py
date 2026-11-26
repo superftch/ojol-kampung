@@ -643,6 +643,7 @@ async def test_complete_loop_maintains_searches_waits_and_claims(settings, state
     journal = Journal(settings.runtime_dir)
     controller = Controller(ui, settings, journal, journal.start(settings))
     controller.wait = AsyncMock()
+    controller.human_pause = AsyncMock()
     with pytest.raises(StopRequested, match="jumlah trip"):
         await controller.run()
     assert ui.buy.await_count == 1 and ui.job_click.await_count == 2

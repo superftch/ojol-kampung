@@ -55,7 +55,7 @@ class TripOrders:
         if pilihan:
             wait_mult = getattr(self.api, "minigame_wait_multiplier", 1.0)
             if wait_mult > 0:
-                await asyncio.sleep(random.uniform(0.9, 2.3) * wait_mult)  # noqa: S311 - timing only
+                await asyncio.sleep(random.uniform(2.5, 6.0) * wait_mult)  # noqa: S311 - timing only
             chosen = max(
                 pilihan,
                 key=lambda o: (
@@ -84,9 +84,13 @@ class TripOrders:
                             "/api/ojol",
                             {"action": "lacak", "x": from_pos["x"], "y": from_pos["y"]},
                         )
+                    if wait_mult > 0:
+                        await asyncio.sleep(random.uniform(1.8, 3.5) * wait_mult)  # noqa: S311 - timing only
                 with contextlib.suppress(Exception):
                     await self.api.request("/api/ojol", {"action": "jemput"})
                 if "x" in to_pos and "y" in to_pos:
+                    if wait_mult > 0:
+                        await asyncio.sleep(random.uniform(1.8, 3.5) * wait_mult)  # noqa: S311 - timing only
                     with contextlib.suppress(Exception):
                         await self.api.request(
                             "/api/ojol",
