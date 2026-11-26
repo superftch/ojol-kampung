@@ -24,6 +24,10 @@ EXTENSION_DIR = ROOT / "tools" / "chrome-diving-radar"
 EXTENSION_FILES = (
     "manifest.json",
     "content.js",
+    "diving-avoid.js",
+    "diving-human.js",
+    "diving-open.js",
+    "diving-shark.js",
     "ojol.js",
     "mancing.js",
     "tpu.js",

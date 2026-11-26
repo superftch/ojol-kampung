@@ -190,6 +190,10 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
             assert "kampungsebelah-extension/manifest.json" in namelist
             assert "kampungsebelah-extension/ojol.js" in namelist
             assert "kampungsebelah-extension/mancing.js" in namelist
+            assert "kampungsebelah-extension/diving-avoid.js" in namelist
+            assert "kampungsebelah-extension/diving-human.js" in namelist
+            assert "kampungsebelah-extension/diving-open.js" in namelist
+            assert "kampungsebelah-extension/diving-shark.js" in namelist
 
         dl_alias = client.get("/download/extension.zip")
         assert dl_alias.status_code == 200
