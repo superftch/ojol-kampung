@@ -914,5 +914,16 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     assert.equal(ranked[0].id, "deep_ramai");
     assert.equal(ranked[0].tier, 3);
     assert.equal(ranked[1].id, "deep_lumayan");
+
+    // In ternak-ikan mode too: small fish -> JADIKAN_UMPAN, medium (< 1.00 koin) -> LEPAS (if safe reserve), >= 1.00 -> JUAL
+    function decideTernakLoot({ isSmallFish, sellPrice, sisaTas, hasUmpanIkanBtn, hasSafeReserve = true }) {
+      if (isSmallFish && hasUmpanIkanBtn) return "JADIKAN_UMPAN";
+      if (sellPrice >= 1.00) return "JUAL";
+      if (sellPrice < 1.00 && hasSafeReserve) return "LEPAS";
+      if (sisaTas > 0) return "SIMPAN";
+      return "JUAL_TAS_PENUH";
+    }
+    assert.equal(decideTernakLoot({ isSmallFish: false, sellPrice: 0.83, sisaTas: 15, hasUmpanIkanBtn: false }), "LEPAS");
+    assert.equal(decideTernakLoot({ isSmallFish: true, sellPrice: 0.42, sisaTas: 15, hasUmpanIkanBtn: true }), "JADIKAN_UMPAN");
   });
 });

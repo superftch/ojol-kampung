@@ -1100,16 +1100,15 @@
         }
       }
 
-      // 2. Cek apakah umpan strategi target atau umpan lain sudah punya stok > 0 -> pakai dulu, JANGAN BELI!
-      const targetPrefCheck = mancingConfig.strategiUmpan === "ternak-ikan"
+      // 2. Cek apakah umpan strategi target (atau umpan lain pada mode cumi) sudah punya stok > 0 -> pakai dulu, JANGAN BELI!
+      const isTernakMode = mancingConfig.strategiUmpan === "ternak-ikan";
+      const targetPrefCheck = isTernakMode
         ? "umpan-cacing"
         : mancingConfig.preferredUmpan;
-      const checkOrder = [
-        targetPrefCheck,
-        "umpan-cumi",
-        "umpan-udang",
-        "umpan-cacing"
-      ].filter((v, idx, arr) => v && arr.indexOf(v) === idx);
+      const checkOrder = (isTernakMode
+        ? ["umpan-cacing"]
+        : [targetPrefCheck, "umpan-cumi", "umpan-udang", "umpan-cacing"]
+      ).filter((v, idx, arr) => v && arr.indexOf(v) === idx);
 
       for (const baitId of checkOrder) {
         const info = readShopBaitStok(baitId);
@@ -1663,6 +1662,9 @@
           <div id="ks-mancing-detail" style="font-size: 10px; color: #94a3b8; margin-top: 2px;">
             Tekan tombol Mulai di bawah untuk otomatisasi
           </div>
+          <div id="ks-mancing-plan" style="font-size: 10px; color: #cbd5e1; margin-top: 5px; padding-top: 4px; border-top: 1px solid rgba(56, 189, 248, 0.2); line-height: 1.35;">
+            📋 Plan: Menunggu status...
+          </div>
         </div>
 
         <!-- Tombol Utama Start / Stop -->
@@ -1730,21 +1732,21 @@
         <!-- Strategi Max Profit -->
         <div style="background: rgba(168, 85, 247, 0.12); border: 1px solid rgba(168, 85, 247, 0.35); border-radius: 6px; padding: 6px 8px; margin-bottom: 7px; font-size: 10.5px;">
           <div style="font-weight: bold; color: #c084fc; font-size: 10.5px; margin-bottom: 4px;">💡 Strategi Paling Cuan (Max Profit):</div>
-          <select id="ks-opt-strategi-umpan" style="width: 100%; margin-bottom: 5px; padding: 4px 6px; border-radius: 5px; border: 1px solid #f59e0b; background: rgba(15, 23, 42, 0.9); color: #f3e8ff; font-size: 10.5px; font-weight: bold; cursor: pointer;">
+          <select id="ks-opt-strategi-umpan" title="Wajib pilih strategi sebelum mulai. Mengatur jenis umpan yang dibeli/dipakai, kedalaman tujuan, dan mode Lempar/Celup." style="width: 100%; margin-bottom: 5px; padding: 4px 6px; border-radius: 5px; border: 1px solid #f59e0b; background: rgba(15, 23, 42, 0.9); color: #f3e8ff; font-size: 10.5px; font-weight: bold; cursor: pointer;">
             <option value="" selected>-- Pilih Strategi Mancing --</option>
-            <option value="cumi">🦑 Langsung Cumi (Cepat · 1.7×)</option>
-            <option value="ternak-ikan">🐟 Ternak Umpan Ikan (Cacing ➔ 2.3×)</option>
+            <option value="cumi" title="Pakai Umpan Cumi (0.5 koin, 1.7x ikan besar) langsung di laut dalam ≥30m. Tercepat per jam.">🦑 Langsung Cumi (Cepat · 1.7×)</option>
+            <option value="ternak-ikan" title="Pakai Cacing (0.2 koin) Lempar di dangkal untuk kumpulkan 5 umpan-ikan (2.3x ikan besar), lalu Celup di ≥30m.">🐟 Ternak Umpan Ikan (Cacing ➔ 2.3×)</option>
           </select>
           <div style="display: flex; flex-direction: column; gap: 3px;">
-            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <label title="Otomatis membeli upgrade Joran terbaik (Samudra → Tonda → Karang) dan Kotak Pendingin (+slot tas) saat koin cukup (sisakan min. 10 koin)." style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
               <input type="checkbox" id="ks-opt-auto-upgrade" checked style="cursor: pointer;">
               <span style="color: #f3e8ff;">🎣 Auto Upgrade (Joran &amp; Pendingin)</span>
             </label>
-            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <label title="Otomatis tebar Jaring untuk umpan gratis harian &amp; nyalakan Lampu Kapal saat malam (18.30–04.30). Aktif jika kapal memiliki fitur tersebut." style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
               <input type="checkbox" id="ks-opt-jaring-lampu" checked style="cursor: pointer;">
               <span style="color: #86efac;">🕸️ Auto Jaring Gratis &amp; Lampu Malam</span>
             </label>
-            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+            <label title="Otomatis mengemudikan kapal ke spot Ramai (≥45%) dengan kedalaman target terbaik sesuai batas kapal &amp; joran." style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
               <input type="checkbox" id="ks-opt-auto-navigasi" checked style="cursor: pointer;">
               <span style="color: #67e8f9;">🧭 Autopilot Kapal (Spot Paling Worth It)</span>
             </label>
@@ -1753,35 +1755,35 @@
 
         <!-- Opsi Aksi & Proteksi (Grid 2 Kolom Kompak) -->
         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px 6px; margin-bottom: 6px; font-size: 10.5px; color: #cbd5e1;">
-          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <label title="Menambahkan variasi refleks manusiawi (220–380ms sentak, 1.4–2.5s baca hasil, klik koordinat acak)." style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-natural" checked style="cursor: pointer;">
             <span>🌿 Natural</span>
           </label>
-          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <label title="Menjaga tegangan tali tetap aman (78–82% lepas saat merah, 59–63% tarik + auto-hold) agar tali tidak putus dan ikan tidak lepas." style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-zeroloss" checked style="cursor: pointer;">
             <span>🛡️ Zero-Loss</span>
           </label>
-          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <label title="Otomatis menurunkan kail (Celup di laut dalam, atau Lempar saat mode Cacing dangkal)." style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-celup" checked style="cursor: pointer;">
             <span>⬇️ Auto Celup</span>
           </label>
-          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <label title="Otomatis menyentak kail begitu ikan menyambar (jauh di bawah batas waktu 10 detik server)." style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-sentak" checked style="cursor: pointer;">
             <span>⚡ Auto Sentak</span>
           </label>
-          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <label title="Otomatis menggulung dan melepas gulungan selama fase Adu Tarik." style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-gulung" checked style="cursor: pointer;">
             <span>🔄 Auto Gulung</span>
           </label>
-          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <label title="Izinkan menyimpan ikan ke Tas saat tidak langsung dijual (mis. setelah kuota jual 20/20 habis, atau saat Smart Profit mati)." style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-simpan" checked style="cursor: pointer;">
             <span>🎒 Auto Simpan</span>
           </label>
-          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <label title="Optimasi kuota harian: jual langsung ikan ≥1.00 koin, lepas ikan &lt;1.00 koin, ubah ikan kecil jadi umpan-ikan, jaga 1 joran, dan berhenti otomatis saat jual+tas penuh." style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-smart-profit" checked style="cursor: pointer;">
             <span>🧠 Smart Profit</span>
           </label>
-          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <label title="Otomatis buang sampah laut (Sandal jepit) dan jual ikan jika tas penuh saat kuota jual masih ada." style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-jual-penuh" checked style="cursor: pointer;">
             <span>🪙 Jual/Sampah</span>
           </label>
@@ -1940,6 +1942,8 @@
       targetInfoEl.textContent = `🎯 Target (${pancingProfile.joranNama}): ≥${target.minDepth}m (${target.targetFish})`;
     }
 
+    renderMancingPlan();
+
     if (hud) {
       const featureInputs = hud.querySelectorAll('input[type="checkbox"], select');
       featureInputs.forEach((input) => {
@@ -2030,6 +2034,52 @@
     }
   }
 
+  function renderMancingPlan() {
+    const planEl = document.getElementById("ks-mancing-plan");
+    if (!planEl) return;
+
+    if (!pancingProfile.loaded) {
+      planEl.innerHTML = "📋 <b>Plan:</b> Memuat status `/api/pancing`...";
+      return;
+    }
+
+    if (!mancingConfig.strategiUmpan) {
+      planEl.innerHTML = "📋 <b>Plan:</b> Pilih strategi di dropdown dulu.";
+      return;
+    }
+
+    const equipped = getEquippedUmpanType();
+    const stok = getUmpanStok();
+    const sonar = getSonarData();
+    const target = getTargetDepth();
+    const umpanIkanStok = pancingProfile.umpanList?.find(u => u.id === "umpan-ikan")?.stok ?? 0;
+    const sisaSlot = Math.max(1, (pancingProfile.jualMaks - pancingProfile.jualHariIni) + (pancingProfile.tasMaks - pancingProfile.tasIkan));
+    const batchTarget = Math.min(5, sisaSlot);
+
+    if (mancingConfig.strategiUmpan === "ternak-ikan") {
+      const s1Done = equipped === "umpan-cacing" && stok > 0 || equipped === "umpan-ikan";
+      const s2Done = equipped === "umpan-ikan" || umpanIkanStok >= batchTarget;
+      const s3Done = equipped === "umpan-ikan" && sonar.depth >= target.minDepth && sonar.crowd !== "Sepi";
+      const activeStep = !s1Done ? 1 : !s2Done ? 2 : !s3Done ? 3 : 4;
+      const mark = (n, done) => (done ? "✅" : activeStep === n ? "▶️" : "⚪");
+
+      planEl.innerHTML =
+        `<div><b>📋 Plan Ternak Umpan:</b></div>` +
+        `<div>${mark(1, s1Done)} 1. Pakai/Beli Cacing · ${mark(2, s2Done)} 2. Kumpul Ikan (${umpanIkanStok}/${batchTarget})</div>` +
+        `<div>${mark(3, s3Done)} 3. Ke ≥30m Ramai · ${mark(4, false)} 4. Celup 2.3× &amp; Jual ≥1k</div>`;
+      return;
+    }
+
+    const c1Done = stok > 0;
+    const c2Done = c1Done && sonar.depth >= target.minDepth && sonar.crowd !== "Sepi";
+    const activeCumi = !c1Done ? 1 : !c2Done ? 2 : 3;
+    const markC = (n, done) => (done ? "✅" : activeCumi === n ? "▶️" : "⚪");
+
+    planEl.innerHTML =
+      `<div><b>📋 Plan Langsung Cumi:</b></div>` +
+      `<div>${markC(1, c1Done)} 1. Siap Cumi · ${markC(2, c2Done)} 2. Ke ≥30m Ramai · ${markC(3, false)} 3. Celup &amp; Jual ≥1k</div>`;
+  }
+
   function updateStatusMsg(title, detail, color = "#38bdf8") {
     const statusEl = document.getElementById("ks-mancing-status");
     const detailEl = document.getElementById("ks-mancing-detail");
@@ -2040,6 +2090,7 @@
     if (detailEl && detail) {
       detailEl.textContent = detail;
     }
+    renderMancingPlan();
   }
 
   function isNightHourFromChip() {
@@ -2240,19 +2291,27 @@
         return;
       }
 
-      // 4c-2. Batching Ternak Umpan Ikan: kumpulkan min(5, sisaSlot) umpan-ikan di dangkal sebelum berlayar ke >=30m
+      // 4c-2. Sinkronisasi Umpan Mode Ternak Ikan:
+      // - Jika sedang pakai cumi/udang pada mode ternak-ikan, wajib pindah ke umpan-ikan / cacing (beli cacing jika 0)
+      // - Jika sedang pakai cacing di dangkal dan umpan-ikan sudah terkumpul >= min(5, sisaSlot), pindah ke umpan-ikan & berlayar ke >=30m
       if (
         mancingConfig.strategiUmpan === "ternak-ikan" &&
         mancingConfig.autoUmpanIkan &&
-        mancingConfig.autoUmpan &&
-        getEquippedUmpanType() === "umpan-cacing"
+        mancingConfig.autoUmpan
       ) {
+        const equippedNow = getEquippedUmpanType();
         const umpanIkanStok = pancingProfile.umpanList?.find(u => u.id === "umpan-ikan")?.stok ?? 0;
         const sisaSlot = pancingProfile.loaded
           ? Math.max(1, (pancingProfile.jualMaks - pancingProfile.jualHariIni) + (pancingProfile.tasMaks - pancingProfile.tasIkan))
           : 5;
         const batchTarget = Math.min(5, sisaSlot);
-        if (umpanIkanStok >= batchTarget) {
+        if (equippedNow !== "umpan-ikan" && equippedNow !== "umpan-cacing") {
+          stopAutopilot();
+          updateStatusMsg("🐟 Mode Ternak Umpan...", "Pindah dari Cumi ke Umpan Ikan / Cacing Laut...", "#22c55e");
+          scheduleAutoBuyUmpan();
+          return;
+        }
+        if (equippedNow === "umpan-cacing" && umpanIkanStok >= batchTarget) {
           stopAutopilot();
           updateStatusMsg("🐟 Batch Umpan Siap!", `${umpanIkanStok} umpan-ikan terkumpul — ganti umpan & berlayar ke ≥30m...`, "#22c55e");
           scheduleAutoBuyUmpan();
