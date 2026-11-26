@@ -621,3 +621,78 @@ async def test_raising_target_poin_wakes_and_resumes_paused_worker(tmp_path, mon
     calls.clear()
     assert await run_kerja(c) is True
     assert calls == ["detak", "urusan-mulai", "urusan-selesai"]
+
+
+@pytest.mark.asyncio
+async def test_run_kerja_records_sesi_jadwal_and_absen_failure_visibility(tmp_path, monkeypatch):
+    import json
+    import time
+
+    from app.integrations.kampung.http_api import HttpCoreError
+
+    set_auto_flag(tmp_path, "ojol", False)
+    set_auto_flag(tmp_path, "kerja", True)
+
+    async def fast_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("app.modules.gameplay.kerja.asyncio.sleep", fast_sleep)
+
+    events = []
+
+    class FakeUi428:
+        async def kantor_action(self, action, **fields):
+            if action == "detak":
+                return {
+                    "kantor": {
+                        "nama": "Bank desa",
+                        "buka": True,
+                        "libur": False,
+                        "sekarang": "2026-11-26T02:53:00.000Z",
+                        "jam": {"from": "08:00", "to": "16:00"},
+                        "kerja": {"poin": 10, "target": 40, "status": "penuh"},
+                        "paket": {"berbayar": False},
+                        "sesi": {
+                            "ke": 2,
+                            "jumlah": 6,
+                            "urusan": 3,
+                            "absen": True,
+                            "absenSetelah": 1,
+                            "jadwal": [
+                                {"ke": 1, "u": 3, "absen": True, "beres": True},
+                                {"ke": 2, "u": 1, "absen": False, "beres": False},
+                            ],
+                        },
+                        "kegiatan": [],
+                        "kejadian": None,
+                        "urusan": None,
+                    }
+                }
+            if action == "urusan-mulai":
+                return {"id": "u-absen-fail", "langkah": [{"aksi": "sapa"}]}
+            if action == "urusan-selesai":
+                return {
+                    "ok": True,
+                    "poin": 2,
+                    "sesi": {"ke": 2, "u": 2, "absen": False, "beres": False, "baru": False},
+                }
+            if action == "sesi-absen":
+                raise HttpCoreError("Transaksi ditolak HTTP428; tidak diulang", category="uncertain")
+            raise AssertionError(f"Unexpected action: {action}")
+
+    c = SimpleNamespace(
+        ui=FakeUi428(),
+        settings=SimpleNamespace(runtime_dir=tmp_path),
+        observed_state=_snapshot(),
+        record_event=lambda kind, msg: events.append((kind, msg)),
+    )
+
+    # First call: detak sees u=1 >= absenSetelah(1) -> calls sesi-absen -> 428 -> saves state & retry ~300s
+    assert await run_kerja(c) is False
+    saved = json.loads((tmp_path / "kerja-status.json").read_text())
+    assert saved["state"] == "Perlu verifikasi"
+    assert "verifikasi angka" in saved["last_message"]
+    assert len(saved["sesi_jadwal"]) == 2
+    assert saved["sesi_jadwal"][1] == {"ke": 2, "u": 1, "absen": False, "beres": False}
+    assert c.kerja_retry_at > time.monotonic() + 200
+

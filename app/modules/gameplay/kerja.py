@@ -256,20 +256,53 @@ def _sesi_snapshot_fields(sesi_config: dict | None) -> dict:
         return {}
     jadwal = sesi_config.get("jadwal") or []
     sesi_jumlah = int(sesi_config.get("jumlah") or len(jadwal) or 6)
-    sesi_absen_done = sum(
-        1 for item in jadwal if isinstance(item, dict) and item.get("absen")
-    )
+    compact_jadwal = [
+        {
+            "ke": item.get("ke"),
+            "u": int(item.get("u") or 0),
+            "absen": bool(item.get("absen")),
+            "beres": bool(item.get("beres")),
+        }
+        for item in jadwal
+        if isinstance(item, dict)
+    ]
+    sesi_absen_done = sum(1 for item in compact_jadwal if item["absen"])
     sesi_beres = int(
         sesi_config.get("beres")
         if sesi_config.get("beres") is not None
-        else sum(1 for item in jadwal if isinstance(item, dict) and item.get("beres"))
+        else sum(1 for item in compact_jadwal if item["beres"])
     )
     return {
         "sesi_absen": min(sesi_absen_done, sesi_jumlah),
         "sesi_beres": min(sesi_beres, sesi_jumlah),
         "sesi_jumlah": sesi_jumlah,
         "sesi_ke": sesi_config.get("ke"),
+        "sesi_urusan": int(sesi_config.get("urusan") or 3),
+        "sesi_absen_enabled": bool(sesi_config.get("absen")),
+        "sesi_absen_setelah": sesi_config.get("absenSetelah"),
+        "sesi_jadwal": compact_jadwal,
     }
+
+
+def _update_sesi_jadwal_entry(status_snapshot: dict, sesi_state: dict) -> None:
+    ke = sesi_state.get("ke")
+    jadwal = status_snapshot.get("sesi_jadwal")
+    if ke is None or not isinstance(jadwal, list):
+        return
+    for item in jadwal:
+        if isinstance(item, dict) and item.get("ke") == ke:
+            if "u" in sesi_state:
+                item["u"] = int(sesi_state.get("u") or 0)
+            if "absen" in sesi_state:
+                item["absen"] = bool(sesi_state.get("absen"))
+            if "beres" in sesi_state:
+                item["beres"] = bool(sesi_state.get("beres"))
+            break
+    jumlah = int(status_snapshot.get("sesi_jumlah") or len(jadwal) or 6)
+    status_snapshot["sesi_absen"] = min(
+        sum(1 for item in jadwal if isinstance(item, dict) and item.get("absen")),
+        jumlah,
+    )
 
 
 def _sesi_all_done(sesi_config: dict | None) -> bool:
@@ -296,6 +329,7 @@ def _sesi_needs_absen(sesi_config: dict | None, sesi_state: dict | None) -> bool
 async def _perform_sesi_absen(
     c, sesi_config: dict, status_snapshot: dict, *, delay: float = 1.6
 ) -> bool:
+    ke_hint = sesi_config.get("ke") or "?"
     await asyncio.sleep(delay + _jitter(0.4, 1.4))
     try:
         res = await c.ui.kantor_action("sesi-absen")
@@ -311,15 +345,23 @@ async def _perform_sesi_absen(
             c.record_event("kerja", "Absen sesi tertahan: verifikasi manusia belum terpecahkan")
             c.kerja_retry_at = time.monotonic() + 300 + _jitter(2.0, 25.0)
             return False
+        err_msg = f"Absen sesi {ke_hint} gagal: {exc}"
+        status_snapshot["last_message"] = err_msg
+        _save_kerja_status(c.settings.runtime_dir, status_snapshot)
+        c.record_event("kerja", err_msg)
         c.kerja_retry_at = time.monotonic() + 30 + _jitter(2.0, 10.0)
         return False
 
     sesi_out = (res or {}).get("sesi") if isinstance(res, dict) else None
     if not isinstance(sesi_out, dict):
+        status_snapshot["last_message"] = f"Respons absen sesi {ke_hint} tidak valid"
+        _save_kerja_status(c.settings.runtime_dir, status_snapshot)
+        c.kerja_retry_at = time.monotonic() + 30 + _jitter(2.0, 10.0)
         return False
     ke = sesi_out.get("ke") or sesi_config.get("ke")
     jumlah = int(sesi_config.get("jumlah") or 6)
-    if sesi_out.get("absen") and isinstance(status_snapshot.get("sesi_absen"), int):
+    _update_sesi_jadwal_entry(status_snapshot, sesi_out)
+    if sesi_out.get("absen") and isinstance(status_snapshot.get("sesi_absen"), int) and not status_snapshot.get("sesi_jadwal"):
         status_snapshot["sesi_absen"] = min(status_snapshot["sesi_absen"] + 1, jumlah)
     if sesi_out.get("jumlahBeres") is not None:
         status_snapshot["sesi_beres"] = min(int(sesi_out["jumlahBeres"]), jumlah)
@@ -355,14 +397,44 @@ async def _run_kantor(c) -> bool:
     except HttpCoreError as exc:
         if exc.category == "auth":
             raise
+        prev = _load_kerja_status(c.settings.runtime_dir)
+        _save_kerja_status(
+            c.settings.runtime_dir,
+            {
+                **prev,
+                "kind": "kantor",
+                "state": "Gangguan sementara",
+                "last_message": f"Gagal cek kantor: {exc}",
+            },
+        )
         c.kerja_retry_at = time.monotonic() + 120 + _jitter(2.0, 15.0)
         return False
-    except Exception:
+    except Exception as exc:
+        prev = _load_kerja_status(c.settings.runtime_dir)
+        _save_kerja_status(
+            c.settings.runtime_dir,
+            {
+                **prev,
+                "kind": "kantor",
+                "state": "Gangguan sementara",
+                "last_message": f"Gagal cek kantor ({type(exc).__name__})",
+            },
+        )
         c.kerja_retry_at = time.monotonic() + 120 + _jitter(2.0, 15.0)
         return False
 
     kantor = (res or {}).get("kantor") if isinstance(res, dict) else None
     if not isinstance(kantor, dict):
+        prev = _load_kerja_status(c.settings.runtime_dir)
+        _save_kerja_status(
+            c.settings.runtime_dir,
+            {
+                **prev,
+                "kind": "kantor",
+                "state": "Menunggu data",
+                "last_message": "Respons detak kantor tidak valid",
+            },
+        )
         c.kerja_retry_at = time.monotonic() + 300 + _jitter(2.0, 20.0)
         return False
 
@@ -565,11 +637,13 @@ async def _run_kantor(c) -> bool:
 
         done_sesi = done.get("sesi")
         if isinstance(done_sesi, dict):
+            _update_sesi_jadwal_entry(status_snapshot, done_sesi)
             if done_sesi.get("jumlahBeres") is not None:
                 status_snapshot["sesi_beres"] = min(
                     int(done_sesi["jumlahBeres"]),
                     int(status_snapshot.get("sesi_jumlah") or 6),
                 )
+            _save_kerja_status(c.settings.runtime_dir, status_snapshot)
             if done_sesi.get("baru"):
                 ke = done_sesi.get("ke") or (sesi or {}).get("ke")
                 jumlah = int((sesi or {}).get("jumlah") or 6)
@@ -583,8 +657,9 @@ async def _run_kantor(c) -> bool:
                 isinstance(sesi, dict)
                 and done_sesi.get("ke") == sesi.get("ke")
                 and _sesi_needs_absen(sesi, done_sesi)
+                and not await _perform_sesi_absen(c, sesi, status_snapshot, delay=1.6)
             ):
-                await _perform_sesi_absen(c, sesi, status_snapshot, delay=1.6)
+                return True
 
         sesi_complete = True
         if isinstance(sesi, dict):
@@ -683,10 +758,18 @@ async def run_kerja(c) -> bool:
     job = getattr(c.observed_state, "job", None) or {}
     jam = job.get("jam") if isinstance(job.get("jam"), dict) else saved.get("jam")
     target_met = custom_target is None or int(saved.get("poin") or 0) >= custom_target
+    sesi_jumlah = saved.get("sesi_jumlah")
+    sesi_met = True
+    if isinstance(sesi_jumlah, int) and sesi_jumlah > 0:
+        sesi_met = int(saved.get("sesi_beres") or 0) >= sesi_jumlah and (
+            not saved.get("sesi_absen_enabled")
+            or int(saved.get("sesi_absen") or 0) >= sesi_jumlah
+        )
     if (
         saved.get("state") == "Selesai hari ini"
         and saved.get("completed_date") == _wib_now().date().isoformat()
         and target_met
+        and sesi_met
     ):
         wait_s = _seconds_until_next_open(jam, force_tomorrow=True) or 3600.0
         c.kerja_retry_at = time.monotonic() + wait_s + _jitter(5.0, 30.0)

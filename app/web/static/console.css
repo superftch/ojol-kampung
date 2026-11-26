@@ -375,6 +375,52 @@ select.account-select { max-width: 100%; }
 .admin-slot-track > div { width: 0; height: 100%; background: var(--primary); }
 .admin-maintenance-summary { margin-top: 16px; padding: 8px 12px; background: var(--accent-soft); border-radius: 6px; }
 .admin-maintenance-summary h3 { font-size: 14px; font-weight: 600; }
+
+.kantor-details-summary {
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--muted);
+    user-select: none;
+}
+.kantor-details-summary:hover { color: var(--text); }
+.kantor-details-body {
+    margin-top: 6px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-alt, rgba(128, 128, 128, 0.05));
+    font-size: 12px;
+    display: grid;
+    gap: 6px;
+}
+.kantor-detail-meta {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+    gap: 4px 12px;
+}
+.kantor-detail-row { display: flex; justify-content: space-between; gap: 8px; }
+.kantor-detail-label { color: var(--muted); }
+.kantor-sesi-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 4px;
+    margin-top: 2px;
+}
+.kantor-sesi-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 7px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    font-size: 11px;
+}
+.kantor-sesi-item[data-state="done"] { border-color: rgba(16, 185, 129, 0.45); color: #10b981; }
+.kantor-sesi-item[data-state="active"] { border-color: rgba(56, 189, 248, 0.5); }
+.kantor-sesi-item[data-state="need-absen"] { border-color: rgba(245, 158, 11, 0.55); color: #d97706; }
 .admin-action {
     display: inline-flex;
     align-items: center;

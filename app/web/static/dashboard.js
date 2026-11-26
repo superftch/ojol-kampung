@@ -889,8 +889,9 @@ function renderAutomationControls(data) {
     }
 
     const kerjaRtEl = document.getElementById('autoKerjaRealtime');
+    const ks = data.kerja_status || null;
+    const kerjaActive = Boolean(sum.active && flags.kerja);
     if (kerjaRtEl) {
-        const ks = data.kerja_status || null;
         if (ks && ks.kind === 'kantor') {
             const parts = [];
             if (ks.state) parts.push(`Status: ${ks.state}`);
@@ -917,9 +918,95 @@ function renderAutomationControls(data) {
             const poin = k.poin ?? 0;
             kerjaRtEl.textContent = `Kerja penuh: ${poin}/${target} poin · Status: ${k.status || '-'}`;
             kerjaRtEl.style.display = 'block';
+        } else if (kerjaActive && isKantorJob) {
+            kerjaRtEl.textContent = kerjaBlockedReason
+                ? `Tertahan: ${kerjaBlockedReason}`
+                : 'Status: Menunggu siklus detak kantor…';
+            kerjaRtEl.style.display = 'block';
         } else {
             kerjaRtEl.textContent = '';
             kerjaRtEl.style.display = 'none';
+        }
+    }
+
+    const kerjaDetailsEl = document.getElementById('autoKerjaDetails');
+    const kerjaDetailsBody = document.getElementById('autoKerjaDetailsBody');
+    if (kerjaDetailsEl && kerjaDetailsBody) {
+        const hasKantorDetails = Boolean(
+            isKantorJob && ((ks && ks.kind === 'kantor') || (snap.job && snap.job.kantor) || kerjaActive)
+        );
+        if (!hasKantorDetails) {
+            kerjaDetailsEl.style.display = 'none';
+            kerjaDetailsBody.innerHTML = '';
+        } else {
+            const kSnap = snap.job?.kantor || null;
+            const rows = [];
+            const stateLabel = ks?.state || (kerjaActive ? (kerjaBlockedReason ? 'Tertahan' : 'Menunggu detak pertama') : kSnap?.status || '-');
+            rows.push(['Status', stateLabel]);
+            if (ks?.fase) rows.push(['Fase', ks.fase]);
+            const jam = ks?.jam || snap.job?.jam;
+            if (jam && jam.from && jam.to) {
+                const breakTxt = jam.istirahat?.from && jam.istirahat?.to ? ` (istirahat ${jam.istirahat.from}–${jam.istirahat.to})` : '';
+                rows.push(['Jam kerja', `${jam.from}–${jam.to}${breakTxt}`]);
+            }
+            if (typeof ks?.lunas === 'number' && typeof ks?.per_hari === 'number') {
+                const lunas = Math.min(ks.lunas, ks.per_hari);
+                const tugasVal = lunas >= ks.per_hari
+                    ? `${lunas}/${ks.per_hari} lunas`
+                    : `${lunas}/${ks.per_hari} lunas (${ks.menuju ?? 0}/${ks.per_paket ?? 5} urusan)`;
+                rows.push(['Paket tugas', tugasVal]);
+            }
+            const poinVal = typeof ks?.poin === 'number' ? ks.poin : kSnap?.poin;
+            const targetVal = typeof ks?.target === 'number' ? ks.target : (data.kerja_target_poin ?? kSnap?.target);
+            if (typeof poinVal === 'number' && typeof targetVal === 'number') {
+                rows.push(['Poin kinerja', `${poinVal}/${targetVal}`]);
+            }
+            if (typeof ks?.sesi_jumlah === 'number') {
+                const beresVal = typeof ks.sesi_beres === 'number' ? Math.min(ks.sesi_beres, ks.sesi_jumlah) : 0;
+                const absenVal = typeof ks.sesi_absen === 'number' ? Math.min(ks.sesi_absen, ks.sesi_jumlah) : 0;
+                rows.push(['Ringkasan sesi', `${beresVal}/${ks.sesi_jumlah} beres · Absen ${absenVal}/${ks.sesi_jumlah}`]);
+            }
+            if (ks?.updated_at) {
+                const dt = new Date(ks.updated_at);
+                if (!Number.isNaN(dt.getTime())) {
+                    rows.push(['Pembaruan', dt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })]);
+                }
+            }
+
+            let html = `<div class="kantor-detail-meta">${rows.map(([label, val]) =>
+                `<div class="kantor-detail-row"><span class="kantor-detail-label">${escapeHtml(label)}</span><strong>${escapeHtml(String(val))}</strong></div>`
+            ).join('')}</div>`;
+
+            if (Array.isArray(ks?.sesi_jadwal) && ks.sesi_jadwal.length) {
+                const urusanReq = typeof ks.sesi_urusan === 'number' ? ks.sesi_urusan : 3;
+                const chips = ks.sesi_jadwal.map((item) => {
+                    const ke = item?.ke ?? '?';
+                    const u = Number(item?.u || 0);
+                    const absenDone = Boolean(item?.absen);
+                    const beres = Boolean(item?.beres);
+                    const isCur = ks.sesi_ke === ke;
+                    let stateAttr = 'pending';
+                    let text = 'nanti';
+                    if (beres) {
+                        stateAttr = 'done';
+                        text = 'beres';
+                    } else if (isCur || u > 0 || absenDone) {
+                        const absenTxt = ks.sesi_absen_enabled === false
+                            ? ''
+                            : (absenDone ? ' · sudah absen' : ' · belum absen');
+                        stateAttr = (!absenDone && ks.sesi_absen_enabled !== false && u > 0) ? 'need-absen' : 'active';
+                        text = `${u}/${urusanReq}${absenTxt}`;
+                    }
+                    return `<div class="kantor-sesi-item" data-state="${stateAttr}"><span>Sesi ${escapeHtml(String(ke))}</span><span>${escapeHtml(text)}</span></div>`;
+                }).join('');
+                html += `<div class="kantor-sesi-grid">${chips}</div>`;
+            }
+
+            if (ks?.last_message) {
+                html += `<div class="meta" style="font-size:11px;">Info terakhir: ${escapeHtml(ks.last_message)}</div>`;
+            }
+            kerjaDetailsBody.innerHTML = html;
+            kerjaDetailsEl.style.display = 'block';
         }
     }
 }
