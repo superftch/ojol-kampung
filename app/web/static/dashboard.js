@@ -885,11 +885,11 @@ function renderAutomationControls(data) {
     const kerjaTargetInput = document.getElementById('kerjaTargetPoinInput');
     if (kerjaTargetInput && document.activeElement !== kerjaTargetInput) {
         kerjaTargetInput.value = data.kerja_target_poin != null ? String(data.kerja_target_poin) : '';
-        kerjaTargetInput.disabled = !selected || !isKantorJob;
+        kerjaTargetInput.disabled = !data.account || !isKantorJob;
     }
     const saveKerjaTargetBtn = document.getElementById('btnSaveKerjaTarget');
     if (saveKerjaTargetBtn) {
-        saveKerjaTargetBtn.disabled = !selected || !isKantorJob;
+        saveKerjaTargetBtn.disabled = !data.account || !isKantorJob;
     }
 
     const kerjaRtEl = document.getElementById('autoKerjaRealtime');
@@ -1048,8 +1048,8 @@ async function controlAction(cmd) {
         return;
     }
     pendingControls.add(feature);
-    renderAutomationControls(dashboardData);
     try {
+        renderAutomationControls(dashboardData);
         const timeoutMs = cmd.startsWith('stop') ? 35000 : 20000;
         const data = await apiFetch('/api/control/' + cmd + '?account_id=' + encodeURIComponent(account.id), { method: 'POST', timeoutMs });
         pendingControls.delete(feature);
