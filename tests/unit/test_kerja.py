@@ -557,3 +557,67 @@ async def test_run_kerja_custom_target_poin_and_sesi_status_fields(tmp_path, mon
     assert saved["target"] == 45
     assert saved["poin"] == 30
     assert saved["state"] == "Aktif"
+
+
+@pytest.mark.asyncio
+async def test_raising_target_poin_wakes_and_resumes_paused_worker(tmp_path, monkeypatch):
+    import json
+    import time
+
+    from app.modules.gameplay.kerja import set_kerja_target_poin
+
+    set_auto_flag(tmp_path, "ojol", False)
+    set_auto_flag(tmp_path, "kerja", True)
+
+    async def fast_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("app.modules.gameplay.kerja.asyncio.sleep", fast_sleep)
+
+    calls = []
+
+    class FakeUi:
+        async def kantor_action(self, action, **fields):
+            calls.append(action)
+            if action == "detak":
+                return {
+                    "kantor": {
+                        "nama": "Bank desa",
+                        "buka": True,
+                        "libur": False,
+                        "sekarang": "2026-11-26T02:00:00.000Z",
+                        "jam": {"from": "08:00", "to": "16:00"},
+                        "kerja": {"poin": 30, "target": 30, "status": "tercapai"},
+                        "paket": {"berbayar": True, "perHari": 3, "lunas": 3},
+                        "kegiatan": [],
+                        "kejadian": None,
+                        "urusan": None,
+                    }
+                }
+            if action == "urusan-mulai":
+                return {"id": "u-resume", "langkah": [{"aksi": "sapa"}]}
+            if action == "urusan-selesai":
+                return {"ok": True, "poin": 2}
+            raise AssertionError(f"Unexpected action: {action}")
+
+    c = SimpleNamespace(
+        ui=FakeUi(),
+        settings=SimpleNamespace(runtime_dir=tmp_path),
+        observed_state=_snapshot(),
+        record_event=lambda kind, msg: None,
+    )
+
+    # 1. Worker hits default 30/30 and pauses until tomorrow
+    assert await run_kerja(c) is False
+    assert calls == ["detak"]
+    assert c.kerja_retry_at > time.monotonic() + 3600
+    assert json.loads((tmp_path / "kerja-status.json").read_text())["state"] == "Selesai hari ini"
+
+    # 2. User raises target_poin to 40 -> status flips to Aktif, WAKE touched, worker resumes!
+    set_kerja_target_poin(tmp_path, 40)
+    assert (tmp_path / "WAKE").is_file()
+    assert json.loads((tmp_path / "kerja-status.json").read_text())["state"] == "Aktif"
+
+    calls.clear()
+    assert await run_kerja(c) is True
+    assert calls == ["detak", "urusan-mulai", "urusan-selesai"]

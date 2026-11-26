@@ -31,7 +31,19 @@ function closeModal(id) {
 }
 
 async function apiFetch(url, options = {}) {
-    const res = await fetch(url, options);
+    const controller = options.signal ? null : new AbortController();
+    const timeoutId = controller ? setTimeout(() => controller.abort(), options.timeoutMs || 20000) : null;
+    let res;
+    try {
+        res = await fetch(url, controller ? { ...options, signal: controller.signal } : options);
+    } catch (err) {
+        if (err && err.name === 'AbortError') {
+            throw new Error('Permintaan melebihi batas waktu. Coba lagi.');
+        }
+        throw err;
+    } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+    }
     let data = {};
     try {
         data = await res.json();
@@ -948,6 +960,7 @@ async function controlAction(cmd) {
     renderAutomationControls(dashboardData);
     try {
         const data = await apiFetch('/api/control/' + cmd + '?account_id=' + encodeURIComponent(account.id), { method: 'POST' });
+        pendingControls.delete(feature);
         showToast(data.message?.split('\n\n', 1)[0] || 'Aksi diproses', 'info');
         await refreshDashboard();
     } catch (e) {

@@ -1,6 +1,7 @@
 """Automated work flows for office/facility/business jobs (/api/kantor) and general jobs (/api/kerja-malam)."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import random
@@ -39,6 +40,20 @@ def set_kerja_target_poin(runtime_dir, target_poin: int | None) -> None:
         raise ValueError("Target poin minimal 1.")
     runtime_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     write_private(runtime_dir / KERJA_SETTINGS_FILE, {"target_poin": target_poin})
+    saved = _load_kerja_status(runtime_dir)
+    if (
+        saved.get("kind") == "kantor"
+        and target_poin is not None
+        and int(saved.get("poin") or 0) < target_poin
+        and saved.get("state") == "Selesai hari ini"
+    ):
+        saved["state"] = "Aktif"
+        saved["target"] = target_poin
+        saved.pop("completed_date", None)
+        saved["last_message"] = f"Target poin diperbarui ke {target_poin}; melanjutkan kerja..."
+        _save_kerja_status(runtime_dir, saved)
+    with contextlib.suppress(OSError):
+        (runtime_dir / "WAKE").touch(mode=0o600)
 
 
 def _load_kerja_status(runtime_dir) -> dict:
@@ -655,13 +670,18 @@ async def run_kerja(c) -> bool:
         return False
     if not can_run_kerja(c):
         return False
+
+    saved = _load_kerja_status(c.settings.runtime_dir)
+    custom_target = kerja_target_poin(c.settings.runtime_dir)
+    if custom_target != getattr(c, "kerja_last_target", None):
+        c.kerja_last_target = custom_target
+        if custom_target is not None and int(saved.get("poin") or 0) < custom_target:
+            c.kerja_retry_at = 0
     if time.monotonic() < getattr(c, "kerja_retry_at", 0):
         return False
 
-    saved = _load_kerja_status(c.settings.runtime_dir)
     job = getattr(c.observed_state, "job", None) or {}
     jam = job.get("jam") if isinstance(job.get("jam"), dict) else saved.get("jam")
-    custom_target = kerja_target_poin(c.settings.runtime_dir)
     target_met = custom_target is None or int(saved.get("poin") or 0) >= custom_target
     if (
         saved.get("state") == "Selesai hari ini"
