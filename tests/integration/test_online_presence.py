@@ -5,13 +5,14 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.cli import main
-from app.core.models import ROOT
+from app.core.models import ROOT, Product, ShopPreview
 from app.core.storage import write_private
 from app.integrations.kampung.http_api import OjolHttpApi
 from app.main import ControlService
 from app.modules.ledger.repository import Journal
 from app.modules.worker.controller import Controller
 from app.modules.worker.fleet import MultiAccountService
+from app.modules.worker.settings import set_auto_flag
 from app.modules.worker.ui import HttpUI
 from tests.conftest import seed_legacy_account
 
@@ -224,3 +225,120 @@ def test_cli_online_all_command(settings, monkeypatch, capsys):
         out = capsys.readouterr().out
         data = json.loads(out)
         assert data["acc1"]["online"] is True
+
+
+async def test_maintain_online_presence_respects_kerja_and_kebutuhan_flags(settings):
+    manager = MultiAccountService(settings)
+    seed_legacy_account(manager.registry, 999)
+    acc_kerja = manager.registry.create(999, "KerjaOnly")
+    acc_needs = manager.registry.create(999, "NeedsOnly")
+
+    dir_kerja = manager.registry.scoped_settings(acc_kerja).runtime_dir
+    dir_needs = manager.registry.scoped_settings(acc_needs).runtime_dir
+    dir_kerja.mkdir(parents=True, exist_ok=True)
+    dir_needs.mkdir(parents=True, exist_ok=True)
+    (dir_kerja / "http-session.json").write_text(json.dumps({"cookies": []}))
+    (dir_needs / "http-session.json").write_text(json.dumps({"cookies": []}))
+
+    set_auto_flag(dir_kerja, "ojol", False)
+    set_auto_flag(dir_kerja, "kerja", True)
+
+    set_auto_flag(dir_needs, "ojol", False)
+    set_auto_flag(dir_needs, "kerja", False)
+    set_auto_flag(dir_needs, "makan", True)
+
+    svc_kerja = manager.service(acc_kerja["id"])
+    svc_needs = manager.service(acc_needs["id"])
+    mock_status = {"online": True, "nickname": "Pemain", "server_time": "10:00"}
+
+    with (
+        patch.object(manager, "settings", settings.model_copy(update={"env": "local"})),
+        patch.object(svc_kerja, "fetch_online_status", AsyncMock(return_value=mock_status)) as f_kerja,
+        patch.object(svc_needs, "fetch_online_status", AsyncMock(return_value=mock_status)) as f_needs,
+    ):
+        await manager.supervisor.maintain_online_presence()
+        f_kerja.assert_awaited_once()
+        f_needs.assert_not_awaited()
+
+
+async def test_controller_wait_respects_kerja_and_kebutuhan_flags(settings):
+    set_auto_flag(settings.runtime_dir, "ojol", False)
+    set_auto_flag(settings.runtime_dir, "kerja", False)
+    set_auto_flag(settings.runtime_dir, "makan", True)
+
+    api = AsyncMock()
+    api.fetch_online_status = AsyncMock(return_value={"online": True})
+    ui = HttpUI(settings, api=api)
+
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        cur_time = [100.0]
+
+        def advancing_monotonic():
+            val = cur_time[0]
+            cur_time[0] += 10.0
+            return val
+
+        with patch("time.monotonic", side_effect=advancing_monotonic):
+            await controller.wait(60)
+        api.fetch_online_status.assert_not_awaited()
+
+        set_auto_flag(settings.runtime_dir, "kerja", True)
+        cur_time[0] = 200.0
+        with patch("time.monotonic", side_effect=advancing_monotonic):
+            await controller.wait(60)
+        api.fetch_online_status.assert_awaited()
+    finally:
+        journal.close()
+
+
+async def test_controller_purchase_need_fetches_online_status(settings, state):
+    set_auto_flag(settings.runtime_dir, "ojol", False)
+    set_auto_flag(settings.runtime_dir, "kerja", False)
+    set_auto_flag(settings.runtime_dir, "makan", True)
+
+    before = state.model_copy(
+        update={"wallet": 100, "needs": {**state.needs, "makan": 30}}
+    )
+    after = state.model_copy(
+        update={
+            "wallet": 95,
+            "needs": {**state.needs, "makan": 80},
+        }
+    )
+    shop = ShopPreview(
+        id="shop-1",
+        plot_id="plot-1",
+        category="makan",
+        distance_squared=10,
+        name="Warung Makan",
+        products=[
+            Product(
+                name="Nasi",
+                price=5,
+                effects={"makan": 50},
+                row_text="Nasi +50%",
+                enabled=True,
+            )
+        ],
+    )
+
+    api = AsyncMock()
+    api.fetch_online_status = AsyncMock(return_value={"online": True})
+    ui = HttpUI(settings, api=api)
+    ui.last_navigation = {"akademis_unavailable": True}
+    ui.preview_shops = AsyncMock(return_value=[shop])
+    ui.buy = AsyncMock()
+    ui.snapshot = AsyncMock(return_value=after)
+
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        controller.human_pause = AsyncMock()
+        result = await controller.purchase(before, "makan")
+        assert result is True
+        api.fetch_online_status.assert_awaited_once()
+        ui.buy.assert_awaited_once()
+    finally:
+        journal.close()

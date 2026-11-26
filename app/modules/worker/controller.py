@@ -29,7 +29,7 @@ from app.modules.worker.ojol_jitter import (
     maybe_start_ojol_jitter,
 )
 from app.modules.worker.planner import is_sleeping, next_step, select_need, select_shop
-from app.modules.worker.settings import auto_flags, set_auto_flag
+from app.modules.worker.settings import auto_flags, set_auto_flag, should_maintain_online_presence
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +214,9 @@ class Controller:
                 break
             await asyncio.sleep(min(0.25, max(0, deadline - time.monotonic())))
             if time.monotonic() - last_presence >= 35:
-                if hasattr(self.ui, "fetch_online_status"):
+                if hasattr(self.ui, "fetch_online_status") and should_maintain_online_presence(
+                    auto_flags(self.settings.runtime_dir)
+                ):
                     try:
                         await self.ui.fetch_online_status()
                     except (HttpCoreError, OSError, ValueError) as exc:
@@ -523,6 +525,9 @@ class Controller:
             self.check_cancel()
             self.stage = f"purchase.click.{resource}"
             await self.human_pause()
+            if is_need and hasattr(self.ui, "fetch_online_status"):
+                with contextlib.suppress(HttpCoreError, OSError, ValueError):
+                    await self.ui.fetch_online_status()
             await self.ui.buy(plan.product, before.wallet, current, self.settings.min_balance)
             self.stage = f"purchase.verify.{resource}"
             tolerance = Decimal("0.02")
@@ -794,7 +799,9 @@ class Controller:
                 if dry_run:
                     self.report("dry_run", reason="Semua fitur Auto nonaktif.")
                     return
-                if hasattr(self.ui, "fetch_online_status"):
+                if should_maintain_online_presence(flags) and hasattr(
+                    self.ui, "fetch_online_status"
+                ):
                     try:
                         await self.ui.fetch_online_status()
                     except (HttpCoreError, OSError, ValueError) as exc:

@@ -15,7 +15,7 @@ from app.modules.worker.capacity import WorkerCapacityError, worker_capacity_err
 from app.modules.worker.maintenance import held_window
 from app.modules.worker.ojol_jitter import is_ojol_jitter_active
 from app.modules.worker.service import WORKER_SHUTDOWN
-from app.modules.worker.settings import auto_flags
+from app.modules.worker.settings import auto_flags, should_maintain_online_presence
 
 if TYPE_CHECKING:
     from app.modules.worker.fleet import MultiAccountService
@@ -114,6 +114,12 @@ class FleetSupervisor:
             if not (directory / "http-session.json").is_file():
                 continue
             if is_ojol_jitter_active(directory):
+                continue
+            try:
+                flags = auto_flags(directory)
+            except ValueError:
+                continue
+            if not should_maintain_online_presence(flags):
                 continue
             _data, status_updated = status_record(directory / "status.json")
             _online_data, online_updated = status_record(directory / "online-status.json")
