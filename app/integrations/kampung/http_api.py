@@ -728,44 +728,64 @@ class OjolHttpApi:
                 payload["kode"] = state.order_code
             elif state.order_verify:
                 payload["kode"] = await self.solve_cek_captcha()
-            for attempt in range(5):
-                try:
-                    result = await self.request("/api/ojol", payload)
-                    if isinstance(result, dict) and result.get("ok") and payload.get("kode"):
-                        from app.modules.captcha import learn_polyline
+            try:
+                return await self._selesai_with_retry(state, payload)
+            except HttpCoreError:
+                from app.modules.captcha import record_captcha_review
 
-                        sample = self.directory / "cek-samples" / f"{state.trip_id}.svg"
-                        with contextlib.suppress(OSError, ValueError):
-                            learn_polyline(self.directory, sample.read_text(), payload["kode"])
-                    return result
-                except HttpCoreError as exc:
-                    # 409 "Penumpang sedang turun" (turun_detik 8): ulang dengan jeda penuh;
-                    # tiap 409 bisa mereset jendela turun, dan bila kedatangan ikut ter-reset,
-                    # kendarai ulang sampai arrived sebelum mencoba lagi.
-                    if attempt == 4 or "409" not in str(exc):
-                        raise
-                    await asyncio.sleep(10)
-                    trip = (await self.raw_trip()) or {}
-                    if trip and not trip.get("arrived") and isinstance(trip.get("to"), dict):
-                        await self.drive_to_destination(trip["to"], max_seconds=240)
-                        continue
-                    # 409 terakhir dengan jejak invalid: server minta batal; ikuti dan lanjut
-                    # ke order baru agar worker tidak mati.
-                    raw = await self._session_client().request(
-                        "POST",
-                        "/api/ojol",
-                        json={"action": "selesai"},
-                        headers=self.browser_headers("/api/ojol", "POST"),
-                    )
-                    if "REQUIREMENT_NOT_MET" in raw.text:
-                        await self.request("/api/ojol", {"action": "batal"})
-                        raise HttpCoreError(
-                            "Order dibatalkan otomatis: jejak perjalanan tidak lewat jalan. "
-                            "Mencari order baru.",
-                            category="rejected",
-                        ) from exc
-                    raise
+                # Kode cek ditolak/putus: antrekan gambarnya ke Bank Angka, jangan hilang.
+                if self.directory and state.order_verify:
+                    sample = self.directory / "cek-samples" / f"{state.trip_id}.svg"
+                    with contextlib.suppress(OSError, ValueError):
+                        record_captcha_review(
+                            self.directory, sample.read_text(), trip_id=state.trip_id
+                        )
+                raise
+
         raise HttpCoreError("Aksi Ojol tidak sesuai state/waktu server", category="blocked")
+
+    async def _selesai_with_retry(self, state, payload):
+        """Kirim `selesai`; 409 penumpang turun diulang, kegagalan lain dilempar ke pemanggil."""
+        from app.modules.captcha import learn_polyline
+
+        for attempt in range(5):
+            try:
+                result = await self.request("/api/ojol", payload)
+                if isinstance(result, dict) and result.get("ok") and payload.get("kode"):
+                    from app.modules.captcha import learn_polyline
+
+                    sample = self.directory / "cek-samples" / f"{state.trip_id}.svg"
+                    with contextlib.suppress(OSError, ValueError):
+                        learn_polyline(self.directory, sample.read_text(), payload["kode"])
+                return result
+            except HttpCoreError as exc:
+                # 409 "Penumpang sedang turun" (turun_detik 8): ulang dengan jeda penuh;
+                # tiap 409 bisa mereset jendela turun, dan bila kedatangan ikut ter-reset,
+                # kendarai ulang sampai arrived sebelum mencoba lagi.
+                if attempt == 4 or "409" not in str(exc):
+                    raise
+                await asyncio.sleep(10)
+                trip = (await self.raw_trip()) or {}
+                if trip and not trip.get("arrived") and isinstance(trip.get("to"), dict):
+                    await self.drive_to_destination(trip["to"], max_seconds=240)
+                    continue
+                # 409 terakhir dengan jejak invalid: server minta batal; ikuti dan lanjut
+                # ke order baru agar worker tidak mati.
+                raw = await self._session_client().request(
+                    "POST",
+                    "/api/ojol",
+                    json={"action": "selesai"},
+                    headers=self.browser_headers("/api/ojol", "POST"),
+                )
+                if "REQUIREMENT_NOT_MET" in raw.text:
+                    await self.request("/api/ojol", {"action": "batal"})
+                    raise HttpCoreError(
+                        "Order dibatalkan otomatis: jejak perjalanan tidak lewat jalan. "
+                        "Mencari order baru.",
+                        category="rejected",
+                    ) from exc
+                raise
+
 
     async def garden_status(self):
         return await self._facilities.garden_status()

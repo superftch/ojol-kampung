@@ -555,6 +555,22 @@ async def test_trip_cek_true_solves_svg_captcha(api, world):
     ]
 
 
+async def test_trip_cek_failure_queues_svg_to_bank_angka(api, world):
+    world["ojol"]["trip"] = {**trip(), "cek": True}
+    world["time"]["now"] = "2030-01-02T10:01:00Z"
+    world["text_responses"] = {
+        "/api/ojol/cek?t=trip-fixture&a=2030-01-02T10:00:00.001Z&m=1": _cek_svg("42")
+    }
+    world["lost_response"] = "/api/ojol"
+
+    with pytest.raises(HttpCoreError):
+        await api.job_action("complete")
+
+    reviews = list((api.directory / "cek-reviews").glob("*.json"))
+    assert len(reviews) == 2  # dua digit pada gambar cek
+    assert all(json.loads(review.read_text())["status"] == "pending" for review in reviews)
+
+
 def _kendara_posts(world, pilihan):
     def respond(request):
         action = json.loads(request.content).get("action")

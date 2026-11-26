@@ -201,8 +201,13 @@ def record_unknown_glyph(directory, glyph, normalized, trip_id=None, svg_text=No
                         if ex_raw:
                             with contextlib.suppress(TypeError, ValueError):
                                 ex_min_x = min(x for stroke in ex_raw for x, _ in stroke)
+                        ex_g = ex_data.get("normalized_glyph") or ex_raw
                         if cur_min_x is not None and ex_min_x is not None:
-                            if abs(cur_min_x - ex_min_x) < 5:
+                            # posisi x saja tidak cukup: glyph path selalu mulai di 0
+                            same_shape = not ex_g or _shape_distance(
+                                normalized, _normalize(ex_g)
+                            ) < 0.05
+                            if abs(cur_min_x - ex_min_x) < 5 and same_shape:
                                 touched = force and not ex_data.get("force")
                                 if touched:
                                     ex_data["force"] = True
@@ -242,12 +247,27 @@ def record_unknown_glyph(directory, glyph, normalized, trip_id=None, svg_text=No
         return None
 
 
+def _path_glyphs(svg_text):
+    """Glyph kasar dari cek berbasis <path> (model svg-captcha) lewat tabel pola digit."""
+    import base64
+
+    from app.modules.captcha.matcher import SvgCaptchaSolver
+
+    model = json.loads(base64.b64decode(SvgCaptchaSolver.model))
+    glyphs = []
+    for shape in re.findall(r'<path[^>]*\bd="([^"]+)"', svg_text):
+        digit = model.get(re.sub(r"[\d.\s]*", "", shape))
+        if digit and digit in _SEED:
+            glyphs.append([[list(point) for point in stroke] for stroke in _SEED[digit][0]])
+    return glyphs
+
+
 def record_captcha_review(directory, svg_text, trip_id=None):
     """Antrekan semua glyph dari satu gambar cek yang gagal dipecahkan ke Bank Angka."""
-    if not directory or not isinstance(svg_text, str) or "<polyline" not in svg_text:
+    if not directory or not isinstance(svg_text, str) or "<svg" not in svg_text:
         return []
     try:
-        glyphs = _glyphs(svg_text)
+        glyphs = _glyphs(svg_text) if "<polyline" in svg_text else _path_glyphs(svg_text)
     except (SvgCaptchaSolverError, ValueError, TypeError):
         return []
     ids = []
