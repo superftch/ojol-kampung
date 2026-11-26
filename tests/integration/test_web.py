@@ -398,6 +398,46 @@ def test_admin_game_account_details_include_archived_accounts_from_other_owners(
     assert 'id="adminGameAccountsDialog"' not in client.get("/").text
 
 
+def test_admin_worker_details_list_active_accounts_and_owners(admin_web):
+    client, manager = admin_web
+    registry = manager.registry
+    admin = registry.web.list_users()[0]
+    credentials = {"username": "driver_sari", "password": "fixture-password"}
+    member = registry.web.register(**credentials, name="Sari")
+    registry.web.review_user(member["id"], admin["id"], approve=True)
+    owner = registry.owner_for_user(member)
+    active_account = registry.create(owner, "Motor Aktif")
+    registry.create(owner, "Motor Diam")
+    archived = registry.create(owner, "Motor Arsip")
+    registry.archive(owner, archived["id"])
+    registry.set_limit("max_active_workers", 5)
+
+    assert 'id="adminWorkersDialog"' in client.get("/").text
+    with exclusive_lock(registry.runtime_directory(active_account)):
+        response = client.get("/api/admin/workers")
+    assert response.is_success
+    assert response.json() == {
+        "used": 1,
+        "limit": 5,
+        "workers": [
+            {
+                "id": active_account["id"],
+                "name": "Motor Aktif",
+                "owner_name": "Sari",
+                "owner_username": "driver_sari",
+                "event": None,
+                "phase": None,
+            }
+        ],
+    }
+
+    client.post("/api/auth/logout")
+    assert client.get("/api/admin/workers").status_code == 401
+    assert client.post("/api/auth/login", json=credentials).is_success
+    assert client.get("/api/admin/workers").status_code == 403
+    assert 'id="adminWorkersDialog"' not in client.get("/").text
+
+
 @pytest.mark.parametrize("standalone", [True, False])
 def test_admin_worker_limit_preview_and_inheritance(admin_web, monkeypatch, standalone):
     client, manager = admin_web
@@ -1608,10 +1648,10 @@ def test_dashboard_auto_kerja_location_and_dynamic_ojol_guards(admin_web):
 
 
 @pytest.mark.asyncio
-async def test_auto_kursus_requires_subject_shows_cost_and_runs(admin_web):
+async def test_auto_kursus_disabled_from_menu_and_api(admin_web):
     from types import SimpleNamespace
 
-    from app.modules.gameplay.study import run_kursus, save_skills
+    from app.modules.gameplay.study import run_kursus
 
     client, manager = admin_web
     user = client.get("/api/auth/me").json()["user"]
@@ -1620,87 +1660,69 @@ async def test_auto_kursus_requires_subject_shows_cost_and_runs(admin_web):
     acc_id = acc["id"]
     service = manager.service(acc_id)
 
-    # HTML has Auto Kursus controls
+    # HTML no longer renders Auto Kursus menu controls
     html = client.get("/").text
-    assert 'id="autoKursusToggle"' in html
-    assert 'id="kursusSubjectSelect"' in html
-    assert 'id="kursusCostInfo"' in html
+    assert 'id="autoKursusToggle"' not in html
+    assert 'id="kursusSubjectSelect"' not in html
+    assert 'id="kursusCostInfo"' not in html
 
-    # Cannot enable Auto Kursus before picking a track
-    res_no_track = client.post(
-        f"/api/control/toggle-auto?account_id={acc_id}",
-        json={"flag": "kursus", "enabled": True},
-    )
-    assert res_no_track.status_code == 400
-    assert "bidang" in res_no_track.json()["detail"].lower()
-
-    # Cannot set "auto" as kursus subject
-    res_auto = client.post(
-        f"/api/control/study-subject?account_id={acc_id}",
-        json={"subject": "auto", "mode": "kursus"},
-    )
-    assert res_auto.status_code == 400
-
-    # Save cached skills and select "mengajar"
-    save_skills(
-        service.settings.runtime_dir,
-        [
-            {
-                "id": "mengajar",
-                "name": "Mengajar",
-                "level": 5,
-                "pending": None,
-                "next": {"level": 6, "hours": 48, "courseMilli": 10000},
-            }
-        ],
-    )
-    res_pick = client.post(
-        f"/api/control/study-subject?account_id={acc_id}",
-        json={"subject": "mengajar", "mode": "kursus"},
-    )
-    assert res_pick.status_code == 200
-
-    # Dashboard exposes kursus_subject and kursus_cost
-    dash = client.get(f"/api/dashboard?account_id={acc_id}").json()
-    assert dash["kursus_subject"] == "mengajar"
-    assert dash["kursus_cost"]["cost_milli"] == 10000
-    assert dash["kursus_cost"]["level"] == 5
-    assert dash["kursus_cost"]["next_level"] == 6
-
-    # Now enabling Auto Kursus succeeds
+    # Cannot enable Auto Kursus
     res_enable = client.post(
         f"/api/control/toggle-auto?account_id={acc_id}",
         json={"flag": "kursus", "enabled": True},
     )
-    assert res_enable.status_code == 200
+    assert res_enable.status_code == 400
+    assert "dinonaktifkan" in res_enable.json()["detail"].lower()
 
-    # Worker run_kursus calls take_skill_course("mengajar")
-    taken = []
-    events = []
+    # Cannot set kursus subject
+    res_pick = client.post(
+        f"/api/control/study-subject?account_id={acc_id}",
+        json={"subject": "mengajar", "mode": "kursus"},
+    )
+    assert res_pick.status_code == 400
+    assert "dinonaktifkan" in res_pick.json()["detail"].lower()
 
+    # Worker run_kursus is disabled and does not call UI
     class FakeUi:
         async def game_skill_state(self):
-            return 50000, {
-                "course": {"priceMilli": 5000, "dailyMax": 3, "usedToday": 0},
-                "tracks": [
-                    {
-                        "id": "mengajar",
-                        "level": 5,
-                        "pending": None,
-                        "next": {"level": 6, "hours": 48, "courseMilli": 10000},
-                    }
-                ],
-            }
+            raise AssertionError("Should not call game_skill_state when kursus is disabled")
 
         async def take_skill_course(self, track):
-            taken.append(track)
-            return {"track": track, "level": 6, "readyAt": "2026-11-27T08:17:33.546Z"}
+            raise AssertionError("Should not call take_skill_course when kursus is disabled")
 
     c = SimpleNamespace(
         ui=FakeUi(),
         settings=SimpleNamespace(runtime_dir=service.settings.runtime_dir),
-        record_event=lambda kind, msg: events.append((kind, msg)),
     )
-    assert await run_kursus(c) is True
-    assert taken == ["mengajar"]
-    assert events and "10 koin" in events[0][1]
+    assert await run_kursus(c) is False
+
+
+@pytest.mark.asyncio
+async def test_kerja_target_poin_api_and_dashboard(admin_web):
+    client, manager = admin_web
+    user = client.get("/api/auth/me").json()["user"]
+    owner = manager.registry.owner_for_user(user)
+    acc = manager.registry.create(owner, "Kerja Target Account")
+    acc_id = acc["id"]
+
+    html = client.get("/").text
+    assert 'id="kerjaTargetPoinInput"' in html
+    assert 'id="btnSaveKerjaTarget"' in html
+    assert 'id="autoKerjaDetails"' in html
+    assert "Status detail kantor" in html
+
+    res_bad = client.post(
+        f"/api/control/kerja-target?account_id={acc_id}",
+        json={"target_poin": 0},
+    )
+    assert res_bad.status_code == 400
+
+    res_ok = client.post(
+        f"/api/control/kerja-target?account_id={acc_id}",
+        json={"target_poin": 60},
+    )
+    assert res_ok.status_code == 200
+    assert res_ok.json()["target_poin"] == 60
+
+    dash = client.get(f"/api/dashboard?account_id={acc_id}").json()
+    assert dash["kerja_target_poin"] == 60

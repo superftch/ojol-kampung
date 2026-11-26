@@ -44,11 +44,14 @@ class HttpUI:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
 
-    async def _run_snapshot(self):
+    async def _ensure_client(self, testing_error: str) -> None:
         if getattr(self.api, "client", "missing") is None:
             if self.settings.env == "testing" and isinstance(self.api, OjolHttpApi):
-                raise HttpCoreError("Snapshot testing tidak membuka HTTP live")
+                raise HttpCoreError(testing_error)
             await self.api.__aenter__()
+
+    async def _run_snapshot(self):
+        await self._ensure_client("Snapshot testing tidak membuka HTTP live")
         return await self.api.snapshot()
 
     async def snapshot(self) -> Snapshot:
@@ -59,6 +62,15 @@ class HttpUI:
         if isinstance(me, dict) and (me.get("profile") or {}).get("nickname") is not None:
             save_profile(self.settings.runtime_dir, verified_profile(me))
         return state
+
+    async def _run_fetch_online_status(self):
+        await self._ensure_client("Presence testing tidak membuka HTTP live")
+        return await self.api.fetch_online_status()
+
+    async def fetch_online_status(self):
+        """Delegate online presence refresh to the HTTP API adapter."""
+        self.check_cancel()
+        return await self._wait_for_stop(self._run_fetch_online_status())
 
     async def daily_wallet(self, day):
         return await self.api.daily_wallet(day.isoformat())

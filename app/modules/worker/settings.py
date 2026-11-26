@@ -50,3 +50,8 @@ def set_auto_flag(directory, key, enabled):
     flags[key] = enabled
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     write_private(directory / FILENAME, flags)
+
+
+def should_maintain_online_presence(flags: dict) -> bool:
+    """Return True when continuous online presence should be maintained (Auto Ojol or Auto Kerja)."""
+    return flags.get("ojol") is True or bool(flags.get("kerja"))

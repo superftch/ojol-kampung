@@ -410,7 +410,8 @@ def _save_kursus_status(directory, payload: dict) -> None:
 
 
 async def run_kursus(c) -> bool:
-    """Take one paid skill course (/api/skills) when Auto Kursus is enabled and eligible."""
+    """Auto Kursus is currently disabled."""
+    return False
     if not hasattr(c.ui, "take_skill_course") or not hasattr(c.ui, "game_skill_state"):
         return False
     flags = auto_flags(c.settings.runtime_dir)
@@ -422,6 +423,7 @@ async def run_kursus(c) -> bool:
     if time.monotonic() < getattr(c, "kursus_retry_at", 0):
         return False
 
+    c.stage = "study.kursus"
     try:
         balance_milli, skill = await c.ui.game_skill_state()
     except HttpCoreError as exc:

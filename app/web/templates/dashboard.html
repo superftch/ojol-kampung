@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard · Kampung Ojol Automation</title>
-    <link rel="stylesheet" href="/ui/console.css">
+    <link rel="stylesheet" href="/ui/console.css?v=20261126d">
 </head>
 <body class="app-shell">
     <header class="app-header">
@@ -155,6 +155,15 @@
                                         <div><span class="control-group-title">Auto Kantor</span><span id="toolbarKerjaBadge" class="control-state">—</span></div>
                                         <div id="toolbarKerjaHint" class="meta" style="display:none;margin-top:3px;font-size:12px;"></div>
                                         <div id="autoKerjaRealtime" class="meta" style="display:none;margin-top:3px;font-size:12px;color:var(--accent,#0f766e);"></div>
+                                        <details id="autoKerjaDetails" class="kantor-details" style="display:none;margin-top:6px;">
+                                            <summary class="kantor-details-summary">Status detail kantor</summary>
+                                            <div id="autoKerjaDetailsBody" class="kantor-details-body"></div>
+                                        </details>
+                                        <div style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap;">
+                                            <label for="kerjaTargetPoinInput" class="meta" style="font-size:12px;">Target poin:</label>
+                                            <input id="kerjaTargetPoinInput" type="number" min="1" max="999" placeholder="30" aria-label="Target poin kantor" style="width:72px;padding:3px 6px;font-size:12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);">
+                                            <button id="btnSaveKerjaTarget" class="btn btn-secondary" type="button" onclick="setKerjaTargetPoin()" style="padding:3px 10px;font-size:12px;">Simpan</button>
+                                        </div>
                                     </div>
                                     <div class="btn-segment-group">
                                         <button id="btnRunKerja" class="btn btn-primary" type="button" onclick="controlAction('run-kerja')" aria-label="Jalankan Auto Kantor">Jalankan</button>
@@ -284,35 +293,6 @@
                         <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 6px;">Pilih Bidang Belajar:</label>
                         <select id="studySubjectSelect" aria-label="Bidang belajar" class="account-select" style="width: 100%;" onchange="setStudySubject(this.value)">
                             <option value="auto">🔄 Auto (Pilih Otomatis yang Belum Maks)</option>
-                            <option value="dagang">🛒 Dagang</option>
-                            <option value="teknik">🔧 Teknik</option>
-                            <option value="administrasi">📋 Administrasi</option>
-                            <option value="kesehatan">🏥 Kesehatan</option>
-                            <option value="mengajar">👨‍🏫 Mengajar</option>
-                            <option value="rawat">🏡 Rawat Desa</option>
-                            <option value="konveksi">👕 Konveksi</option>
-                            <option value="keamanan">🛡️ Keamanan</option>
-                            <option value="boga">🍳 Tata Boga</option>
-                            <option value="penerbangan">✈️ Penerbangan</option>
-                            <option value="media">📰 Media</option>
-                        </select>
-                    </div>
-
-                    <div style="margin-top: 18px; border-top: 1px solid var(--border); padding-top: 14px;">
-                        <div class="toggle-item" style="margin-bottom: 8px;">
-                            <div class="toggle-info">
-                                <span class="toggle-title">⚡ Auto Kursus Keahlian (Berbayar)</span>
-                                <span class="toggle-desc" id="autoKursusDesc">Otomatis ambil kursus (/api/skills) sesuai kuota harian. Wajib pilih bidang terlebih dahulu.</span>
-                                <span class="toggle-desc" id="kursusCostInfo" style="margin-top:4px;font-size:12px;color:var(--accent,#0f766e);display:none;"></span>
-                            </div>
-                            <label class="switch">
-                                <input type="checkbox" id="autoKursusToggle" aria-label="Auto Kursus" onchange="toggleAuto('kursus', this.checked)">
-                                <span class="slider"></span>
-                            </label>
-                        </div>
-                        <label style="font-size: 12px; color: var(--text-muted); display: block; margin-bottom: 6px;">Pilih Bidang Kursus (Wajib):</label>
-                        <select id="kursusSubjectSelect" aria-label="Bidang kursus" class="account-select" style="width: 100%;" onchange="setKursusSubject(this.value)">
-                            <option value="">-- Pilih Bidang Kursus (Wajib) --</option>
                             <option value="dagang">🛒 Dagang</option>
                             <option value="teknik">🔧 Teknik</option>
                             <option value="administrasi">📋 Administrasi</option>
@@ -833,6 +813,6 @@ __ADMIN_NOTIF_PANEL__
     </dialog>
 
     <script>const currentUser = __USER_JSON__;</script>
-    <script src="/ui/dashboard.js"></script>
+    <script src="/ui/dashboard.js?v=20261126d"></script>
 </body>
 </html>

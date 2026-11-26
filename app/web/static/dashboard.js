@@ -31,7 +31,19 @@ function closeModal(id) {
 }
 
 async function apiFetch(url, options = {}) {
-    const res = await fetch(url, options);
+    const controller = options.signal ? null : new AbortController();
+    const timeoutId = controller ? setTimeout(() => controller.abort(), options.timeoutMs || 20000) : null;
+    let res;
+    try {
+        res = await fetch(url, controller ? { ...options, signal: controller.signal } : options);
+    } catch (err) {
+        if (err && err.name === 'AbortError') {
+            throw new Error('Permintaan melebihi batas waktu. Coba lagi.');
+        }
+        throw err;
+    } finally {
+        if (timeoutId) clearTimeout(timeoutId);
+    }
     let data = {};
     try {
         data = await res.json();
@@ -331,8 +343,10 @@ function startLiveStream() {
 }
 
 async function refreshDashboard() {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
-        const res = await fetch('/api/dashboard');
+        const res = await fetch('/api/dashboard', { signal: controller.signal });
         if (res.status === 401) {
             window.location.href = '/login';
             return false;
@@ -343,6 +357,8 @@ async function refreshDashboard() {
     } catch (e) {
         document.getElementById('dashboardFreshness').textContent = 'Status gagal dimuat. Coba segarkan.';
         return false;
+    } finally {
+        clearTimeout(timeoutId);
     }
 }
 
@@ -866,9 +882,20 @@ function renderAutomationControls(data) {
         }
     }
 
+    const kerjaTargetInput = document.getElementById('kerjaTargetPoinInput');
+    if (kerjaTargetInput && document.activeElement !== kerjaTargetInput) {
+        kerjaTargetInput.value = data.kerja_target_poin != null ? String(data.kerja_target_poin) : '';
+        kerjaTargetInput.disabled = !data.account || !isKantorJob;
+    }
+    const saveKerjaTargetBtn = document.getElementById('btnSaveKerjaTarget');
+    if (saveKerjaTargetBtn) {
+        saveKerjaTargetBtn.disabled = !data.account || !isKantorJob;
+    }
+
     const kerjaRtEl = document.getElementById('autoKerjaRealtime');
+    const ks = data.kerja_status || null;
+    const kerjaActive = Boolean(sum.active && flags.kerja);
     if (kerjaRtEl) {
-        const ks = data.kerja_status || null;
         if (ks && ks.kind === 'kantor') {
             const parts = [];
             if (ks.state) parts.push(`Status: ${ks.state}`);
@@ -880,22 +907,134 @@ function renderAutomationControls(data) {
                         : `Tugas: ${lunas}/${ks.per_hari} lunas (${ks.menuju ?? 0}/${ks.per_paket ?? 5} urusan)`
                 );
             }
+            if (typeof ks.sesi_absen === 'number' && typeof ks.sesi_jumlah === 'number') {
+                parts.push(`Sesi absen: ${Math.min(ks.sesi_absen, ks.sesi_jumlah)}/${ks.sesi_jumlah}`);
+            }
             if (typeof ks.poin === 'number' && typeof ks.target === 'number') {
-                parts.push(`Kerja penuh: ${Math.min(ks.poin, ks.target)}/${ks.target} poin`);
+                parts.push(`Kerja penuh: ${ks.poin}/${ks.target} poin`);
             }
             if (ks.last_message) parts.push(ks.last_message);
             kerjaRtEl.textContent = parts.join(' · ');
             kerjaRtEl.style.display = parts.length ? 'block' : 'none';
         } else if (snap.job && snap.job.kantor) {
             const k = snap.job.kantor;
-            const target = k.target ?? 30;
-            const poin = Math.min(k.poin ?? 0, target);
+            const target = data.kerja_target_poin ?? k.target ?? 30;
+            const poin = k.poin ?? 0;
             kerjaRtEl.textContent = `Kerja penuh: ${poin}/${target} poin · Status: ${k.status || '-'}`;
+            kerjaRtEl.style.display = 'block';
+        } else if (kerjaActive && isKantorJob) {
+            kerjaRtEl.textContent = kerjaBlockedReason
+                ? `Tertahan: ${kerjaBlockedReason}`
+                : 'Status: Menunggu siklus detak kantor…';
             kerjaRtEl.style.display = 'block';
         } else {
             kerjaRtEl.textContent = '';
             kerjaRtEl.style.display = 'none';
         }
+    }
+
+    const kerjaDetailsEl = document.getElementById('autoKerjaDetails');
+    const kerjaDetailsBody = document.getElementById('autoKerjaDetailsBody');
+    if (kerjaDetailsEl && kerjaDetailsBody) {
+        const hasKantorDetails = Boolean(
+            isKantorJob && ((ks && ks.kind === 'kantor') || (snap.job && snap.job.kantor) || kerjaActive)
+        );
+        if (!hasKantorDetails) {
+            kerjaDetailsEl.style.display = 'none';
+            kerjaDetailsBody.innerHTML = '';
+        } else {
+            const kSnap = snap.job?.kantor || null;
+            const rows = [];
+            const stateLabel = ks?.state || (kerjaActive ? (kerjaBlockedReason ? 'Tertahan' : 'Menunggu detak pertama') : kSnap?.status || '-');
+            rows.push(['Status', stateLabel]);
+            if (ks?.fase) rows.push(['Fase', ks.fase]);
+            const jam = ks?.jam || snap.job?.jam;
+            if (jam && jam.from && jam.to) {
+                const breakTxt = jam.istirahat?.from && jam.istirahat?.to ? ` (istirahat ${jam.istirahat.from}–${jam.istirahat.to})` : '';
+                rows.push(['Jam kerja', `${jam.from}–${jam.to}${breakTxt}`]);
+            }
+            if (typeof ks?.lunas === 'number' && typeof ks?.per_hari === 'number') {
+                const lunas = Math.min(ks.lunas, ks.per_hari);
+                const tugasVal = lunas >= ks.per_hari
+                    ? `${lunas}/${ks.per_hari} lunas`
+                    : `${lunas}/${ks.per_hari} lunas (${ks.menuju ?? 0}/${ks.per_paket ?? 5} urusan)`;
+                rows.push(['Paket tugas', tugasVal]);
+            }
+            const poinVal = typeof ks?.poin === 'number' ? ks.poin : kSnap?.poin;
+            const targetVal = typeof ks?.target === 'number' ? ks.target : (data.kerja_target_poin ?? kSnap?.target);
+            if (typeof poinVal === 'number' && typeof targetVal === 'number') {
+                rows.push(['Poin kinerja', `${poinVal}/${targetVal}`]);
+            }
+            if (typeof ks?.sesi_jumlah === 'number') {
+                const beresVal = typeof ks.sesi_beres === 'number' ? Math.min(ks.sesi_beres, ks.sesi_jumlah) : 0;
+                const absenVal = typeof ks.sesi_absen === 'number' ? Math.min(ks.sesi_absen, ks.sesi_jumlah) : 0;
+                rows.push(['Ringkasan sesi', `${beresVal}/${ks.sesi_jumlah} beres · Absen ${absenVal}/${ks.sesi_jumlah}`]);
+            }
+            if (ks?.updated_at) {
+                const dt = new Date(ks.updated_at);
+                if (!Number.isNaN(dt.getTime())) {
+                    rows.push(['Pembaruan', dt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })]);
+                }
+            }
+
+            let html = `<div class="kantor-detail-meta">${rows.map(([label, val]) =>
+                `<div class="kantor-detail-row"><span class="kantor-detail-label">${escapeHtml(label)}</span><strong>${escapeHtml(String(val))}</strong></div>`
+            ).join('')}</div>`;
+
+            if (Array.isArray(ks?.sesi_jadwal) && ks.sesi_jadwal.length) {
+                const urusanReq = typeof ks.sesi_urusan === 'number' ? ks.sesi_urusan : 3;
+                const chips = ks.sesi_jadwal.map((item) => {
+                    const ke = item?.ke ?? '?';
+                    const u = Number(item?.u || 0);
+                    const absenDone = Boolean(item?.absen);
+                    const beres = Boolean(item?.beres);
+                    const isCur = ks.sesi_ke === ke;
+                    let stateAttr = 'pending';
+                    let text = 'nanti';
+                    if (beres) {
+                        stateAttr = 'done';
+                        text = 'beres';
+                    } else if (isCur || u > 0 || absenDone) {
+                        const absenTxt = ks.sesi_absen_enabled === false
+                            ? ''
+                            : (absenDone ? ' · sudah absen' : ' · belum absen');
+                        stateAttr = (!absenDone && ks.sesi_absen_enabled !== false && u > 0) ? 'need-absen' : 'active';
+                        text = `${u}/${urusanReq}${absenTxt}`;
+                    }
+                    return `<div class="kantor-sesi-item" data-state="${stateAttr}"><span>Sesi ${escapeHtml(String(ke))}</span><span>${escapeHtml(text)}</span></div>`;
+                }).join('');
+                html += `<div class="kantor-sesi-grid">${chips}</div>`;
+            }
+
+            if (ks?.last_message) {
+                html += `<div class="meta" style="font-size:11px;">Info terakhir: ${escapeHtml(ks.last_message)}</div>`;
+            }
+            kerjaDetailsBody.innerHTML = html;
+            kerjaDetailsEl.style.display = 'block';
+        }
+    }
+}
+
+async function setKerjaTargetPoin() {
+    const account = dashboardData?.account;
+    const input = document.getElementById('kerjaTargetPoinInput');
+    if (!account || !input) return;
+    const raw = input.value.trim();
+    const target = raw === '' ? null : Number(raw);
+    if (target !== null && (!Number.isInteger(target) || target < 1)) {
+        showToast('Target poin minimal 1.', 'error');
+        return;
+    }
+    try {
+        await apiFetch('/api/control/kerja-target?account_id=' + encodeURIComponent(account.id), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target_poin: target })
+        });
+        showToast(target !== null ? `Target poin kantor disetel ke ${target}` : 'Target poin kantor dikembalikan ke default (30)', 'info');
+        await refreshDashboard();
+    } catch (e) {
+        showToast('Gagal menyimpan target poin: ' + e.message, 'error');
     }
 }
 
@@ -909,9 +1048,11 @@ async function controlAction(cmd) {
         return;
     }
     pendingControls.add(feature);
-    renderAutomationControls(dashboardData);
     try {
-        const data = await apiFetch('/api/control/' + cmd + '?account_id=' + encodeURIComponent(account.id), { method: 'POST' });
+        renderAutomationControls(dashboardData);
+        const timeoutMs = cmd.startsWith('stop') ? 35000 : 20000;
+        const data = await apiFetch('/api/control/' + cmd + '?account_id=' + encodeURIComponent(account.id), { method: 'POST', timeoutMs });
+        pendingControls.delete(feature);
         showToast(data.message?.split('\n\n', 1)[0] || 'Aksi diproses', 'info');
         await refreshDashboard();
     } catch (e) {
@@ -1216,6 +1357,69 @@ let adminLastChecked = null;
 let adminLoadVersion = 0;
 let adminGameAccounts = [];
 let adminGameAccountsRequest = 0;
+let adminWorkers = [];
+let adminWorkersMeta = { used: 0, limit: 0 };
+let adminWorkersRequest = 0;
+
+function openAdminWorkers(trigger) {
+    document.getElementById('adminWorkersSearch').value = '';
+    trigger?.focus();
+    openModal('adminWorkersDialog');
+    loadAdminWorkers();
+}
+
+async function loadAdminWorkers() {
+    const request = ++adminWorkersRequest;
+    const message = document.getElementById('adminWorkersMessage');
+    const filters = document.getElementById('adminWorkersFilters');
+    const retry = document.getElementById('adminWorkersRetry');
+    filters.disabled = true;
+    retry.hidden = true;
+    message.textContent = 'Memuat pengguna worker…';
+    const list = document.getElementById('adminWorkersList');
+    list.replaceChildren();
+    try {
+        const data = await apiFetch('/api/admin/workers');
+        if (request !== adminWorkersRequest) return;
+        adminWorkers = data.workers || [];
+        adminWorkersMeta = { used: data.used ?? adminWorkers.length, limit: data.limit ?? 0 };
+        filters.disabled = false;
+        renderAdminWorkers();
+    } catch (error) {
+        if (request !== adminWorkersRequest) return;
+        message.textContent = 'Daftar pengguna worker gagal dimuat.';
+        retry.hidden = false;
+    }
+}
+
+function renderAdminWorkers() {
+    const query = document.getElementById('adminWorkersSearch').value.trim().toLowerCase().replace(/^@/, '');
+    const phaseLabels = {
+        idle: 'Menunggu order',
+        searching: 'Mencari order',
+        delivering: 'Dalam perjalanan',
+        complete: 'Siap klaim ongkos',
+        sleeping: 'Karakter tidur',
+    };
+    const matches = adminWorkers.filter(worker => [worker.name, worker.id, worker.owner_name, worker.owner_username]
+        .some(value => value?.toLowerCase().includes(query)));
+    const message = document.getElementById('adminWorkersMessage');
+    if (matches.length) {
+        message.textContent = query
+            ? `${adminNumber.format(matches.length)} dari ${adminNumber.format(adminWorkers.length)} worker aktif`
+            : `${adminNumber.format(adminWorkersMeta.used)} dari ${adminNumber.format(adminWorkersMeta.limit)} slot terpakai`;
+    } else {
+        message.textContent = adminWorkers.length ? 'Tidak ada worker yang cocok.' : 'Belum ada worker yang sedang berjalan.';
+    }
+    document.getElementById('adminWorkersList').innerHTML = matches.map(worker => {
+        const owner = [worker.owner_name, worker.owner_username && `@${worker.owner_username}`].filter(Boolean).join(' · ');
+        const state = phaseLabels[worker.phase] || 'Aktif';
+        return `<li><div><strong>${escapeHtml(worker.name)}</strong>
+            <p class="meta">Pemilik ${escapeHtml(owner || 'tidak tercatat')}</p>
+            <p class="meta">ID <code>${escapeHtml(worker.id)}</code></p></div>
+            <span class="admin-account-status">${escapeHtml(state)}</span></li>`;
+    }).join('');
+}
 
 function openAdminGameAccounts(trigger) {
     document.getElementById('adminGameAccountsSearch').value = '';

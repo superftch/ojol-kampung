@@ -326,3 +326,23 @@ def test_digit_four_from_live_human_check_samples():
 )
 def test_four_and_one_are_not_confused(points, kode):
     assert solve_polyline_captcha(f'<svg><polyline points="{points}"/></svg>') == kode
+
+
+def test_failed_captcha_is_queued_for_bank_contribution():
+    """Gambar yang gagal dipecahkan tetap muncul di antrean walau bank sudah "mengenali" glyph-nya."""
+    from app.modules.captcha import record_captcha_review
+
+    with tempfile.TemporaryDirectory() as tmp:
+        svg = _svg("57", offset=3)
+        assert solve_polyline_captcha(svg, tmp) == "57"  # bank sudah kenal -> dulu auto-diskip
+        assert get_pending_reviews(tmp) == []
+
+        ids = record_captcha_review(tmp, svg, trip_id="kunci-1")
+        assert len(ids) == 2
+        reviews = get_pending_reviews(tmp)
+        assert len(reviews) == 2
+        assert all(r["svg_text"] == svg for r in reviews)
+        assert all(r["trip_id"] == "kunci-1" for r in reviews)
+
+        record_captcha_review(tmp, svg, trip_id="kunci-1")  # tanpa duplikat
+        assert len(get_pending_reviews(tmp)) == 2

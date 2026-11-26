@@ -16,7 +16,7 @@ from app.core.models import NEEDS, Resource, Snapshot, Step, now
 from app.modules.gameplay.garden import run_garden
 from app.modules.gameplay.gym import run_gym
 from app.modules.gameplay.kerja import run_kerja
-from app.modules.gameplay.study import run_kursus, run_learning
+from app.modules.gameplay.study import run_learning
 from app.modules.ledger.finance import completion_evidence
 from app.modules.ledger.reconciliation import reconcile, wait_until_resolved
 from app.modules.ledger.repository import load_journal_snapshot
@@ -29,7 +29,7 @@ from app.modules.worker.ojol_jitter import (
     maybe_start_ojol_jitter,
 )
 from app.modules.worker.planner import is_sleeping, next_step, select_need, select_shop
-from app.modules.worker.settings import auto_flags, set_auto_flag
+from app.modules.worker.settings import auto_flags, set_auto_flag, should_maintain_online_presence
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +186,12 @@ class Controller:
         if text:
             queue_notice(self.settings, redact(text), {"event": event, "run_id": self.run_id})
 
+    def record_event(self, event, message="", **data):
+        payload = {"message": message, **data}
+        self.report(event, **payload)
+        if message and not event_text(event, payload):
+            queue_notice(self.settings, redact(message), {"event": event, "run_id": self.run_id})
+
     async def wait(self, seconds):
         if self.state and self.state.sleep_schedule and self.snapshot_read_at is not None:
             boundary = self.state.sleep_schedule.next_transition(self.state.observed_at)
@@ -208,7 +214,9 @@ class Controller:
                 break
             await asyncio.sleep(min(0.25, max(0, deadline - time.monotonic())))
             if time.monotonic() - last_presence >= 35:
-                if hasattr(self.ui, "fetch_online_status"):
+                if hasattr(self.ui, "fetch_online_status") and should_maintain_online_presence(
+                    auto_flags(self.settings.runtime_dir)
+                ):
                     try:
                         await self.ui.fetch_online_status()
                     except (HttpCoreError, OSError, ValueError) as exc:
@@ -517,6 +525,9 @@ class Controller:
             self.check_cancel()
             self.stage = f"purchase.click.{resource}"
             await self.human_pause()
+            if is_need and hasattr(self.ui, "fetch_online_status"):
+                with contextlib.suppress(HttpCoreError, OSError, ValueError):
+                    await self.ui.fetch_online_status()
             await self.ui.buy(plan.product, before.wallet, current, self.settings.min_balance)
             self.stage = f"purchase.verify.{resource}"
             tolerance = Decimal("0.02")
@@ -638,7 +649,8 @@ class Controller:
             if kind == "complete":
                 await self.human_pause(10.5, 60.0)
             else:
-                await self.human_pause(2.5, 5.5)
+                # Audit 25 Nov 2026: jeda ambil order berikutnya 4-8 dtk terdeteksi pola bot.
+                await self.human_pause(10.5, 28.0)
             await self.ui.job_click(labels[0])
             self.stage = f"job.{kind}.verify"
             if kind == "complete":
@@ -787,7 +799,9 @@ class Controller:
                 if dry_run:
                     self.report("dry_run", reason="Semua fitur Auto nonaktif.")
                     return
-                if hasattr(self.ui, "fetch_online_status"):
+                if should_maintain_online_presence(flags) and hasattr(
+                    self.ui, "fetch_online_status"
+                ):
                     try:
                         await self.ui.fetch_online_status()
                     except (HttpCoreError, OSError, ValueError) as exc:
@@ -1008,8 +1022,6 @@ class Controller:
             if self.observed_state.phase == "idle" and await run_gym(self):
                 continue
             if self.observed_state.phase == "idle" and await run_learning(self):
-                continue
-            if self.observed_state.phase == "idle" and await run_kursus(self):
                 continue
             if self.observed_state.phase == "idle" and await run_garden(self):
                 continue
