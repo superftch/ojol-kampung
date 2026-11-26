@@ -27,6 +27,8 @@ EXTENSION_FILES = (
     "ojol.js",
     "mancing.js",
     "tpu.js",
+    "berburu.js",
+    "berburu-inject.js",
     "inject.js",
     "popup.html",
     "popup.js",

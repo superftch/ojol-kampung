@@ -786,10 +786,10 @@
   // ==========================================
 
   if (typeof window !== "undefined" && typeof document !== "undefined") {
-    // Pastikan hanya aktif di halaman game utama (bukan /diving atau /mancing)
+    // Pastikan hanya aktif di halaman game utama (bukan /diving, /mancing, atau /berburu)
     function isOjolEligiblePage() {
       const p = window.location.pathname;
-      return !p.startsWith("/diving") && !p.startsWith("/mancing");
+      return !p.startsWith("/diving") && !p.startsWith("/mancing") && !p.startsWith("/berburu");
     }
 
     if (!isOjolEligiblePage()) {
@@ -1041,6 +1041,7 @@
         z-index: 999999;
         overflow: hidden;
         user-select: none;
+        display: none;
         transition: transform 0.2s ease, opacity 0.2s ease;
       `;
 
@@ -1075,6 +1076,14 @@
               cursor: pointer;
               padding: 0 4px;
             ">_</button>
+            <button id="ks-ojol-close-hud" title="Sembunyikan Panel" style="
+              background: transparent;
+              border: none;
+              color: #94a3b8;
+              font-size: 13px;
+              cursor: pointer;
+              padding: 0 4px;
+            ">✕</button>
           </div>
         </div>
 
@@ -1281,6 +1290,29 @@
         document.getElementById("ks-ojol-body").style.display = minimized ? "none" : "block";
         toggleMin.textContent = minimized ? "□" : "_";
       };
+
+      function applyHudVisibility(visible) {
+        hud.style.display = visible ? "block" : "none";
+      }
+      if (typeof chrome !== "undefined" && chrome.storage?.local) {
+        chrome.storage.local.get(["ks_ojol_hud_visible"], (res) => {
+          applyHudVisibility(Boolean(res?.ks_ojol_hud_visible));
+        });
+        chrome.storage.onChanged.addListener((changes, area) => {
+          if (area === "local" && changes.ks_ojol_hud_visible) {
+            applyHudVisibility(Boolean(changes.ks_ojol_hud_visible.newValue));
+          }
+        });
+      }
+      const closeHudBtn = document.getElementById("ks-ojol-close-hud");
+      if (closeHudBtn) {
+        closeHudBtn.onclick = () => {
+          applyHudVisibility(false);
+          if (typeof chrome !== "undefined" && chrome.storage?.local) {
+            chrome.storage.local.set({ ks_ojol_hud_visible: false });
+          }
+        };
+      }
 
       fetchOjolBars();
       updateHUDView();

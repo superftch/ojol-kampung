@@ -1,7 +1,8 @@
-# Chrome Extension: KampungSebelah Helper v2.2.0 (Diving, Mancing, Ojol & TPU Pusaka)
+# Chrome Extension: KampungSebelah Helper v2.4.0 (Diving, Mancing, Ojol, TPU & Berburu)
 
 Ekstensi Chrome multi-fitur untuk minigame dan aktivitas di KampungSebelah:
-1. **👻 TPU & Pusaka Mbah Rukmi Radar (Auto-Geledah)**: HUD Live Tracker Jam Angker (23.00 - 03.00 WIB), radar 12 koordinat perabot rumah & pekarangan, transparansi server RNG (1:200), serta auto-geledah rute optimal 12 perabot.
+1. **🎯 Berburu Radar & Sniper (`/berburu`)**: Radar satwa 3D + deteksi halangan pohon (LOS), auto-bidik balistik (kompensasi gravitasi + angin), auto-tembak aman, auto-ambil, proteksi seruduk babi, dan kalkulasi cuan.
+2. **👻 TPU & Pusaka Mbah Rukmi Radar (Auto-Geledah)**: HUD Live Tracker Jam Angker (23.00 - 03.00 WIB), radar 12 koordinat perabot rumah & pekarangan, transparansi server RNG (1:200), serta auto-geledah rute optimal 12 perabot.
 2. **🚗 Auto-Ojol Pro (Khusus Mode Kendarai)**: Otomatisasi ojol tanpa batas 12 jam harian, auto-pilih order tarif tertinggi (max omzet), solver SVG captcha cek 2-angka instan, proteksi retry 409 penumpang turun, dan loop otomatis.
 3. **🤿 Diving Radar & Full Auto-Pilot**: HUD Live Compass 3D, filter potensi mutiara (300 koin & 100 koin), auto-pilot berenang navigasi 3D, auto-buka kerang, dan auto-chain loop ke kerang berikutnya di `/diving`.
 4. **🎣 Auto-Mancing Pro**: Modul otomatisasi memancing lengkap di `/mancing`: auto celup kail (laut dalam), auto sentak instan (< 100ms), smart tension reel control (gulung pintar anti-putus & anti-kendur), dan auto simpan/jual tangkapan.
@@ -202,3 +203,4 @@ Setelah terpasang, buka halaman game untuk memunculkan panel kontrol:
 - Untuk Auto-Ojol: `https://www.kampungsebelah.com/?narik=1` (atau buka desa langsung)
 - Untuk Diving: `https://www.kampungsebelah.com/diving`
 - Untuk Mancing: `https://www.kampungsebelah.com/mancing`
+- Untuk Berburu: `https://www.kampungsebelah.com/berburu`
