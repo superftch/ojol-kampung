@@ -12,6 +12,7 @@ from app.main import ControlService
 from app.modules.ledger.repository import Journal
 from app.modules.worker.controller import Controller
 from app.modules.worker.fleet import MultiAccountService
+from app.modules.worker.ui import HttpUI
 from tests.conftest import seed_legacy_account
 
 
@@ -119,6 +120,29 @@ async def test_controller_wait_pings_online_presence(settings, state):
             await controller.wait(60)
 
         ui.fetch_online_status.assert_awaited()
+    finally:
+        journal.close()
+
+
+async def test_controller_wait_with_http_ui_pings_online_presence(settings, state):
+    api = AsyncMock()
+    api.fetch_online_status = AsyncMock(return_value={"online": True})
+    ui = HttpUI(settings, api=api)
+
+    journal = Journal(settings.runtime_dir)
+    try:
+        controller = Controller(ui, settings, journal, journal.start(settings))
+        cur_time = [100.0]
+
+        def advancing_monotonic():
+            val = cur_time[0]
+            cur_time[0] += 10.0
+            return val
+
+        with patch("time.monotonic", side_effect=advancing_monotonic):
+            await controller.wait(60)
+
+        api.fetch_online_status.assert_awaited()
     finally:
         journal.close()
 
