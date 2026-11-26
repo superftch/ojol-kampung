@@ -1655,3 +1655,32 @@ async def test_auto_kursus_disabled_from_menu_and_api(admin_web):
         settings=SimpleNamespace(runtime_dir=service.settings.runtime_dir),
     )
     assert await run_kursus(c) is False
+
+
+@pytest.mark.asyncio
+async def test_kerja_target_poin_api_and_dashboard(admin_web):
+    client, manager = admin_web
+    user = client.get("/api/auth/me").json()["user"]
+    owner = manager.registry.owner_for_user(user)
+    acc = manager.registry.create(owner, "Kerja Target Account")
+    acc_id = acc["id"]
+
+    html = client.get("/").text
+    assert 'id="kerjaTargetPoinInput"' in html
+    assert 'id="btnSaveKerjaTarget"' in html
+
+    res_bad = client.post(
+        f"/api/control/kerja-target?account_id={acc_id}",
+        json={"target_poin": 0},
+    )
+    assert res_bad.status_code == 400
+
+    res_ok = client.post(
+        f"/api/control/kerja-target?account_id={acc_id}",
+        json={"target_poin": 60},
+    )
+    assert res_ok.status_code == 200
+    assert res_ok.json()["target_poin"] == 60
+
+    dash = client.get(f"/api/dashboard?account_id={acc_id}").json()
+    assert dash["kerja_target_poin"] == 60

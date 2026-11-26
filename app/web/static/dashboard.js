@@ -866,6 +866,16 @@ function renderAutomationControls(data) {
         }
     }
 
+    const kerjaTargetInput = document.getElementById('kerjaTargetPoinInput');
+    if (kerjaTargetInput && document.activeElement !== kerjaTargetInput) {
+        kerjaTargetInput.value = data.kerja_target_poin != null ? String(data.kerja_target_poin) : '';
+        kerjaTargetInput.disabled = !selected || !isKantorJob;
+    }
+    const saveKerjaTargetBtn = document.getElementById('btnSaveKerjaTarget');
+    if (saveKerjaTargetBtn) {
+        saveKerjaTargetBtn.disabled = !selected || !isKantorJob;
+    }
+
     const kerjaRtEl = document.getElementById('autoKerjaRealtime');
     if (kerjaRtEl) {
         const ks = data.kerja_status || null;
@@ -880,22 +890,48 @@ function renderAutomationControls(data) {
                         : `Tugas: ${lunas}/${ks.per_hari} lunas (${ks.menuju ?? 0}/${ks.per_paket ?? 5} urusan)`
                 );
             }
+            if (typeof ks.sesi_absen === 'number' && typeof ks.sesi_jumlah === 'number') {
+                parts.push(`Sesi absen: ${Math.min(ks.sesi_absen, ks.sesi_jumlah)}/${ks.sesi_jumlah}`);
+            }
             if (typeof ks.poin === 'number' && typeof ks.target === 'number') {
-                parts.push(`Kerja penuh: ${Math.min(ks.poin, ks.target)}/${ks.target} poin`);
+                parts.push(`Kerja penuh: ${ks.poin}/${ks.target} poin`);
             }
             if (ks.last_message) parts.push(ks.last_message);
             kerjaRtEl.textContent = parts.join(' · ');
             kerjaRtEl.style.display = parts.length ? 'block' : 'none';
         } else if (snap.job && snap.job.kantor) {
             const k = snap.job.kantor;
-            const target = k.target ?? 30;
-            const poin = Math.min(k.poin ?? 0, target);
+            const target = data.kerja_target_poin ?? k.target ?? 30;
+            const poin = k.poin ?? 0;
             kerjaRtEl.textContent = `Kerja penuh: ${poin}/${target} poin · Status: ${k.status || '-'}`;
             kerjaRtEl.style.display = 'block';
         } else {
             kerjaRtEl.textContent = '';
             kerjaRtEl.style.display = 'none';
         }
+    }
+}
+
+async function setKerjaTargetPoin() {
+    const account = dashboardData?.account;
+    const input = document.getElementById('kerjaTargetPoinInput');
+    if (!account || !input) return;
+    const raw = input.value.trim();
+    const target = raw === '' ? null : Number(raw);
+    if (target !== null && (!Number.isInteger(target) || target < 1)) {
+        showToast('Target poin minimal 1.', 'error');
+        return;
+    }
+    try {
+        await apiFetch('/api/control/kerja-target?account_id=' + encodeURIComponent(account.id), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target_poin: target })
+        });
+        showToast(target !== null ? `Target poin kantor disetel ke ${target}` : 'Target poin kantor dikembalikan ke default (30)', 'info');
+        await refreshDashboard();
+    } catch (e) {
+        showToast('Gagal menyimpan target poin: ' + e.message, 'error');
     }
 }
 

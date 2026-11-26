@@ -19,6 +19,10 @@ class StudySubjectChange(BaseModel):
     mode: str | None = None
 
 
+class KerjaTargetChange(BaseModel):
+    target_poin: int | None = None
+
+
 class DirectCookieImport(BaseModel):
     cookie: str = Field(default="", repr=False)
     name: str | None = None

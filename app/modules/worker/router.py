@@ -8,12 +8,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core.models import STUDY_LABELS
 from app.integrations.kampung import session_transfer
+from app.modules.gameplay.kerja import set_kerja_target_poin
 from app.modules.gameplay.study import set_subject
 from app.modules.ledger.finance import report_date
 from app.modules.worker.maintenance import held_window
 from app.modules.worker.schemas import (
     AutoFlagChange,
     DirectCookieImport,
+    KerjaTargetChange,
     OjolModeChange,
     StudySubjectChange,
 )
@@ -228,6 +230,21 @@ async def toggle_auto_api(
                 set_auto_flag(cur_service.settings.runtime_dir, "kerja", False)
             set_auto_flag(cur_service.settings.runtime_dir, flag, enabled)
         return {"success": True, "flag": flag, "enabled": enabled}
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
+@router.post("/api/control/kerja-target")
+async def set_kerja_target_api(
+    request: Request,
+    user: Annotated[dict, Depends(require_user)],
+    ctx: Annotated[WebContext, Depends(get_ctx)],
+):
+    body = await read_json(request, KerjaTargetChange)
+    cur_service = _require_account_service(ctx, user, request)
+    try:
+        set_kerja_target_poin(cur_service.settings.runtime_dir, body.target_poin)
+        return {"success": True, "target_poin": body.target_poin}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
 

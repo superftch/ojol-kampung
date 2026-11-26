@@ -481,3 +481,79 @@ async def test_run_kerja_auto_sesi_absen_after_urusan_and_from_detak(tmp_path, m
     assert await run_kerja(c2) is True
     assert detak_calls == ["detak", "sesi-absen"]
     assert any("Sesi 1 beres! (1/6 sesi)" in msg for _, msg in events2)
+
+
+@pytest.mark.asyncio
+async def test_run_kerja_custom_target_poin_and_sesi_status_fields(tmp_path, monkeypatch):
+    import json
+
+    from app.modules.gameplay.kerja import set_kerja_target_poin
+
+    set_auto_flag(tmp_path, "ojol", False)
+    set_auto_flag(tmp_path, "kerja", True)
+    set_kerja_target_poin(tmp_path, 45)
+
+    async def fast_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr("app.modules.gameplay.kerja.asyncio.sleep", fast_sleep)
+
+    calls = []
+
+    class FakeUi:
+        async def kantor_action(self, action, **fields):
+            calls.append(action)
+            if action == "detak":
+                return {
+                    "kantor": {
+                        "nama": "Bank desa",
+                        "buka": True,
+                        "libur": False,
+                        "sekarang": "2026-11-26T02:00:00.000Z",
+                        "jam": {"from": "08:00", "to": "16:00"},
+                        "kerja": {"poin": 30, "target": 30, "status": "tercapai"},
+                        "paket": {"berbayar": True, "perHari": 3, "lunas": 3},
+                        "sesi": {
+                            "ke": 6,
+                            "jumlah": 6,
+                            "urusan": 3,
+                            "absen": True,
+                            "absenSetelah": 1,
+                            "beres": 5,
+                            "jadwal": [
+                                *({"ke": i, "u": 3, "absen": True, "beres": True} for i in range(1, 6)),
+                                {"ke": 6, "u": 2, "absen": False, "beres": False},
+                            ],
+                        },
+                        "kegiatan": [],
+                        "kejadian": None,
+                        "urusan": None,
+                    }
+                }
+            if action == "sesi-absen":
+                return {
+                    "sesi": {
+                        "ke": 6,
+                        "u": 2,
+                        "absen": True,
+                        "beres": False,
+                        "baru": False,
+                    }
+                }
+            raise AssertionError(f"Unexpected action: {action}")
+
+    c = SimpleNamespace(
+        ui=FakeUi(),
+        settings=SimpleNamespace(runtime_dir=tmp_path),
+        observed_state=_snapshot(),
+        record_event=lambda kind, msg: None,
+    )
+    # Even though server status is "tercapai" at 30/30, custom target is 45 and session 6 needs absen
+    assert await run_kerja(c) is True
+    assert calls == ["detak", "sesi-absen"]
+    saved = json.loads((tmp_path / "kerja-status.json").read_text())
+    assert saved["sesi_absen"] == 6
+    assert saved["sesi_jumlah"] == 6
+    assert saved["target"] == 45
+    assert saved["poin"] == 30
+    assert saved["state"] == "Aktif"
