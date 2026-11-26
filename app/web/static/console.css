@@ -338,13 +338,14 @@ select.account-select { max-width: 100%; }
 }
 .admin-account-filters label { display: grid; gap: 4px; font-size: 13px; }
 .admin-account-filters :is(input, select) { width: 100%; }
+.admin-worker-filters { grid-template-columns: minmax(0, 1fr); }
 .admin-game-accounts .admin-account-message { margin-top: 12px; font-size: 13px; }
 .admin-game-accounts .admin-overview-list { overflow: auto; }
 .admin-game-accounts .admin-overview-list li { padding-block: 10px; }
 .admin-game-accounts .admin-overview-list .meta { overflow-wrap: anywhere; }
 .admin-account-status { align-self: start; padding: 2px 7px; border-radius: 4px; background: var(--accent-soft); color: var(--accent-ink); font-size: 12px; }
 .admin-account-status.archived { background: var(--raised); color: var(--text-muted); }
-#adminGameAccountsRetry { align-self: start; margin-top: 8px; }
+#adminGameAccountsRetry, #adminWorkersRetry { align-self: start; margin-top: 8px; }
 .admin-user-limit-inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; min-width: 0; margin: 0; padding: 0; border: 0; }
 .admin-user-limit-inputs label { display: grid; gap: 4px; font-size: 13px; }
 .admin-user-limit-inputs input { width: 100%; }
@@ -361,7 +362,7 @@ select.account-select { max-width: 100%; }
 .admin-overview-grid > .card { padding: 16px; }
 .admin-recent { grid-column: 1 / -1; }
 .admin-recent .card-header { margin-bottom: 4px; }
-.admin-slot-readout, .admin-maintenance-summary {
+.admin-slot-readout, .admin-slot-meta, .admin-maintenance-summary {
     display: flex;
     align-items: center;
     justify-content: space-between;

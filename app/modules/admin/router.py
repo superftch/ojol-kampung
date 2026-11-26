@@ -22,11 +22,30 @@ from app.modules.notifications.repository import (
     mark_all_admin_notifications_read,
 )
 from app.modules.worker.maintenance import SCHEDULE_FILE, MaintenanceWindow, read_window
+from app.modules.worker.status import status_record
 from app.web.deps import WebContext, get_ctx, public_user, require_admin
 from app.web.payloads import read_json
 
 router = APIRouter()
 ADMIN_NOTIFICATION_LIMIT = 200
+
+
+def _owner_map(registry) -> dict[str, dict]:
+    owners = {row["owner"]: row for row in registry.users()}
+    owners.update({web_owner_id(row): row for row in registry.web.list_users()})
+    return owners
+
+
+def _account_uses_worker_slot(ctx: WebContext, account: dict) -> bool:
+    if account["archived"]:
+        return False
+    directory = ctx.registry.runtime_directory(account)
+    service = ctx.manager.services.get(account["id"]) if ctx.manager else ctx.service
+    process = service.worker if service and service.settings.runtime_dir == directory else None
+    return bool(
+        (process and process.returncode is None)
+        or ((directory / "run.lock").is_file() and running(directory))
+    )
 
 
 @router.get("/api/admin/overview")
@@ -41,13 +60,7 @@ def admin_overview(
     for account in accounts:
         if account["archived"]:
             archived += 1
-            continue
-        directory = registry.runtime_directory(account)
-        service = ctx.manager.services.get(account["id"]) if ctx.manager else ctx.service
-        process = service.worker if service and service.settings.runtime_dir == directory else None
-        if (process and process.returncode is None) or (
-            (directory / "run.lock").is_file() and running(directory)
-        ):
+        elif _account_uses_worker_slot(ctx, account):
             worker_slots += 1
 
     checked_at = now()
@@ -96,8 +109,7 @@ def admin_accounts(
 ):
     registry = ctx.registry
     registered = registry.list(archived=None)
-    owners = {row["owner"]: row for row in registry.users()}
-    owners.update({web_owner_id(row): row for row in registry.web.list_users()})
+    owners = _owner_map(registry)
     accounts = []
     for row in registered:
         owner = owners.get(row["owner"], {})
@@ -111,6 +123,39 @@ def admin_accounts(
             }
         )
     return {"accounts": accounts}
+
+
+@router.get("/api/admin/workers")
+def admin_workers(
+    user: Annotated[dict, Depends(require_admin)],
+    ctx: Annotated[WebContext, Depends(get_ctx)],
+):
+    registry = ctx.registry
+    registered = registry.list(archived=False)
+    owners = _owner_map(registry)
+    workers = []
+    for row in registered:
+        if not _account_uses_worker_slot(ctx, row):
+            continue
+        owner = owners.get(row["owner"], {})
+        directory = registry.runtime_directory(row)
+        data, _ = status_record(directory / "status.json")
+        snapshot = data.get("snapshot") if isinstance(data.get("snapshot"), dict) else {}
+        workers.append(
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "owner_name": owner.get("name"),
+                "owner_username": owner.get("username"),
+                "event": data.get("event"),
+                "phase": snapshot.get("phase"),
+            }
+        )
+    return {
+        "used": len(workers),
+        "limit": registry.value("max_active_workers"),
+        "workers": workers,
+    }
 
 
 @router.get("/api/admin/notifications")

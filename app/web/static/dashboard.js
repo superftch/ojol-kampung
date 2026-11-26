@@ -1265,6 +1265,69 @@ let adminLastChecked = null;
 let adminLoadVersion = 0;
 let adminGameAccounts = [];
 let adminGameAccountsRequest = 0;
+let adminWorkers = [];
+let adminWorkersMeta = { used: 0, limit: 0 };
+let adminWorkersRequest = 0;
+
+function openAdminWorkers(trigger) {
+    document.getElementById('adminWorkersSearch').value = '';
+    trigger?.focus();
+    openModal('adminWorkersDialog');
+    loadAdminWorkers();
+}
+
+async function loadAdminWorkers() {
+    const request = ++adminWorkersRequest;
+    const message = document.getElementById('adminWorkersMessage');
+    const filters = document.getElementById('adminWorkersFilters');
+    const retry = document.getElementById('adminWorkersRetry');
+    filters.disabled = true;
+    retry.hidden = true;
+    message.textContent = 'Memuat pengguna worker…';
+    const list = document.getElementById('adminWorkersList');
+    list.replaceChildren();
+    try {
+        const data = await apiFetch('/api/admin/workers');
+        if (request !== adminWorkersRequest) return;
+        adminWorkers = data.workers || [];
+        adminWorkersMeta = { used: data.used ?? adminWorkers.length, limit: data.limit ?? 0 };
+        filters.disabled = false;
+        renderAdminWorkers();
+    } catch (error) {
+        if (request !== adminWorkersRequest) return;
+        message.textContent = 'Daftar pengguna worker gagal dimuat.';
+        retry.hidden = false;
+    }
+}
+
+function renderAdminWorkers() {
+    const query = document.getElementById('adminWorkersSearch').value.trim().toLowerCase().replace(/^@/, '');
+    const phaseLabels = {
+        idle: 'Menunggu order',
+        searching: 'Mencari order',
+        delivering: 'Dalam perjalanan',
+        complete: 'Siap klaim ongkos',
+        sleeping: 'Karakter tidur',
+    };
+    const matches = adminWorkers.filter(worker => [worker.name, worker.id, worker.owner_name, worker.owner_username]
+        .some(value => value?.toLowerCase().includes(query)));
+    const message = document.getElementById('adminWorkersMessage');
+    if (matches.length) {
+        message.textContent = query
+            ? `${adminNumber.format(matches.length)} dari ${adminNumber.format(adminWorkers.length)} worker aktif`
+            : `${adminNumber.format(adminWorkersMeta.used)} dari ${adminNumber.format(adminWorkersMeta.limit)} slot terpakai`;
+    } else {
+        message.textContent = adminWorkers.length ? 'Tidak ada worker yang cocok.' : 'Belum ada worker yang sedang berjalan.';
+    }
+    document.getElementById('adminWorkersList').innerHTML = matches.map(worker => {
+        const owner = [worker.owner_name, worker.owner_username && `@${worker.owner_username}`].filter(Boolean).join(' · ');
+        const state = phaseLabels[worker.phase] || 'Aktif';
+        return `<li><div><strong>${escapeHtml(worker.name)}</strong>
+            <p class="meta">Pemilik ${escapeHtml(owner || 'tidak tercatat')}</p>
+            <p class="meta">ID <code>${escapeHtml(worker.id)}</code></p></div>
+            <span class="admin-account-status">${escapeHtml(state)}</span></li>`;
+    }).join('');
+}
 
 function openAdminGameAccounts(trigger) {
     document.getElementById('adminGameAccountsSearch').value = '';

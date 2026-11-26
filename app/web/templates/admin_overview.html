@@ -39,7 +39,11 @@
                 <a class="admin-action" href="#admin-server-settings">Pengaturan worker</a>
             </div>
             <div class="admin-slot-track" aria-hidden="true"><div id="adminWorkerFill"></div></div>
-            <p id="adminWorkerAvailable" class="meta">Slot worker tersedia setelah data dimuat.</p>
+            <div class="admin-slot-meta">
+                <p id="adminWorkerAvailable" class="meta">Slot worker tersedia setelah data dimuat.</p>
+                <button class="admin-action" type="button" aria-label="Lihat detail pengguna worker" aria-haspopup="dialog"
+                    aria-controls="adminWorkersDialog" onclick="openAdminWorkers(this)">Lihat detail</button>
+            </div>
             <div class="admin-maintenance-summary">
                 <div>
                     <h3>Maintenance</h3>
@@ -81,6 +85,23 @@
         <p id="adminGameAccountsMessage" class="meta admin-account-message" role="status"></p>
         <button id="adminGameAccountsRetry" class="btn btn-utility" type="button" onclick="loadAdminGameAccounts()" hidden>Coba lagi</button>
         <ul id="adminGameAccountsList" class="admin-overview-list"></ul>
+    </div>
+</dialog>
+
+<dialog id="adminWorkersDialog" class="modal admin-game-accounts" aria-labelledby="adminWorkersTitle">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 id="adminWorkersTitle" class="card-title">Pengguna worker aktif</h2>
+            <button class="btn btn-utility" type="button" onclick="closeModal('adminWorkersDialog')">Tutup</button>
+        </div>
+        <fieldset id="adminWorkersFilters" class="admin-account-filters admin-worker-filters" disabled>
+            <label for="adminWorkersSearch">Cari akun atau pemilik
+                <input id="adminWorkersSearch" type="search" autocomplete="off" oninput="renderAdminWorkers()">
+            </label>
+        </fieldset>
+        <p id="adminWorkersMessage" class="meta admin-account-message" role="status"></p>
+        <button id="adminWorkersRetry" class="btn btn-utility" type="button" onclick="loadAdminWorkers()" hidden>Coba lagi</button>
+        <ul id="adminWorkersList" class="admin-overview-list"></ul>
     </div>
 </dialog>
 

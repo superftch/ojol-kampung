@@ -398,6 +398,46 @@ def test_admin_game_account_details_include_archived_accounts_from_other_owners(
     assert 'id="adminGameAccountsDialog"' not in client.get("/").text
 
 
+def test_admin_worker_details_list_active_accounts_and_owners(admin_web):
+    client, manager = admin_web
+    registry = manager.registry
+    admin = registry.web.list_users()[0]
+    credentials = {"username": "driver_sari", "password": "fixture-password"}
+    member = registry.web.register(**credentials, name="Sari")
+    registry.web.review_user(member["id"], admin["id"], approve=True)
+    owner = registry.owner_for_user(member)
+    active_account = registry.create(owner, "Motor Aktif")
+    registry.create(owner, "Motor Diam")
+    archived = registry.create(owner, "Motor Arsip")
+    registry.archive(owner, archived["id"])
+    registry.set_limit("max_active_workers", 5)
+
+    assert 'id="adminWorkersDialog"' in client.get("/").text
+    with exclusive_lock(registry.runtime_directory(active_account)):
+        response = client.get("/api/admin/workers")
+    assert response.is_success
+    assert response.json() == {
+        "used": 1,
+        "limit": 5,
+        "workers": [
+            {
+                "id": active_account["id"],
+                "name": "Motor Aktif",
+                "owner_name": "Sari",
+                "owner_username": "driver_sari",
+                "event": None,
+                "phase": None,
+            }
+        ],
+    }
+
+    client.post("/api/auth/logout")
+    assert client.get("/api/admin/workers").status_code == 401
+    assert client.post("/api/auth/login", json=credentials).is_success
+    assert client.get("/api/admin/workers").status_code == 403
+    assert 'id="adminWorkersDialog"' not in client.get("/").text
+
+
 @pytest.mark.parametrize("standalone", [True, False])
 def test_admin_worker_limit_preview_and_inheritance(admin_web, monkeypatch, standalone):
     client, manager = admin_web
