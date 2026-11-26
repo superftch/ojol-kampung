@@ -620,4 +620,219 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     assert.equal(shouldStopForFullQuota(0, 1, true), false);
     assert.equal(shouldStopForFullQuota(1, 0, true), false);
   });
+
+  await t.test("Max Cuan selective release, night lamp window, and bait-saving guards", () => {
+    function decideSmartLootAction({
+      isTrash,
+      sellPrice,
+      baitCost,
+      sisaJual,
+      sisaTas,
+      saldoKoin,
+      stokUmpan,
+      config,
+      availableButtons
+    }) {
+      if (isTrash && config.autoJualSampah) {
+        if (availableButtons.buang) return "BUANG";
+        if (availableButtons.jual) return "JUAL_SAMPAH";
+      }
+
+      const isHighValue = sellPrice >= 1.40;
+      const isLowValue = sellPrice < 1.00;
+      const sisaTotal = sisaJual + sisaTas;
+      const hasSafeReserve = saldoKoin >= 5.0 || stokUmpan >= 5;
+
+      if (config.smartProfit) {
+        if (config.selectiveRelease && isLowValue && hasSafeReserve && sisaTotal > 2 && availableButtons.lepas) {
+          return "LEPAS";
+        }
+        if ((config.autoJual || isHighValue) && sisaJual > 0 && availableButtons.jual) {
+          return "JUAL";
+        }
+        if (config.autoSimpan && sisaTas > 0 && availableButtons.simpan) {
+          return "SIMPAN";
+        }
+        if (config.autoJualTasPenuh && sisaJual > 0 && availableButtons.jual) {
+          if (config.selectiveRelease && sellPrice < baitCost && hasSafeReserve && sisaJual > 2 && availableButtons.lepas) {
+            return "LEPAS";
+          }
+          return "JUAL_TAS_PENUH";
+        }
+      }
+      return availableButtons.makan ? "MAKAN" : "NONE";
+    }
+
+    const baseConfig = {
+      smartProfit: true,
+      selectiveRelease: true,
+      autoJualSampah: true,
+      autoJual: false,
+      autoSimpan: true,
+      autoJualTasPenuh: true
+    };
+    const allBtns = { buang: true, jual: true, simpan: true, makan: true, lepas: true };
+
+    // 1. Ikan kecil (0.40 koin) with safe coins -> LEPAS to save slot for >=1.40 fish
+    assert.equal(
+      decideSmartLootAction({
+        isTrash: false, sellPrice: 0.40, baitCost: 0.50, sisaJual: 20, sisaTas: 20,
+        saldoKoin: 25, stokUmpan: 10, config: baseConfig, availableButtons: allBtns
+      }),
+      "LEPAS"
+    );
+
+    // 2. Ikan sedang (0.85 koin) with low coins & low bait -> SIMPAN (safe fallback, no risk of running dry)
+    assert.equal(
+      decideSmartLootAction({
+        isTrash: false, sellPrice: 0.85, baitCost: 0.50, sisaJual: 20, sisaTas: 20,
+        saldoKoin: 1.5, stokUmpan: 2, config: baseConfig, availableButtons: allBtns
+      }),
+      "SIMPAN"
+    );
+
+    // 3. Ikan besar/raksasa (2.65 koin) with sell quota -> JUAL immediately
+    assert.equal(
+      decideSmartLootAction({
+        isTrash: false, sellPrice: 2.65, baitCost: 0.50, sisaJual: 12, sisaTas: 20,
+        saldoKoin: 25, stokUmpan: 10, config: baseConfig, availableButtons: allBtns
+      }),
+      "JUAL"
+    );
+
+    // 4. Last 2 slots of the day -> keep/sell instead of releasing
+    assert.equal(
+      decideSmartLootAction({
+        isTrash: false, sellPrice: 0.85, baitCost: 0.50, sisaJual: 1, sisaTas: 1,
+        saldoKoin: 25, stokUmpan: 10, config: baseConfig, availableButtons: allBtns
+      }),
+      "SIMPAN"
+    );
+
+    // 5. Night hour detection for lamp (18.30 - 04.30)
+    function isNightHour(text) {
+      const lower = text.toLowerCase();
+      if (lower.includes("malam")) return true;
+      const m = lower.match(/(\d{1,2})\.(\d{2})/);
+      if (!m) return false;
+      const mins = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+      return mins >= 1110 || mins < 270;
+    }
+
+    assert.equal(isNightHour("Malam 21.15"), true);
+    assert.equal(isNightHour("Subuh 04.10"), true);
+    assert.equal(isNightHour("Sore 18.45"), true);
+    assert.equal(isNightHour("Siang 13.00"), false);
+  });
+
+  await t.test("Pre-fetch gate locks features until /api/pancing status is loaded", () => {
+    function getHudControlState({ loaded, loading, loadError, autoMancing }) {
+      const checkboxesDisabled = !loaded;
+      if (!loaded) {
+        if (loading) return { checkboxesDisabled, startDisabled: true, action: "WAIT" };
+        if (loadError) return { checkboxesDisabled, startDisabled: false, action: "RETRY_FETCH" };
+        return { checkboxesDisabled, startDisabled: true, action: "WAIT" };
+      }
+      return { checkboxesDisabled: false, startDisabled: false, action: autoMancing ? "STOP" : "START" };
+    }
+
+    assert.deepEqual(getHudControlState({ loaded: false, loading: true, loadError: null, autoMancing: false }), {
+      checkboxesDisabled: true,
+      startDisabled: true,
+      action: "WAIT"
+    });
+    assert.deepEqual(getHudControlState({ loaded: false, loading: false, loadError: "HTTP 500", autoMancing: false }), {
+      checkboxesDisabled: true,
+      startDisabled: false,
+      action: "RETRY_FETCH"
+    });
+    assert.deepEqual(getHudControlState({ loaded: true, loading: false, loadError: null, autoMancing: false }), {
+      checkboxesDisabled: false,
+      startDisabled: false,
+      action: "START"
+    });
+  });
+
+  await t.test("Boat lepasM range filter and rod/boat capability parsing", () => {
+    function parseCapabilities(data) {
+      const aktifKapal = Array.isArray(data.kapal?.daftar)
+        ? data.kapal.daftar.find(k => k.dipakai)
+        : null;
+      const joranDipakai = data.joranDipakai || data.joran?.find(j => j.dipakai)?.id || "joran-bambu";
+      return {
+        kapalNama: aktifKapal?.nama || "Perahu jukung",
+        lepasM: typeof data.kapal?.lepasM === "number" ? data.kapal.lepasM : (aktifKapal?.lepasM ?? 0),
+        hasJaring: !!data.jaring,
+        hasLampu: !!(data.kapal?.lampu ?? aktifKapal?.lampu),
+        joranId: joranDipakai
+      };
+    }
+
+    const starterCap = parseCapabilities({
+      kapal: { lepasM: 0, lampu: false, daftar: [{ nama: "Perahu jukung", dipakai: true, lepasM: 0 }] },
+      jaring: null,
+      joran: [{ id: "joran-bambu", dipakai: true }]
+    });
+    assert.equal(starterCap.kapalNama, "Perahu jukung");
+    assert.equal(starterCap.lepasM, 0);
+    assert.equal(starterCap.hasJaring, false);
+    assert.equal(starterCap.hasLampu, false);
+    assert.equal(starterCap.joranId, "joran-bambu");
+
+    // Starter boat (lepasM=0) must filter out offshore spot beyond bay boundary (z < -640)
+    const spots = [
+      { x: 0, z: -560, kaya: 0.5 },
+      { x: 0, z: -900, kaya: 0.9 }
+    ];
+    const minReachableZ = -640 - starterCap.lepasM;
+    const reachable = spots.filter(s => s.z >= minReachableZ);
+    assert.equal(reachable.length, 1);
+    assert.equal(reachable[0].z, -560);
+  });
+
+  await t.test("Small fish converts to umpan-ikan (2.3x big fish) when autoUmpanIkan is enabled", () => {
+    function decideSmallFishAction({ autoUmpanIkan, isSmallFish, hasUmpanIkanBtn, hasLepasBtn }) {
+      if (autoUmpanIkan && isSmallFish && hasUmpanIkanBtn) return "JADIKAN_UMPAN";
+      if (isSmallFish && hasLepasBtn) return "LEPAS";
+      return "SIMPAN";
+    }
+
+    assert.equal(
+      decideSmallFishAction({ autoUmpanIkan: true, isSmallFish: true, hasUmpanIkanBtn: true, hasLepasBtn: true }),
+      "JADIKAN_UMPAN"
+    );
+    assert.equal(
+      decideSmallFishAction({ autoUmpanIkan: false, isSmallFish: true, hasUmpanIkanBtn: true, hasLepasBtn: true }),
+      "LEPAS"
+    );
+    assert.equal(
+      decideSmallFishAction({ autoUmpanIkan: true, isSmallFish: true, hasUmpanIkanBtn: false, hasLepasBtn: true }),
+      "LEPAS"
+    );
+  });
+
+  await t.test("Bait strategy switch toggles Cumi (deep Celup) vs Ternak Umpan Ikan (Cacing shallow Lempar)", () => {
+    function resolveStrategyMode(strategiUmpan, equippedUmpan) {
+      const targetPref = strategiUmpan === "ternak-ikan" ? "umpan-cacing" : "umpan-cumi";
+      const useLempar = strategiUmpan === "ternak-ikan" && equippedUmpan === "umpan-cacing";
+      const minDepth = useLempar ? 2 : 30;
+      return { targetPref, useLempar, minDepth };
+    }
+
+    assert.deepEqual(resolveStrategyMode("cumi", "umpan-cumi"), {
+      targetPref: "umpan-cumi",
+      useLempar: false,
+      minDepth: 30
+    });
+    assert.deepEqual(resolveStrategyMode("ternak-ikan", "umpan-cacing"), {
+      targetPref: "umpan-cacing",
+      useLempar: true,
+      minDepth: 2
+    });
+    assert.deepEqual(resolveStrategyMode("ternak-ikan", "umpan-ikan"), {
+      targetPref: "umpan-cacing",
+      useLempar: false,
+      minDepth: 30
+    });
+  });
 });

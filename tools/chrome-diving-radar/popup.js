@@ -39,6 +39,19 @@ document.getElementById("btn-open-mancing").onclick = () => {
   chrome.tabs.create({ url: "https://www.kampungsebelah.com/mancing" });
 };
 
+const btnOpenMancingMini = document.getElementById("btn-open-mancing-mini");
+if (btnOpenMancingMini) {
+  btnOpenMancingMini.onclick = () => {
+    chrome.windows.create({
+      url: "https://www.kampungsebelah.com/mancing",
+      type: "popup",
+      width: 460,
+      height: 680,
+      focused: true
+    });
+  };
+}
+
 document.getElementById("btn-open-tpu").onclick = () => {
   chrome.tabs.create({ url: "https://www.kampungsebelah.com/?tpu=1" });
 };

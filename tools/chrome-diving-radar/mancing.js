@@ -18,25 +18,66 @@
     autoGulung: true,
     autoSimpan: true,
     autoJual: false,
-    smartProfit: true,       // Strategi 40 slot (20 Jual + 20 Tas): Jual ikan besar (>=1.4 koin), simpan/cadangkan murah, stop saat 40/40 penuh
+    smartProfit: true,       // Strategi 40+ slot (20 Jual + Tas): Jual ikan besar (>=1.4 koin), simpan/cadangkan sedang, stop saat penuh
+    selectiveRelease: true,  // Max Cuan: lepas ikan murah (<1.0 koin) jika koin/umpan aman agar slot terisi ikan mahal
+    autoJaring: true,        // Otomatis tebar jaring untuk dapat umpan gratis harian
+    autoLampu: true,         // Otomatis nyalakan lampu kapal saat malam (18.30 - 04.30) agar ikan lebih ramai
+    singleRodProfit: true,   // Max Cuan: pertahankan 1 joran (1 umpan/celup) agar tidak boros umpan 2x-3x
     autoJualTasPenuh: true,  // Jika tas ikan penuh, otomatis jual agar tangkapan tidak sia-sia
     autoJualSampah: true,    // Otomatis buang/jual sampah laut (Sandal jepit, dll)
     autoUmpan: true,         // Otomatis beli umpan paling worth it (Cumi / Udang) saat habis
+    autoUmpanIkan: true,     // Jadikan ikan kecil sebagai umpan-ikan (besar 2.3x) & prioritaskan pakai stoknya
     autoUpgrade: true,       // Otomatis beli upgrade joran & pendingin bernilai tinggi (ROI Max)
     autoNavigasi: true,      // Otomatis arahkan & kemudikan kapal ke kedalaman paling worth it sesuai umpan & joran
-    preferredUmpan: "umpan-cumi", // "umpan-cumi" (Paling Cuan) / "umpan-udang" (Hemat Modal)
+    preferredUmpan: "umpan-cumi", // "umpan-cumi" (Paling Cuan) / "umpan-udang" (Hemat Modal) / "umpan-cacing" (Ternak Umpan Ikan)
+    strategiUmpan: "cumi",        // "cumi" (Langsung Cumi 1.7x) | "ternak-ikan" (Cacing -> Ikan Kecil -> 2.3x)
     baseMaxTension: 80,      // % max sebelum lepas gulung (batas putus game di 85%)
     baseMinTension: 61       // % min sebelum gulung kembali (batas lepas game di <8%)
   };
 
+  const DAILY_STATS_KEY = "ks_mancing_daily_stats";
+
+  function getTodayWibKey() {
+    const wib = new Date(Date.now() + 7 * 3600 * 1000);
+    return wib.toISOString().slice(0, 10);
+  }
+
   const mancingStats = {
     catches: 0,
+    released: 0,
+    jaringUsed: 0,
     totalProfit: 0,
     lastFish: null,
     history: [],
     umpanDibeli: 0,
     upgradeTerpasang: []
   };
+
+  function loadDailyMancingStats() {
+    try {
+      const raw = localStorage.getItem(DAILY_STATS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (parsed && parsed.date === getTodayWibKey()) {
+        if (typeof parsed.catches === "number") mancingStats.catches = parsed.catches;
+        if (typeof parsed.totalProfit === "number") mancingStats.totalProfit = parsed.totalProfit;
+        if (typeof parsed.lastFish === "string") mancingStats.lastFish = parsed.lastFish;
+      }
+    } catch (_) {}
+  }
+
+  function saveDailyMancingStats() {
+    try {
+      localStorage.setItem(DAILY_STATS_KEY, JSON.stringify({
+        date: getTodayWibKey(),
+        catches: mancingStats.catches,
+        totalProfit: mancingStats.totalProfit,
+        lastFish: mancingStats.lastFish
+      }));
+    } catch (_) {}
+  }
+
+  loadDailyMancingStats();
 
   let isGulungActive = false;
   let isNavigating = false;
@@ -49,6 +90,9 @@
   let autoUmpanPending = false;
   let autoUpgradePending = false;
   let lastUpgradeCheckTime = 0;
+  let lastJaringTime = 0;
+  let lastLampuCheckTime = 0;
+  let lastKailCheckTime = 0;
   const upgradeFailedMap = {};
 
   // Helper: Bilangan acak natural dalam rentang [min, max]
@@ -177,25 +221,38 @@
     }) || null;
   }
 
+  function findLemparButton() {
+    const byTestId = document.querySelector('[data-testid="pancing-lempar"]');
+    if (byTestId) return byTestId;
+
+    const scope = document.querySelector('[data-testid="pancing"]') || document;
+    const buttons = Array.from(scope.querySelectorAll("button"));
+    return buttons.find((b) => {
+      if (b.closest("#ks-mancing-hud")) return false;
+      const txt = (b.textContent || "").trim();
+      return /\blempar\b/i.test(txt);
+    }) || null;
+  }
+
   function isCelupButtonReady(btn) {
     return !!(btn && !btn.disabled && !btn.getAttribute("aria-busy"));
   }
 
-  // Celup Kail Alami: kail lurus ke bawah untuk ikan besar di laut dalam (jeda 2.2s - 3.8s)
-  function scheduleNaturalCelup() {
+  // Celup / Lempar Kail Alami (jeda 2.2s - 3.8s)
+  function scheduleNaturalCelup(useLempar = false) {
     if (castPending) return;
     const now = performance.now();
     const cooldown = mancingConfig.modeNatural ? humanJitter(2200, 3800) : 1200;
     if (now - lastCelupTime < cooldown) return;
 
-    const btnCelup = findCelupButton();
-    if (!isCelupButtonReady(btnCelup)) return;
+    const btnCast = useLempar ? findLemparButton() : findCelupButton();
+    if (!isCelupButtonReady(btnCast)) return;
 
     castPending = true;
     lastCelupTime = now;
 
     setTimeout(() => {
-      const btn = findCelupButton();
+      const btn = useLempar ? findLemparButton() : findCelupButton();
       if (isCelupButtonReady(btn)) {
         naturalClick(btn);
       }
@@ -206,6 +263,7 @@
   function getEquippedUmpanType() {
     const btnUmpan = document.querySelector('[data-testid="pancing-umpan"]');
     const label = (btnUmpan?.textContent || "").toLowerCase();
+    if (label.includes("ikan")) return "umpan-ikan";
     if (label.includes("cumi")) return "umpan-cumi";
     if (label.includes("udang")) return "umpan-udang";
     if (label.includes("cacing")) return "umpan-cacing";
@@ -214,6 +272,7 @@
 
   function getActiveUmpanCost() {
     const active = getEquippedUmpanType();
+    if (active === "umpan-ikan") return 0.00;
     if (active === "umpan-cumi") return 0.50;
     if (active === "umpan-udang") return 0.30;
     if (active === "umpan-cacing") return 0.20;
@@ -314,9 +373,75 @@
     );
   }
 
-  // Penanganan Hasil Tangkapan (Zero-Loss & 40-Slot Smart Profit: 20 Jual + 20 Tas)
+  function decideSmartLootAction({
+    isTrash,
+    isSmallFish,
+    sellPrice,
+    baitCost,
+    sisaJual,
+    sisaTas,
+    saldoKoin,
+    stokUmpan,
+    config,
+    availableButtons
+  }) {
+    if (isTrash && config.autoJualSampah) {
+      if (availableButtons.buang) return "BUANG";
+      if (availableButtons.jual) return "JUAL_SAMPAH";
+    }
+
+    if (config.autoUmpanIkan && isSmallFish && availableButtons.umpanIkan) {
+      return "JADIKAN_UMPAN";
+    }
+
+    const isHighValue = sellPrice >= 1.40;
+    const isLowValue = sellPrice < 1.00;
+    const sisaTotal = sisaJual + sisaTas;
+    const hasSafeReserve = saldoKoin >= 5.0 || stokUmpan >= 5 || !pancingProfile.loaded;
+
+    if (config.smartProfit) {
+      if (config.selectiveRelease && isLowValue && hasSafeReserve && sisaTotal > 2 && availableButtons.lepas) {
+        return "LEPAS";
+      }
+
+      if ((config.autoJual || isHighValue) && sisaJual > 0 && availableButtons.jual) {
+        return "JUAL";
+      }
+
+      if (config.autoSimpan && sisaTas > 0 && availableButtons.simpan) {
+        return "SIMPAN";
+      }
+
+      if (config.autoJualTasPenuh && sisaJual > 0 && availableButtons.jual) {
+        if (config.selectiveRelease && sellPrice < baitCost && hasSafeReserve && sisaJual > 2 && availableButtons.lepas) {
+          return "LEPAS";
+        }
+        return "JUAL_TAS_PENUH";
+      }
+    } else {
+      if (config.autoJual && sisaJual > 0 && availableButtons.jual) return "JUAL";
+      if (config.autoSimpan && sisaTas > 0 && availableButtons.simpan) return "SIMPAN";
+      if (config.autoJualTasPenuh && sisaJual > 0 && availableButtons.jual) return "JUAL_TAS_PENUH";
+    }
+
+    if (availableButtons.makan) return "MAKAN";
+    if (availableButtons.lepas) return "LEPAS";
+    return "NONE";
+  }
+
+  // Penanganan Hasil Tangkapan (Zero-Loss & Max Cuan Selective 40+ Slot)
   function handleCatch(hasilCard) {
     if (lootPending) return;
+
+    // Tunggu kartu hasil siap (data-siap) agar tidak mengklik tombol yang masih disabled
+    const btnBuangInit = findCatchButton(hasilCard, ['[data-testid="pancing-buang"]', '[data-testid="pancing-buang-sampah"]'], /\bbuang\b/i);
+    const btnSimpanInit = findCatchButton(hasilCard, ['[data-testid="pancing-simpan"]'], /\bsimpan\b/i);
+    const btnJualInit = findCatchButton(hasilCard, ['[data-testid="pancing-jual"]'], /\bjual\b/i);
+    const btnLepasInit = findCatchButton(hasilCard, ['[data-testid="pancing-lepas"]'], /\blepas\b/i);
+    const anyReadyBtn = [btnBuangInit, btnSimpanInit, btnJualInit, btnLepasInit].some(b => b && !b.disabled);
+    if (!hasilCard.hasAttribute("data-siap") && !anyReadyBtn) {
+      return;
+    }
 
     const fishNameEl = hasilCard.querySelector('[class*="judulBesar"], .O26Avq_judulBesar');
     const fishWeightEl = hasilCard.querySelector('[class*="berat"], .O26Avq_berat');
@@ -366,6 +491,7 @@
       mancingStats.lastFish = `${fishName} (${fishWeight}) ➔ Profit: ${profitText} (Jual: ${sellPrice.toFixed(2)} koin)`;
       mancingStats.history.unshift(`${fishName} (${fishWeight}) | Jual ${sellPrice.toFixed(2)} | Profit ${profitText}`);
       if (mancingStats.history.length > 5) mancingStats.history.pop();
+      saveDailyMancingStats();
       updateMancingUI();
     }
 
@@ -381,6 +507,11 @@
             pancingProfile.jualHariIni = Math.min(pancingProfile.jualMaks, pancingProfile.jualHariIni + 1);
           } else if (actionType === "simpan") {
             pancingProfile.tasIkan = Math.min(pancingProfile.tasMaks, pancingProfile.tasIkan + 1);
+          } else if (actionType === "lepas") {
+            mancingStats.released++;
+            // Karena dilepas (tidak dijual/disimpan), koreksi estimasi profit hari ini agar akurat (-baitCost saja)
+            mancingStats.totalProfit -= sellPrice;
+            saveDailyMancingStats();
           }
           updateMancingUI();
         }
@@ -394,74 +525,92 @@
       const btnSimpan = findCatchButton(hasilCard, ['[data-testid="pancing-simpan"]'], /\bsimpan\b/i);
       const btnJual = findCatchButton(hasilCard, ['[data-testid="pancing-jual"]'], /\bjual\b/i);
       const btnMakan = findCatchButton(hasilCard, ['[data-testid="pancing-makan"]'], /\bmakan\b/i);
-
-      // 1. Barang sampah (Sandal jepit / SAMPAH LAUT) -> klik "Buang ke tempat sampah" (atau jual jika tersedia)
-      if (isTrash && mancingConfig.autoJualSampah) {
-        if (btnBuang && !btnBuang.disabled) {
-          executeLootClick(btnBuang, "buang", "🗑️ Sampah Laut", `Membuang ${fishName} ke tempat sampah`, "#94a3b8");
-          return;
-        }
-        if (btnJual && !btnJual.disabled) {
-          executeLootClick(btnJual, "buang", "🗑️ Sampah Laut", `Menjual ${fishName} otomatis`, "#94a3b8");
-          return;
-        }
-      }
+      const btnLepas = findCatchButton(hasilCard, ['[data-testid="pancing-lepas"]'], /\blepas\b/i);
+      const btnUmpanIkan = findCatchButton(
+        hasilCard,
+        ['[data-testid="pancing-umpan-ikan"]', '[data-testid="pancing-jadikan-umpan"]'],
+        /jadikan\s*umpan|buat\s*umpan|umpan\s*hidup/i
+      );
 
       const sisaJual = Math.max(0, pancingProfile.jualMaks - pancingProfile.jualHariIni);
       const sisaTas = Math.max(0, pancingProfile.tasMaks - pancingProfile.tasIkan);
-      const isHighValue = sellPrice >= 1.40; // Ikan Besar (>=1.40) & Raksasa (>=2.40): layak pakai jatah jual 20/hari
+      const stokUmpan = getUmpanStok();
+      const isSmallFish = !isTrash && (fishClass.includes("kecil") || sellPrice < 0.70);
 
-      // 2. Smart Profit Strategy (20 Jual + 20 Tas):
-      //    - Ikan mahal (>=1.40 koin): Jual langsung jika jatah jual masih ada (maksimalkan omzet 20 ekor/hari)
-      //    - Ikan kecil/sedang (<1.40 koin): Simpan ke tas dulu agar jatah jual 20/hari tidak terbuang untuk ikan murah
-      //    - Jika jatah jual habis (0/20): Simpan ke 20 slot tas untuk dijual besok setelah reset 00:00 WIB
-      if (mancingConfig.smartProfit) {
-        if ((mancingConfig.autoJual || isHighValue) && sisaJual > 0 && btnJual && !btnJual.disabled) {
-          executeLootClick(
-            btnJual,
-            "jual",
-            "💰 Jual Ikan Mahal",
-            `${fishName} (${sellPrice.toFixed(2)} koin) · Sisa jual ${Math.max(0, sisaJual - 1)}/${pancingProfile.jualMaks}`,
-            "#22c55e"
-          );
-          return;
+      const decision = decideSmartLootAction({
+        isTrash,
+        isSmallFish,
+        sellPrice,
+        baitCost,
+        sisaJual,
+        sisaTas,
+        saldoKoin: pancingProfile.saldoKoin,
+        stokUmpan,
+        config: mancingConfig,
+        availableButtons: {
+          buang: !!(btnBuang && !btnBuang.disabled),
+          jual: !!(btnJual && !btnJual.disabled),
+          simpan: !!(btnSimpan && !btnSimpan.disabled),
+          makan: !!(btnMakan && !btnMakan.disabled),
+          lepas: !!(btnLepas && !btnLepas.disabled),
+          umpanIkan: !!(btnUmpanIkan && !btnUmpanIkan.disabled)
         }
+      });
 
-        if (mancingConfig.autoSimpan && sisaTas > 0 && btnSimpan && !btnSimpan.disabled) {
-          const reason = sisaJual === 0 ? "Jatah jual habis, simpan untuk besok" : "Hemat kuota jual untuk ikan besar";
-          executeLootClick(btnSimpan, "simpan", "🎒 Simpan ke Tas", `${fishName} · ${reason}`, "#38bdf8");
-          return;
-        }
-
-        if (mancingConfig.autoJualTasPenuh && sisaJual > 0 && btnJual && !btnJual.disabled) {
-          executeLootClick(btnJual, "jual", "🎒 Tas Penuh!", `Menjual ${fishName} (Zero-Loss)`, "#eab308");
-          return;
-        }
-      } else {
-        // Mode standar (non-smart)
-        if (mancingConfig.autoJual && sisaJual > 0 && btnJual && !btnJual.disabled) {
-          executeLootClick(btnJual, "jual", "💰 Menjual Ikan", `${fishName} (+${sellPrice.toFixed(2)} koin)`, "#22c55e");
-          return;
-        }
-
-        if (mancingConfig.autoSimpan && btnSimpan && !btnSimpan.disabled) {
-          executeLootClick(btnSimpan, "simpan", "🎒 Menyimpan Ikan", `${fishName} ke tas`, "#38bdf8");
-          return;
-        }
-
-        if (mancingConfig.autoJualTasPenuh && sisaJual > 0 && btnJual && !btnJual.disabled) {
-          executeLootClick(btnJual, "jual", "🎒 Tas Penuh!", `Menjual ${fishName} (Zero-Loss)`, "#eab308");
-          return;
-        }
+      if (decision === "JADIKAN_UMPAN") {
+        executeLootClick(
+          btnUmpanIkan,
+          "lepas",
+          "🐟 Jadi Umpan Hidup!",
+          `${fishName} dijadikan umpan-ikan (2.3× ikan besar)`,
+          "#22c55e"
+        );
+        return;
       }
 
-      // 3. Fallback terakhir jika tas penuh dan jatah jual habis: makan ikan agar dialog tidak macet
-      if (btnMakan && !btnMakan.disabled) {
+      if (decision === "BUANG") {
+        executeLootClick(btnBuang, "buang", "🗑️ Sampah Laut", `Membuang ${fishName} ke tempat sampah`, "#94a3b8");
+        return;
+      }
+      if (decision === "JUAL_SAMPAH") {
+        executeLootClick(btnJual, "buang", "🗑️ Sampah Laut", `Menjual ${fishName} otomatis`, "#94a3b8");
+        return;
+      }
+      if (decision === "LEPAS") {
+        executeLootClick(
+          btnLepas,
+          "lepas",
+          "💎 Selektif Max Cuan",
+          `Lepas ${fishName} (${sellPrice.toFixed(2)} koin) agar slot diisi ikan mahal`,
+          "#c084fc"
+        );
+        return;
+      }
+      if (decision === "JUAL") {
+        executeLootClick(
+          btnJual,
+          "jual",
+          "💰 Jual Ikan Mahal",
+          `${fishName} (${sellPrice.toFixed(2)} koin) · Sisa jual ${Math.max(0, sisaJual - 1)}/${pancingProfile.jualMaks}`,
+          "#22c55e"
+        );
+        return;
+      }
+      if (decision === "SIMPAN") {
+        const reason = sisaJual === 0 ? "Jatah jual habis, simpan untuk besok" : "Hemat kuota jual untuk ikan besar";
+        executeLootClick(btnSimpan, "simpan", "🎒 Simpan ke Tas", `${fishName} · ${reason}`, "#38bdf8");
+        return;
+      }
+      if (decision === "JUAL_TAS_PENUH") {
+        executeLootClick(btnJual, "jual", "🎒 Tas Penuh!", `Menjual ${fishName} (Zero-Loss)`, "#eab308");
+        return;
+      }
+      if (decision === "MAKAN") {
         executeLootClick(btnMakan, "makan", "🍽️ Makan Ikan", `Memakan ${fishName} (+Makan)`, "#38bdf8");
         return;
       }
 
-      // 4. Jika semua tombol aksi nonaktif/tidak ditemukan -> tunggu dengan jeda aman agar tidak spam klik
+      // Jika semua tombol aksi nonaktif/tidak ditemukan -> tunggu dengan jeda aman agar tidak spam klik
       updateStatusMsg("⚠️ Aksi Tangkapan Tertahan", "Tombol buang/simpan/jual tidak tersedia", "#ef4444");
       setTimeout(() => {
         lootPending = false;
@@ -525,28 +674,49 @@
     return { depth, crowd, raw: aria || text };
   }
 
-  // Helper: Tentukan target kedalaman laut paling bernilai (ROI Maksimal) berdasarkan peralatan & umpan
+  // Helper: Tentukan target kedalaman & ikan paling bernilai sesuai joran aktif, kapal (lepasM), dan umpan
   function getTargetDepth() {
     const activeUmpan = getEquippedUmpanType();
+    const isIkanHidup = activeUmpan === "umpan-ikan";
     const isCumi = activeUmpan === "umpan-cumi";
     const isUdang = activeUmpan === "umpan-udang";
+    const joranKey = (pancingProfile.joranId || "").toLowerCase();
+    const hasOffshoreAccess = (pancingProfile.lepasM || 0) > 0;
 
-    const hasSamudra = mancingStats.upgradeTerpasang.some(j => j.toLowerCase().includes("samudra"));
-    const hasTonda = mancingStats.upgradeTerpasang.some(j => j.toLowerCase().includes("tonda"));
-    const hasKarang = mancingStats.upgradeTerpasang.some(j => j.toLowerCase().includes("karang"));
+    const hasSamudra = joranKey.includes("samudra") || mancingStats.upgradeTerpasang.some(j => j.toLowerCase().includes("samudra"));
+    const hasTonda = joranKey.includes("tonda") || mancingStats.upgradeTerpasang.some(j => j.toLowerCase().includes("tonda"));
+    const hasKarang = joranKey.includes("karang") || mancingStats.upgradeTerpasang.some(j => j.toLowerCase().includes("karang"));
 
-    // 1. Skenario Umpan Cumi / Joran Samudra: Target Ikan Raksasa Termahal Teluk (Kuwe GT 30m & Barakuda 24m)
-    if (isCumi || hasSamudra) {
+    // 0. Mode Ternak Umpan Ikan dengan Cacing: tetap di dangkal agar ikan kecil cepat didapat
+    if (mancingConfig.strategiUmpan === "ternak-ikan" && activeUmpan === "umpan-cacing") {
       return {
-        minDepth: 30, // Kuwe GT (ikan termahal teluk: 32kg, 2.87 koin) hanya muncul di kedalaman >= 30m!
-        optimalDepth: 32,
-        allowCrowdStopAt: 30, // Targetkan >= 30m agar Kuwe GT resmi terbuka di daftar RNG server
-        targetFish: "Kuwe GT (≥30m) & Barakuda (≥24m)",
-        reason: "Umpan Cumi (Target Ikan Termahal Teluk)"
+        minDepth: 2,
+        optimalDepth: 5,
+        allowCrowdStopAt: 2,
+        targetFish: "Ikan Kecil (Jadi Umpan 2.3×)",
+        reason: "Ternak Umpan Ikan (Cacing di Dangkal)"
       };
     }
 
-    // 2. Skenario Joran Tonda: Target Ikan Cepat (Tenggiri 20m, Cakalang 18m)
+    // 1. Umpan Ikan Hidup (2.3x), Umpan Cumi (1.7x), atau Joran Samudra: Target Ikan Raksasa
+    if (hasSamudra || isIkanHidup || isCumi) {
+      const targetFish = hasOffshoreAccess
+        ? "Kuwe GT, Barakuda, Tuna/Marlin (Laut Lepas)"
+        : "Kuwe GT (≥30m) & Barakuda (≥24m)";
+      return {
+        minDepth: 30,
+        optimalDepth: hasOffshoreAccess ? 35 : 32,
+        allowCrowdStopAt: 30,
+        targetFish,
+        reason: isIkanHidup
+          ? "Umpan Ikan Hidup (2.3x Ikan Besar)"
+          : hasSamudra
+          ? "Joran Samudra (2x Ikan Raksasa)"
+          : "Umpan Cumi (Target Termahal Teluk)"
+      };
+    }
+
+    // 2. Joran Tonda: Target Ikan Cepat (Tenggiri 20m, Cakalang 18m)
     if (hasTonda) {
       return {
         minDepth: 20,
@@ -557,24 +727,24 @@
       };
     }
 
-    // 3. Skenario Umpan Udang / Joran Karang: Target Ikan Sedang/Besar (Tongkol 15m, Kerapu 12m)
-    if (isUdang || hasKarang) {
+    // 3. Joran Karang / Umpan Udang: Target Ikan Sedang/Besar (Tongkol 15m, Kerapu 12m)
+    if (hasKarang || isUdang) {
       return {
         minDepth: 15,
         optimalDepth: 18,
         allowCrowdStopAt: 14,
         targetFish: "Tongkol & Kerapu",
-        reason: "Umpan Udang & Joran Karang"
+        reason: hasKarang ? "Joran Karang (1.8x Ikan Karang)" : "Umpan Udang"
       };
     }
 
-    // 4. Skenario Umpan Cacing / Joran Pemula: Target Ikan Sedang Rendah (Kakap 8m, Bawal 6m)
+    // 4. Joran Bambu + Umpan Cacing: Target Pemula (Kakap 8m, Bawal 6m)
     return {
       minDepth: 8,
       optimalDepth: 12,
       allowCrowdStopAt: 7,
       targetFish: "Kakap & Bawal",
-      reason: "Umpan Cacing (Target Pemula)"
+      reason: "Joran Bambu & Cacing (Target Pemula)"
     };
   }
 
@@ -601,16 +771,32 @@
     jualHariIni: 0,
     jualMaks: 20,
     saldoKoin: 0,
+    kapalNama: "Perahu jukung",
+    lepasM: 0,
+    hasJaring: false,
+    jaringSisa: 0,
+    jaringHarian: 0,
+    hasLampu: false,
+    joranId: "joran-bambu",
+    joranNama: "Joran Bambu",
     lastSync: 0,
-    loaded: false
+    loaded: false,
+    loading: false,
+    loadError: null
   };
 
   async function fetchPancingData(force = false) {
     if (!force && pancingProfile.loaded && (performance.now() - pancingProfile.lastSync < 20000)) {
       return pancingProfile;
     }
+    pancingProfile.loading = true;
+    pancingProfile.loadError = null;
+    updateMancingUI();
     try {
       const res = await fetch("/api/pancing");
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
       const data = await res.json();
       if (data) {
         if (data.hariIni) {
@@ -628,16 +814,59 @@
         if (typeof data.saldoMilli === "number") {
           pancingProfile.saldoKoin = data.saldoMilli / 1000;
         }
+        if (data.kapal) {
+          const aktifKapal = Array.isArray(data.kapal.daftar)
+            ? data.kapal.daftar.find(k => k.dipakai)
+            : null;
+          pancingProfile.kapalNama = aktifKapal?.nama || pancingProfile.kapalNama;
+          pancingProfile.lepasM = typeof data.kapal.lepasM === "number"
+            ? data.kapal.lepasM
+            : (aktifKapal?.lepasM ?? 0);
+          pancingProfile.hasLampu = !!(data.kapal.lampu ?? aktifKapal?.lampu);
+        }
+        pancingProfile.hasJaring = !!data.jaring;
+        pancingProfile.jaringSisa = data.jaring?.sisa ?? 0;
+        pancingProfile.jaringHarian = data.jaring?.harian ?? 0;
+
+        let savedJoran = null;
+        try {
+          savedJoran = localStorage.getItem("ks-pancing-joran");
+        } catch (_) {}
+
+        let resolvedJoran = null;
+        if (Array.isArray(data.joran)) {
+          resolvedJoran =
+            data.joran.find(j => j.dipakai) ||
+            (savedJoran ? data.joran.find(j => j.id === savedJoran && j.punya) : null) ||
+            data.joran.find(j => j.punya) ||
+            data.joran[0] ||
+            null;
+        }
+        if (typeof data.joranDipakai === "string" && data.joranDipakai) {
+          pancingProfile.joranId = data.joranDipakai;
+          pancingProfile.joranNama = resolvedJoran?.nama || data.joranDipakai;
+        } else if (resolvedJoran) {
+          pancingProfile.joranId = resolvedJoran.id || "joran-bambu";
+          pancingProfile.joranNama = resolvedJoran.nama || resolvedJoran.id || "Joran Bambu";
+        }
+        if (pancingProfile.joranId && !mancingStats.upgradeTerpasang.includes(pancingProfile.joranId)) {
+          mancingStats.upgradeTerpasang.push(pancingProfile.joranId);
+        }
         if (Array.isArray(data.titik) && data.titik.length > 0) {
           cachedTitik = data.titik;
           lastTitikFetchTime = performance.now();
         }
         pancingProfile.lastSync = performance.now();
         pancingProfile.loaded = true;
+        pancingProfile.loading = false;
+        pancingProfile.loadError = null;
         updateMancingUI();
       }
     } catch (e) {
+      pancingProfile.loading = false;
+      pancingProfile.loadError = e?.message || "Gagal mengambil status mancing";
       console.warn("[AutoMancing] Gagal sinkronisasi data profil pancing:", e);
+      updateMancingUI();
     }
     return pancingProfile;
   }
@@ -660,14 +889,19 @@
   function findBestCrowdedSpot(spots, shipX, shipZ) {
     if (!spots || spots.length === 0) return null;
 
-    const scored = spots.map(s => {
+    // Batas utara kapal sesuai lepasM (E.z0 teluk ~ -640, ditambah jangkauan laut lepas kapal)
+    const minReachableZ = -640 - Math.max(0, pancingProfile.lepasM || 0);
+    const reachableSpots = spots.filter(s => s.z >= minReachableZ);
+    const pool = reachableSpots.length > 0 ? reachableSpots : spots;
+
+    const scored = pool.map(s => {
       const d = calcDepth(s.x, s.z);
       const dist = Math.hypot(s.x - shipX, s.z - shipZ);
       // Prioritas untuk Celup laut dalam:
-      // 1. Kedalaman laut (>= 30m agar Kuwe GT & ikan raksasa laut dalam terbuka penuh)
+      // 1. Kedalaman laut (>= 30m agar Kuwe GT & ikan raksasa laut dalam terbuka penuh, >= 34m untuk laut lepas)
       // 2. Kepadatan ikan s.kaya (makin kaya ikan makin sering melompat, 5 bar hijau)
       // 3. Jarak efisien
-      const depthBonus = d >= 30 ? 220 : d >= 28 ? 150 : d >= 24 ? 100 : d >= 18 ? 40 : 0;
+      const depthBonus = d >= 34 ? 250 : d >= 30 ? 220 : d >= 28 ? 150 : d >= 24 ? 100 : d >= 18 ? 40 : 0;
       const score = (s.kaya * 300) + depthBonus - (dist * 0.05);
       return { ...s, depth: d, dist, score };
     });
@@ -802,7 +1036,28 @@
     updateStatusMsg("🛒 Beli Umpan...", "Membuka toko umpan...", "#38bdf8");
 
     function proceedInShop(sheetToko) {
-      // Step 2: Pilih paket jumlah (pilih 5 jika sisa kuota 40 slot tinggal <= 5, selain itu 10)
+      // Cek apakah punya stok Umpan Ikan Hidup (umpan-ikan, gratis & 2.3x ikan besar) -> pakai dulu sebelum beli
+      if (mancingConfig.autoUmpanIkan) {
+        const btnPilihIkan = sheetToko.querySelector('[data-testid="pancing-pilih-umpan-ikan"], [data-testid="pancing-pilih-ikan"]');
+        const txtIkan = (btnPilihIkan?.textContent || "").toLowerCase();
+        const matchStok = txtIkan.match(/punya\s*(\d+)/i);
+        const stokIkan = matchStok ? parseInt(matchStok[1], 10) : 0;
+        if (btnPilihIkan && !btnPilihIkan.disabled && stokIkan > 0) {
+          updateStatusMsg("🐟 Pakai Umpan Ikan!", `Memasang ${stokIkan} umpan ikan hidup (2.3× besar)...`, "#22c55e");
+          naturalClick(btnPilihIkan);
+          setTimeout(() => {
+            const btnTutup = sheetToko.querySelector('button[aria-label="Tutup"], button[class*="tutup"]');
+            if (btnTutup) naturalClick(btnTutup);
+            setTimeout(() => {
+              autoUmpanPending = false;
+              updateMancingUI();
+            }, getActionDelay(0));
+          }, getActionDelay(0));
+          return;
+        }
+      }
+
+      // Step 2: Pilih paket jumlah (pilih 5 jika sisa kuota slot tinggal <= 5 atau saldo < 5, selain itu 10)
       setTimeout(() => {
         const qtyButtons = Array.from(sheetToko.querySelectorAll('button[role="radio"]'));
         const btn10 = qtyButtons.find(b => b.textContent.trim() === "10");
@@ -810,7 +1065,8 @@
         const sisaSlot = pancingProfile.loaded
           ? Math.max(0, pancingProfile.jualMaks - pancingProfile.jualHariIni) + Math.max(0, pancingProfile.tasMaks - pancingProfile.tasIkan)
           : 40;
-        const preferPack5 = mancingConfig.smartProfit && sisaSlot > 0 && sisaSlot <= 5;
+        const lowCoinPack5 = pancingProfile.loaded && pancingProfile.saldoKoin < 5.0;
+        const preferPack5 = (mancingConfig.smartProfit && sisaSlot > 0 && sisaSlot <= 5) || lowCoinPack5;
         if (preferPack5 && btn5) naturalClick(btn5);
         else if (btn10) naturalClick(btn10);
         else if (btn5) naturalClick(btn5);
@@ -825,8 +1081,15 @@
           let targetBeli = null;
           let namaUmpan = "Umpan Cumi";
           let targetPilihId = "cumi";
+          const targetPref = mancingConfig.strategiUmpan === "ternak-ikan"
+            ? "umpan-cacing"
+            : mancingConfig.preferredUmpan;
 
-          if (mancingConfig.preferredUmpan === "umpan-cumi" && btnBeliCumi && !btnBeliCumi.disabled) {
+          if (targetPref === "umpan-cacing" && btnBeliCacing && !btnBeliCacing.disabled) {
+            targetBeli = btnBeliCacing;
+            namaUmpan = "Cacing Laut (Ternak Umpan Ikan)";
+            targetPilihId = "cacing";
+          } else if (targetPref === "umpan-cumi" && btnBeliCumi && !btnBeliCumi.disabled) {
             targetBeli = btnBeliCumi;
             namaUmpan = "Umpan Cumi (Profit Max)";
             targetPilihId = "cumi";
@@ -1014,14 +1277,42 @@
             naturalClick(pilihKarang);
           }
 
-          // Tutup sheet kapal
-          setTimeout(() => {
-            const btnTutup = sheetKapal.querySelector('button[aria-label="Tutup"], button[class*="tutup"]');
-            if (btnTutup) naturalClick(btnTutup);
+          // Cek Tab Tambahan (Pendingin: tambah kapasitas tas ikan untuk Max Cuan, sisakan minimal 10 koin untuk Umpan Cumi)
+          const tabTambahan = sheetKapal.querySelector('[data-testid="pancing-tab-tambahan"]');
+          const hasGoodRod = !!(
+            (pilihSamudra && !pilihSamudra.disabled) ||
+            (pilihTonda && !pilihTonda.disabled)
+          );
+          if (tabTambahan && hasGoodRod && pancingProfile.saldoKoin >= 10 && !upgradeFailedMap["pendingin"]) {
             setTimeout(() => {
-              autoUpgradePending = false;
+              naturalClick(tabTambahan);
+              setTimeout(() => {
+                const btnPendingin = sheetKapal.querySelector('[data-testid="pancing-tambahan-beli-pendingin"]');
+                if (btnPendingin && !btnPendingin.disabled) {
+                  updateStatusMsg("❄️ Upgrade Pendingin!", "Menambah kapasitas tas ikan...", "#a855f7");
+                  naturalClick(btnPendingin);
+                  mancingStats.upgradeTerpasang.push("pendingin");
+                }
+                setTimeout(() => {
+                  const btnTutup = sheetKapal.querySelector('button[aria-label="Tutup"], button[class*="tutup"]');
+                  if (btnTutup) naturalClick(btnTutup);
+                  setTimeout(() => {
+                    autoUpgradePending = false;
+                    fetchPancingData(true);
+                  }, getActionDelay(0));
+                }, getActionDelay(0));
+              }, getActionDelay(0));
             }, getActionDelay(0));
-          }, getActionDelay(0));
+          } else {
+            // Tutup sheet kapal
+            setTimeout(() => {
+              const btnTutup = sheetKapal.querySelector('button[aria-label="Tutup"], button[class*="tutup"]');
+              if (btnTutup) naturalClick(btnTutup);
+              setTimeout(() => {
+                autoUpgradePending = false;
+              }, getActionDelay(0));
+            }, getActionDelay(0));
+          }
         }
       }, getActionDelay(0));
     }, getActionDelay(0));
@@ -1035,6 +1326,17 @@
       stopStatusOverride = null;
       updateStatusMsg("🔄 Sinkronisasi Data...", "Mengambil data mancing hari ini...", "#38bdf8");
       await fetchPancingData(true);
+
+      if (!pancingProfile.loaded) {
+        mancingConfig.autoMancing = false;
+        stopStatusOverride = {
+          title: "⚠️ Status Mancing Belum Siap",
+          detail: pancingProfile.loadError || "Gagal mengambil data /api/pancing. Muat ulang sebelum menyalakan fitur.",
+          color: "#f59e0b"
+        };
+        updateMancingUI();
+        return;
+      }
 
       const sisaJual = Math.max(0, pancingProfile.jualMaks - pancingProfile.jualHariIni);
       const sisaTas = Math.max(0, pancingProfile.tasMaks - pancingProfile.tasIkan);
@@ -1248,15 +1550,18 @@
     hud.id = "ks-mancing-hud";
     hud.style.cssText = `
       position: fixed;
-      top: 16px;
-      right: 16px;
-      width: 290px;
+      top: 12px;
+      right: 12px;
+      width: 310px;
+      max-height: calc(100vh - 24px);
+      display: flex;
+      flex-direction: column;
       background: rgba(11, 19, 43, 0.94);
       border: 1px solid rgba(0, 229, 255, 0.45);
       border-radius: 12px;
       color: #e2e8f0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      font-size: 12px;
+      font-size: 11px;
       z-index: 999999;
       box-shadow: 0 8px 32px rgba(0, 0, 0, 0.55), 0 0 16px rgba(0, 229, 255, 0.25);
       backdrop-filter: blur(12px);
@@ -1265,22 +1570,24 @@
     `;
 
     hud.innerHTML = `
-      <div id="ks-mancing-header" style="background: rgba(0, 229, 255, 0.15); padding: 10px 14px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(0, 229, 255, 0.25); cursor: grab; user-select: none;">
-        <div style="font-weight: bold; color: #00e5ff; display: flex; align-items: center; gap: 6px;">
+      <div id="ks-mancing-header" style="background: rgba(0, 229, 255, 0.15); padding: 8px 12px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(0, 229, 255, 0.25); cursor: grab; user-select: none; flex-shrink: 0;">
+        <div style="font-weight: bold; color: #00e5ff; display: flex; align-items: center; gap: 6px; font-size: 12px;">
           <span style="opacity: 0.7; font-size: 13px;" title="Geser Posisi HUD (Klik & Geser Bebas)">⠿</span>
           <span>🎣 Auto-Mancing Pro (Natural)</span>
         </div>
-        <button id="ks-mancing-toggle" style="background: none; border: none; color: #90caf9; cursor: pointer; font-size: 14px; font-weight: bold; padding: 2px 6px;">_</button>
+        <div style="display: flex; align-items: center; gap: 4px;">
+          <button id="ks-mancing-mini-win" title="Buka di Mini Window (460×680)" style="background: rgba(13, 148, 136, 0.35); border: 1px solid rgba(45, 212, 191, 0.45); color: #5eead4; cursor: pointer; font-size: 11px; font-weight: bold; padding: 2px 6px; border-radius: 5px;">📌</button>
+          <button id="ks-mancing-toggle" style="background: none; border: none; color: #90caf9; cursor: pointer; font-size: 14px; font-weight: bold; padding: 2px 6px;">_</button>
+        </div>
       </div>
 
-      <div id="ks-mancing-content" style="padding: 12px;">
+      <div id="ks-mancing-content" style="padding: 9px 10px; overflow-y: auto; flex: 1;">
         <!-- Status Box -->
-        <div style="background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 8px; padding: 10px; margin-bottom: 10px;">
-          <div style="font-size: 11px; color: #94a3b8; margin-bottom: 2px;">Status Saat Ini:</div>
-          <div id="ks-mancing-status" style="font-size: 13px; font-weight: bold; color: #38bdf8;">
+        <div style="background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(56, 189, 248, 0.35); border-radius: 7px; padding: 7px 9px; margin-bottom: 7px;">
+          <div id="ks-mancing-status" style="font-size: 12px; font-weight: bold; color: #38bdf8;">
             ⚪ Siap Memancing
           </div>
-          <div id="ks-mancing-detail" style="font-size: 10px; color: #94a3b8; margin-top: 4px;">
+          <div id="ks-mancing-detail" style="font-size: 10px; color: #94a3b8; margin-top: 2px;">
             Tekan tombol Mulai di bawah untuk otomatisasi
           </div>
         </div>
@@ -1288,130 +1595,133 @@
         <!-- Tombol Utama Start / Stop -->
         <button id="ks-mancing-start-btn" style="
           width: 100%;
-          padding: 10px;
+          padding: 8px;
           background: linear-gradient(90deg, #16a34a, #22c55e);
           border: none;
           color: white;
-          border-radius: 8px;
+          border-radius: 7px;
           cursor: pointer;
-          font-size: 13px;
+          font-size: 12px;
           font-weight: 800;
-          margin-bottom: 10px;
+          margin-bottom: 7px;
           box-shadow: 0 4px 12px rgba(22, 163, 74, 0.35);
           transition: all 0.15s ease;
         ">
           ▶️ Mulai Auto Mancing Natural
         </button>
 
-        <!-- Profil Statistik Harian Game (Lempar, Tas, Jual BUMDes, Koin) -->
-        <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 8px; margin-bottom: 10px; font-size: 11px;">
-          <div style="font-weight: bold; color: #38bdf8; margin-bottom: 5px; font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;">
-            📊 Profil Mancing Hari Ini
+        <!-- Profil Statistik Harian Game -->
+        <div style="background: rgba(15, 23, 42, 0.85); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 7px; padding: 7px 8px; margin-bottom: 7px; font-size: 10.5px;">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+            <span style="color: #94a3b8;">🎣 Celup / Tas / Jual:</span>
+            <span><b id="ks-stat-hari-ini" style="color: #38bdf8;">...</b> · <b id="ks-stat-tas" style="color: #4ade80;">...</b> · <b id="ks-stat-jual" style="color: #fbbf24;">...</b></span>
           </div>
-          <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
-            <span style="color: #94a3b8;">🎣 Celupan:</span>
-            <b id="ks-stat-hari-ini" style="color: #38bdf8;">Memuat...</b>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+            <span style="color: #94a3b8;">🪙 Koin &amp; Joran:</span>
+            <span><b id="ks-stat-saldo" style="color: #f1f5f9;">...</b> · <b id="ks-stat-joran" style="color: #c084fc;">...</b></span>
           </div>
-          <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
-            <span style="color: #94a3b8;">🎒 Isi Tas Ikan:</span>
-            <b id="ks-stat-tas" style="color: #4ade80;">Memuat...</b>
-          </div>
-          <div style="display: flex; justify-content: space-between; margin-bottom: 3px;">
-            <span style="color: #94a3b8;">💰 Jatah Jual BUMDes:</span>
-            <b id="ks-stat-jual" style="color: #fbbf24;">Memuat...</b>
+          <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+            <span style="color: #94a3b8;">⛵ Kapal:</span>
+            <b id="ks-stat-kapal" style="color: #67e8f9;">Memuat...</b>
           </div>
           <div style="display: flex; justify-content: space-between;">
-            <span style="color: #94a3b8;">🪙 Saldo Koin:</span>
-            <b id="ks-stat-saldo" style="color: #f1f5f9;">Memuat...</b>
+            <span style="color: #94a3b8;">🧰 Fitur Kapal:</span>
+            <b id="ks-stat-fitur-kapal" style="color: #cbd5e1;">Memuat...</b>
           </div>
         </div>
 
-        <!-- Stats Tangkapan & Profit -->
-        <div style="background: rgba(255, 255, 255, 0.05); border-radius: 6px; padding: 8px; margin-bottom: 10px;">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-            <span style="font-size: 11px; color: #cbd5e1;">Tangkapan Sesi Ini:</span>
-            <span id="ks-mancing-count" style="font-size: 13px; font-weight: 800; color: #4ade80;">0 ekor</span>
-          </div>
-          <div id="ks-mancing-last" style="font-size: 10px; color: #94a3b8; line-height: 1.3;">Terakhir: -</div>
-          <div id="ks-mancing-profit" style="font-size: 11px; color: #38bdf8; margin-top: 4px; font-weight: bold; border-top: 1px solid rgba(255, 255, 255, 0.08); padding-top: 4px;">
-            💰 Estimasi Laba Sesi: +0.00 koin
-          </div>
-        </div>
-
-        <!-- Mode Proteksi & Natural -->
-        <div style="background: rgba(0, 229, 255, 0.08); border-radius: 6px; padding: 8px; margin-bottom: 10px;">
-          <div style="font-weight: bold; color: #38bdf8; font-size: 11px; margin-bottom: 6px;">🛡️ Proteksi Tanpa Rugi & Natural</div>
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; margin-bottom: 4px;">
-            <input type="checkbox" id="ks-opt-natural" checked style="cursor: pointer;">
-            <span>🌿 Gerakan Natural (Refleks & Jeda Manusia)</span>
-          </label>
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="checkbox" id="ks-opt-zeroloss" checked style="cursor: pointer;">
-            <span>🛡️ Zero-Loss (Anti-Putus & Anti-Lepas Tali)</span>
-          </label>
-        </div>
-
-        <!-- Rekomendasi Umpan & Upgrade (High-ROI Engine) -->
-        <div style="background: rgba(168, 85, 247, 0.12); border: 1px solid rgba(168, 85, 247, 0.35); border-radius: 6px; padding: 8px; margin-bottom: 10px;">
-          <div style="font-weight: bold; color: #c084fc; font-size: 11px; margin-bottom: 4px;">💡 Rekomendasi Profit Paling Worth It:</div>
-          <div style="font-size: 10px; color: #e2e8f0; line-height: 1.4; margin-bottom: 6px;">
-            • <b>Umpan Cumi (0.5 koin)</b>: Juara 1 Profit! Modal 10 koin ➔ Omzet 45–70+ koin (Batas 20 ekor BUMDes).<br>
-            • <b>Joran Tonda / Samudra</b>: Tarikan ringan (mudah +1) & sambaran ikan raksasa 1.8×–2× lipat.
-          </div>
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; margin-bottom: 4px;">
-            <input type="checkbox" id="ks-opt-auto-umpan" checked style="cursor: pointer;">
-            <span style="color: #f3e8ff;">🦑 <b>Auto Beli Umpan</b> (Cumi / Udang)</span>
-          </label>
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; margin-bottom: 4px;">
-            <input type="checkbox" id="ks-opt-auto-upgrade" checked style="cursor: pointer;">
-            <span style="color: #f3e8ff;">🎣 <b>Auto Upgrade Joran</b> (Tonda / Samudra)</span>
-          </label>
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
-            <input type="checkbox" id="ks-opt-auto-navigasi" checked style="cursor: pointer;">
-            <span style="color: #67e8f9;">🧭 <b>Autopilot Kapal</b> (Ke Spot Paling Worth It)</span>
-          </label>
-        </div>
-
-        <!-- Live Sonar & Navigasi Box -->
-        <div style="background: rgba(14, 165, 233, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 6px; padding: 6px 8px; margin-bottom: 10px; font-size: 11px;">
+        <!-- Stats Tangkapan & Profit Hari Ini -->
+        <div style="background: rgba(255, 255, 255, 0.05); border-radius: 6px; padding: 6px 8px; margin-bottom: 7px; font-size: 10.5px;">
           <div style="display: flex; justify-content: space-between; align-items: center;">
-            <span style="color: #38bdf8;">📡 Sonar Laut:</span>
-            <b id="ks-mancing-sonar-info" style="color: #4ade80;">Membaca Sonar...</b>
+            <span>Hari Ini: <b id="ks-mancing-count" style="color: #4ade80;">0 ekor</b></span>
+            <span id="ks-mancing-profit" style="color: #4ade80; font-weight: bold;">💰 Laba Hari Ini: +0.00 koin</span>
           </div>
-          <div id="ks-mancing-target-info" style="font-size: 10px; color: #cbd5e1; margin-top: 2px;">
+          <div id="ks-mancing-last" style="font-size: 10px; color: #94a3b8; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Terakhir: -</div>
+        </div>
+
+        <!-- Live Sonar & Target -->
+        <div style="background: rgba(14, 165, 233, 0.12); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 6px; padding: 5px 8px; margin-bottom: 7px; font-size: 10.5px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span style="color: #38bdf8;">📡 Sonar:</span>
+            <b id="ks-mancing-sonar-info" style="color: #4ade80;">Membaca...</b>
+          </div>
+          <div id="ks-mancing-target-info" style="font-size: 10px; color: #cbd5e1; margin-top: 1px;">
             🎯 Target: Membaca...
           </div>
         </div>
 
-        <!-- Pilihan Aksi Otomatisasi -->
-        <div style="display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; font-size: 11px; color: #cbd5e1;">
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+        <!-- Strategi Max Profit -->
+        <div style="background: rgba(168, 85, 247, 0.12); border: 1px solid rgba(168, 85, 247, 0.35); border-radius: 6px; padding: 6px 8px; margin-bottom: 7px; font-size: 10.5px;">
+          <div style="font-weight: bold; color: #c084fc; font-size: 10.5px; margin-bottom: 4px;">💡 Strategi Paling Cuan (Max Profit):</div>
+          <select id="ks-opt-strategi-umpan" style="width: 100%; margin-bottom: 5px; padding: 4px 6px; border-radius: 5px; border: 1px solid rgba(192, 132, 252, 0.45); background: rgba(15, 23, 42, 0.9); color: #f3e8ff; font-size: 10.5px; font-weight: bold; cursor: pointer;">
+            <option value="cumi">🦑 Langsung Cumi (Cepat · 1.7×)</option>
+            <option value="ternak-ikan">🐟 Ternak Umpan Ikan (Cacing ➔ 2.3×)</option>
+          </select>
+          <div style="display: flex; flex-direction: column; gap: 3px;">
+            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+              <input type="checkbox" id="ks-opt-auto-umpan" checked style="cursor: pointer;">
+              <span style="color: #f3e8ff;">🦑 Auto Beli Umpan (Cumi / Udang)</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+              <input type="checkbox" id="ks-opt-umpan-ikan" checked style="cursor: pointer;">
+              <span style="color: #86efac;">🐟 Umpan Ikan Kecil (2.3× Besar)</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+              <input type="checkbox" id="ks-opt-auto-upgrade" checked style="cursor: pointer;">
+              <span style="color: #f3e8ff;">🎣 Auto Upgrade (Joran &amp; Pendingin)</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+              <input type="checkbox" id="ks-opt-selective" checked style="cursor: pointer;">
+              <span style="color: #fde047;">💎 Selektif Ikan Mahal (Lepas &lt;1 koin)</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+              <input type="checkbox" id="ks-opt-jaring-lampu" checked style="cursor: pointer;">
+              <span style="color: #86efac;">🕸️ Auto Jaring Gratis &amp; Lampu Malam</span>
+            </label>
+            <label style="display: flex; align-items: center; gap: 5px; cursor: pointer;">
+              <input type="checkbox" id="ks-opt-auto-navigasi" checked style="cursor: pointer;">
+              <span style="color: #67e8f9;">🧭 Autopilot Kapal (Spot Paling Worth It)</span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Opsi Aksi & Proteksi (Grid 2 Kolom Kompak) -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px 6px; margin-bottom: 6px; font-size: 10.5px; color: #cbd5e1;">
+          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+            <input type="checkbox" id="ks-opt-natural" checked style="cursor: pointer;">
+            <span>🌿 Natural</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
+            <input type="checkbox" id="ks-opt-zeroloss" checked style="cursor: pointer;">
+            <span>🛡️ Zero-Loss</span>
+          </label>
+          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-celup" checked style="cursor: pointer;">
-            <span>⬇️ Auto Celup Kail (Laut Dalam)</span>
+            <span>⬇️ Auto Celup</span>
           </label>
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-sentak" checked style="cursor: pointer;">
-            <span>⚡ Auto Sentak Sambaran</span>
+            <span>⚡ Auto Sentak</span>
           </label>
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-gulung" checked style="cursor: pointer;">
-            <span>🔄 Auto Gulung (Smart Tension Control)</span>
+            <span>🔄 Auto Gulung</span>
           </label>
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-simpan" checked style="cursor: pointer;">
-            <span>🎒 Auto Simpan ke Tas Ikan</span>
+            <span>🎒 Auto Simpan</span>
           </label>
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-smart-profit" checked style="cursor: pointer;">
-            <span>🧠 Smart Profit (20 Jual Besar + 20 Tas)</span>
+            <span>🧠 Smart Profit</span>
           </label>
-          <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+          <label style="display: flex; align-items: center; gap: 4px; cursor: pointer;">
             <input type="checkbox" id="ks-opt-jual-penuh" checked style="cursor: pointer;">
-            <span>🪙 Auto Jual Tas Penuh / Buang Sampah</span>
+            <span>🪙 Jual/Sampah</span>
           </label>
         </div>
 
-        <div style="font-size: 10px; color: #64748b; text-align: center; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 6px;">
+        <div style="font-size: 9.5px; color: #64748b; text-align: center; border-top: 1px solid rgba(255,255,255,0.08); padding-top: 4px;">
           Tekan <b>Esc</b> kapan saja untuk membatalkan
         </div>
       </div>
@@ -1431,14 +1741,45 @@
       document.getElementById("ks-mancing-toggle").textContent = minimized ? "□" : "_";
     };
 
+    const btnMiniWin = document.getElementById("ks-mancing-mini-win");
+    if (btnMiniWin) {
+      btnMiniWin.onclick = () => {
+        const popupWin = window.open(
+          window.location.href,
+          "ks-mancing-mini",
+          "popup=yes,width=460,height=680,left=40,top=40"
+        );
+        if (!popupWin) {
+          updateStatusMsg("⚠️ Popup Diblokir", "Izinkan pop-up atau klik 'Mancing Mini Window' di icon ekstensi.", "#f59e0b");
+        }
+      };
+    }
+
     document.getElementById("ks-mancing-start-btn").onclick = () => {
+      if (!pancingProfile.loaded) {
+        if (!pancingProfile.loading) {
+          fetchPancingData(true);
+        }
+        return;
+      }
       toggleAutoMancing();
     };
 
     document.getElementById("ks-opt-natural").onchange = (e) => mancingConfig.modeNatural = e.target.checked;
     document.getElementById("ks-opt-zeroloss").onchange = (e) => mancingConfig.zeroLossGuard = e.target.checked;
     document.getElementById("ks-opt-auto-umpan").onchange = (e) => mancingConfig.autoUmpan = e.target.checked;
+    document.getElementById("ks-opt-strategi-umpan").onchange = (e) => {
+      mancingConfig.strategiUmpan = e.target.value;
+      mancingConfig.preferredUmpan = e.target.value === "ternak-ikan" ? "umpan-cacing" : "umpan-cumi";
+      updateMancingUI();
+    };
+    document.getElementById("ks-opt-umpan-ikan").onchange = (e) => mancingConfig.autoUmpanIkan = e.target.checked;
     document.getElementById("ks-opt-auto-upgrade").onchange = (e) => mancingConfig.autoUpgrade = e.target.checked;
+    document.getElementById("ks-opt-selective").onchange = (e) => mancingConfig.selectiveRelease = e.target.checked;
+    document.getElementById("ks-opt-jaring-lampu").onchange = (e) => {
+      mancingConfig.autoJaring = e.target.checked;
+      mancingConfig.autoLampu = e.target.checked;
+    };
     document.getElementById("ks-opt-auto-navigasi").onchange = (e) => mancingConfig.autoNavigasi = e.target.checked;
     document.getElementById("ks-opt-celup").onchange = (e) => mancingConfig.autoCelup = e.target.checked;
     document.getElementById("ks-opt-sentak").onchange = (e) => mancingConfig.autoSentak = e.target.checked;
@@ -1467,23 +1808,40 @@
     const statTasEl = document.getElementById("ks-stat-tas");
     const statJualEl = document.getElementById("ks-stat-jual");
     const statSaldoEl = document.getElementById("ks-stat-saldo");
+    const statKapalEl = document.getElementById("ks-stat-kapal");
+    const statFiturKapalEl = document.getElementById("ks-stat-fitur-kapal");
+    const statJoranEl = document.getElementById("ks-stat-joran");
 
     if (pancingProfile.loaded) {
       if (statHariIniEl) {
-        statHariIniEl.textContent = `${pancingProfile.lempar} celup · ${pancingProfile.dapat} dapat`;
+        statHariIniEl.textContent = `${pancingProfile.lempar}`;
       }
       if (statTasEl) {
-        const sisaTas = Math.max(0, pancingProfile.tasMaks - pancingProfile.tasIkan);
-        statTasEl.textContent = `${pancingProfile.tasIkan}/${pancingProfile.tasMaks} ekor (${sisaTas} slot)`;
+        statTasEl.textContent = `${pancingProfile.tasIkan}/${pancingProfile.tasMaks}`;
         statTasEl.style.color = pancingProfile.tasIkan >= pancingProfile.tasMaks ? "#ef4444" : "#4ade80";
       }
       if (statJualEl) {
         const sisaJual = Math.max(0, pancingProfile.jualMaks - pancingProfile.jualHariIni);
-        statJualEl.textContent = `${pancingProfile.jualHariIni}/${pancingProfile.jualMaks} (${sisaJual} sisa)`;
+        statJualEl.textContent = `${pancingProfile.jualHariIni}/${pancingProfile.jualMaks}`;
         statJualEl.style.color = sisaJual === 0 ? "#f59e0b" : "#fbbf24";
       }
       if (statSaldoEl) {
         statSaldoEl.textContent = `${pancingProfile.saldoKoin.toFixed(2)} koin`;
+      }
+      if (statKapalEl) {
+        const jarakText = pancingProfile.lepasM > 0 ? `+${pancingProfile.lepasM}m lepas` : "Teluk (0m lepas)";
+        statKapalEl.textContent = `${pancingProfile.kapalNama} · ${jarakText}`;
+      }
+      if (statFiturKapalEl) {
+        const jaringText = pancingProfile.hasJaring
+          ? `Jaring ${pancingProfile.jaringSisa}/${pancingProfile.jaringHarian}`
+          : "Tanpa Jaring";
+        const lampuText = pancingProfile.hasLampu ? "Lampu Ada" : "Tanpa Lampu";
+        statFiturKapalEl.textContent = `${jaringText} · ${lampuText}`;
+        statFiturKapalEl.style.color = (pancingProfile.hasJaring || pancingProfile.hasLampu) ? "#4ade80" : "#94a3b8";
+      }
+      if (statJoranEl) {
+        statJoranEl.textContent = pancingProfile.joranNama || pancingProfile.joranId;
       }
     }
 
@@ -1491,16 +1849,60 @@
       const sonar = getSonarData();
       const target = getTargetDepth();
       sonarInfoEl.textContent = sonar.depth > 0 ? `${sonar.depth}m (${sonar.crowd})` : "-";
-      targetInfoEl.textContent = `🎯 Target: ≥${target.minDepth}m (${target.targetFish})`;
+      targetInfoEl.textContent = `🎯 Target (${pancingProfile.joranNama}): ≥${target.minDepth}m (${target.targetFish})`;
+    }
+
+    if (hud) {
+      const featureInputs = hud.querySelectorAll('input[type="checkbox"], select');
+      featureInputs.forEach((input) => {
+        const noBoatSupport =
+          input.id === "ks-opt-jaring-lampu" &&
+          pancingProfile.loaded &&
+          !pancingProfile.hasJaring &&
+          !pancingProfile.hasLampu;
+        const locked = !pancingProfile.loaded || noBoatSupport;
+        input.disabled = locked;
+        if (noBoatSupport) input.checked = false;
+        if (input.parentElement) {
+          input.parentElement.style.opacity = locked ? "0.55" : "1";
+          input.parentElement.style.cursor = locked ? "not-allowed" : "pointer";
+        }
+      });
     }
 
     if (btn) {
-      if (mancingConfig.autoMancing) {
+      if (!pancingProfile.loaded) {
+        if (pancingProfile.loading) {
+          btn.disabled = true;
+          btn.textContent = "⏳ Memuat Status Mancing...";
+          btn.style.background = "#475569";
+          btn.style.boxShadow = "none";
+          btn.style.cursor = "not-allowed";
+          updateStatusMsg("🔄 Mengambil Status...", "Membaca data /api/pancing sebelum fitur aktif...", "#38bdf8");
+        } else if (pancingProfile.loadError) {
+          btn.disabled = false;
+          btn.textContent = "🔄 Muat Ulang Status Mancing";
+          btn.style.background = "#d97706";
+          btn.style.boxShadow = "0 4px 12px rgba(217, 119, 6, 0.35)";
+          btn.style.cursor = "pointer";
+          updateStatusMsg("⚠️ Gagal Memuat Status", pancingProfile.loadError, "#f59e0b");
+        } else {
+          btn.disabled = true;
+          btn.textContent = "⏳ Menunggu Status...";
+          btn.style.background = "#475569";
+          btn.style.boxShadow = "none";
+          btn.style.cursor = "not-allowed";
+        }
+      } else if (mancingConfig.autoMancing) {
+        btn.disabled = false;
+        btn.style.cursor = "pointer";
         btn.textContent = "⏹ STOP Auto Mancing";
         btn.style.background = "#ef4444";
         btn.style.boxShadow = "0 4px 12px rgba(239, 68, 68, 0.45)";
         if (hud) hud.style.boxShadow = "0 8px 32px rgba(0, 0, 0, 0.55), 0 0 24px rgba(34, 197, 94, 0.45)";
       } else {
+        btn.disabled = false;
+        btn.style.cursor = "pointer";
         btn.textContent = "▶️ Mulai Auto Mancing Natural";
         btn.style.background = "linear-gradient(90deg, #16a34a, #22c55e)";
         btn.style.boxShadow = "0 4px 12px rgba(22, 163, 74, 0.35)";
@@ -1508,20 +1910,22 @@
         if (stopStatusOverride) {
           updateStatusMsg(stopStatusOverride.title, stopStatusOverride.detail, stopStatusOverride.color);
         } else if (statusEl) {
-          statusEl.textContent = "⚪ Dihentikan";
-          statusEl.style.color = "#94a3b8";
+          updateStatusMsg("⚪ Siap Memancing", "Status terhubung. Tekan tombol Mulai untuk otomatisasi.", "#38bdf8");
         }
       }
     }
 
-    if (countEl) countEl.textContent = `${mancingStats.catches} ekor`;
+    const todayCatches = pancingProfile.loaded
+      ? Math.max(pancingProfile.dapat || 0, mancingStats.catches)
+      : mancingStats.catches;
+    if (countEl) countEl.textContent = `${todayCatches} ekor`;
     if (lastEl && mancingStats.lastFish) lastEl.textContent = `Terakhir: ${mancingStats.lastFish}`;
 
     const profitEl = document.getElementById("ks-mancing-profit");
     if (profitEl) {
       const p = mancingStats.totalProfit;
       const sign = p >= 0 ? "+" : "";
-      profitEl.textContent = `💰 Estimasi Laba Sesi: ${sign}${p.toFixed(2)} koin`;
+      profitEl.textContent = `💰 Laba Hari Ini: ${sign}${p.toFixed(2)} koin`;
       profitEl.style.color = p >= 0 ? "#4ade80" : "#f87171";
     }
   }
@@ -1536,6 +1940,64 @@
     if (detailEl && detail) {
       detailEl.textContent = detail;
     }
+  }
+
+  function isNightHourFromChip() {
+    const jamEl = document.querySelector('[data-testid="pancing-jam"]');
+    if (!jamEl) return false;
+    const text = (jamEl.textContent || "").toLowerCase();
+    if (text.includes("malam")) return true;
+    const m = text.match(/(\d{1,2})\.(\d{2})/);
+    if (!m) return false;
+    const mins = parseInt(m[1], 10) * 60 + parseInt(m[2], 10);
+    // Lampu kapal efektif pukul 18.30 (1110) sampai 04.30 (270)
+    return mins >= 1110 || mins < 270;
+  }
+
+  function checkBoatProfitTools() {
+    const now = performance.now();
+
+    // 1. Auto-Jaring: tangkap umpan gratis bila kapal punya jaring & tidak cooldown
+    if (mancingConfig.autoJaring && pancingProfile.hasJaring && now - lastJaringTime > 4000) {
+      const btnJaring = document.querySelector('[data-testid="pancing-jaring"]');
+      if (btnJaring && !btnJaring.disabled && !btnJaring.getAttribute("aria-busy")) {
+        lastJaringTime = now;
+        mancingStats.jaringUsed++;
+        updateStatusMsg("🕸️ Tebar Jaring!", "Menangkap umpan gratis harian...", "#22c55e");
+        naturalClick(btnJaring);
+        return true;
+      }
+    }
+
+    // 2. Auto-Lampu Malam: nyalakan lampu kapal saat malam jika kapal punya lampu
+    if (mancingConfig.autoLampu && pancingProfile.hasLampu && now - lastLampuCheckTime > 5000) {
+      lastLampuCheckTime = now;
+      const btnLampu = document.querySelector('[data-testid="pancing-lampu"]');
+      if (btnLampu) {
+        const isNight = isNightHourFromChip();
+        const isPressed = btnLampu.getAttribute("aria-pressed") === "true";
+        if (isNight && !isPressed) {
+          naturalClick(btnLampu);
+          return true;
+        }
+      }
+    }
+
+    // 3. Guard 1-Joran Hemat Umpan: 2+ joran menghabiskan 2x-3x umpan per celup
+    if (mancingConfig.singleRodProfit && mancingConfig.smartProfit && now - lastKailCheckTime > 2000) {
+      const btnKail = document.querySelector('[data-testid="pancing-kail"]');
+      if (btnKail) {
+        const bEl = btnKail.querySelector("b");
+        const activeRods = bEl ? parseInt(bEl.textContent.trim(), 10) : 1;
+        if (!isNaN(activeRods) && activeRods > 1) {
+          lastKailCheckTime = now;
+          naturalClick(btnKail);
+          return true;
+        }
+      }
+    }
+
+    return false;
   }
 
   // Loop Eksekusi Auto-Mancing (40ms)
@@ -1639,18 +2101,25 @@
         return;
       }
 
-      // 4b-2. Smart Profit Guard: Stop otomatis saat kuota 20 Jual + 20 Tas (40 ikan) penuh agar tidak rugi umpan
+      // 4b-2. Smart Profit Guard: Stop otomatis saat kuota Jual + Tas penuh agar tidak rugi umpan
       if (mancingConfig.smartProfit && pancingProfile.loaded) {
         const sisaJual = Math.max(0, pancingProfile.jualMaks - pancingProfile.jualHariIni);
         const sisaTas = Math.max(0, pancingProfile.tasMaks - pancingProfile.tasIkan);
+        const totalSlot = pancingProfile.jualMaks + pancingProfile.tasMaks;
         if (sisaJual === 0 && sisaTas === 0) {
           toggleAutoMancing(false, {
-            title: "🏆 Target 40/40 Tercapai!",
-            detail: "20/20 terjual & 20/20 tas penuh. Berhenti otomatis agar hemat umpan.",
+            title: `🏆 Target ${totalSlot}/${totalSlot} Tercapai!`,
+            detail: `${pancingProfile.jualMaks}/${pancingProfile.jualMaks} terjual & ${pancingProfile.tasMaks}/${pancingProfile.tasMaks} tas penuh. Berhenti otomatis agar hemat umpan.`,
             color: "#22c55e"
           });
           return;
         }
+      }
+
+      // 4b-3. Alat Profit Kapal (Jaring Umpan Gratis, Lampu Malam, 1-Joran Hemat)
+      if (checkBoatProfitTools()) {
+        stopAutopilot();
+        return;
       }
 
       // 4c. Cek stok umpan aktif (harus > 0) dan cek pesan peringatan habis
@@ -1723,9 +2192,16 @@
         stopAutopilot();
       }
 
-      updateStatusMsg("⬇️ Menurunkan Kail (Celup)...", "Jeda alami mencelupkan kail ke laut dalam...", "#38bdf8");
+      const useLemparForTernak =
+        mancingConfig.strategiUmpan === "ternak-ikan" &&
+        getEquippedUmpanType() === "umpan-cacing";
+      updateStatusMsg(
+        useLemparForTernak ? "🎣 Lempar Cacing (Cari Ikan Kecil)..." : "⬇️ Menurunkan Kail (Celup)...",
+        useLemparForTernak ? "Mencari ikan kecil untuk umpan-ikan 2.3×..." : "Jeda alami mencelupkan kail ke laut dalam...",
+        "#38bdf8"
+      );
       if (mancingConfig.autoCelup) {
-        scheduleNaturalCelup();
+        scheduleNaturalCelup(useLemparForTernak);
       }
       return;
     }
