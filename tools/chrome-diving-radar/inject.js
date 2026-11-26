@@ -502,8 +502,85 @@
     active: false,
     target: null,
     autoOpen: true,
-    autoChain: true
+    autoChain: true,
+    phase: "swim",      // swim | open
+    opener: null,       // diving-open.js: mesin buka kerang untuk target aktif
+    lockedSince: 0,
+    lastSnapAt: 0,
+    guardUntil: 0       // penjaga hiu aktif sampai waktu ini (performance.now) walau auto-pilot jeda
   };
+
+  // ---- Log diagnostik ----
+  // Buffer cincin 400 entri. Salin lewat tombol "Salin Log" di panel radar, atau
+  // panggil window.__KS_DIVING_DUMP() di konsol. Snapshot dicatat saat berhenti, nyangkut,
+  // tiba, klik buka, dan tiap 5 detik selama auto-pilot aktif.
+  const DLOG = { buf: [], max: 400 };
+
+  function r1(n) { return typeof n === "number" && isFinite(n) ? Math.round(n * 10) / 10 : n; }
+
+  function dlog(type, data) {
+    DLOG.buf.push(Object.assign({ t: Math.round(performance.now()), at: new Date().toISOString().slice(11, 23), type }, data || {}));
+    if (DLOG.buf.length > DLOG.max) DLOG.buf.shift();
+  }
+
+  function snapshot(sc, target) {
+    try {
+      const p = sc.p;
+      const OPEN = window.__KS_DIVING_OPEN;
+      const item = target && Array.isArray(sc.kerang) ? sc.kerang[target.i] : null;
+      const rocks = sc.dunia && sc.dunia.batuBesar;
+      let nearRocks = [];
+      if (Array.isArray(rocks)) {
+        nearRocks = rocks
+          .filter(r => r && typeof r.x === "number")
+          .map(r => ({ gap: Math.hypot(p.x - r.x, p.y - r.y, p.z - r.z) - r.r, x: r.x, y: r.y, z: r.z, r: r.r }))
+          .sort((a, b) => a.gap - b.gap)
+          .slice(0, 2)
+          .map(r => ({ gap: r1(r.gap), x: r1(r.x), y: r1(r.y), z: r1(r.z), r: r1(r.r) }));
+      }
+      const nv = navigator;
+      return {
+        pos: { x: r1(p.x), y: r1(p.y), z: r1(p.z) },
+        yaw: r1(sc.yaw), pitch: r1(sc.pitch),
+        speed: sc.v ? { h: r1(Math.hypot(sc.v.x, sc.v.z)), v: r1(sc.v.y) } : null,
+        floor: sc.dunia && typeof sc.dunia.tinggi === "function" ? r1(sc.dunia.tinggi(p.x, p.z)) : null,
+        flags: { kunci: !!sc.kunci, tertangkap: !!sc.tertangkap, permukaan: !!sc.permukaan, membuka: !!sc.membuka },
+        page: { vis: document.visibilityState, focus: document.hasFocus() },
+        target: target ? {
+          i: target.i, x: r1(target.x), z: r1(target.z), d: r1(target.d),
+          itemY: item ? r1(item.y) : null,
+          dibuka: item ? !!item.dibuka : null,
+          gameDist: OPEN && item ? r1(OPEN.gameDistance(p, target, item)) : null,
+          kerangDekat: typeof sc.kerangDekat === "function" ? sc.kerangDekat() : null
+        } : null,
+        nav: nv ? {
+          stuck: nv.state.stuckLevel, relax: nv.state.relax,
+          best: r1(nv.state.bestDist), mode: lastAvoidMode
+        } : null,
+        phase: autopilot.phase,
+        rocks: nearRocks
+      };
+    } catch (err) {
+      return { err: String(err) };
+    }
+  }
+
+  function dumpText() {
+    const head = `KS Diving log | ${new Date().toISOString()} | ext 2.4.0 | ${location.href}\n`;
+    return head + DLOG.buf.map(e => JSON.stringify(e)).join("\n");
+  }
+
+  window.__KS_DIVING_DUMP = dumpText;
+  window.addEventListener("ks_diving_dump", () => {
+    window.dispatchEvent(new CustomEvent("ks_diving_dump_result", { detail: { text: dumpText() } }));
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    dlog("visibility", { state: document.visibilityState, active: autopilot.active });
+    console.log("[DivingAutopilot] Tab", document.visibilityState, autopilot.active ? "(auto-pilot aktif)" : "");
+  });
+  window.addEventListener("blur", () => dlog("blur", { active: autopilot.active }));
+  window.addEventListener("focus", () => dlog("focus", { active: autopilot.active }));
 
   // Navigator anti-nyangkut (diving-avoid.js): hindari batu, waypoint bila kerang
   // terkurung batu, pemulihan nyangkut, dan watchdog kemajuan. Dimuat terpisah,
@@ -548,8 +625,130 @@
 
   function reportAvoid(mode) {
     if (lastAvoidMode === mode) return;
+    dlog("mode", { from: lastAvoidMode, to: mode });
     lastAvoidMode = mode;
     window.dispatchEvent(new CustomEvent("ks_autopilot_avoid", { detail: { mode } }));
+  }
+
+  // Kabur dari hiu (diving-shark.js). Hiu memburu hanya di kedalaman > 6 m, jadi jalan aman
+  // satu-satunya adalah naik. Navigator kedua dipakai hanya untuk menghindari batu saat kabur,
+  // supaya status nyangkut/kemajuan navigator utama tidak terganggu.
+  let shark = null;
+  let fleeNav = null;
+  let lastSharkMode = "clear";
+
+  function getShark() {
+    if (!shark && window.__KS_DIVING_SHARK) shark = window.__KS_DIVING_SHARK.createShark();
+    return shark;
+  }
+
+  function getFleeNav() {
+    if (!fleeNav && window.__KS_DIVING_AVOID) fleeNav = window.__KS_DIVING_AVOID.createNavigator();
+    return fleeNav;
+  }
+
+  function reportShark(mode, res) {
+    if (lastSharkMode === mode) return;
+    lastSharkMode = mode;
+    window.dispatchEvent(new CustomEvent("ks_autopilot_shark", {
+      detail: { mode, dist: res && res.dist, depth: res && res.depth }
+    }));
+  }
+
+  // Baca hiu dari scene game (hiuS, sama dengan yang dipakai game) dan indikator merah di HUD game.
+  function readShark(sc) {
+    let hiu = null;
+    const h = sc.hiuS;
+    if (h && h.aktif && h.pergi <= 0 && h.p && typeof h.p.x === "number") {
+      hiu = {
+        p: { x: h.p.x, y: h.p.y, z: h.p.z },
+        awas: !!h.awas, memburu: !!h.memburu, sergap: h.sergap > 0
+      };
+    } else if (!h && typeof sc.keadaan === "function") {
+      // Cadangan bila hiuS tidak ada: keadaan().hiu hanya punya jarak dan sudut relatif kamera.
+      try {
+        const k = sc.keadaan();
+        if (k && k.hiu && typeof k.hiu.jarak === "number") {
+          const a = (typeof sc.yaw === "number" ? sc.yaw : 0) + (k.hiu.sudut || 0);
+          hiu = {
+            p: { x: sc.p.x + Math.sin(a) * k.hiu.jarak, y: sc.p.y, z: sc.p.z + Math.cos(a) * k.hiu.jarak },
+            awas: !!k.hiu.awas, memburu: !!k.hiu.memburu, sergap: false
+          };
+        }
+      } catch (e) {}
+    }
+    let domDanger = false;
+    try {
+      const el = document.querySelector('[data-testid="diving-hiu"][data-bahaya]');
+      domDanger = !!el && !el.hasAttribute("data-aman");
+    } catch (e) {}
+    return { hiu, domDanger };
+  }
+
+  // Satu tick kabur/sembunyi. Hasil true bila tick ini sudah diurus (auto-pilot tidak lanjut).
+  function sharkTick(sc, now) {
+    const sh = getShark();
+    if (!sh) return false;
+    const { hiu, domDanger } = readShark(sc);
+    const res = sh.assess({ now, pos: { x: sc.p.x, y: sc.p.y, z: sc.p.z }, hiu, domDanger });
+
+    if (res.event) {
+      const snapS = snapshot(sc, autopilot.target);
+      dlog("shark", { event: res.event, mode: res.mode, dist: r1(res.dist), depth: r1(res.depth), domDanger, hiu: hiu ? { memburu: hiu.memburu, awas: hiu.awas, x: r1(hiu.p.x), y: r1(hiu.p.y), z: r1(hiu.p.z) } : null, snap: snapS });
+      console.warn("[DivingAutopilot] Hiu:", res.event, "mode", res.mode, "jarak", r1(res.dist), "kedalaman", r1(res.depth));
+      if (res.event === "flee_start") {
+        const fn = getFleeNav();
+        if (fn) fn.reset();
+        // Jangan berhenti membuka kerang di tengah ancaman: batalkan, dekati lagi setelah aman.
+        if (autopilot.phase === "open") {
+          dlog("open_abort_shark", { target: autopilot.target && autopilot.target.i });
+          autopilot.phase = "swim";
+          autopilot.opener = null;
+        }
+      }
+    }
+    reportShark(res.mode, res);
+    if (res.mode === "clear") return false;
+
+    const nv = getNavigator();
+    if (nv) nv.hold(now); // diam atau menyimpang karena hiu bukan nyangkut
+    const cmd = sh.steer(res);
+
+    if (res.mode === "flee") {
+      let yaw = res.awayYaw !== null ? res.awayYaw : sc.yaw;
+      let gx = 0;
+      let gy = res.awayYaw !== null ? 1 : 0;
+      const fn = res.awayYaw !== null ? getFleeNav() : null;
+      if (fn) {
+        // Titik tujuan 25 m ke arah menjauh dan dangkal; navigator hanya mengatur belokan menghindari batu.
+        const p = sc.p;
+        const out = fn.step({
+          now,
+          pos: { x: p.x, y: p.y, z: p.z },
+          target: { i: -1, x: p.x + Math.sin(yaw) * 25, z: p.z + Math.cos(yaw) * 25, d: 3 },
+          rocks: sc.dunia && sc.dunia.batuBesar,
+          pitch: sc.pitch,
+          surfaceY: sc.pen && typeof sc.pen.apung === "number" ? sc.pen.apung : undefined,
+          floorFn: sc.dunia && typeof sc.dunia.tinggi === "function" ? (x, z) => sc.dunia.tinggi(x, z) : undefined
+        });
+        if (!out.stop) {
+          yaw = out.yaw;
+          gx = out.gerak.x;
+          gy = out.gerak.y;
+        }
+      }
+      if (typeof yaw === "number") {
+        sc.yaw = yaw;
+        sc.hadap = yaw;
+      }
+      sc.setGerak(gx, gy);
+      sc.setTegak(cmd ? cmd.tegak : 1);
+    } else {
+      // Bersembunyi di zona aman: diam, jaga kedalaman 3-5 m.
+      sc.setGerak(0, 0);
+      sc.setTegak(cmd ? cmd.tegak : 0);
+    }
+    return true;
   }
 
   window.addEventListener("ks_autopilot_command", (e) => {
@@ -559,8 +758,15 @@
       autopilot.target = cmd.target;
       autopilot.autoOpen = cmd.autoOpen !== false;
       autopilot.autoChain = cmd.autoChain !== false;
+      autopilot.phase = "swim";
+      autopilot.opener = null;
+      autopilot.lockedSince = 0;
+      autopilot.lastSnapAt = 0;
       resetNav();
+      autopilot.guardUntil = 0;
       console.log("[DivingAutopilot] Start towards kerang #", cmd.target.i);
+      const sc0 = window.__KS_SCENE_INSTANCE;
+      dlog("start", { target: cmd.target.i, autoOpen: autopilot.autoOpen, autoChain: autopilot.autoChain, snap: sc0 && sc0.p ? snapshot(sc0, cmd.target) : null });
       window.dispatchEvent(new CustomEvent("ks_autopilot_status", {
         detail: { active: true, target: cmd.target }
       }));
@@ -569,32 +775,49 @@
     }
   });
 
-  function stopAutopilot(reason = "stopped") {
+  function stopAutopilot(reason = "stopped", extra) {
     if (!autopilot.active) return;
     autopilot.active = false;
     const lastTarget = autopilot.target;
     autopilot.target = null;
+    autopilot.phase = "swim";
+    autopilot.opener = null;
+    // Penjaga hiu tetap menyala selama jeda rantai, kecuali dihentikan pengguna atau dikunci game.
+    const userStop = reason === "manual_stop" || reason === "user_input" || reason === "locked";
+    autopilot.guardUntil = userStop ? 0 : performance.now() + 15000;
+    if (userStop && shark) shark.reset();
 
-    if (window.__KS_SCENE_INSTANCE) {
+    const sc = window.__KS_SCENE_INSTANCE;
+    const snap = sc && sc.p ? snapshot(sc, lastTarget) : null;
+    if (sc) {
       try {
-        window.__KS_SCENE_INSTANCE.setGerak(0, 0);
-        window.__KS_SCENE_INSTANCE.setTegak(0);
+        sc.setGerak(0, 0);
+        sc.setTegak(0);
       } catch (e) {}
     }
 
     reportAvoid("none");
-    console.log("[DivingAutopilot] Stopped:", reason);
+    reportShark("clear");
+    dlog("stop", { reason, extra, snap });
+    if (reason === "arrived") {
+      console.log("[DivingAutopilot] Stopped:", reason);
+    } else {
+      // Alasan selain tiba selalu disertai snapshot supaya sebabnya bisa dibaca dari konsol.
+      console.warn("[DivingAutopilot] Stopped:", reason, extra || "", snap ? JSON.stringify(snap) : "");
+    }
     window.dispatchEvent(new CustomEvent("ks_autopilot_status", {
       detail: { active: false, reason, target: lastTarget }
     }));
   }
 
   // Keyboard cancel. Pintasan dengan Cmd/Ctrl/Alt (mis. Cmd+Opt+Panah untuk pindah tab)
-  // bukan kemudi manual, jadi tidak membatalkan auto-pilot.
+  // bukan kemudi manual, jadi tidak membatalkan auto-pilot. Event buatan skrip
+  // (isTrusted=false) juga diabaikan: hanya tombol fisik yang membatalkan.
   window.addEventListener("keydown", (e) => {
-    if (e.metaKey || e.ctrlKey || e.altKey) return;
-    if (autopilot.active && ["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) {
-      stopAutopilot("user_input");
+    if (!autopilot.active) return;
+    if (e.metaKey || e.ctrlKey || e.altKey || !e.isTrusted) return;
+    if (["KeyW", "KeyA", "KeyS", "KeyD", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Space"].includes(e.code)) {
+      stopAutopilot("user_input", e.code);
     }
   });
 
@@ -610,60 +833,179 @@
     } catch (err) {}
   });
 
-  function triggerOpenShell(target) {
-    console.log("[DivingAutopilot] Arrived at kerang #", target.i, "- opening...");
+  // Fase buka kerang. Pemain diam sampai game sendiri menandai kerang terbuka (dibuka=true),
+  // klik tombol hanya bila tombol game benar-benar ada, dan kegagalan (server menolak,
+  // klik diabaikan, menjauh) dicoba ulang dengan jeda. Hasil dilaporkan jujur:
+  // sukses -> ks_shell_opened_auto; gagal -> stopAutopilot("open_failed"|"unreachable").
+  function beginOpen(sc, target, now) {
+    const OPEN = window.__KS_DIVING_OPEN;
+    autopilot.phase = "open";
+    if (!autopilot.opener) {
+      autopilot.opener = OPEN.createOpener();
+      autopilot.opener.begin(now, target.i);
+      console.log("[DivingAutopilot] Arrived at kerang #", target.i, "- opening...");
+      dlog("arrive", { target: target.i, snap: snapshot(sc, target) });
+    } else {
+      autopilot.opener.resume(now);
+      dlog("arrive_again", { target: target.i });
+    }
+    try {
+      sc.setGerak(0, 0);
+      sc.setTegak(0);
+    } catch (e) {}
+  }
 
-    if (window.__KS_SCENE_INSTANCE) {
-      try {
-        window.__KS_SCENE_INSTANCE.setGerak(0, 0);
-        window.__KS_SCENE_INSTANCE.setTegak(0);
-      } catch (e) {}
+  function openTick(sc, target, item, gd, now) {
+    const OPEN = window.__KS_DIVING_OPEN;
+    const nv = getNavigator();
+    if (nv) nv.hold(now);
+    try {
+      sc.setGerak(0, 0);
+      sc.setTegak(0);
+    } catch (e) {}
+
+    const btn = document.querySelector('[data-testid="diving-kerang"]');
+    const busy = !!(btn && btn.getAttribute("aria-busy") === "true");
+    const act = autopilot.opener.tick(now, {
+      dist: gd,
+      busy,
+      opened: !!(item && item.dibuka),
+      buttonReady: !!(btn && !btn.disabled && !busy)
+    });
+
+    if (act.type === "wait") return;
+
+    if (act.type === "click") {
+      dlog("click", { target: target.i, attempt: act.attempt, snap: snapshot(sc, target) });
+      console.log("[DivingAutopilot] Klik buka kerang #", target.i, "percobaan", act.attempt);
+      btn.click();
+      return;
     }
 
-    setTimeout(() => {
-      const btn = document.querySelector('[data-testid="diving-kerang"]');
-      if (btn && !btn.disabled) {
-        btn.click();
-      } else if (window.__KS_SCENE_INSTANCE && typeof window.__KS_SCENE_INSTANCE.bukaKerang === "function") {
-        window.__KS_SCENE_INSTANCE.bukaKerang(target.i);
-      }
+    if (act.type === "reapproach") {
+      autopilot.phase = "swim";
+      dlog("reapproach", { target: target.i, reason: act.reason, snap: snapshot(sc, target) });
+      console.warn("[DivingAutopilot] Dekati kerang lagi:", act.reason);
+      return;
+    }
 
+    if (act.type === "success") {
+      const reached = autopilot.target;
+      const chain = autopilot.autoChain;
+      dlog("opened", { target: target.i, attempts: act.attempts });
+      stopAutopilot("arrived");
       window.dispatchEvent(new CustomEvent("ks_shell_opened_auto", {
-        detail: {
-          kerang: target,
-          autoChain: autopilot.autoChain
-        }
+        detail: { kerang: reached, autoChain: chain, ok: true }
       }));
-    }, (getHuman() ? getHuman().arrivalDelayMs() : 300));
+      return;
+    }
+
+    if (act.type === "fail") {
+      stopAutopilot(act.reason, act.detail);
+    }
   }
 
   // Loop Navigasi Auto-Pilot (50ms)
   setInterval(() => {
+    // Jeda antar kerang (rantai): auto-pilot belum aktif lagi, tapi hiu tetap harus dihindari.
+    if (!autopilot.active && autopilot.guardUntil > 0) {
+      const sg = window.__KS_SCENE_INSTANCE;
+      const nowG = performance.now();
+      if (nowG > autopilot.guardUntil) {
+        autopilot.guardUntil = 0;
+        if (shark) shark.reset();
+        reportShark("clear");
+      } else if (sg && sg.p && !document.hidden && !sg.kunci && !sg.tertangkap) {
+        try { sharkTick(sg, nowG); } catch (e) { console.warn("[DivingAutopilot] Error di penjaga hiu:", e); }
+      }
+      return;
+    }
     if (!autopilot.active || !autopilot.target || !window.__KS_SCENE_INSTANCE) return;
 
     try {
       const sc = window.__KS_SCENE_INSTANCE;
       if (!sc.p) return;
 
+      const now = performance.now();
+      const OPEN = window.__KS_DIVING_OPEN;
+      const target0 = autopilot.target;
+      const item = Array.isArray(sc.kerang) ? sc.kerang[target0.i] : null;
+      // Target navigator disetel agar jarak 3D-nya sama dengan jarak game (kerang.y + 0.3).
+      // Tanpa ini "tiba" kita bisa meleset sampai 0.65 m dari jangkauan tombol buka (3.2 m).
+      const target = OPEN && item ? OPEN.toNavTarget(target0, item) : target0;
+
       const px = sc.p.x;
       const pz = sc.p.z;
       const py = sc.p.y;
       const pd = Math.max(0, -py - 0.35);
 
-      const target = autopilot.target;
       const dx = target.x - px;
       const dz = target.z - pz;
       const dd = target.d - pd;
       const distXZ = Math.hypot(dx, dz);
       const dist3D = Math.hypot(distXZ, dd);
+      const gd = OPEN && item ? OPEN.gameDistance(sc.p, target0, item) : dist3D;
 
-      // Jangkauan buka kerang aman: <= 2.8 meter
-      if (dist3D <= 2.8) {
-        const reachedTarget = target;
+      // Log berkala (hanya ke buffer) untuk membaca perjalanan setelah kejadian.
+      if (now - autopilot.lastSnapAt > 5000) {
+        autopilot.lastSnapAt = now;
+        dlog("tick", { snap: snapshot(sc, target0) });
+      }
+
+      const nvEarly = getNavigator();
+
+      // Kerang sudah terbuka di game (mis. dibuka manual): selesai tanpa mengklik lagi.
+      if (item && item.dibuka && autopilot.phase === "swim") {
+        const reached = autopilot.target;
+        const chain = autopilot.autoChain;
+        dlog("already_open", { target: reached.i });
         stopAutopilot("arrived");
+        window.dispatchEvent(new CustomEvent("ks_shell_opened_auto", {
+          detail: { kerang: reached, autoChain: chain, ok: true }
+        }));
+        return;
+      }
 
-        if (autopilot.autoOpen) {
-          triggerOpenShell(reachedTarget);
+      // Input dikunci game (tertangkap hiu, sesi selesai): karakter memang tidak bergerak,
+      // bukan nyangkut. Tahan pengukuran; berhenti hanya bila terkunci lama.
+      if (sc.kunci || sc.tertangkap) {
+        if (nvEarly) nvEarly.hold(now);
+        if (!autopilot.lockedSince) {
+          autopilot.lockedSince = now;
+          dlog("locked", { kunci: !!sc.kunci, tertangkap: !!sc.tertangkap });
+          console.warn("[DivingAutopilot] Game mengunci kontrol", sc.kunci ? "(kunci)" : "(tertangkap)");
+        } else if (now - autopilot.lockedSince > 20000) {
+          stopAutopilot("locked", sc.tertangkap ? "tertangkap" : "kunci");
+        }
+        return;
+      }
+      if (autopilot.lockedSince) {
+        dlog("unlocked", { after: Math.round(now - autopilot.lockedSince) });
+        autopilot.lockedSince = 0;
+      }
+
+      // Tab tersembunyi: game berhenti menggambar dan menggerakkan karakter. Posisi diam
+      // saat itu bukan nyangkut, jadi pengukuran ditahan dan dilanjut saat tab kembali.
+      if (document.hidden) {
+        if (nvEarly) nvEarly.hold(now);
+        return;
+      }
+
+      // Hiu: prioritas di atas semua (navigasi, buka kerang). Naik dan menjauh sampai aman.
+      if (sharkTick(sc, now)) return;
+
+      if (autopilot.phase === "open" && autopilot.opener) {
+        openTick(sc, target0, item, gd, now);
+        return;
+      }
+
+      // Tiba: jarak game <= 2.7 m (jangkauan tombol buka 3.2 m, margin 0.5 m).
+      const arriveDist = OPEN ? OPEN.CFG.arriveDist : 2.8;
+      if (gd <= arriveDist) {
+        if (autopilot.autoOpen && OPEN) {
+          beginOpen(sc, target0, now);
+        } else {
+          stopAutopilot("arrived");
         }
         return;
       }
@@ -706,12 +1048,14 @@
       });
 
       if (out.stop) {
-        console.warn("[DivingAutopilot] Berhenti:", out.stop);
-        stopAutopilot(out.stop);
+        // stopAutopilot mencatat alasan beserta snapshot ke konsol dan buffer log.
+        stopAutopilot(out.stop, "relax=" + out.relax);
         return;
       }
       if (out.mode === "recover" && lastAvoidMode !== "recover") {
-        console.warn("[DivingAutopilot] Stuck level", nv.state.stuckLevel, "- recovering");
+        const snapS = snapshot(sc, target0);
+        dlog("stuck", { level: nv.state.stuckLevel, snap: snapS });
+        console.warn("[DivingAutopilot] Stuck level", nv.state.stuckLevel, "- recovering", JSON.stringify(snapS));
       }
 
       reportAvoid(out.mode);
@@ -748,8 +1092,7 @@
       sc.setTegak(out.tegak);
 
       // Highlight mesh kerang target agar selalu kelihatan dan berkilau di Three.js!
-      if (Array.isArray(sc.kerang) && sc.kerang[target.i]) {
-        const item = sc.kerang[target.i];
+      if (item) {
         if (item.m && item.m.g) {
           item.m.g.visible = true; // Jangan di-cull oleh jarak
         }

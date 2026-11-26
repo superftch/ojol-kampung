@@ -5,8 +5,9 @@
   console.log("[DivingCompass] Content script v1.8.0 loaded");
 
   function injectMainScript() {
-    // diving-avoid.js dan diving-human.js dibaca saat tick auto-pilot, jadi urutan muat tidak penting.
-    for (const file of ["diving-avoid.js", "diving-human.js", "inject.js"]) {
+    // diving-avoid.js, diving-human.js, dan diving-open.js dibaca saat tick auto-pilot,
+    // jadi urutan muat tidak penting.
+    for (const file of ["diving-avoid.js", "diving-human.js", "diving-open.js", "diving-shark.js", "inject.js"]) {
       try {
         const s = document.createElement("script");
         s.src = chrome.runtime.getURL(file);
@@ -133,6 +134,69 @@
   const skippedSet = new Set(); // kerang tak terjangkau di sesi ini (tidak disimpan)
   let selectedKerang = null;
   let isAutopilotRunning = false;
+
+  // Rantai otomatis: jeda alami antar kerang. Selama jeda ini HUD tetap berstatus aktif
+  // (tombol STOP + hitung mundur) supaya tidak terlihat "berhenti sendiri".
+  let chainTimer = null;
+  let chainTick = null;
+  let chainPending = false;
+  let statusNote = null; // { text, color, until } menimpa judul HUD sementara
+
+  function setNote(text, color, ms) {
+    statusNote = { text, color: color || "#fbbf24", until: Date.now() + ms };
+  }
+
+  function cancelChain() {
+    if (chainTimer) clearTimeout(chainTimer);
+    if (chainTick) clearInterval(chainTick);
+    chainTimer = null;
+    chainTick = null;
+    if (chainPending) {
+      chainPending = false;
+      statusNote = null;
+      updateAutopilotUI({ active: isAutopilotRunning });
+    }
+  }
+
+  function scheduleChain(delayMs, why) {
+    cancelChain();
+    chainPending = true;
+    const due = Date.now() + delayMs;
+    updateAutopilotUI({ active: true });
+    const refresh = () => {
+      const s = Math.max(0, Math.ceil((due - Date.now()) / 1000));
+      setNote(`⏳ ${why} · lanjut ${s} dtk (klik STOP untuk batal)`, "#38bdf8", 2500);
+    };
+    refresh();
+    chainTick = setInterval(refresh, 500);
+    chainTimer = setTimeout(() => {
+      clearInterval(chainTick);
+      chainTick = null;
+      chainTimer = null;
+      chainPending = false;
+      statusNote = null;
+      if (isAutopilotRunning) {
+        updateAutopilotUI({ active: true });
+        return;
+      }
+      startNextChain();
+    }, delayMs);
+  }
+
+  function startNextChain() {
+    const next = getNextChainShell();
+    console.log("[DivingChain] pilih berikutnya:", next ? "#" + next.i : "tidak ada",
+      "| dibuka:", openedSet.size, "| dilewati:", Array.from(skippedSet).join(",") || "-", "| mode:", currentFilterMode);
+    if (!next) {
+      updateAutopilotUI({ active: false });
+      setNote("🎉 Semua kerang pada mode ini selesai!", "#22c55e", 60000);
+      return;
+    }
+    selectKerangTarget(next);
+    const autoOpen = document.getElementById("ks-auto-open-check")?.checked ?? true;
+    const autoChain = document.getElementById("ks-auto-chain-check")?.checked ?? true;
+    sendAutopilotCommand("start", next, autoOpen, autoChain);
+  }
   let currentFilterMode = "langka"; // "langka" (300 koin), "potensial" (100 & 300 koin), "all" (semua)
 
   let livePlayer = {
@@ -194,36 +258,20 @@
   window.addEventListener("ks_shell_opened_auto", (e) => {
     const k = e.detail.kerang;
     const shouldChain = !!e.detail.autoChain;
+    const ok = e.detail.ok !== false;
 
-    if (k && typeof k.i === "number") {
+    if (k && typeof k.i === "number" && ok) {
       openedSet.add(k.i);
       saveOpened();
       renderList();
     }
-
-    const titleEl = document.getElementById("ks-compass-title");
-    if (titleEl) {
-      titleEl.textContent = `🐚 Membuka Kerang #${k.i}...`;
-      titleEl.style.color = "#fbbf24";
-    }
+    console.log("[DivingChain] kerang #" + (k && k.i) + (ok ? " terbuka" : " TIDAK terbuka") +
+      " | dibuka: " + openedSet.size + " | dilewati: " + skippedSet.size + " | rantai: " + shouldChain);
 
     if (shouldChain) {
-      setTimeout(() => {
-        if (!isAutopilotRunning) {
-          const nextTarget = getNextChainShell();
-          if (nextTarget) {
-            selectKerangTarget(nextTarget);
-            const autoOpen = document.getElementById("ks-auto-open-check")?.checked ?? true;
-            const autoChain = document.getElementById("ks-auto-chain-check")?.checked ?? true;
-            sendAutopilotCommand("start", nextTarget, autoOpen, autoChain);
-          } else {
-            if (titleEl) {
-              titleEl.textContent = "🎉 Semua Kerang Potensial Selesai!";
-              titleEl.style.color = "#22c55e";
-            }
-          }
-        }
-      }, chainGapMs());
+      scheduleChain(chainGapMs(), `Kerang #${k.i} terbuka`);
+    } else {
+      setNote(`✅ Kerang #${k.i} terbuka`, "#22c55e", 6000);
     }
   });
 
@@ -231,29 +279,39 @@
     const st = e.detail;
     isAutopilotRunning = !!st.active;
     if (!st.active) autopilotAvoidMode = "none";
-    updateAutopilotUI(st);
+    updateAutopilotUI({ active: isAutopilotRunning || chainPending });
 
-    // Kerang yang tidak bisa didekati (terkurung batu): lewati dan lanjut ke kerang
-    // berikutnya, jangan biarkan rantai auto-pilot putus. Hanya berlaku di sesi ini.
-    if (!st.active && st.reason === "no_progress" && st.target && typeof st.target.i === "number") {
+    if (st.active) {
+      // Auto-pilot mulai: pesan lama dan hitung mundur rantai tidak berlaku lagi.
+      statusNote = null;
+      return;
+    }
+    if (st.reason === "arrived") return; // tiba: rantai diurus ks_shell_opened_auto
+
+    const why = {
+      no_progress: "tidak bisa didekati",
+      open_failed: "gagal dibuka (server menolak)",
+      unreachable: "tombol buka tidak muncul",
+      locked: "kontrol dikunci game",
+      user_input: "dihentikan tombol keyboard",
+      manual_stop: "dihentikan manual"
+    }[st.reason] || String(st.reason);
+    console.warn("[DivingChain] berhenti:", st.reason, "kerang", st.target && st.target.i);
+
+    // Kerang yang tidak bisa didekati atau dibuka: lewati dan lanjut ke kerang berikutnya,
+    // jangan biarkan rantai auto-pilot putus. Hanya berlaku di sesi ini.
+    const skippable = st.reason === "no_progress" || st.reason === "open_failed" || st.reason === "unreachable";
+    if (skippable && st.target && typeof st.target.i === "number") {
       skippedSet.add(st.target.i);
-      const titleEl = document.getElementById("ks-compass-title");
-      if (titleEl) {
-        titleEl.textContent = `⏭️ Kerang #${st.target.i} tidak terjangkau, lanjut berikutnya...`;
-        titleEl.style.color = "#fbbf24";
-      }
       const autoChain = document.getElementById("ks-auto-chain-check")?.checked ?? true;
       if (autoChain) {
-        setTimeout(() => {
-          if (isAutopilotRunning) return;
-          const nextTarget = getNextChainShell();
-          if (nextTarget) {
-            selectKerangTarget(nextTarget);
-            const autoOpen = document.getElementById("ks-auto-open-check")?.checked ?? true;
-            sendAutopilotCommand("start", nextTarget, autoOpen, autoChain);
-          }
-        }, 800);
+        scheduleChain(1500, `⏭️ Kerang #${st.target.i} ${why}`);
+      } else {
+        setNote(`⏹ Berhenti: kerang #${st.target.i} ${why}`, "#fbbf24", 15000);
       }
+    } else {
+      cancelChain();
+      setNote(`⏹ Berhenti: ${why}`, "#fbbf24", 15000);
     }
   });
 
@@ -261,6 +319,17 @@
   let autopilotAvoidMode = "none";
   window.addEventListener("ks_autopilot_avoid", (e) => {
     autopilotAvoidMode = (e.detail && e.detail.mode) || "none";
+  });
+
+  // Status hiu dari inject.js: clear | flee | hide. Ditampilkan di judul HUD.
+  let sharkMode = "clear";
+  let sharkDist = null;
+  let sharkDepth = null;
+  window.addEventListener("ks_autopilot_shark", (e) => {
+    const d = e.detail || {};
+    sharkMode = d.mode || "clear";
+    sharkDist = typeof d.dist === "number" ? d.dist : null;
+    sharkDepth = typeof d.depth === "number" ? d.depth : null;
   });
 
   function sendAutopilotCommand(action, target, autoOpen = true, autoChain = true) {
@@ -606,9 +675,20 @@
   }
 
   function toggleAutopilot() {
-    if (isAutopilotRunning) {
-      sendAutopilotCommand("stop");
+    // STOP juga membatalkan jeda rantai yang sedang berjalan.
+    if (isAutopilotRunning || chainPending) {
+      const wasChain = chainPending;
+      cancelChain();
+      if (isAutopilotRunning) {
+        sendAutopilotCommand("stop");
+      } else if (wasChain) {
+        setNote("⏹ Rantai dihentikan", "#fbbf24", 8000);
+        updateAutopilotUI({ active: false });
+      }
     } else {
+      // Target lama yang sudah dibuka tidak dipakai lagi: ambil kerang berikutnya.
+      if (selectedKerang && openedSet.has(selectedKerang.i)) selectedKerang = null;
+      statusNote = null;
       if (!selectedKerang) {
         const next = getNextNearestShell();
         if (next) selectKerangTarget(next);
@@ -621,36 +701,68 @@
     }
   }
 
-  function updateAutopilotUI(st) {
-    const btnHud = document.getElementById("ks-hud-autopilot-btn");
-    const btnRadar = document.getElementById("ks-radar-autopilot-btn");
-    const compassBox = document.getElementById("ks-compass-hud");
+  // Tampilan tombol dihitung dari status nyata (isAutopilotRunning, chainPending), bukan
+  // dari argumen event, lalu disinkronkan tiap frame. Jadi tombol tidak bisa tertinggal
+  // walau satu event gagal diproses atau HUD dibuat ulang saat pindah halaman.
+  //   idle = biru "Auto Jalan" | run = merah berdenyut "STOP" | wait = kuning berdenyut "STOP (jeda)"
+  function autopilotMode() {
+    return isAutopilotRunning ? "run" : chainPending ? "wait" : "idle";
+  }
 
-    if (st.active) {
-      if (btnHud) {
-        btnHud.style.background = "#ef4444";
-        btnHud.innerHTML = "<span>⏹ STOP</span>";
-      }
-      if (btnRadar) {
-        btnRadar.style.background = "#ef4444";
-        btnRadar.textContent = "⏹ Batalkan Auto Berenang";
-      }
-      if (compassBox) {
-        compassBox.style.boxShadow = "0 0 32px rgba(6, 182, 212, 0.85)";
-      }
-    } else {
-      if (btnHud) {
-        btnHud.style.background = "linear-gradient(135deg, #0284c7, #06b6d4)";
-        btnHud.innerHTML = "<span>🚀 Auto Jalan</span>";
-      }
-      if (btnRadar) {
-        btnRadar.style.background = "linear-gradient(90deg, #16a34a, #22c55e)";
-        btnRadar.textContent = "🚀 Mulai Auto Berenang ke Sini";
-      }
-      if (compassBox) {
-        compassBox.style.boxShadow = "0 6px 28px rgba(0, 229, 255, 0.45)";
-      }
+  function ensureApStyle() {
+    if (document.getElementById("ks-ap-style")) return;
+    const st = document.createElement("style");
+    st.id = "ks-ap-style";
+    st.textContent = `
+      @keyframes ks-ap-pulse-run { 0%,100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.75); } 50% { box-shadow: 0 0 0 9px rgba(239,68,68,0); } }
+      @keyframes ks-ap-pulse-wait { 0%,100% { box-shadow: 0 0 0 0 rgba(245,158,11,0.75); } 50% { box-shadow: 0 0 0 9px rgba(245,158,11,0); } }
+      .ks-ap-run { animation: ks-ap-pulse-run 1.1s ease-in-out infinite; }
+      .ks-ap-wait { animation: ks-ap-pulse-wait 1.4s ease-in-out infinite; }
+    `;
+    (document.head || document.documentElement).appendChild(st);
+  }
+
+  const AP_LOOK = {
+    idle: {
+      hud: { bg: "linear-gradient(135deg, #0284c7, #06b6d4)", html: "<span>🚀 Auto Jalan</span>" },
+      radar: { bg: "linear-gradient(90deg, #16a34a, #22c55e)", text: "🚀 Mulai Auto Berenang ke Sini" },
+      glow: "0 6px 28px rgba(0, 229, 255, 0.45)"
+    },
+    run: {
+      hud: { bg: "#dc2626", html: "<span>⏹ STOP Auto Jalan</span>" },
+      radar: { bg: "#dc2626", text: "⏹ Batalkan Auto Berenang" },
+      glow: "0 0 32px rgba(239, 68, 68, 0.85)"
+    },
+    wait: {
+      hud: { bg: "#d97706", html: "<span>⏹ STOP (jeda)</span>" },
+      radar: { bg: "#d97706", text: "⏹ Batalkan Lanjutan Otomatis" },
+      glow: "0 0 32px rgba(245, 158, 11, 0.8)"
     }
+  };
+
+  function syncAutopilotUI() {
+    const mode = autopilotMode();
+    const look = AP_LOOK[mode];
+    const apply = (el, bg, setContent) => {
+      if (!el || el.dataset.apMode === mode) return;
+      el.dataset.apMode = mode;
+      el.style.background = bg;
+      setContent(el);
+      el.classList.remove("ks-ap-run", "ks-ap-wait");
+      if (mode !== "idle") el.classList.add("ks-ap-" + mode);
+    };
+    ensureApStyle();
+    apply(document.getElementById("ks-hud-autopilot-btn"), look.hud.bg, (el) => { el.innerHTML = look.hud.html; });
+    apply(document.getElementById("ks-radar-autopilot-btn"), look.radar.bg, (el) => { el.textContent = look.radar.text; });
+    const compassBox = document.getElementById("ks-compass-hud");
+    if (compassBox && compassBox.dataset.apMode !== mode) {
+      compassBox.dataset.apMode = mode;
+      compassBox.style.boxShadow = look.glow;
+    }
+  }
+
+  function updateAutopilotUI() {
+    syncAutopilotUI();
   }
 
   // 5. Update Loop Panah Penunjuk Arah (60 FPS) dengan Rumus Game Asli
@@ -668,14 +780,35 @@
 
     function tick() {
       requestAnimationFrame(tick);
+      syncAutopilotUI();
+
+      const mode = autopilotMode();
+      const note = statusNote && statusNote.until > Date.now() ? statusNote : null;
+      const shk = sharkMode === "flee"
+        ? { text: `🦈 HIU! Kabur naik${sharkDist !== null ? ` · hiu ${Math.round(sharkDist)} m` : ""}${sharkDepth !== null ? ` · kedalaman ${Math.round(sharkDepth)} m` : ""}`, color: "#ef4444" }
+        : sharkMode === "hide"
+          ? { text: `🦈 Zona aman: menunggu hiu pergi${sharkDist !== null ? ` · hiu ${Math.round(sharkDist)} m` : ""}`, color: "#f97316" }
+          : null;
 
       if (!selectedKerang) {
         const stats = getPotensiStats();
         if (titleEl) {
-          titleEl.textContent = stats.availablePotensi > 0 ? "Pilih Target Kerang di Radar" : "🎉 Semua Kerang Potensi Selesai!";
-          titleEl.style.color = stats.availablePotensi > 0 ? "#38bdf8" : "#22c55e";
+          if (shk) {
+            titleEl.textContent = shk.text;
+            titleEl.style.color = shk.color;
+          } else if (note) {
+            titleEl.textContent = note.text;
+            titleEl.style.color = note.color;
+          } else {
+            titleEl.textContent = stats.availablePotensi > 0 ? "Pilih Target Kerang di Radar" : "🎉 Semua Kerang Potensi Selesai!";
+            titleEl.style.color = stats.availablePotensi > 0 ? "#38bdf8" : "#22c55e";
+          }
         }
-        if (badgeEl) badgeEl.style.display = "none";
+        if (badgeEl) {
+          badgeEl.style.display = mode === "wait" ? "inline-block" : "none";
+          badgeEl.textContent = "JEDA";
+          badgeEl.style.background = "#d97706";
+        }
         if (distEl) {
           distEl.innerHTML = `✨ Potensi Sisa: <b>${stats.availablePotensi}</b> kerang`;
         }
@@ -688,8 +821,7 @@
           arrowSvg.style.filter = "none";
         }
         if (compassBox) {
-          compassBox.style.borderColor = "rgba(255,255,255,0.2)";
-          compassBox.style.boxShadow = "none";
+          compassBox.style.borderColor = shk ? "#ef4444" : mode === "wait" ? "#f59e0b" : "rgba(255,255,255,0.2)";
         }
         return;
       }
@@ -733,13 +865,19 @@
           arrowSvg.style.fill = color;
           arrowSvg.style.filter = `drop-shadow(0 0 8px ${color})`;
           if (compassBox) {
-            compassBox.style.borderColor = isAutopilotRunning ? "#06b6d4" : color;
+            compassBox.style.borderColor = shk ? "#ef4444" : isAutopilotRunning ? "#ef4444" : mode === "wait" ? "#f59e0b" : color;
           }
         }
       }
 
       if (titleEl) {
-        if (isAutopilotRunning) {
+        if (shk) {
+          titleEl.textContent = shk.text;
+          titleEl.style.color = shk.color;
+        } else if (note && !isAutopilotRunning) {
+          titleEl.textContent = note.text;
+          titleEl.style.color = note.color;
+        } else if (isAutopilotRunning) {
           if (autopilotAvoidMode === "recover") {
             titleEl.textContent = `🛟 Lepas dari batu → Kerang #${selectedKerang.i}`;
             titleEl.style.color = "#fbbf24";
@@ -761,8 +899,8 @@
 
       if (badgeEl) {
         badgeEl.style.display = "inline-block";
-        badgeEl.textContent = isAutopilotRunning ? "AUTO" : (selectedKerang.kategori === "langka" ? "LANGKA" : "POTENSIAL");
-        badgeEl.style.background = isAutopilotRunning ? "#0284c7" : (selectedKerang.badgeColor || "#0284c7");
+        badgeEl.textContent = isAutopilotRunning ? "AUTO" : mode === "wait" ? "JEDA" : (selectedKerang.kategori === "langka" ? "LANGKA" : "POTENSIAL");
+        badgeEl.style.background = isAutopilotRunning ? "#0284c7" : mode === "wait" ? "#d97706" : (selectedKerang.badgeColor || "#0284c7");
       }
 
       if (distEl) {
@@ -880,6 +1018,10 @@
           ⚡ Arahkan Panah ke Kerang Terdekat
         </button>
 
+        <button id="ks-copy-log-btn" style="width: 100%; padding: 5px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); color: #cbd5e1; border-radius: 6px; cursor: pointer; font-size: 11px; margin-bottom: 8px;">
+          📋 Salin Log Diagnostik
+        </button>
+
         <div id="ks-target-tracker" style="display: none; background: rgba(0, 229, 255, 0.12); border: 1px dashed #00e5ff; border-radius: 6px; padding: 10px; margin-bottom: 8px;">
           <div style="font-weight: bold; color: #38bdf8; font-size: 12px; margin-bottom: 4px;" id="ks-target-title">Target: Kerang #X</div>
           <div style="font-size: 11px; margin-bottom: 8px;" id="ks-target-coords">X: 0, Z: 0, Dalam: 0m</div>
@@ -954,6 +1096,48 @@
       const next = getNextNearestShell();
       if (next) selectKerangTarget(next);
     };
+
+    // Log diagnostik: inject.js (dunia halaman) menyimpan buffer 400 entri dan membalas
+    // event ks_diving_dump. Salin berhasil bila diizinkan browser; kalau tidak, tampil kotak teks.
+    const copyBtn = document.getElementById("ks-copy-log-btn");
+    if (copyBtn) {
+      copyBtn.onclick = () => {
+        const flash = (t) => {
+          copyBtn.textContent = t;
+          setTimeout(() => { copyBtn.textContent = "📋 Salin Log Diagnostik"; }, 2500);
+        };
+        let answered = false;
+        const onResult = (ev) => {
+          answered = true;
+          window.removeEventListener("ks_diving_dump_result", onResult);
+          const text = (ev.detail && ev.detail.text) || "";
+          const fallback = () => {
+            const ta = document.createElement("textarea");
+            ta.value = text;
+            ta.style.cssText = "position:fixed;left:8px;bottom:8px;width:420px;height:160px;z-index:2147483647;font-size:10px;";
+            document.body.appendChild(ta);
+            ta.select();
+            let ok = false;
+            try { ok = document.execCommand("copy"); } catch (_) {}
+            if (ok) ta.remove();
+            flash(ok ? "✅ Log tersalin" : "⚠️ Salin manual dari kotak teks");
+          };
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(() => flash("✅ Log tersalin"), fallback);
+          } else {
+            fallback();
+          }
+        };
+        window.addEventListener("ks_diving_dump_result", onResult);
+        window.dispatchEvent(new CustomEvent("ks_diving_dump"));
+        setTimeout(() => {
+          if (!answered) {
+            window.removeEventListener("ks_diving_dump_result", onResult);
+            flash("⚠️ Log belum siap (muat ulang tab)");
+          }
+        }, 1500);
+      };
+    }
 
     const resetBtn = document.getElementById("ks-reset-opened-btn");
     if (resetBtn) {
