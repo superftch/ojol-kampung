@@ -343,8 +343,10 @@ function startLiveStream() {
 }
 
 async function refreshDashboard() {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000);
     try {
-        const res = await fetch('/api/dashboard');
+        const res = await fetch('/api/dashboard', { signal: controller.signal });
         if (res.status === 401) {
             window.location.href = '/login';
             return false;
@@ -355,6 +357,8 @@ async function refreshDashboard() {
     } catch (e) {
         document.getElementById('dashboardFreshness').textContent = 'Status gagal dimuat. Coba segarkan.';
         return false;
+    } finally {
+        clearTimeout(timeoutId);
     }
 }
 
@@ -1046,7 +1050,8 @@ async function controlAction(cmd) {
     pendingControls.add(feature);
     renderAutomationControls(dashboardData);
     try {
-        const data = await apiFetch('/api/control/' + cmd + '?account_id=' + encodeURIComponent(account.id), { method: 'POST' });
+        const timeoutMs = cmd.startsWith('stop') ? 35000 : 20000;
+        const data = await apiFetch('/api/control/' + cmd + '?account_id=' + encodeURIComponent(account.id), { method: 'POST', timeoutMs });
         pendingControls.delete(feature);
         showToast(data.message?.split('\n\n', 1)[0] || 'Aksi diproses', 'info');
         await refreshDashboard();
