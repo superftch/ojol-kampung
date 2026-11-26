@@ -225,8 +225,8 @@ Verifikasi client bundle `0gw8r7_0xl80t.js`, `2suhvd2g415c_.js` (modul `309513`)
   - Client menentukan status "Online" bila selisih waktu sekarang dengan aktivitas terakhir (`lastOnlineAt`) tidak melebihi `onlineWindowSec` (120 detik). Jika lebih, status turun menjadi "Aktif X mnt lalu" atau "Lama tidak online".
   - Status online warga di peta direpresentasikan oleh flag boolean `t.w.o` (online) pada plot kavling (`/api/world/plots`).
 - **Strategi Pemeliharaan Presence Online**:
-  - Endpoint `GET /api/game/me` dan `GET /api/time` (didampingi `GET /api/realtime/token`) memperbarui timestamp aktivitas akun pada server.
-  - Adapter `OjolHttpApi.fetch_online_status()` dipanggil secara berkala ($\le 35$ detik) baik oleh worker aktif (termasuk saat menunggu trip countdown/tidur/idle) maupun oleh supervisor multi-akun `MultiAccountService` untuk semua akun terdaftar, sehingga setiap akun selalu berada dalam status presence online tanpa terputus.
+  - Verifikasi live 26 November 2026 membuktikan bahwa `GET /api/chat?toa=0` adalah endpoint yang memperbarui timestamp aktivitas online akun di server sehingga akun tercatat online di `/api/teman/online` dan menu Teman, sedangkan `GET /api/game/me`, `GET /api/time`, dan `GET /api/realtime/token` saja tidak memperbarui status online tersebut.
+  - Adapter `OjolHttpApi.fetch_online_status()` memanggil `GET /api/chat?toa=0` bersama `GET /api/game/me`, `GET /api/time`, dan `GET /api/realtime/token` secara berkala ($\le 35$ detik) saat Auto Ojol atau Auto Kerja aktif (dan saat Auto Kebutuhan membeli kebutuhan), sehingga status presence tetap online tanpa terputus.
 
 
 

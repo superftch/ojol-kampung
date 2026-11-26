@@ -307,6 +307,7 @@ class OjolHttpApi:
                 "/api/kantor",
                 "/api/kerja-malam",
                 "/api/skills",
+                "/api/chat?toa=0",
             }
             or re.fullmatch(
                 r"/api/world/plots\?v=2&blocks=[A-Z][0-9]{2}(?:,[A-Z][0-9]{2}){0,23}", path
@@ -553,7 +554,7 @@ class OjolHttpApi:
         return state
 
     async def fetch_online_status(self):
-        """Fetch online presence endpoints (/api/game/me, /api/time, /api/realtime/token).
+        """Fetch online presence endpoints (/api/game/me, /api/time, /api/realtime/token, /api/chat?toa=0).
 
         Touches the session on KampungSebelah, keeping the player within the
         online window (120s) and writing online status to online-status.json.
@@ -565,6 +566,8 @@ class OjolHttpApi:
         rt = None
         with contextlib.suppress(Exception):
             rt = await self.request("/api/realtime/token")
+        with contextlib.suppress(Exception):
+            await self.request("/api/chat?toa=0")
 
         self.config_version = me.get("configVersion")
         self.home = me.get("home")

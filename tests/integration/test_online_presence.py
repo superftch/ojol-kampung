@@ -56,6 +56,8 @@ async def test_ojol_http_api_fetch_online_status_success(settings, session_file)
             return {"now": "2026-11-19T09:00:00.000Z"}
         if path == "/api/realtime/token":
             return {"url": "wss://realtime.kampungsebelah.com/ws"}
+        if path == "/api/chat?toa=0":
+            return {"onlineNow": 1}
         raise ValueError(f"Unexpected path: {path}")
 
     api.request.side_effect = mock_request
@@ -68,6 +70,7 @@ async def test_ojol_http_api_fetch_online_status_success(settings, session_file)
     assert status["realtime_connected"] is True
     assert status["resting"] is False
     assert status["server_time"] == "2026-11-19T09:00:00.000Z"
+    assert "/api/chat?toa=0" in [call.args[0] for call in api.request.await_args_list]
 
     # Verify online-status.json was written
     status_file = settings.runtime_dir / "online-status.json"
