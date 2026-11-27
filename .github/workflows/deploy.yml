@@ -1,0 +1,173 @@
+name: Deploy
+
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Target deploy (auto = deteksi otomatis dari perubahan file)"
+        required: true
+        default: "auto"
+        type: choice
+        options:
+          - auto
+          - app
+          - worker
+          - all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  detect:
+    name: Detect Deploy Target
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      target: ${{ steps.detect.outputs.target }}
+      changed_files: ${{ steps.detect.outputs.changed_files }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.head_sha || github.sha }}
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Determine deploy target
+        id: detect
+        env:
+          MANUAL_TARGET: ${{ inputs.target || 'auto' }}
+        run: |
+          set -euo pipefail
+
+          if [ "$MANUAL_TARGET" != "auto" ]; then
+            echo "target=$MANUAL_TARGET" >> "$GITHUB_OUTPUT"
+            echo "changed_files=manual:$MANUAL_TARGET" >> "$GITHUB_OUTPUT"
+            echo "### Manual Deploy Target: \`$MANUAL_TARGET\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          if ! git rev-parse --verify HEAD^1 >/dev/null 2>&1; then
+            echo "target=all" >> "$GITHUB_OUTPUT"
+            echo "changed_files=initial-commit" >> "$GITHUB_OUTPUT"
+            echo "### Initial commit detected -> target: \`all\`" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          CHANGED_FILES=$(git diff --name-only HEAD^1 HEAD)
+          if [ -z "$CHANGED_FILES" ]; then
+            echo "target=none" >> "$GITHUB_OUTPUT"
+            echo "changed_files=" >> "$GITHUB_OUTPUT"
+            echo "### No changed files -> skip deploy" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+
+          needs_app=false
+          needs_worker=false
+          needs_all=false
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            case "$file" in
+              # Dokumen, test, dan file non-runtime -> tidak perlu deploy
+              docs/*|tests/*|scripts/*|deploy/*|.github/*|*.md|.gitignore|.dockerignore|.python-version|compose.local.yaml|.env*)
+                ;;
+
+              # Perubahan infrastruktur / dependency / entrypoint -> deploy all
+              Dockerfile|compose.yaml|pyproject.toml|uv.lock|deploy.sh|main.py|docker/*)
+                needs_all=true
+                ;;
+
+              # Khusus app (web UI, auth, admin, static, assets, extension)
+              app/web/*|app/modules/admin/*|app/modules/auth/*|app/main.py|assets/*|tools/*|ojol/control.py|ojol/web/*)
+                needs_app=true
+                ;;
+
+              # Khusus worker (supervisor, loop, gameplay)
+              ojol/worker_service.py|app/modules/gameplay/*|app/modules/worker/supervisor.py|app/modules/worker/fleet_supervision.py|app/modules/worker/ojol_*|app/modules/worker/runner*)
+                needs_worker=true
+                ;;
+
+              # Modul bersama (core, integrations, jobs, accounts, captcha, ledger, notifications, shared worker/ojol)
+              app/*|ojol/*)
+                needs_all=true
+                ;;
+
+              # Fallback aman untuk file baru/tak dikenal
+              *)
+                needs_all=true
+                ;;
+            esac
+          done <<< "$CHANGED_FILES"
+
+          if [ "$needs_all" = true ] || { [ "$needs_app" = true ] && [ "$needs_worker" = true ]; }; then
+            target="all"
+          elif [ "$needs_app" = true ]; then
+            target="app"
+          elif [ "$needs_worker" = true ]; then
+            target="worker"
+          else
+            target="none"
+          fi
+
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          {
+            echo "changed_files<<EOF"
+            echo "$CHANGED_FILES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Dynamic Deploy Target: \`$target\`"
+            echo ""
+            echo "**Changed files:**"
+            echo '```'
+            echo "$CHANGED_FILES"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Deploy (${{ needs.detect.outputs.target }})
+    needs: detect
+    if: needs.detect.outputs.target != 'none'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    environment: production
+    steps:
+      - name: Deploy to VPS via SSH
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_PATH: ${{ secrets.DEPLOY_PATH }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_TARGET: ${{ needs.detect.outputs.target }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "${DEPLOY_HOST:-}" ] || [ -z "${DEPLOY_USER:-}" ] || [ -z "${DEPLOY_SSH_KEY:-}" ] || [ -z "${DEPLOY_PATH:-}" ]; then
+            echo "::error::Secrets DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY, dan DEPLOY_PATH wajib diisi di GitHub Environment/Repository Secrets."
+            exit 1
+          fi
+
+          PORT="${DEPLOY_PORT:-22}"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+
+          ssh-keyscan -p "$PORT" -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+
+          ssh -i ~/.ssh/deploy_key -p "$PORT" -o StrictHostKeyChecking=accept-new \
+            "${DEPLOY_USER}@${DEPLOY_HOST}" \
+            "cd '${DEPLOY_PATH}' && ./deploy.sh '${DEPLOY_TARGET}'"
