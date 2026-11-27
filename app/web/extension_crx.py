@@ -33,6 +33,8 @@ EXTENSION_FILES = (
     "tpu.js",
     "berburu.js",
     "berburu-inject.js",
+    "futsal.js",
+    "futsal-inject.js",
     "inject.js",
     "popup.html",
     "popup.js",

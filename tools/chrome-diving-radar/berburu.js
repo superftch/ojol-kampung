@@ -28,6 +28,62 @@
     kuotaBabiPerHutan: 3
   };
 
+  const HUNTING_PLAN_PRESETS = {
+    "max-cuan": {
+      id: "max-cuan",
+      label: "🔥 Max Cuan",
+      babi: 3,
+      ayam: 2,
+      tupai: 0,
+      tikus: 0,
+      pakaiIzin: true,
+      peluruPerSatwa: 1,
+      beliSenapan: false
+    },
+    "babi-only": {
+      id: "babi-only",
+      label: "🐗 3 Babi",
+      babi: 3,
+      ayam: 0,
+      tupai: 0,
+      tikus: 0,
+      pakaiIzin: true,
+      peluruPerSatwa: 1,
+      beliSenapan: false
+    },
+    "ayam-only": {
+      id: "ayam-only",
+      label: "🐔 5 Ayam",
+      babi: 0,
+      ayam: 5,
+      tupai: 0,
+      tikus: 0,
+      pakaiIzin: true,
+      peluruPerSatwa: 1,
+      beliSenapan: false
+    },
+    "latihan": {
+      id: "latihan",
+      label: "🎯 Latihan",
+      babi: 3,
+      ayam: 2,
+      tupai: 0,
+      tikus: 0,
+      pakaiIzin: false,
+      peluruPerSatwa: 1,
+      beliSenapan: false
+    }
+  };
+
+  function toNonNegInt(val) {
+    const n = Math.floor(Number(val));
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function roundKoin(val) {
+    return Math.round(val * 100) / 100;
+  }
+
   function evaluateBagProfit(buruanList = [], peluruDipakai = 0, pakaiIzin = true) {
     let omzetKoin = 0;
     let totalPorsi = 0;
@@ -44,16 +100,102 @@
 
     const biayaIzin = pakaiIzin ? BERBURU_ECONOMY.izinKoin : 0;
     const biayaPeluru = (peluruDipakai / BERBURU_ECONOMY.peluruIsi) * BERBURU_ECONOMY.peluruKoin;
-    const netProfit = Math.round((omzetKoin - biayaIzin - biayaPeluru) * 100) / 100;
+    const netProfit = roundKoin(omzetKoin - biayaIzin - biayaPeluru);
 
     return {
       jumlah: buruanList.length,
-      omzetKoin: Math.round(omzetKoin * 100) / 100,
+      omzetKoin: roundKoin(omzetKoin),
       biayaIzin,
-      biayaPeluru: Math.round(biayaPeluru * 100) / 100,
+      biayaPeluru: roundKoin(biayaPeluru),
       netProfit,
       totalPorsi,
       counts
+    };
+  }
+
+  function planHunting(planInput = {}) {
+    const babi = toNonNegInt(planInput.babi);
+    const ayam = toNonNegInt(planInput.ayam);
+    const tupai = toNonNegInt(planInput.tupai);
+    const tikus = toNonNegInt(planInput.tikus);
+    const pakaiIzin = planInput.pakaiIzin !== false;
+    const beliSenapan = Boolean(planInput.beliSenapan);
+    const rawPeluruPerSatwa = Number(planInput.peluruPerSatwa);
+    const peluruPerSatwa = Number.isFinite(rawPeluruPerSatwa) && rawPeluruPerSatwa > 0 ? rawPeluruPerSatwa : 1;
+
+    const buruanList = [
+      ...Array(babi).fill("babi-hutan"),
+      ...Array(ayam).fill("ayam-hutan"),
+      ...Array(tupai).fill("tupai-kelapa"),
+      ...Array(tikus).fill("tikus-sawah")
+    ];
+
+    const totalTarget = buruanList.length;
+    const estimasiPeluru = planInput.peluruDipakai != null
+      ? toNonNegInt(planInput.peluruDipakai)
+      : Math.ceil(totalTarget * peluruPerSatwa);
+
+    const bagEval = evaluateBagProfit(buruanList, estimasiPeluru, pakaiIzin);
+    const biayaSenapan = beliSenapan ? BERBURU_ECONOMY.senapanKoin : 0;
+    const totalBiaya = roundKoin(bagEval.biayaIzin + bagEval.biayaPeluru + biayaSenapan);
+    const netProfit = roundKoin(bagEval.omzetKoin - totalBiaya);
+    const roiPersen = totalBiaya > 0
+      ? Math.round((netProfit / totalBiaya) * 100)
+      : (bagEval.omzetKoin > 0 ? 100 : 0);
+    const packPeluru = estimasiPeluru > 0 ? Math.ceil(estimasiPeluru / BERBURU_ECONOMY.peluruIsi) : 0;
+
+    let recommendedFilter = "high-roi";
+    if (babi > 0 && ayam === 0 && tupai === 0 && tikus === 0) {
+      recommendedFilter = "babi";
+    } else if (ayam > 0 && babi === 0 && tupai === 0 && tikus === 0) {
+      recommendedFilter = "ayam";
+    } else if ((babi > 0 || ayam > 0) && tupai === 0 && tikus === 0) {
+      recommendedFilter = "high-roi";
+    } else if ((tupai > 0 || tikus > 0) && babi === 0 && ayam === 0) {
+      recommendedFilter = "hama";
+    } else if (totalTarget > 0) {
+      recommendedFilter = "all";
+    }
+
+    const warnings = [];
+    const melebihiKuotaBabi = babi > BERBURU_ECONOMY.kuotaBabiPerHutan;
+    const melebihiKuotaHarian = totalTarget > BERBURU_ECONOMY.kuotaHarianWarga;
+    if (totalTarget === 0) {
+      warnings.push("Pilih minimal 1 satwa target.");
+    }
+    if (melebihiKuotaBabi) {
+      warnings.push(`Maksimal ${BERBURU_ECONOMY.kuotaBabiPerHutan} Babi per hutan.`);
+    }
+    if (melebihiKuotaHarian) {
+      warnings.push(`Total ${totalTarget} melebihi kuota harian (${BERBURU_ECONOMY.kuotaHarianWarga}).`);
+    }
+    if (totalTarget > 0 && netProfit < 0) {
+      warnings.push("Estimasi rugi! Tambah Babi/Ayam atau matikan izin untuk latihan.");
+    }
+
+    const statusLabel = netProfit > 0 ? "UNTUNG" : netProfit < 0 ? "RUGI" : "IMPAS";
+
+    return {
+      targets: { babi, ayam, tupai, tikus },
+      totalTarget,
+      pakaiIzin,
+      beliSenapan,
+      peluruPerSatwa,
+      estimasiPeluru,
+      packPeluru,
+      omzetKoin: bagEval.omzetKoin,
+      biayaIzin: bagEval.biayaIzin,
+      biayaPeluru: bagEval.biayaPeluru,
+      biayaSenapan,
+      totalBiaya,
+      netProfit,
+      roiPersen,
+      totalPorsi: bagEval.totalPorsi,
+      recommendedFilter,
+      melebihiKuotaBabi,
+      melebihiKuotaHarian,
+      warnings,
+      statusLabel
     };
   }
 
@@ -214,8 +356,29 @@
     injectMainWorld();
 
     const HUD_POS_KEY = "ks_berburu_hud_pos";
+    const PLAN_STORAGE_KEY = "ks_berburu_plan";
+
+    function loadSavedPlan() {
+      try {
+        const raw = JSON.parse(localStorage.getItem(PLAN_STORAGE_KEY) || "null");
+        if (raw && typeof raw === "object") {
+          return {
+            babi: toNonNegInt(raw.babi ?? 3),
+            ayam: toNonNegInt(raw.ayam ?? 2),
+            tupai: toNonNegInt(raw.tupai ?? 0),
+            tikus: toNonNegInt(raw.tikus ?? 0),
+            pakaiIzin: raw.pakaiIzin !== false,
+            peluruPerSatwa: Number(raw.peluruPerSatwa) > 0 ? Number(raw.peluruPerSatwa) : 1,
+            beliSenapan: Boolean(raw.beliSenapan)
+          };
+        }
+      } catch {}
+      return { ...HUNTING_PLAN_PRESETS["max-cuan"] };
+    }
+
+    const initialPlanDraft = loadSavedPlan();
     const uiState = {
-      filter: "babi",
+      filter: planHunting(initialPlanDraft).recommendedFilter || "babi",
       autoHunt: false,
       autoAim: false,
       autoShoot: false,
@@ -224,6 +387,9 @@
       esp2d: false,
       chams3d: false,
       minimized: false,
+      planOpen: true,
+      planDraft: initialPlanDraft,
+      appliedPlan: planHunting(initialPlanDraft),
       lockedId: null,
       lastShotAt: 0,
       lastAmbilAt: 0,
@@ -303,6 +469,51 @@
           <div style="background:rgba(16,185,129,0.1);border:1px solid rgba(16,185,129,0.25);border-radius:8px;padding:6px 8px;font-size:11px;line-height:1.4;color:#a7f3d0;">
             <b>💰 Cuan Resmi:</b> Babi <b>8k</b> (3 porsi) · Ayam <b>2.5k</b> (2 porsi) · Tupai <b>0.8k</b> · Tikus <b>0.6k</b>
           </div>
+          <div style="background:rgba(15,23,42,0.72);border:1px solid rgba(56,189,248,0.3);border-radius:8px;overflow:hidden;">
+            <button id="ks-bb-plan-toggle" style="width:100%;display:flex;align-items:center;justify-content:space-between;padding:6px 8px;background:rgba(2,132,199,0.18);border:none;color:#bae6fd;cursor:pointer;font-size:11px;font-weight:700;">
+              <span>📋 Rencana &amp; Estimasi Profit</span>
+              <span id="ks-bb-plan-badge" style="color:#4ade80;">+23.5k</span>
+            </button>
+            <div id="ks-bb-plan-body" style="padding:8px;display:flex;flex-direction:column;gap:6px;border-top:1px solid rgba(56,189,248,0.2);">
+              <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:4px;">
+                ${Object.values(HUNTING_PLAN_PRESETS).map((p) => `<button class="ks-bb-preset" data-preset="${p.id}" style="padding:3px 4px;border-radius:5px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#e2e8f0;cursor:pointer;font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${p.label}</button>`).join("")}
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr;gap:5px;font-size:11px;">
+                <label style="display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.04);padding:3px 6px;border-radius:5px;">
+                  <span>🐗 Babi</span>
+                  <input id="ks-bb-plan-babi" type="number" min="0" max="5" value="${uiState.planDraft.babi}" style="width:38px;background:#0f172a;color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:4px;padding:1px 4px;text-align:center;font-size:11px;">
+                </label>
+                <label style="display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.04);padding:3px 6px;border-radius:5px;">
+                  <span>🐔 Ayam</span>
+                  <input id="ks-bb-plan-ayam" type="number" min="0" max="5" value="${uiState.planDraft.ayam}" style="width:38px;background:#0f172a;color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:4px;padding:1px 4px;text-align:center;font-size:11px;">
+                </label>
+                <label style="display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.04);padding:3px 6px;border-radius:5px;">
+                  <span>🐿️ Tupai</span>
+                  <input id="ks-bb-plan-tupai" type="number" min="0" max="5" value="${uiState.planDraft.tupai}" style="width:38px;background:#0f172a;color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:4px;padding:1px 4px;text-align:center;font-size:11px;">
+                </label>
+                <label style="display:flex;align-items:center;justify-content:space-between;background:rgba(255,255,255,0.04);padding:3px 6px;border-radius:5px;">
+                  <span>🐀 Tikus</span>
+                  <input id="ks-bb-plan-tikus" type="number" min="0" max="5" value="${uiState.planDraft.tikus}" style="width:38px;background:#0f172a;color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:4px;padding:1px 4px;text-align:center;font-size:11px;">
+                </label>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:6px;font-size:10px;color:#cbd5e1;">
+                <label style="display:flex;align-items:center;gap:4px;cursor:pointer;">
+                  <input id="ks-bb-plan-izin" type="checkbox" ${uiState.planDraft.pakaiIzin ? "checked" : ""}>
+                  <span>Izin Hutan (5k)</span>
+                </label>
+                <label style="display:flex;align-items:center;gap:4px;">
+                  <span>Peluru/ekor:</span>
+                  <select id="ks-bb-plan-peluru" style="background:#0f172a;color:#fff;border:1px solid rgba(255,255,255,0.2);border-radius:4px;padding:1px 3px;font-size:10px;">
+                    <option value="1" ${uiState.planDraft.peluruPerSatwa === 1 ? "selected" : ""}>1x (Tepat)</option>
+                    <option value="1.5" ${uiState.planDraft.peluruPerSatwa === 1.5 ? "selected" : ""}>1.5x (Aman)</option>
+                    <option value="2" ${uiState.planDraft.peluruPerSatwa === 2 ? "selected" : ""}>2x (Cadangan)</option>
+                  </select>
+                </label>
+              </div>
+              <div id="ks-bb-plan-summary" style="background:rgba(255,255,255,0.04);border-radius:6px;padding:6px 8px;font-size:11px;line-height:1.45;"></div>
+              <button id="ks-bb-plan-apply" style="width:100%;padding:5px;border-radius:6px;border:1px solid rgba(56,189,248,0.5);background:#0284c7;color:#fff;cursor:pointer;font-weight:700;font-size:11px;">✅ Terapkan Rencana &amp; Filter</button>
+            </div>
+          </div>
           <div style="display:flex;gap:4px;flex-wrap:wrap;">
             <button class="ks-bb-flt" data-flt="babi" style="flex:1;padding:4px 6px;border-radius:6px;border:1px solid rgba(74,222,128,0.5);background:#166534;color:#fff;cursor:pointer;font-size:11px;font-weight:600;">🐗 Babi</button>
             <button class="ks-bb-flt" data-flt="high-roi" style="padding:4px 6px;border-radius:6px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.06);color:#cbd5e1;cursor:pointer;font-size:11px;">🔥 Babi+Ayam</button>
@@ -376,15 +587,122 @@
         hud.querySelector("#ks-berburu-body").style.display = uiState.minimized ? "none" : "flex";
       });
 
+      function syncFilterButtons() {
+        hud.querySelectorAll(".ks-bb-flt").forEach((b) => {
+          const active = b.dataset.flt === uiState.filter;
+          b.style.background = active ? "#166534" : "rgba(255,255,255,0.06)";
+          b.style.color = active ? "#fff" : "#cbd5e1";
+          b.style.borderColor = active ? "rgba(74,222,128,0.5)" : "rgba(255,255,255,0.15)";
+        });
+      }
+
+      function readPlanInputs() {
+        uiState.planDraft = {
+          babi: toNonNegInt(hud.querySelector("#ks-bb-plan-babi")?.value),
+          ayam: toNonNegInt(hud.querySelector("#ks-bb-plan-ayam")?.value),
+          tupai: toNonNegInt(hud.querySelector("#ks-bb-plan-tupai")?.value),
+          tikus: toNonNegInt(hud.querySelector("#ks-bb-plan-tikus")?.value),
+          pakaiIzin: Boolean(hud.querySelector("#ks-bb-plan-izin")?.checked),
+          peluruPerSatwa: Number(hud.querySelector("#ks-bb-plan-peluru")?.value) || 1,
+          beliSenapan: false
+        };
+      }
+
+      function renderPlanPanel() {
+        const plan = planHunting(uiState.planDraft);
+        const badgeEl = hud.querySelector("#ks-bb-plan-badge");
+        const summaryEl = hud.querySelector("#ks-bb-plan-summary");
+        const sign = plan.netProfit > 0 ? "+" : "";
+        const profitColor = plan.netProfit > 0 ? "#4ade80" : plan.netProfit < 0 ? "#f87171" : "#facc15";
+        if (badgeEl) {
+          badgeEl.textContent = `${sign}${plan.netProfit}k`;
+          badgeEl.style.color = profitColor;
+        }
+        if (summaryEl) {
+          const warnHtml = plan.warnings.length > 0
+            ? `<div style="color:#fbbf24;font-size:10px;margin-top:3px;">⚠️ ${plan.warnings[0]}</div>`
+            : "";
+          summaryEl.innerHTML = `
+            <div style="display:flex;justify-content:space-between;">
+              <span>Target: <b>${plan.totalTarget}/${BERBURU_ECONOMY.kuotaHarianWarga}</b> (${plan.totalPorsi} porsi)</span>
+              <span>Peluru: <b>${plan.estimasiPeluru}</b> (${plan.packPeluru} pack)</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;">
+              <span>Omzet: <b>${plan.omzetKoin}k</b></span>
+              <span>Biaya: <b>${plan.totalBiaya}k</b> (Izin ${plan.biayaIzin}k + Plr ${plan.biayaPeluru}k)</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:2px;padding-top:3px;border-top:1px solid rgba(255,255,255,0.08);">
+              <span>Estimasi Profit:</span>
+              <span style="font-weight:700;color:${profitColor};">${sign}${plan.netProfit}k (${plan.roiPersen}% ROI · ${plan.statusLabel})</span>
+            </div>
+            ${warnHtml}
+          `;
+        }
+      }
+
+      function writePlanInputs(draft) {
+        const setVal = (sel, val) => {
+          const el = hud.querySelector(sel);
+          if (el) el.value = String(val);
+        };
+        setVal("#ks-bb-plan-babi", draft.babi);
+        setVal("#ks-bb-plan-ayam", draft.ayam);
+        setVal("#ks-bb-plan-tupai", draft.tupai);
+        setVal("#ks-bb-plan-tikus", draft.tikus);
+        const izinEl = hud.querySelector("#ks-bb-plan-izin");
+        if (izinEl) izinEl.checked = Boolean(draft.pakaiIzin);
+        setVal("#ks-bb-plan-peluru", draft.peluruPerSatwa);
+      }
+
+      hud.querySelector("#ks-bb-plan-toggle").addEventListener("click", () => {
+        uiState.planOpen = !uiState.planOpen;
+        hud.querySelector("#ks-bb-plan-body").style.display = uiState.planOpen ? "flex" : "none";
+      });
+
+      hud.querySelectorAll(".ks-bb-preset").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const preset = HUNTING_PLAN_PRESETS[btn.dataset.preset];
+          if (!preset) return;
+          uiState.planDraft = { ...preset };
+          writePlanInputs(uiState.planDraft);
+          renderPlanPanel();
+        });
+      });
+
+      ["#ks-bb-plan-babi", "#ks-bb-plan-ayam", "#ks-bb-plan-tupai", "#ks-bb-plan-tikus", "#ks-bb-plan-izin", "#ks-bb-plan-peluru"].forEach((sel) => {
+        hud.querySelector(sel)?.addEventListener("input", () => {
+          readPlanInputs();
+          renderPlanPanel();
+        });
+        hud.querySelector(sel)?.addEventListener("change", () => {
+          readPlanInputs();
+          renderPlanPanel();
+        });
+      });
+
+      hud.querySelector("#ks-bb-plan-apply").addEventListener("click", () => {
+        readPlanInputs();
+        const plan = planHunting(uiState.planDraft);
+        uiState.appliedPlan = plan;
+        uiState.filter = plan.recommendedFilter;
+        try {
+          localStorage.setItem(PLAN_STORAGE_KEY, JSON.stringify(uiState.planDraft));
+        } catch {}
+        syncFilterButtons();
+        sendCmd({ action: "setWallhack", filter: uiState.filter });
+        const sign = plan.netProfit > 0 ? "+" : "";
+        uiState.autoStatus = `📋 Rencana: ${plan.totalTarget} ekor (${sign}${plan.netProfit}k)`;
+        renderPlanPanel();
+        renderHud();
+      });
+
+      syncFilterButtons();
+      renderPlanPanel();
+
       hud.querySelectorAll(".ks-bb-flt").forEach((btn) => {
         btn.addEventListener("click", () => {
           uiState.filter = btn.dataset.flt;
-          hud.querySelectorAll(".ks-bb-flt").forEach((b) => {
-            const active = b.dataset.flt === uiState.filter;
-            b.style.background = active ? "#166534" : "rgba(255,255,255,0.06)";
-            b.style.color = active ? "#fff" : "#cbd5e1";
-            b.style.borderColor = active ? "rgba(74,222,128,0.5)" : "rgba(255,255,255,0.15)";
-          });
+          syncFilterButtons();
           sendCmd({ action: "setWallhack", filter: uiState.filter });
           renderHud();
         });
@@ -562,7 +880,7 @@
       if (!snap || !snap.ready || !snap.state) {
         statsEl.innerHTML = `<span style="grid-column:span 2;">Masuk ke hutan buru (atau mode Latihan) untuk mengaktifkan radar.</span>`;
         if (compassEl) compassEl.textContent = "🧭 Radar menunggu hutan";
-        if (autoStatusEl) autoStatusEl.textContent = "Mode: Menunggu";
+        if (autoStatusEl) autoStatusEl.textContent = uiState.autoStatus || "Mode: Menunggu";
         listEl.innerHTML = "";
         alertEl.style.display = "none";
         return;
@@ -795,7 +1113,9 @@
   return {
     SATWA_ECONOMY,
     BERBURU_ECONOMY,
+    HUNTING_PLAN_PRESETS,
     evaluateBagProfit,
+    planHunting,
     computeRelativeDirection,
     filterAnimals,
     selectBestTarget,

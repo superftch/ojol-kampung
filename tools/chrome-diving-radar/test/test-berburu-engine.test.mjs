@@ -149,4 +149,51 @@ test("Berburu Radar & Sniper Engine", async (t) => {
     assert.match(injSrc, /chams3d:\s*false/);
     assert.match(injSrc, /cmd\.action === "setWallhack"/);
   });
+
+  await t.test("planHunting estimates profit, bullets, ROI, and recommended filter for max-cuan preset", () => {
+    const plan = berburu.planHunting(berburu.HUNTING_PLAN_PRESETS["max-cuan"]);
+    assert.equal(plan.totalTarget, 5);
+    assert.equal(plan.estimasiPeluru, 5);
+    assert.equal(plan.packPeluru, 1);
+    assert.equal(plan.omzetKoin, 29);
+    assert.equal(plan.biayaIzin, 5);
+    assert.equal(plan.biayaPeluru, 0.5);
+    assert.equal(plan.totalBiaya, 5.5);
+    assert.equal(plan.netProfit, 23.5);
+    assert.equal(plan.totalPorsi, 13);
+    assert.equal(plan.recommendedFilter, "high-roi");
+    assert.equal(plan.statusLabel, "UNTUNG");
+    assert.equal(plan.warnings.length, 0);
+  });
+
+  await t.test("planHunting flags quota violations, loss plans, and selects targeted filters", () => {
+    const babiOnly = berburu.planHunting({ babi: 3, ayam: 0, tupai: 0, tikus: 0, pakaiIzin: true, peluruPerSatwa: 2 });
+    assert.equal(babiOnly.recommendedFilter, "babi");
+    assert.equal(babiOnly.estimasiPeluru, 6);
+    assert.equal(babiOnly.biayaPeluru, 0.6);
+    assert.equal(babiOnly.netProfit, 18.4);
+
+    const overQuota = berburu.planHunting({ babi: 4, ayam: 3, pakaiIzin: true });
+    assert.equal(overQuota.melebihiKuotaBabi, true);
+    assert.equal(overQuota.melebihiKuotaHarian, true);
+    assert.ok(overQuota.warnings.length >= 2);
+
+    const hamaLoss = berburu.planHunting({ babi: 0, ayam: 0, tupai: 2, tikus: 3, pakaiIzin: true });
+    assert.equal(hamaLoss.recommendedFilter, "hama");
+    assert.equal(hamaLoss.statusLabel, "RUGI");
+    assert.equal(hamaLoss.netProfit, -2.1);
+    assert.ok(hamaLoss.warnings.some((w) => w.includes("rugi")));
+
+    const latihan = berburu.planHunting(berburu.HUNTING_PLAN_PRESETS.latihan);
+    assert.equal(latihan.biayaIzin, 0);
+    assert.equal(latihan.netProfit, 28.5);
+  });
+
+  await t.test("HUD includes pre-hunt planning and profit estimation controls", () => {
+    const hudSrc = fs.readFileSync(path.resolve(__dirname, "../berburu.js"), "utf8");
+    assert.match(hudSrc, /id="ks-bb-plan-toggle"/);
+    assert.match(hudSrc, /id="ks-bb-plan-summary"/);
+    assert.match(hudSrc, /id="ks-bb-plan-apply"/);
+    assert.match(hudSrc, /id="ks-bb-plan-babi"/);
+  });
 });

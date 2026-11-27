@@ -59,3 +59,10 @@ document.getElementById("btn-open-tpu").onclick = () => {
 document.getElementById("btn-open-berburu").onclick = () => {
   chrome.tabs.create({ url: "https://www.kampungsebelah.com/berburu" });
 };
+
+const btnOpenFutsal = document.getElementById("btn-open-futsal");
+if (btnOpenFutsal) {
+  btnOpenFutsal.onclick = () => {
+    chrome.tabs.create({ url: "https://www.kampungsebelah.com/" });
+  };
+}

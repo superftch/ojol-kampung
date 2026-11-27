@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "KampungSebelah - Diving, Mancing, Ojol, TPU & Berburu",
+  "name": "KampungSebelah - Diving, Mancing, Ojol, TPU, Berburu & Sepak Bola",
   "version": "2.6.0",
-  "description": "Radar & Auto-Pilot Diving Laut, Otomatisasi Mancing Pro, Auto-Ojol, TPU Pusaka Mbah Rukmi, serta Radar & Sniper Balistik Berburu untuk Kampung Sebelah.",
+  "description": "Radar & Auto-Pilot Diving Laut, Otomatisasi Mancing Pro, Auto-Ojol, TPU Pusaka Mbah Rukmi, Berburu Sniper, serta Radar & Auto-Play Sepak Bola / Futsal untuk Kampung Sebelah.",
   "permissions": [
     "storage"
   ],
@@ -27,7 +27,8 @@
         "mancing.js",
         "ojol.js",
         "tpu.js",
-        "berburu.js"
+        "berburu.js",
+        "futsal.js"
       ],
       "run_at": "document_start"
     }
@@ -40,7 +41,8 @@
         "diving-human.js",
         "diving-open.js",
         "diving-shark.js",
-        "berburu-inject.js"
+        "berburu-inject.js",
+        "futsal-inject.js"
       ],
       "matches": [
         "https://www.kampungsebelah.com/*",

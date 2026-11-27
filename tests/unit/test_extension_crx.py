@@ -51,7 +51,7 @@ def _parse_protobuf_fields(buf: bytes) -> dict[int, list[bytes]]:
 def test_build_extension_crx3_and_verify_signature(tmp_path: Path):
     crx_bytes, ext_id, version = build_extension_crx3(tmp_path)
     assert re.fullmatch(r"[a-p]{32}", ext_id)
-    assert version == "2.2.0"
+    assert version == "2.6.0"
 
     # Header magic + version + header_len
     assert crx_bytes[:4] == b"Cr24"
@@ -77,6 +77,8 @@ def test_build_extension_crx3_and_verify_signature(tmp_path: Path):
         names = zf.namelist()
         assert "manifest.json" in names
         assert "ojol.js" in names
+        assert "futsal.js" in names
+        assert "futsal-inject.js" in names
         assert not any(name.startswith("kampungsebelah-extension/") for name in names)
 
     # Verify RSA-SHA256 signature with OpenSSL
