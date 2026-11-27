@@ -1159,6 +1159,7 @@ def test_web_dashboard_finance_and_expense_history(admin_web):
     assert totals["total_income"] == "15.000"
     assert totals["total_expenses"] == "3.000"
     assert totals["total_net_profit"] == "12.000"
+    assert totals["total_salary_profit"] == "0"
     assert totals["income_growth"]["percent"] == 50.0
     assert totals["income_growth"]["direction"] == "up"
     assert totals["income_growth"]["text"] == "+50.0%"
@@ -1171,6 +1172,7 @@ def test_web_dashboard_finance_and_expense_history(admin_web):
     assert fin["today_income"] == "15.000"
     assert fin["today_expenses"] == "3.000"
     assert fin["today_net_profit"] == "12.000"
+    assert fin["salary_profit"] == "0"
     assert fin["profit_growth"]["direction"] == "up"
     assert len(fin["expense_history"]) == 2
     latest_exp = fin["expense_history"][0]
@@ -1183,11 +1185,13 @@ def test_web_dashboard_finance_and_expense_history(admin_web):
     assert html_res.status_code == 200
     assert "fleetTotalExpenses" in html_res.text
     assert "fleetTotalNetProfit" in html_res.text
+    assert "fleetTotalSalary" in html_res.text
     assert "fleetIncomeGrowth" in html_res.text
     assert "fleetNetGrowth" in html_res.text
     assert "accProfitVal" in html_res.text
     assert "accExpenseVal" in html_res.text
     assert "accNetProfitVal" in html_res.text
+    assert "accSalaryVal" in html_res.text
     assert "expenseList" in html_res.text
     assert "Riwayat Pengeluaran" in html_res.text
 
@@ -1755,3 +1759,36 @@ async def test_kerja_target_poin_api_and_dashboard(admin_web):
 
     dash = client.get(f"/api/dashboard?account_id={acc_id}").json()
     assert dash["kerja_target_poin"] == 60
+
+
+def test_dashboard_salary_profit_from_job_snapshot(admin_web):
+    from app.core.storage import write_private
+
+    client, manager = admin_web
+    user = client.get("/api/auth/me").json()["user"]
+    owner = manager.registry.owner_for_user(user)
+    acc = manager.registry.create(owner, "Salary Account")
+    acc_service = manager.service(acc["id"])
+    write_private(
+        acc_service.settings.runtime_dir / "status.json",
+        {
+            "snapshot": {
+                "wallet": "10",
+                "fuel": 100,
+                "condition": 100,
+                "data": 100,
+                "phase": "idle",
+                "job": {
+                    "profession": "Teller bank",
+                    "rateMilliDay": 3300,
+                    "ekonomiBps": 10000,
+                },
+            }
+        },
+    )
+
+    dash = client.get(f"/api/dashboard?account_id={acc['id']}").json()
+    assert dash["finance"]["salary_profit"] == "6,6"
+    assert dash["finance"]["salary_profit_num"] == 6.6
+    assert dash["all_accounts_summary"]["total_salary_profit"] == "6,6"
+    assert dash["all_accounts_summary"]["total_salary_profit_num"] == 6.6

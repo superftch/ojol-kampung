@@ -405,6 +405,7 @@ function renderDashboard(data) {
     document.getElementById('fleetTotalExpenses').textContent = (totals.total_expenses ?? '0') + ' koin';
     document.getElementById('fleetTotalNetProfit').textContent = (totals.total_net_profit ?? '0') + ' koin';
     renderGrowthBadge('fleetNetGrowth', totals.profit_growth);
+    document.getElementById('fleetTotalSalary').textContent = (totals.total_salary_profit ?? '0') + ' koin/hari';
     document.getElementById('fleetTotalTrips').textContent = totals.total_trips ?? 0;
     document.getElementById('fleetCountAccounts').textContent = accounts.length + ' akun';
     document.getElementById('fleetCountWorkers').textContent = (totals.active_workers ?? 0) + ' dari ' + accounts.length;
@@ -443,6 +444,7 @@ function renderDashboard(data) {
     document.getElementById('accExpenseVal').textContent = (fin.today_expenses ?? '0') + ' koin';
     document.getElementById('accNetProfitVal').textContent = (fin.today_net_profit ?? '0') + ' koin';
     renderGrowthBadge('accNetGrowth', fin.profit_growth);
+    document.getElementById('accSalaryVal').textContent = (fin.salary_profit ?? '0') + ' koin/hari';
     document.getElementById('tripsVal').textContent = sum.trips ?? '—';
     document.getElementById('presenceVal').textContent = sum.online ? 'Online di game' : 'Offline di game';
 

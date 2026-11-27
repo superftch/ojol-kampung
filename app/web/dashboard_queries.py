@@ -65,6 +65,25 @@ def calculate_growth(today_val: Decimal, yesterday_val: Decimal) -> dict[str, An
     return {"percent": 0.0, "text": "0.0%", "direction": "neutral"}
 
 
+def _snapshot_salary_profit(snapshot: dict[str, Any]) -> Decimal:
+    """Compute daily job salary (in koin) from the snapshot's active job object."""
+    job = snapshot.get("job")
+    if not isinstance(job, dict):
+        return Decimal(0)
+    try:
+        rate_milli = int(job.get("rateMilliDay") or 0)
+    except (TypeError, ValueError):
+        return Decimal(0)
+    if rate_milli <= 0:
+        return Decimal(0)
+    try:
+        ek_bps = int(job.get("ekonomiBps") or 0)
+    except (TypeError, ValueError):
+        ek_bps = 0
+    ek_milli = (rate_milli * ek_bps) // 10000
+    return Decimal(rate_milli + ek_milli) / Decimal(1000)
+
+
 def _read_day_cashflows_ro(directory: Path, day: date) -> tuple[Decimal, Decimal]:
     """Read income and expense totals for a WIB day using a read-only SQLite connection."""
     db_file = directory / "history.sqlite3"
@@ -515,6 +534,7 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
     total_income = Decimal(0)
     total_expenses = Decimal(0)
     total_net_profit = Decimal(0)
+    total_salary_profit = Decimal(0)
     total_yesterday_net = Decimal(0)
     total_yesterday_income = Decimal(0)
     total_trips = 0
@@ -551,6 +571,7 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
 
         effective_income = max(acc_income_num, acc_journal_income)
         effective_net = effective_income - acc_expenses
+        acc_salary_profit = _snapshot_salary_profit(acc_snap)
         acc_growth_net = calculate_growth(effective_net, acc_yest_net)
         acc_growth_inc = calculate_growth(effective_income, acc_yest_income)
 
@@ -560,6 +581,7 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
         total_income += effective_income
         total_expenses += acc_expenses
         total_net_profit += effective_net
+        total_salary_profit += acc_salary_profit
         total_yesterday_net += acc_yest_net
         total_yesterday_income += acc_yest_income
         total_trips += acc_trips
@@ -590,6 +612,8 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
                 "today_expenses_num": float(acc_expenses),
                 "today_net_profit": format_coins(effective_net),
                 "today_net_profit_num": float(effective_net),
+                "salary_profit": format_coins(acc_salary_profit),
+                "salary_profit_num": float(acc_salary_profit),
                 "profit_growth": acc_growth_net,
                 "income_growth": acc_growth_inc,
                 "trips": acc_trips,
@@ -607,6 +631,8 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
                 "today_expenses_num": float(acc_expenses),
                 "today_net_profit": format_coins(effective_net),
                 "today_net_profit_num": float(effective_net),
+                "salary_profit": format_coins(acc_salary_profit),
+                "salary_profit_num": float(acc_salary_profit),
                 "profit_growth": acc_growth_net,
                 "income_growth": acc_growth_inc,
             }
@@ -623,6 +649,8 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
         "total_expenses_num": float(total_expenses),
         "total_net_profit": format_coins(total_net_profit),
         "total_net_profit_num": float(total_net_profit),
+        "total_salary_profit": format_coins(total_salary_profit),
+        "total_salary_profit_num": float(total_salary_profit),
         "profit_growth": calculate_growth(total_net_profit, total_yesterday_net),
         "income_growth": calculate_growth(total_income, total_yesterday_income),
         "total_trips": total_trips,
@@ -636,6 +664,8 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
         "today_expenses_num": 0.0,
         "today_net_profit": "0",
         "today_net_profit_num": 0.0,
+        "salary_profit": "0",
+        "salary_profit_num": 0.0,
         "profit_growth": {"percent": 0.0, "text": "0.0%", "direction": "neutral"},
         "income_growth": {"percent": 0.0, "text": "0.0%", "direction": "neutral"},
         "expense_history": [],
