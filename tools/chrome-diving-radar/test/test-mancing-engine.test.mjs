@@ -1,36 +1,70 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import vm from "node:vm";
+import { fileURLToPath } from "node:url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const extDir = path.resolve(__dirname, "..");
 
 function humanJitter(min, max) {
   return Math.floor(min + Math.random() * (max - min + 1));
 }
 
-// Reel tension controller logic with dynamic human jitter & zero-loss guard
+// Long-hold hysteresis reel tension controller (30% <-> 80% with per-cycle jitter & zero-loss guard)
 class MockMancingReelController {
-  constructor(modeNatural = true) {
+  constructor(modeNatural = true, zeroLossGuard = true) {
     this.modeNatural = modeNatural;
+    this.zeroLossGuard = zeroLossGuard;
     this.isPulling = false;
+    this.reelCoolingDown = false;
     this.strikeTriggered = false;
-    this.baseMaxTension = 0.80;
-    this.baseMinTension = 0.61;
+    this.baseMaxTension = 80;
+    this.baseMinTension = 30;
+    this.reelTargetMax = this.rollReelMax();
+    this.reelTargetMin = this.rollReelMin();
   }
 
-  evaluateTension(tension, isDanger) {
-    const jitterMax = this.modeNatural ? (humanJitter(-2, 2) / 100) : 0;
-    const jitterMin = this.modeNatural ? (humanJitter(-2, 2) / 100) : 0;
-    const effectiveMax = this.baseMaxTension + jitterMax;
-    const effectiveMin = this.baseMinTension + jitterMin;
+  rollReelMax() {
+    if (!this.zeroLossGuard) return 84;
+    return this.baseMaxTension + (this.modeNatural ? humanJitter(-2, 2) : 0);
+  }
 
-    if (tension > effectiveMax || isDanger) {
-      if (this.isPulling) {
-        this.isPulling = false;
-        return "RELEASE";
+  rollReelMin() {
+    return this.baseMinTension + (this.modeNatural ? humanJitter(-2, 2) : 0);
+  }
+
+  resetReelCycle() {
+    this.reelCoolingDown = false;
+    this.reelTargetMax = this.rollReelMax();
+    this.reelTargetMin = this.rollReelMin();
+  }
+
+  evaluateTension(tensionPct, isDanger, isHoldingDom = this.isPulling) {
+    const hitCeiling = (this.zeroLossGuard && isDanger) || tensionPct >= this.reelTargetMax;
+    if (hitCeiling) {
+      if (!this.reelCoolingDown) {
+        this.reelCoolingDown = true;
+        this.reelTargetMin = this.rollReelMin();
       }
-    } else if (!isDanger && tension < effectiveMin) {
-      if (!this.isPulling) {
+      this.isPulling = false;
+      return "RELEASE";
+    }
+    if (this.reelCoolingDown) {
+      const safeToHold = !(this.zeroLossGuard && isDanger);
+      if (safeToHold && tensionPct <= this.reelTargetMin) {
+        this.reelCoolingDown = false;
+        this.reelTargetMax = this.rollReelMax();
         this.isPulling = true;
         return "PULL";
       }
+      this.isPulling = false;
+      return "COOLDOWN_RELEASE";
+    }
+    if (!this.isPulling || !isHoldingDom) {
+      this.isPulling = true;
+      return "PULL";
     }
     return "MAINTAIN";
   }
@@ -52,35 +86,55 @@ class MockMancingReelController {
 }
 
 test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
-  await t.test("Reel tension releases on high tension or danger attribute (Zero-Loss Line Snap)", () => {
-    const ctrl = new MockMancingReelController(true);
-    ctrl.isPulling = true;
+  await t.test("Long-hold hysteresis releases at ceiling/danger and stays released until ~30%", () => {
+    const ctrl = new MockMancingReelController(false, true);
+    assert.equal(ctrl.reelTargetMax, 80);
+    assert.equal(ctrl.reelTargetMin, 30);
 
-    // Normal safe tension (0.70 is in the sweet spot)
-    assert.equal(ctrl.evaluateTension(0.70, false), "MAINTAIN");
+    // Starts pulling smoothly from 30% -> 80%
+    assert.equal(ctrl.evaluateTension(40, false, false), "PULL");
     assert.equal(ctrl.isPulling, true);
+    assert.equal(ctrl.evaluateTension(70, false, true), "MAINTAIN");
 
-    // High tension threshold exceeded (> 0.83) -> must release!
-    assert.equal(ctrl.evaluateTension(0.84, false), "RELEASE");
+    // Hits ceiling (80%) -> enters cooldown and releases
+    assert.equal(ctrl.evaluateTension(80, false, true), "RELEASE");
+    assert.equal(ctrl.isPulling, false);
+    assert.equal(ctrl.reelCoolingDown, true);
+
+    // Must NOT immediately re-grab at 79% or 55% during cooldown (fixes 40ms press/release spam)
+    assert.equal(ctrl.evaluateTension(79, false, false), "COOLDOWN_RELEASE");
+    assert.equal(ctrl.evaluateTension(55, false, false), "COOLDOWN_RELEASE");
     assert.equal(ctrl.isPulling, false);
 
-    // If danger flag (data-merah) is true even at 0.72 -> must release immediately!
-    ctrl.isPulling = true;
-    assert.equal(ctrl.evaluateTension(0.72, true), "RELEASE");
+    // Drops to <= 30% -> exits cooldown and begins next long hold
+    assert.equal(ctrl.evaluateTension(30, false, false), "PULL");
+    assert.equal(ctrl.isPulling, true);
+    assert.equal(ctrl.reelCoolingDown, false);
+
+    // Danger flag (data-merah) at 65% immediately triggers release & cooldown
+    assert.equal(ctrl.evaluateTension(65, true, true), "RELEASE");
     assert.equal(ctrl.isPulling, false);
+    assert.equal(ctrl.reelCoolingDown, true);
+
+    // Reset clears cooldown for next fish
+    ctrl.resetReelCycle();
+    assert.equal(ctrl.reelCoolingDown, false);
   });
 
-  await t.test("Reel tension pulls when slack (< 0.58) to prevent fish escape", () => {
-    const ctrl = new MockMancingReelController(true);
-    ctrl.isPulling = false;
+  await t.test("Long-hold hysteresis re-presses if DOM drops data-tahan mid-hold, and respects Zero-Loss OFF ceiling (84%)", () => {
+    const ctrl = new MockMancingReelController(false, true);
+    ctrl.isPulling = true;
+    ctrl.reelCoolingDown = false;
 
-    // Moderate slack
-    assert.equal(ctrl.evaluateTension(0.68, false), "MAINTAIN");
-    assert.equal(ctrl.isPulling, false);
-
-    // Slack threshold exceeded (< 0.58) -> must pull!
-    assert.equal(ctrl.evaluateTension(0.55, false), "PULL");
+    // Mid-hold at 50%, DOM dropped data-tahan -> re-presses without spamming
+    assert.equal(ctrl.evaluateTension(50, false, false), "PULL");
     assert.equal(ctrl.isPulling, true);
+
+    // Zero-Loss OFF uses 84% ceiling
+    const loose = new MockMancingReelController(false, false);
+    assert.equal(loose.reelTargetMax, 84);
+    assert.equal(loose.evaluateTension(82, true, true), "PULL");
+    assert.equal(loose.evaluateTension(84, false, true), "RELEASE");
   });
 
   await t.test("Strike initiates upon sambar phase with human jitter range", () => {
@@ -181,30 +235,43 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     assert.equal(getActionDelay(0, false), 30);
   });
 
-  await t.test("Smart tension controller prevents slack line escape (Anti-Kendur Zero-Loss)", () => {
-    function evaluateTensionControl({ isRed, tension, effectiveMax, effectiveMin, isHolding }) {
-      if (isRed || tension > effectiveMax) {
-        return "RELEASE";
+  await t.test("Smart tension hysteresis handles slack recovery without 40ms spam", () => {
+    function evaluateHysteresisTick({ isRed, tension, reelTargetMax, reelTargetMin, reelCoolingDown, isHoldingDom }) {
+      if (isRed || tension >= reelTargetMax) {
+        return { action: "RELEASE", reelCoolingDown: true };
       }
-      // Proteksi anti-kendur mutlak: jika tidak menahan saat aman, atau tegangan di bawah batas bawah
-      if (!isRed && (tension < effectiveMin || !isHolding)) {
-        return "HOLD";
+      if (reelCoolingDown) {
+        if (!isRed && tension <= reelTargetMin) {
+          return { action: "HOLD", reelCoolingDown: false };
+        }
+        return { action: "RELEASE", reelCoolingDown: true };
       }
-      return "MAINTAIN";
+      if (!isHoldingDom) {
+        return { action: "HOLD", reelCoolingDown: false };
+      }
+      return { action: "MAINTAIN", reelCoolingDown: false };
     }
 
-    // High tension / danger -> release
-    assert.equal(evaluateTensionControl({ isRed: true, tension: 70, effectiveMax: 80, effectiveMin: 61, isHolding: true }), "RELEASE");
-    assert.equal(evaluateTensionControl({ isRed: false, tension: 85, effectiveMax: 80, effectiveMin: 61, isHolding: true }), "RELEASE");
-
-    // Slack danger: tension dropped to 20% while holding was dropped -> MUST HOLD IMMEDIATELY
-    assert.equal(evaluateTensionControl({ isRed: false, tension: 20, effectiveMax: 80, effectiveMin: 61, isHolding: false }), "HOLD");
-
-    // Tension below minimum threshold (e.g. 50%) -> MUST HOLD
-    assert.equal(evaluateTensionControl({ isRed: false, tension: 50, effectiveMax: 80, effectiveMin: 61, isHolding: true }), "HOLD");
-
-    // Sweet spot between 61% and 80% with hold active -> MAINTAIN
-    assert.equal(evaluateTensionControl({ isRed: false, tension: 72, effectiveMax: 80, effectiveMin: 61, isHolding: true }), "MAINTAIN");
+    assert.deepEqual(
+      evaluateHysteresisTick({ isRed: true, tension: 70, reelTargetMax: 80, reelTargetMin: 30, reelCoolingDown: false, isHoldingDom: true }),
+      { action: "RELEASE", reelCoolingDown: true }
+    );
+    assert.deepEqual(
+      evaluateHysteresisTick({ isRed: false, tension: 78, reelTargetMax: 80, reelTargetMin: 30, reelCoolingDown: true, isHoldingDom: false }),
+      { action: "RELEASE", reelCoolingDown: true }
+    );
+    assert.deepEqual(
+      evaluateHysteresisTick({ isRed: false, tension: 28, reelTargetMax: 80, reelTargetMin: 30, reelCoolingDown: true, isHoldingDom: false }),
+      { action: "HOLD", reelCoolingDown: false }
+    );
+    assert.deepEqual(
+      evaluateHysteresisTick({ isRed: false, tension: 50, reelTargetMax: 80, reelTargetMin: 30, reelCoolingDown: false, isHoldingDom: false }),
+      { action: "HOLD", reelCoolingDown: false }
+    );
+    assert.deepEqual(
+      evaluateHysteresisTick({ isRed: false, tension: 65, reelTargetMax: 80, reelTargetMin: 30, reelCoolingDown: false, isHoldingDom: true }),
+      { action: "MAINTAIN", reelCoolingDown: false }
+    );
   });
 
   await t.test("Hotspot finder selects most crowded spot and computes steering", () => {
@@ -318,42 +385,101 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     assert.equal(evaluateNavigation(16, "Lumayan", targetUdang), "READY_TO_CAST");
   });
 
-  await t.test("Anti-Spin Guard & Pulsed Micro-Steering prevents circular left-turn loop", () => {
-    // Model kemudi dengan Anti-Spin Guard
-    function computeSteering({ targetHeading, shipH, stuckCount }) {
-      // Jika shipH macet / tidak ada update Three.js (> 10 tick), kemudi dipaksa netral 0 (maju lurus ke laut)
-      if (stuckCount > 10) {
-        return { gas: 1, belok: 0, reason: "ANTI_SPIN_GUARD" };
-      }
+  await t.test("Proportional steering, turning-only stuck guard, smart braking, and polarity self-correction", () => {
+    function createSteerState() {
+      return {
+        lastRecordedShipH: null,
+        shipHStuckCount: 0,
+        lastCommandedBelok: 0,
+        lastAbsHeadingDiff: null,
+        wrongTurnStreak: 0,
+        navTurnSign: 1
+      };
+    }
 
+    function stepSteering(state, { targetHeading, shipH, dist, synced = true }) {
       let diff = (targetHeading - shipH + Math.PI) % (2 * Math.PI);
       if (diff < 0) diff += 2 * Math.PI;
       diff -= Math.PI;
+      const absDiff = Math.abs(diff);
 
-      // Deadband 0.15 rad (~8.5 derajat)
-      if (Math.abs(diff) <= 0.15) {
-        return { gas: 1, belok: 0, reason: "ALIGNED" };
+      if (absDiff > 0.04 && (Math.abs(state.lastCommandedBelok) > 0.15 || state.shipHStuckCount > 25)) {
+        if (state.lastRecordedShipH !== null && Math.abs(shipH - state.lastRecordedShipH) < 0.0008) {
+          state.shipHStuckCount++;
+        } else {
+          state.shipHStuckCount = 0;
+          state.lastRecordedShipH = shipH;
+        }
+        if (Math.abs(state.lastCommandedBelok) > 0.15 && state.lastAbsHeadingDiff !== null && absDiff > 0.35 && absDiff < 2.6) {
+          if (absDiff > state.lastAbsHeadingDiff + 0.005) {
+            state.wrongTurnStreak++;
+            if (state.wrongTurnStreak >= 8) {
+              state.navTurnSign *= -1;
+              state.wrongTurnStreak = 0;
+            }
+          } else if (absDiff < state.lastAbsHeadingDiff - 0.003) {
+            state.wrongTurnStreak = 0;
+          }
+        }
+      } else {
+        state.shipHStuckCount = 0;
+        state.wrongTurnStreak = 0;
+        state.lastRecordedShipH = shipH;
       }
-      return { gas: 1, belok: diff > 0 ? 1 : -1, reason: diff > 0 ? "TURN_LEFT_PULSE" : "TURN_RIGHT_PULSE" };
+      state.lastAbsHeadingDiff = absDiff;
+
+      let belok = 0;
+      if (synced && state.shipHStuckCount <= 25 && absDiff > 0.04) {
+        const rawTurn = Math.max(-1, Math.min(1, diff / 0.45));
+        belok = rawTurn * state.navTurnSign;
+      }
+
+      let gas = 1.0;
+      if (absDiff > 1.05) gas = 0.15;
+      else if (absDiff > 0.45) gas = 0.55;
+      else if (dist < 25) gas = Math.max(0.25, Math.min(1, dist / 25));
+
+      state.lastCommandedBelok = belok;
+      return { gas, belok };
     }
 
-    // Kasus 1: Heading normal, target di kiri -> Belok kiri pulse
-    const steerNormal = computeSteering({ targetHeading: 2.8, shipH: 2.2, stuckCount: 0 });
-    assert.equal(steerNormal.belok, 1);
-    assert.equal(steerNormal.reason, "TURN_LEFT_PULSE");
+    // 1. Sailing straight for 50 ticks with constant shipH must NEVER trip stuck guard!
+    const straightState = createSteerState();
+    for (let i = 0; i < 50; i++) {
+      const out = stepSteering(straightState, { targetHeading: Math.PI, shipH: Math.PI, dist: 100 });
+      assert.equal(out.belok, 0);
+      assert.equal(out.gas, 1.0);
+    }
+    assert.equal(straightState.shipHStuckCount, 0);
+    // Subsequent turn still responds immediately
+    const afterStraight = stepSteering(straightState, { targetHeading: Math.PI - 0.3, shipH: Math.PI, dist: 100 });
+    assert.ok(afterStraight.belok < -0.5, "Must steer normally after sailing straight");
 
-    // Kasus 2: Target sudah sejajar dalam toleransi deadband (0.10 rad) -> Kemudi netral lurus
-    const steerAligned = computeSteering({ targetHeading: 3.14, shipH: 3.20, stuckCount: 0 });
-    assert.equal(steerAligned.belok, 0);
-    assert.equal(steerAligned.reason, "ALIGNED");
+    // 2. Sharp turn (> 1.05 rad) slows gas to 0.15 to avoid orbiting; close approach (< 25m) decelerates
+    const turnState = createSteerState();
+    const sharp = stepSteering(turnState, { targetHeading: 0, shipH: 1.5, dist: 80 });
+    assert.equal(sharp.gas, 0.15);
+    const close = stepSteering(createSteerState(), { targetHeading: 0, shipH: 0.01, dist: 10 });
+    assert.equal(close.belok, 0);
+    assert.equal(close.gas, 0.4);
 
-    // Kasus 3: Bug yang dialami user sebelumnya (heading macet di 3.14 selama navigasi)
-    // Tanpa guard, belok kiri dipencet terus -> Kapal muter-muter.
-    // Dengan Anti-Spin Guard, saat stuckCount > 10, kemudi otomatis netral 0!
-    const steerStuck = computeSteering({ targetHeading: 1.5, shipH: 3.14, stuckCount: 15 });
-    assert.equal(steerStuck.belok, 0);
-    assert.equal(steerStuck.gas, 1);
-    assert.equal(steerStuck.reason, "ANTI_SPIN_GUARD");
+    // 3. Polarity auto-correction flips navTurnSign after 8 diverging ticks while actively turning
+    const wrongState = createSteerState();
+    wrongState.lastCommandedBelok = 1;
+    let h = 1.0;
+    for (let i = 0; i < 10; i++) {
+      stepSteering(wrongState, { targetHeading: 1.8, shipH: h, dist: 100 });
+      h -= 0.05; // heading drifting away from 1.8 despite turn command
+    }
+    assert.equal(wrongState.navTurnSign, -1);
+
+    // 4. Stuck guard triggers only when actively turning and heading stays frozen (> 25 ticks)
+    const frozenState = createSteerState();
+    let lastOut = { belok: 1, gas: 1 };
+    for (let i = 0; i < 28; i++) {
+      lastOut = stepSteering(frozenState, { targetHeading: 2.5, shipH: 1.5, dist: 100 });
+    }
+    assert.equal(lastOut.belok, 0, "Frozen heading during active turn eventually zeroes belok");
   });
 
   await t.test("Auto-Umpan selectors match KampungSebelah real shop testids (cumi, udang, cacing)", () => {
@@ -528,40 +654,38 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     assert.equal(canProceedToCelup({ isSheetOpen: false, lootPending: false, autoUmpanPending: false, autoUpgradePending: false }), true);
   });
 
-  await t.test("Celup deep-sea spot selection prioritizes >=30m and re-navigates when crowd turns Sepi", () => {
-    function calcDepth(x, z) {
-      let n = Math.min(1, Math.max(0, (-z - 10) / 630));
-      return Math.max(1.5, 2 + n * n * 18 + 20 * n + Math.sin(0.021 * x + 1.3) * Math.cos(0.017 * z) * 3 * n);
+  await t.test("Celup deep-sea arrival stops immediately on 5/5 sonar bars or inner core (not outer 3-4 bar rim)", () => {
+    function shouldStopAtSpot({ dist, radius, sonarDepth, sonarCrowd, sonarBars, minDepth = 30, maxDepth = null, optimalDepth = 32, spotIsRamai = true }) {
+      const inDepthRange = sonarDepth >= minDepth && (maxDepth == null || sonarDepth <= maxDepth);
+      const coreRadius = Math.min(8, Math.max(5, (radius || 30) * 0.25));
+      const reachedFiveBars = typeof sonarBars === "number" && sonarBars >= 5 && inDepthRange;
+      const reachedSpotCore = dist <= coreRadius && inDepthRange;
+      const reachedLumayanFallback = !spotIsRamai && sonarCrowd === "Lumayan" && inDepthRange;
+      const reachedOptimalDepth = !spotIsRamai && sonarDepth >= optimalDepth && inDepthRange && sonarCrowd !== "Sepi";
+      return reachedFiveBars || reachedSpotCore || reachedLumayanFallback || reachedOptimalDepth;
     }
 
-    function scoreSpot(s, shipX, shipZ) {
-      const d = calcDepth(s.x, s.z);
-      const dist = Math.hypot(s.x - shipX, s.z - shipZ);
-      const depthBonus = d >= 30 ? 220 : d >= 28 ? 150 : d >= 24 ? 100 : d >= 18 ? 40 : 0;
-      return { ...s, depth: d, dist, score: (s.kaya * 300) + depthBonus - (dist * 0.05) };
-    }
+    // Outer rim of Ramai spot (dist=20m, only 3 bars) -> keep sailing toward core/5-bar zone!
+    assert.equal(shouldStopAtSpot({ dist: 20, radius: 30, sonarDepth: 33, sonarCrowd: "Ramai", sonarBars: 3 }), false);
 
-    const spots = [
-      scoreSpot({ x: 0, z: -495, r: 30, kaya: 0.5 }, 0, -46), // ~28m
-      scoreSpot({ x: 0, z: -560, r: 30, kaya: 0.5 }, 0, -46)  // >= 30m
-    ];
-    spots.sort((a, b) => b.score - a.score);
-    assert.ok(spots[0].depth >= 30, `Deep >=30m spot must beat ~28m spot (got ${spots[0].depth.toFixed(2)}m)`);
+    // Hits 5/5 sonar bars even at 18m from dead center -> stop immediately!
+    assert.equal(shouldStopAtSpot({ dist: 18, radius: 30, sonarDepth: 33, sonarCrowd: "Ramai", sonarBars: 5 }), true);
 
-    // Re-navigate when sonar turns Sepi even if depth >= optimalDepth (32m)
-    const minDepth = 30;
-    const optimalDepth = 32;
-    const allowCrowdStopAt = 30;
-    function shouldStopAtSpot({ dist, radius, sonarDepth, sonarCrowd }) {
-      const reachedSpotRadius = dist <= Math.max(16, (radius || 30) * 0.65) && sonarDepth >= minDepth;
-      const reachedCrowdSonar = (sonarCrowd === "Ramai" || (sonarCrowd === "Lumayan" && sonarDepth >= 22)) && sonarDepth >= allowCrowdStopAt;
-      const reachedOptimalDepth = sonarDepth >= optimalDepth && sonarCrowd !== "Sepi";
-      return reachedSpotRadius || reachedCrowdSonar || reachedOptimalDepth;
-    }
+    // 5/5 bars in too-shallow water (12m < 30m) -> do NOT stop
+    assert.equal(shouldStopAtSpot({ dist: 10, radius: 30, sonarDepth: 12, sonarCrowd: "Ramai", sonarBars: 5 }), false);
 
-    assert.equal(shouldStopAtSpot({ dist: 47, radius: 30, sonarDepth: 33, sonarCrowd: "Sepi" }), false);
-    assert.equal(shouldStopAtSpot({ dist: 10, radius: 30, sonarDepth: 30, sonarCrowd: "Ramai" }), true);
-    assert.equal(shouldStopAtSpot({ dist: 10, radius: 30, sonarDepth: 12, sonarCrowd: "Ramai" }), false);
+    // Spot caps at 4 bars -> stops once inside inner core (<= 7.5m for r=30)
+    assert.equal(shouldStopAtSpot({ dist: 7, radius: 30, sonarDepth: 32, sonarCrowd: "Ramai", sonarBars: 4 }), true);
+
+    // Shallow ternak-ikan target (minDepth=2, maxDepth=10): rejects 32m deep water even with 5/5 bars
+    assert.equal(
+      shouldStopAtSpot({ dist: 5, radius: 30, sonarDepth: 32, sonarCrowd: "Ramai", sonarBars: 5, minDepth: 2, maxDepth: 10 }),
+      false
+    );
+    assert.equal(
+      shouldStopAtSpot({ dist: 12, radius: 30, sonarDepth: 6, sonarCrowd: "Ramai", sonarBars: 5, minDepth: 2, maxDepth: 10 }),
+      true
+    );
   });
 
   await t.test("Trash catch ('SAMPAH LAUT' / 'Buang ke tempat sampah') and 40-slot Smart Profit strategy (20 sell + 20 bag)", () => {
@@ -881,49 +1005,243 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
       { action: "BUY_NEW", equip: "umpan-cumi" }
     );
 
-    // Batching: collect min(5, sisaSlot) umpan-ikan before switching and sailing to >=30m
+    // Batching: collect min(10, sisaSlot) umpan-ikan before switching and sailing to >=30m
     function shouldSwitchToUmpanIkan({ strategiUmpan, equipped, umpanIkanStok, sisaSlot }) {
       if (strategiUmpan !== "ternak-ikan" || equipped !== "umpan-cacing") return false;
-      const batchTarget = Math.min(5, Math.max(1, sisaSlot));
+      const batchTarget = Math.min(10, Math.max(1, sisaSlot));
       return umpanIkanStok >= batchTarget;
     }
 
-    assert.equal(shouldSwitchToUmpanIkan({ strategiUmpan: "ternak-ikan", equipped: "umpan-cacing", umpanIkanStok: 2, sisaSlot: 20 }), false);
-    assert.equal(shouldSwitchToUmpanIkan({ strategiUmpan: "ternak-ikan", equipped: "umpan-cacing", umpanIkanStok: 5, sisaSlot: 20 }), true);
+    assert.equal(shouldSwitchToUmpanIkan({ strategiUmpan: "ternak-ikan", equipped: "umpan-cacing", umpanIkanStok: 5, sisaSlot: 20 }), false);
+    assert.equal(shouldSwitchToUmpanIkan({ strategiUmpan: "ternak-ikan", equipped: "umpan-cacing", umpanIkanStok: 10, sisaSlot: 20 }), true);
     assert.equal(shouldSwitchToUmpanIkan({ strategiUmpan: "ternak-ikan", equipped: "umpan-cacing", umpanIkanStok: 3, sisaSlot: 3 }), true);
 
-    // Area ranking: Tier 3 (depth >= minDepth AND kaya >= 0.45 Ramai) beats shallow Ramai or deep Lumayan
+    // Area ranking: Tier 4 (5-bar >= 0.78 + meetsDepth) beats Tier 3 (Ramai >= 0.45 + meetsDepth)
     const RAMAI_MIN_KAYA = 0.45;
-    function rankAreas(spots, minDepth) {
+    const FIVE_BAR_MIN_KAYA = 0.78;
+    function rankAreas(spots, minDepth, maxDepth = null) {
       return spots
         .map(s => {
-          const meetsDepth = s.depth >= minDepth;
+          const meetsDepth = s.depth >= minDepth && (maxDepth === null || s.depth <= maxDepth);
           const isRamai = s.kaya >= RAMAI_MIN_KAYA;
-          const tier = (meetsDepth && isRamai) ? 3 : meetsDepth ? 2 : isRamai ? 1 : 0;
-          const score = (tier * 1000) + (s.kaya * 400) + (s.depth >= 30 ? 120 : s.depth) - (s.dist * 0.05);
+          const isFiveBar = s.kaya >= FIVE_BAR_MIN_KAYA;
+          const tier = (meetsDepth && isFiveBar) ? 4 : (meetsDepth && isRamai) ? 3 : meetsDepth ? 2 : isRamai ? 1 : 0;
+          const score = (tier * 1000) + (s.kaya * 600) + (s.depth >= 30 ? 120 : s.depth) - (s.dist * 0.08);
           return { ...s, tier, score };
         })
         .sort((a, b) => b.score - a.score);
     }
 
     const ranked = rankAreas([
-      { id: "shallow_ramai", depth: 10, kaya: 0.90, dist: 50 },
+      { id: "shallow_5bar", depth: 10, kaya: 0.90, dist: 50 },
       { id: "deep_lumayan", depth: 33, kaya: 0.35, dist: 200 },
-      { id: "deep_ramai", depth: 32, kaya: 0.55, dist: 450 }
+      { id: "deep_ramai", depth: 32, kaya: 0.55, dist: 150 },
+      { id: "deep_5bar", depth: 34, kaya: 0.85, dist: 450 }
     ], 30);
-    assert.equal(ranked[0].id, "deep_ramai");
-    assert.equal(ranked[0].tier, 3);
-    assert.equal(ranked[1].id, "deep_lumayan");
+    assert.equal(ranked[0].id, "deep_5bar");
+    assert.equal(ranked[0].tier, 4);
+    assert.equal(ranked[1].id, "deep_ramai");
+    assert.equal(ranked[1].tier, 3);
 
-    // In ternak-ikan mode too: small fish -> JADIKAN_UMPAN, medium (< 1.00 koin) -> LEPAS (if safe reserve), >= 1.00 -> JUAL
-    function decideTernakLoot({ isSmallFish, sellPrice, sisaTas, hasUmpanIkanBtn, hasSafeReserve = true }) {
+    // Default selectiveRelease OFF: medium fish (< 1.00 koin) is saved instead of released; opt-in ON releases it
+    function decideTernakLoot({ isSmallFish, sellPrice, sisaTas, hasUmpanIkanBtn, selectiveRelease = false, hasSafeReserve = true }) {
       if (isSmallFish && hasUmpanIkanBtn) return "JADIKAN_UMPAN";
       if (sellPrice >= 1.00) return "JUAL";
-      if (sellPrice < 1.00 && hasSafeReserve) return "LEPAS";
+      if (selectiveRelease && sellPrice < 1.00 && hasSafeReserve) return "LEPAS";
       if (sisaTas > 0) return "SIMPAN";
       return "JUAL_TAS_PENUH";
     }
-    assert.equal(decideTernakLoot({ isSmallFish: false, sellPrice: 0.83, sisaTas: 15, hasUmpanIkanBtn: false }), "LEPAS");
+    assert.equal(decideTernakLoot({ isSmallFish: false, sellPrice: 0.83, sisaTas: 15, hasUmpanIkanBtn: false, selectiveRelease: false }), "SIMPAN");
+    assert.equal(decideTernakLoot({ isSmallFish: false, sellPrice: 0.83, sisaTas: 15, hasUmpanIkanBtn: false, selectiveRelease: true }), "LEPAS");
     assert.equal(decideTernakLoot({ isSmallFish: true, sellPrice: 0.42, sisaTas: 15, hasUmpanIkanBtn: true }), "JADIKAN_UMPAN");
+  });
+
+  await t.test("Bait-loss accounting, deduplication, consecutive trash, and makan profit correction", () => {
+    const roundCoin = (v) => Math.round((Number(v) || 0) * 100) / 100;
+    const costOf = (t) => (t === "umpan-ikan" ? 0 : t === "umpan-cumi" ? 0.5 : t === "umpan-udang" ? 0.3 : 0.2);
+
+    const stats = { catches: 0, losses: 0, totalLoss: 0, totalProfit: 0, history: [] };
+    let lastLossKey = null;
+    let lastLossTime = 0;
+
+    function recordLoss({ id = "", reason = "dimakan", umpan = "umpan-cumi" }, now) {
+      const dedupKey = id ? `${id}:${reason}` : `${reason}:${Math.floor(now / 2500)}`;
+      if (dedupKey === lastLossKey || now - lastLossTime < 2200) return false;
+      lastLossKey = dedupKey;
+      lastLossTime = now;
+      const cost = costOf(umpan);
+      stats.losses++;
+      stats.totalLoss = roundCoin(stats.totalLoss + cost);
+      stats.totalProfit = roundCoin(stats.totalProfit - cost);
+      stats.history.unshift({ reason, profit: -cost, isLoss: true });
+      return true;
+    }
+
+    // First API loss recorded (-0.50), phase-transition fallback 450ms later deduplicated
+    assert.equal(recordLoss({ id: "c1", reason: "dimakan", umpan: "umpan-cumi" }, 10000), true);
+    assert.equal(recordLoss({ id: "", reason: "dimakan", umpan: "umpan-cumi" }, 10450), false);
+    assert.equal(stats.losses, 1);
+    assert.equal(stats.totalProfit, -0.5);
+
+    // Consecutive identical trash catches both deduct baitCost once lastCatchId resets after loot click
+    let lastCatchId = null;
+    for (let i = 0; i < 2; i++) {
+      const key = "Sandal jepit-172 g";
+      assert.notEqual(lastCatchId, key);
+      lastCatchId = key;
+      stats.losses++;
+      stats.totalLoss = roundCoin(stats.totalLoss + 0.5);
+      stats.totalProfit = roundCoin(stats.totalProfit - 0.5);
+      lastCatchId = null; // reset on click
+    }
+    assert.equal(stats.losses, 3);
+    assert.equal(stats.totalLoss, 1.5);
+    assert.equal(stats.totalProfit, -1.5);
+
+    // Eating a caught fish ("makan") corrects initial +sellPrice - baitCost down to -baitCost
+    const sellPrice = 0.85;
+    const baitCost = 0.50;
+    stats.totalProfit = roundCoin(stats.totalProfit + (sellPrice - baitCost)); // +0.35 tentative
+    stats.totalProfit = roundCoin(stats.totalProfit - sellPrice); // makan correction -> -0.50 net
+    assert.equal(stats.totalProfit, -2.0);
+  });
+
+  await t.test("Last-bait (1 -> 0) grace window waits before stopping or switching owned bait", () => {
+    function handleZeroBait({ now, lastCelupTime, strategiUmpan, autoUmpanIkan, autoUmpan, owned }) {
+      if (lastCelupTime > 0 && now - lastCelupTime < 3000) {
+        return { action: "WAIT_LAST_CAST" };
+      }
+      if (strategiUmpan === "ternak-ikan") {
+        if (owned["umpan-ikan"] > 0) return { action: "SWITCH_OWNED", bait: "umpan-ikan" };
+        if (owned["umpan-cacing"] > 0) return { action: "SWITCH_OWNED", bait: "umpan-cacing" };
+      } else if (autoUmpanIkan && owned["umpan-ikan"] > 0) {
+        return { action: "SWITCH_OWNED", bait: "umpan-ikan" };
+      }
+      if (autoUmpan) return { action: "AUTO_BUY" };
+      return { action: "STOP_NO_BAIT" };
+    }
+
+    // 900ms after casting last bait -> wait so cast finishes!
+    assert.deepEqual(
+      handleZeroBait({ now: 5900, lastCelupTime: 5000, strategiUmpan: "cumi", autoUmpanIkan: true, autoUmpan: false, owned: {} }),
+      { action: "WAIT_LAST_CAST" }
+    );
+    // After 3s grace window with owned umpan-ikan -> free switch even when autoUmpan is OFF
+    assert.deepEqual(
+      handleZeroBait({ now: 9000, lastCelupTime: 5000, strategiUmpan: "cumi", autoUmpanIkan: true, autoUmpan: false, owned: { "umpan-ikan": 3 } }),
+      { action: "SWITCH_OWNED", bait: "umpan-ikan" }
+    );
+    // After 3s grace window with no owned bait & autoUmpan OFF -> stop safely
+    assert.deepEqual(
+      handleZeroBait({ now: 9000, lastCelupTime: 5000, strategiUmpan: "cumi", autoUmpanIkan: true, autoUmpan: false, owned: {} }),
+      { action: "STOP_NO_BAIT" }
+    );
+    // After 3s grace window with no owned bait & opt-in autoUmpan ON -> buy
+    assert.deepEqual(
+      handleZeroBait({ now: 9000, lastCelupTime: 5000, strategiUmpan: "cumi", autoUmpanIkan: true, autoUmpan: true, owned: {} }),
+      { action: "AUTO_BUY" }
+    );
+  });
+
+  await t.test("mancing.js defaults keep Auto Beli Umpan, Auto Upgrade, and Selektif Lepas OFF & opt-in", () => {
+    const src = fs.readFileSync(path.join(extDir, "mancing.js"), "utf-8");
+
+    assert.match(src, /selectiveRelease:\s*false\b/, "selectiveRelease must default to false");
+    assert.match(src, /autoUmpan:\s*false\b/, "autoUmpan must default to false");
+    assert.match(src, /autoUpgrade:\s*false\b/, "autoUpgrade must default to false");
+    assert.match(src, /baseMinTension:\s*30\b/, "baseMinTension must default to 30 for long-hold hysteresis");
+
+    // All 3 checkboxes must exist in HUD without `checked` attribute
+    assert.match(src, /<input type="checkbox" id="ks-opt-auto-umpan"(?![^>]*\bchecked\b)/);
+    assert.match(src, /<input type="checkbox" id="ks-opt-auto-upgrade"(?![^>]*\bchecked\b)/);
+    assert.match(src, /<input type="checkbox" id="ks-opt-selective-release"(?![^>]*\bchecked\b)/);
+
+    // Strategy dropdown onchange must NOT force selectiveRelease = true
+    const dropdownBlock = src.match(/getElementById\("ks-opt-strategi-umpan"\)\.onchange\s*=\s*\(e\)\s*=>\s*\{[\s\S]*?\};/);
+    assert.ok(dropdownBlock, "strategy dropdown onchange handler must exist");
+    assert.doesNotMatch(dropdownBlock[0], /selectiveRelease\s*=\s*true/, "dropdown must never force selectiveRelease = true");
+  });
+
+  await t.test("inject.js: passive /api/pancing fetch observer, hasSetInput, and analog setInput vs keys isolation", async () => {
+    const listeners = {};
+    const baitLostEvents = [];
+    const mancingUpdates = [];
+    const fetchHandlers = [];
+
+    const win = {
+      console: { log() {}, warn() {}, error() {} },
+      performance: { now: () => 1000 },
+      CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
+      setTimeout: () => 1,
+      clearTimeout: () => {},
+      setInterval: () => 1,
+      clearInterval: () => {},
+      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+      removeEventListener() {},
+      dispatchEvent(ev) { for (const fn of (listeners[ev.type] || []).slice()) fn(ev); return true; },
+      location: { href: "https://www.kampungsebelah.com/mancing" },
+      document: { hidden: false, visibilityState: "visible", hasFocus: () => true, addEventListener() {}, querySelector: () => null },
+      fetch: (url, init) => {
+        const next = fetchHandlers.shift();
+        const payload = next ? next(url, init) : {};
+        const makeRes = () => ({ ok: true, clone: () => makeRes(), json: () => Promise.resolve(payload) });
+        return Promise.resolve(makeRes());
+      }
+    };
+    win.window = win;
+    win.globalThis = win;
+
+    const ctx = vm.createContext(win);
+    vm.runInContext(fs.readFileSync(path.join(extDir, "inject.js"), "utf-8"), ctx, { filename: "inject.js" });
+
+    win.addEventListener("ks_mancing_bait_lost", (e) => baitLostEvents.push(e.detail));
+    win.addEventListener("ks_mancing_data_update", (e) => mancingUpdates.push(e.detail));
+
+    // 1. POST /api/pancing responses: dimakan, tarik fail, batal emit events; tarik dapat does NOT
+    fetchHandlers.push(
+      () => ({ dimakan: "Umpan dimakan ikan kecil", lemparan: { id: "L1", umpan: "umpan-cumi" } }),
+      () => ({ hasil: "putus", lemparan: { id: "L2", umpan: "umpan-cumi" } }),
+      () => ({ hasil: "dapat", ikan: { nama: "Kuwe" }, lemparan: { id: "L3", umpan: "umpan-cumi" } }),
+      () => ({ ok: true })
+    );
+
+    await win.fetch("/api/pancing", { method: "POST", body: JSON.stringify({ aksi: "lempar", umpan: "umpan-cumi" }) });
+    await win.fetch("/api/pancing", { method: "POST", body: JSON.stringify({ aksi: "tarik", id: "L2", berhasil: false }) });
+    await win.fetch("/api/pancing", { method: "POST", body: JSON.stringify({ aksi: "tarik", id: "L3", berhasil: true }) });
+    await win.fetch("/api/pancing", { method: "POST", body: JSON.stringify({ aksi: "batal", id: "L4" }) });
+    await new Promise((r) => setTimeout(r, 10));
+
+    assert.equal(baitLostEvents.length, 3);
+    assert.deepEqual(baitLostEvents.map((e) => e.reason), ["dimakan", "putus", "batal"]);
+    assert.equal(baitLostEvents[0].umpan, "umpan-cumi");
+
+    // 2. ks_mancing_steer with setInput clamps values and clears mInst.keys
+    const setInputCalls = [];
+    const keysWithSetInput = new Set(["w", "a", "d"]);
+    win.__KS_MANCING_INSTANCE = {
+      setInput: (v) => setInputCalls.push({ gas: v.gas, belok: v.belok }),
+      keys: keysWithSetInput
+    };
+    win.dispatchEvent(new win.CustomEvent("ks_mancing_steer", { detail: { gas: 1.5, belok: -1.8 } }));
+    assert.deepEqual(setInputCalls, [{ gas: 1, belok: -1 }]);
+    assert.equal(keysWithSetInput.size, 0, "keys must be cleared when analog setInput is used");
+
+    // 3. ks_mancing_steer without setInput falls back to mInst.keys
+    const keysFallback = new Set();
+    win.__KS_MANCING_INSTANCE = { keys: keysFallback };
+    win.dispatchEvent(new win.CustomEvent("ks_mancing_steer", { detail: { gas: 0.8, belok: 0.4 } }));
+    assert.equal(keysFallback.has("w"), true);
+    assert.equal(keysFallback.has("a"), true);
+    assert.equal(keysFallback.has("d"), false);
+
+    // 4. posisi() hook attaches __KS_MANCING_INSTANCE and reports hasSetInput (assigned property triggers Object.prototype.posisi setter)
+    const shipObj = vm.runInContext(`(() => {
+      const o = { perahu: true, titik: [], setInput() {} };
+      o.posisi = function () { return { x: 10, z: -200, h: 3.14, laju: 2 }; };
+      return o;
+    })()`, ctx);
+    shipObj.posisi();
+    assert.equal(win.__KS_MANCING_INSTANCE, shipObj);
+    assert.equal(mancingUpdates.at(-1).hasSetInput, true);
   });
 });
