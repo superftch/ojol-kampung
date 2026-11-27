@@ -312,3 +312,25 @@ async def test_run_job_sniper_wait_kosong_sleeps_until_kosong_at(tmp_path):
     assert res["next_check_epoch"] == res["next_kosong_epoch"]
     assert res["state"]["next_check_at"] is not None
     fake_api.apply_facility_job.assert_not_awaited()
+
+
+def test_pick_best_sniper_candidate_specific_target():
+    me = _sample_me()
+    payload = build_job_vacancies_payload(me, biz_items=[])
+    # Pick a specific full job with kosong_at -> returns (None, target)
+    best, next_kosong = pick_best_sniper_candidate(
+        payload,
+        {"target_mode": "specific", "target_job_id": "fac:fac-bank:Kepala wilayah bank"},
+    )
+    assert best is None
+    assert next_kosong is not None
+    assert next_kosong["facility_id"] == "fac-bank"
+
+    # Pick a specific open job -> returns (target, None)
+    best_open, next_open = pick_best_sniper_candidate(
+        payload,
+        {"target_mode": "specific", "target_job_id": "fac:fac-rs:Dokter"},
+    )
+    assert best_open is not None
+    assert best_open["profession"] == "Dokter"
+    assert next_open is None

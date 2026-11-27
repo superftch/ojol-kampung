@@ -30,6 +30,8 @@ SNIPER_STATE_FILE = "job-sniper-state.json"
 DEFAULT_SNIPER_CONFIG: dict[str, Any] = {
     "enabled": False,
     "mode": "wait_kosong",
+    "target_mode": "highest",
+    "target_job_id": "",
     "interval_seconds": 30,
     "schedule_enabled": False,
     "start_time": "00:00",
@@ -98,9 +100,15 @@ def normalize_sniper_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     if mode not in {"wait_kosong", "interval"}:
         mode = "wait_kosong"
 
+    target_mode = str(data.get("target_mode") or "highest").strip().lower()
+    if target_mode not in {"highest", "specific"}:
+        target_mode = "highest"
+
     return {
         "enabled": bool(data.get("enabled", False)),
         "mode": mode,
+        "target_mode": target_mode,
+        "target_job_id": str(data.get("target_job_id") or "").strip(),
         "interval_seconds": interval,
         "schedule_enabled": bool(data.get("schedule_enabled", False)),
         "start_time": _parse_hhmm(data.get("start_time"), "00:00"),
@@ -209,10 +217,28 @@ def pick_best_sniper_candidate(
     config: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Return (highest_salary_eligible_vacancy, earliest_matching_kosong_vacancy)."""
+    vacancies = payload.get("vacancies") if isinstance(payload.get("vacancies"), list) else []
+    target_mode = config.get("target_mode", "highest")
+    target_job_id = str(config.get("target_job_id") or "").strip()
+
+    if target_mode == "specific":
+        if not target_job_id:
+            return None, None
+        target = next(
+            (v for v in vacancies if isinstance(v, dict) and v.get("id") == target_job_id),
+            None,
+        )
+        if not target:
+            return None, None
+        if target.get("can_apply") and not target.get("is_full"):
+            return target, None
+        if target.get("is_full") and target.get("kosong_at"):
+            return None, target
+        return None, None
+
     current_job = payload.get("current_job") if isinstance(payload.get("current_job"), dict) else None
     current_net_milli = int(current_job.get("net_milli") or 0) if current_job else None
 
-    vacancies = payload.get("vacancies") if isinstance(payload.get("vacancies"), list) else []
     # Vacancies are already sorted descending by salary.net_milli; re-sort defensively.
     ordered = sorted(
         (v for v in vacancies if isinstance(v, dict)),

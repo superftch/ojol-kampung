@@ -710,11 +710,11 @@ __ADMIN_NOTIF_PANEL__
                 <div class="jobs-sniper-head">
                     <div>
                         <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                            <h3 style="margin: 0; font-size: 15px;">🎯 Job Sniper (Auto Lamar Terjadwal)</h3>
+                            <h3 style="margin: 0; font-size: 15px;">🎯 Job Sniper</h3>
                             <span id="sniperStatusBadge" class="job-badge muted">Nonaktif</span>
                         </div>
                         <p id="sniperStatusText" style="margin: 4px 0 0; font-size: 12px; color: var(--text-muted);">
-                            Otomatis mengambil lowongan dengan gaji bersih tertinggi sesuai skill saat slot tersedia di jadwal.
+                            Otomatis melamar saat slot tersedia. Hemat resource: hanya aktif di waktu lowongan kosong.
                         </p>
                     </div>
                     <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
@@ -722,60 +722,20 @@ __ADMIN_NOTIF_PANEL__
                         <button id="btnSniperToggle" class="btn btn-primary" type="button" onclick="toggleJobSniper()">Aktifkan Sniper</button>
                     </div>
                 </div>
-                <div class="jobs-sniper-grid">
-                    <label class="jobs-sniper-field">
-                        <span>Mode Cek</span>
-                        <select id="sniperMode" class="jobs-filter-select" onchange="syncSniperModeInputs()">
-                            <option value="wait_kosong">Hemat (Tunggu Jadwal Kosong)</option>
-                            <option value="interval">Interval Rutin (detik)</option>
+                <div class="jobs-sniper-simple-row">
+                    <label class="jobs-sniper-field" style="flex: 1; min-width: 220px;">
+                        <span>Pilihan Target</span>
+                        <select id="sniperTargetMode" class="jobs-filter-select" onchange="onSniperTargetChange()">
+                            <option value="highest">Rekomendasi (Gaji tertinggi sesuai skill)</option>
+                            <option value="specific">Pilih Lowongan Sendiri</option>
                         </select>
                     </label>
-                    <label class="jobs-sniper-field" id="sniperIntervalField" style="display: none;">
-                        <span>Interval Cek (detik)</span>
-                        <input type="number" id="sniperInterval" class="jobs-filter-input" min="10" max="3600" value="30">
-                    </label>
-                    <label class="jobs-sniper-field">
-                        <span>Sumber Lowongan</span>
-                        <select id="sniperSourceFilter" class="jobs-filter-select">
-                            <option value="all">Semua (Fasum &amp; Usaha)</option>
-                            <option value="facility">Fasum / BUMDes / Pemerintah</option>
-                            <option value="business">Usaha Warga Saja</option>
+                    <label class="jobs-sniper-field" id="sniperTargetJobField" style="flex: 1.5; min-width: 240px; display: none;">
+                        <span>Lowongan Target</span>
+                        <select id="sniperTargetJob" class="jobs-filter-select" onchange="onSniperTargetJobChange()">
+                            <option value="">-- Pilih lowongan dari daftar --</option>
                         </select>
                     </label>
-                    <label class="jobs-sniper-field">
-                        <span>Bidang Skill</span>
-                        <select id="sniperSkillTrack" class="jobs-filter-select">
-                            <option value="">Semua Bidang Skill</option>
-                        </select>
-                    </label>
-                    <label class="jobs-sniper-field">
-                        <span>Min. Gaji Bersih (koin/hari)</span>
-                        <input type="number" id="sniperMinSalary" class="jobs-filter-input" min="0" step="0.5" value="0">
-                    </label>
-                </div>
-                <div class="jobs-sniper-schedule-row">
-                    <label class="jobs-sniper-check">
-                        <input type="checkbox" id="sniperScheduleEnabled" onchange="syncSniperScheduleInputs()">
-                        <span>Batasi Jadwal Aktif (WIB)</span>
-                    </label>
-                    <div class="jobs-sniper-time-range">
-                        <input type="time" id="sniperStartTime" class="jobs-filter-input" value="00:00">
-                        <span style="color: var(--text-muted); font-size: 12px;">s/d</span>
-                        <input type="time" id="sniperEndTime" class="jobs-filter-input" value="23:59">
-                    </div>
-                    <label class="jobs-sniper-check">
-                        <input type="checkbox" id="sniperAllowSwitch" checked>
-                        <span>Pindah kerja jika gaji lebih tinggi</span>
-                    </label>
-                    <label class="jobs-sniper-check">
-                        <input type="checkbox" id="sniperAutoStop" checked>
-                        <span>Matikan otomatis setelah dapat kerja</span>
-                    </label>
-                    <label class="jobs-sniper-check">
-                        <input type="checkbox" id="sniperAllowFee">
-                        <span>Izinkan sewa lapak berbayar</span>
-                    </label>
-                    <button id="btnSniperSave" class="btn btn-secondary" type="button" onclick="saveJobSniperConfig()" style="margin-left: auto;">Simpan Pengaturan</button>
                 </div>
                 <div id="sniperMetaRow" class="jobs-sniper-meta"></div>
             </div>
