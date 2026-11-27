@@ -4,6 +4,76 @@
 (function () {
   console.log("[DivingRadar] Injector v1.8.0 initializing in page context...");
 
+  // 0. Passive fetch observer untuk /api/pancing (deteksi umpan dimakan ikan kecil / lepas / putus)
+  if (!window.__KS_PANCING_FETCH_HOOKED && typeof window.fetch === "function") {
+    window.__KS_PANCING_FETCH_HOOKED = true;
+    const origFetch = window.fetch;
+    window.fetch = function (input, init) {
+      const fetchPromise = origFetch.apply(this, arguments);
+      try {
+        const url = typeof input === "string" ? input : (input && input.url ? input.url : "");
+        const method = String((init && init.method) || (input && input.method) || "GET").toUpperCase();
+        if (method === "POST" && /\/api\/pancing(?:\?|$)/.test(url)) {
+          let reqBody = {};
+          try {
+            if (init && typeof init.body === "string") {
+              reqBody = JSON.parse(init.body);
+            }
+          } catch (_) {}
+
+          fetchPromise.then((res) => {
+            if (!res || !res.ok) return;
+            res.clone().json().then((data) => {
+              if (!data || typeof data !== "object") return;
+              const aksi = String(reqBody.aksi || "").toLowerCase();
+              const umpan = reqBody.umpan || data.lemparan?.umpan || "";
+              const castId = data.lemparan?.id || reqBody.id || "";
+              const statusUpper = String(data.lemparan?.status || "").toUpperCase();
+
+              if (data.dimakan) {
+                window.dispatchEvent(new CustomEvent("ks_mancing_bait_lost", {
+                  detail: {
+                    id: castId,
+                    reason: "dimakan",
+                    message: typeof data.dimakan === "string"
+                      ? data.dimakan
+                      : (data.dimakan?.pesan || data.dimakan?.nama || ""),
+                    umpan
+                  }
+                }));
+              } else if (aksi === "tarik" && data.hasil && data.hasil !== "dapat") {
+                window.dispatchEvent(new CustomEvent("ks_mancing_bait_lost", {
+                  detail: {
+                    id: castId,
+                    reason: String(data.hasil).toLowerCase(),
+                    umpan
+                  }
+                }));
+              } else if (aksi === "cek" && ["DIMAKAN", "LEPAS", "PUTUS", "GAGAL", "HABIS"].includes(statusUpper)) {
+                window.dispatchEvent(new CustomEvent("ks_mancing_bait_lost", {
+                  detail: {
+                    id: castId,
+                    reason: statusUpper.toLowerCase(),
+                    umpan
+                  }
+                }));
+              } else if (aksi === "batal") {
+                window.dispatchEvent(new CustomEvent("ks_mancing_bait_lost", {
+                  detail: {
+                    id: castId,
+                    reason: "batal",
+                    umpan
+                  }
+                }));
+              }
+            }).catch(() => {});
+          }).catch(() => {});
+        }
+      } catch (_) {}
+      return fetchPromise;
+    };
+  }
+
   window.__KS_DIVING_DATA = {
     x: 0,
     z: -26,
@@ -127,12 +197,14 @@
               window.__KS_DIVING_DATA.source = "posisi";
             }
             if (typeof res.h === "number" || this.perahu) {
+              window.__KS_MANCING_INSTANCE = this;
               const mancingData = {
                 x: res.x,
                 z: res.z,
                 h: typeof res.h === "number" ? res.h : 0,
                 laju: typeof res.laju === "number" ? res.laju : 0,
-                titik: Array.isArray(this.titik) ? this.titik : []
+                titik: Array.isArray(this.titik) ? this.titik : [],
+                hasSetInput: typeof this.setInput === "function"
               };
               window.__KS_MANCING_DATA = mancingData;
               window.dispatchEvent(new CustomEvent("ks_mancing_data_update", {
@@ -323,7 +395,8 @@
                   z: pos.z,
                   h: pos.h,
                   laju: pos.laju,
-                  titik: Array.isArray(inst.titik) ? inst.titik : []
+                  titik: Array.isArray(inst.titik) ? inst.titik : [],
+                  hasSetInput: typeof inst.setInput === "function"
                 };
                 window.__KS_MANCING_DATA = mancingData;
                 window.dispatchEvent(new CustomEvent("ks_mancing_data_update", {
@@ -396,7 +469,8 @@
           z: pos.z,
           h: pos.h,
           laju: pos.laju,
-          titik: Array.isArray(mInst.titik) ? mInst.titik : (window.__KS_MANCING_DATA?.titik || [])
+          titik: Array.isArray(mInst.titik) ? mInst.titik : (window.__KS_MANCING_DATA?.titik || []),
+          hasSetInput: typeof mInst.setInput === "function"
         };
         window.__KS_MANCING_DATA = mData;
         window.dispatchEvent(new CustomEvent("ks_mancing_data_update", {
@@ -440,17 +514,24 @@
     const mInst = window.__KS_MANCING_INSTANCE;
     if (mInst) {
       try {
+        const g = typeof gas === "number" ? Math.max(-1, Math.min(1, gas)) : 0;
+        const b = typeof belok === "number" ? Math.max(-1, Math.min(1, belok)) : 0;
         if (typeof mInst.setInput === "function") {
-          mInst.setInput({ gas: gas || 0, belok: belok || 0 });
-        }
-        if (mInst.keys) {
-          if (gas > 0) mInst.keys.add("w");
+          mInst.setInput({ gas: g, belok: b });
+          // Bersihkan keys agar tidak bertabrakan dengan analog setInput
+          if (mInst.keys && typeof mInst.keys.delete === "function") {
+            mInst.keys.delete("w");
+            mInst.keys.delete("a");
+            mInst.keys.delete("d");
+          }
+        } else if (mInst.keys) {
+          if (g > 0.05) mInst.keys.add("w");
           else mInst.keys.delete("w");
 
-          if (belok > 0) {
+          if (b > 0.05) {
             mInst.keys.add("a");
             mInst.keys.delete("d");
-          } else if (belok < 0) {
+          } else if (b < -0.05) {
             mInst.keys.add("d");
             mInst.keys.delete("a");
           } else {

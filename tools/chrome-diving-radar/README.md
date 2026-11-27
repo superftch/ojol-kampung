@@ -61,15 +61,13 @@ Ekstensi Chrome multi-fitur untuk minigame dan aktivitas di KampungSebelah:
   - **Jeda Inspeksi Tangkapan**: Jeda `1.4s - 2.5s` sebelum menekan Simpan/Jual, mensimulasikan pemain membaca kartu nama & berat ikan.
 
 - **🛡️ Zero-Loss Engine (Pasti Untung & Anti-Rugi)**:
-  - **🧭 Autopilot Navigasi Langsung ke Titik Paling Ramai**: Membaca koordinat spot gerombolan ikan (`titik`) dari game dan secara otomatis mengemudikan kapal (kemudi proporsional & throttle maju) langsung ke titik spot yang paling ramai (*kaya*) dan berkedalaman tinggi. Kapal berhenti tepat di tengah gerombolan ikan saat Sonar membaca **"Ramai" (5 Bar)**!
+  - **🧭 Autopilot Navigasi Presisi & Stop di 5/5 Bar Sonar**: Membaca koordinat spot gerombolan ikan (`titik`) dengan *spot-lock hysteresis*, kemudi analog proporsional (`setInput` tanpa bentrok keyboard + koreksi polaritas belok otomatis), pengereman cerdas mendekati spot, dan pembacaan bar sonar langsung. Kapal otomatis berhenti begitu mencapai **5/5 bar** pada rentang kedalaman target (atau di inti spot 5–8m bila spot terbaik di bawah 5 bar).
   - **⚡ Tindakan Cepat Alami (Tanpa Delay Kaku 1s, Tetap Human Jitter)**: Menghapus jeda kaku 1 detik antar aksi toko/alat dan menggantinya dengan refleks manusiawi dinamis `140ms - 280ms`.
-  - **🛡️ Proteksi Anti-Kendur Mutlak (Anti-Lepas 100%)**: Memperbaiki kontrol gulungan tali dengan mendeteksi atribut `data-tahan` game langsung dan memproteksi `setPointerCapture`, mencegah situasi tali kendur ($< 4\%$) selama $> 3.2$s sehingga ikan tidak akan pernah lepas!
-  - **Anti-Putus Tali**: Otomatis melepas tarikan pada tegangan dinamis `78% - 82%` atau segera bila status bahaya `data-merah` muncul (game putus jika $> 85\%$ selama $> 0.6$s).
-  - **Anti-Lepas Ikan**: Otomatis menarik kail saat tegangan turun ke `58% - 63%` (game lepas jika $< 8\%$ selama $> 3.2$s).
+  - **🔄 Long-Hold Hysteresis Reel Control (`30% ⇄ 80%`)**: Mengganti spam klik 40ms dengan siklus tahan-panjang murni: menahan gulungan secara kontinu dari `~30%` hingga batas atas dinamis `78% - 82%` (atau segera lepas saat `data-merah` muncul), lalu melepas murni hingga tegangan turun ke `~30%` sebelum menarik lagi. Memeriksa atribut DOM `data-tahan` agar tombol tidak pernah nyangkut.
+  - **📋 Riwayat Tangkapan & Akuntansi Laba Akurat**: Menampilkan daftar riwayat 8 tangkapan/kerugian terakhir beserta badge aksi (`Jual`/`Simpan`/`Lepas`/`Buang`/`Makan`/`Umpan`) dan mendeteksi otomatis umpan hilang (`Dimakan`, `Putus`, `Lepas`, `Batal`) agar `Laba Hari Ini` mencerminkan profit bersih yang sebenarnya.
   - **Smart Bag Fallback (Tas Penuh $\rightarrow$ Auto Jual)**: Jika tas ikan penuh sehingga tombol simpan tidak aktif, sistem otomatis beralih menjual tangkapan menjadi koin desa agar tidak ada ikan yang hangus atau terbuang.
-  - **Anti-Sampah**: Otomatis menjual tangkapan sampah (seperti Sandal Jepit) untuk mengosongkan slot tas demi ikan bernilai tinggi.
-  - **Auto-Beli Umpan Paling Worth It (Zero Downtime)**: Otomatis mendeteksi saat umpan habis, membuka toko umpan, membeli paket umpan cumi (atau udang jika modal tipis), memilihnya, dan kembali mencelupkan kail tanpa intervensi manual!
-  - **Auto-Upgrade Joran & Peralatan (High-ROI Engine)**: Otomatis memeriksa dan membeli upgrade joran (Tonda / Samudra) saat saldo koin mencukupi.
+  - **Anti-Sampah**: Otomatis membuang/menjual tangkapan sampah (seperti Sandal Jepit) untuk mengosongkan slot tas demi ikan bernilai tinggi.
+  - **Aman Tanpa Belanja/Buang Tak Terduga (Opt-In OFF Default)**: Ganti antar umpan milik sendiri (termasuk batch 10 umpan-ikan pada mode *Ternak Umpan Ikan*) berjalan otomatis dan gratis, ditambah jendela tenggang 3 detik agar umpan terakhir selesai hingga tuntas. Opsi berisiko/pengeluaran koin (**Auto Beli Umpan**, **Auto Upgrade Joran & Pendingin**, dan **Selektif Lepas `<1.00` koin**) disediakan sebagai checkbox opt-in yang **mati secara default**.
 
 - **📊 Kalkulasi Matematis: Umpan & Upgrade Paling Worth It**:
   - **Tabel Umpan (Batas BUMDes: 20 Ekor / Hari)**:
