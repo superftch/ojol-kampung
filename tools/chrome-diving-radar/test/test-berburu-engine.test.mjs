@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -133,5 +134,19 @@ test("Berburu Radar & Sniper Engine", async (t) => {
     };
     const d4 = berburu.decideAutoHuntAction(snapAmbil, "high-roi");
     assert.equal(d4.type, "ambil");
+  });
+
+  await t.test("wallhack ESP 2D and Chams 3D toggles default to OFF in HUD and injector", () => {
+    const hudSrc = fs.readFileSync(path.resolve(__dirname, "../berburu.js"), "utf8");
+    const injSrc = fs.readFileSync(path.resolve(__dirname, "../berburu-inject.js"), "utf8");
+
+    assert.match(hudSrc, /esp2d:\s*false/);
+    assert.match(hudSrc, /chams3d:\s*false/);
+    assert.match(hudSrc, /id="ks-bb-esp2d"[^>]*>👁️ ESP 2D: OFF</);
+    assert.match(hudSrc, /id="ks-bb-chams3d"[^>]*>🩻 Chams 3D: OFF</);
+
+    assert.match(injSrc, /esp2d:\s*false/);
+    assert.match(injSrc, /chams3d:\s*false/);
+    assert.match(injSrc, /cmd\.action === "setWallhack"/);
   });
 });

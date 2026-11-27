@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (f) => fs.readFileSync(path.join(dir, f), "utf-8");
 
-function makeEnv() {
+function makeEnv(initialStorage = {}) {
   let clock = Date.UTC(2026, 10, 26, 3, 0, 0);
   let seq = 0;
   const timers = [];
@@ -21,6 +21,7 @@ function makeEnv() {
   const ids = new Map();
   const appended = [];
   const logs = [];
+  const storage = new Map(Object.entries(initialStorage));
 
   class FakeDate extends Date {
     static now() { return clock; }
@@ -71,7 +72,11 @@ function makeEnv() {
     Date: FakeDate,
     CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
     chrome: { runtime: { getURL: (f) => "chrome-extension://x/" + f } },
-    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    localStorage: {
+      getItem: (k) => (storage.has(k) ? storage.get(k) : null),
+      setItem: (k, v) => storage.set(k, String(v)),
+      removeItem: (k) => storage.delete(k)
+    },
     confirm: () => true,
     innerWidth: 1280,
     innerHeight: 800,
@@ -102,6 +107,7 @@ function makeEnv() {
 
   const ctx = vm.createContext(win);
   vm.runInContext(read("diving-human.js"), ctx);
+  vm.runInContext(read("diving-route.js"), ctx);
   vm.runInContext(read("content.js"), ctx);
 
   function advance(ms) {
@@ -127,7 +133,7 @@ function makeEnv() {
   advance(900); // initAll dijadwalkan 800 ms setelah muat
   frame();
 
-  return { win, ids, appended, logs, advance, frame, send, commands, get: (id) => ids.get(id) };
+  return { win, ids, appended, logs, storage, advance, frame, send, commands, get: (id) => ids.get(id) };
 }
 
 test("HUD diving: tombol Auto Jalan / STOP", async (t) => {
@@ -264,5 +270,65 @@ test("HUD diving: tombol Auto Jalan / STOP", async (t) => {
     await Promise.resolve();
     assert.equal(copied, "LOG-ISI");
     assert.match(env.get("ks-copy-log-btn").textContent, /tersalin/);
+  });
+
+  await t.test("toggle humanize: default aktif, bisa dinonaktifkan dan disimpan", () => {
+    const env = makeEnv();
+    const cb = env.get("ks-humanize-check");
+    assert.ok(cb, "checkbox ks-humanize-check harus ada");
+    assert.equal(cb.checked, true, "humanize defaultnya harus aktif");
+
+    const toggles = [];
+    env.win.addEventListener("ks_humanize_toggle", (e) => toggles.push(e.detail));
+
+    const t1 = startRun(env);
+    assert.equal(env.commands.at(-1).humanize, true);
+
+    // Nonaktifkan humanize
+    cb.checked = false;
+    cb.onchange();
+    assert.equal(env.storage.get("ks_diving_humanize"), "0");
+    assert.equal(toggles.at(-1)?.enabled, false);
+
+    // Hentikan lalu mulai lagi: perintah start membawa humanize: false
+    env.get("ks-hud-autopilot-btn").onclick({ stopPropagation() {} });
+    env.send("ks_autopilot_status", { active: false, reason: "manual_stop", target: t1 });
+    env.frame();
+    startRun(env);
+    assert.equal(env.commands.at(-1).humanize, false);
+
+    // Muat ulang dengan localStorage ks_diving_humanize = "0": tetap nonaktif
+    const env2 = makeEnv({ ks_diving_humanize: "0" });
+    assert.equal(env2.get("ks-humanize-check").checked, false);
+    startRun(env2);
+    assert.equal(env2.commands.at(-1).humanize, false);
+  });
+
+  await t.test("pilihan rute optimal: hanya 300, prioritas 300, semua terdekat", () => {
+    const env = makeEnv({ ks_diving_humanize: "0" });
+    assert.ok(env.get("ks-filter-rare"), "tombol Hanya 300 harus ada");
+    assert.ok(env.get("ks-filter-priority"), "tombol Prioritas 300 harus ada");
+    assert.ok(env.get("ks-filter-potensial"), "tombol Semua Terdekat harus ada");
+    assert.ok(env.get("ks-filter-all"), "tombol Semua harus ada");
+    assert.ok(env.get("ks-route-summary"), "ringkasan rute optimal harus ada");
+
+    // Pilih mode Prioritas 300
+    env.get("ks-filter-priority").onclick();
+    assert.equal(env.storage.get("ks_diving_route_mode"), "prioritas_300");
+    assert.match(env.get("ks-route-summary").innerHTML, /Prioritas 300/);
+
+    env.get("ks-pick-nearest").onclick();
+    env.get("ks-hud-autopilot-btn").onclick({ stopPropagation() {} });
+    const firstCmd = env.commands.at(-1);
+    assert.equal(firstCmd.action, "start");
+    assert.equal(firstCmd.target.kategori, "langka", "Prioritas 300 harus memilih kerang langka (300) terlebih dahulu");
+
+    // Pilih mode Semua Terdekat (potensial)
+    env.get("ks-hud-autopilot-btn").onclick({ stopPropagation() {} });
+    env.send("ks_autopilot_status", { active: false, reason: "manual_stop", target: firstCmd.target });
+    env.frame();
+    env.get("ks-filter-potensial").onclick();
+    assert.equal(env.storage.get("ks_diving_route_mode"), "potensial");
+    assert.match(env.get("ks-route-summary").innerHTML, /Semua Terdekat/);
   });
 });

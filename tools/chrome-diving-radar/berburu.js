@@ -221,6 +221,8 @@
       autoShoot: false,
       autoAmbil: true,
       antiSeruduk: true,
+      esp2d: false,
+      chams3d: false,
       minimized: false,
       lockedId: null,
       lastShotAt: 0,
@@ -313,6 +315,8 @@
             <button id="ks-bb-autoshoot" style="padding:6px;border-radius:7px;border:1px solid rgba(248,113,113,0.4);background:rgba(185,28,28,0.2);color:#fecaca;cursor:pointer;font-weight:600;font-size:11px;">🔫 Auto-Tembak: OFF</button>
             <button id="ks-bb-autoambil" style="padding:6px;border-radius:7px;border:1px solid rgba(74,222,128,0.4);background:rgba(22,101,52,0.45);color:#bbf7d0;cursor:pointer;font-weight:600;font-size:11px;">📦 Auto-Ambil: ON</button>
             <button id="ks-bb-stopwalk" style="padding:6px;border-radius:7px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.08);color:#e2e8f0;cursor:pointer;font-weight:600;font-size:11px;">⏹ Stop Jalan</button>
+            <button id="ks-bb-esp2d" style="padding:6px;border-radius:7px;border:1px solid rgba(192,132,252,0.4);background:rgba(126,34,206,0.18);color:#e9d5ff;cursor:pointer;font-weight:600;font-size:11px;">👁️ ESP 2D: OFF</button>
+            <button id="ks-bb-chams3d" style="padding:6px;border-radius:7px;border:1px solid rgba(250,204,21,0.4);background:rgba(161,98,7,0.18);color:#fef08a;cursor:pointer;font-weight:600;font-size:11px;">🩻 Chams 3D: OFF</button>
           </div>
           <div id="ks-berburu-list" style="display:flex;flex-direction:column;gap:5px;max-height:240px;overflow-y:auto;"></div>
         </div>
@@ -381,6 +385,7 @@
             b.style.color = active ? "#fff" : "#cbd5e1";
             b.style.borderColor = active ? "rgba(74,222,128,0.5)" : "rgba(255,255,255,0.15)";
           });
+          sendCmd({ action: "setWallhack", filter: uiState.filter });
           renderHud();
         });
       });
@@ -390,6 +395,8 @@
       const btnShoot = hud.querySelector("#ks-bb-autoshoot");
       const btnAmbil = hud.querySelector("#ks-bb-autoambil");
       const btnStop = hud.querySelector("#ks-bb-stopwalk");
+      const btnEsp2d = hud.querySelector("#ks-bb-esp2d");
+      const btnChams3d = hud.querySelector("#ks-bb-chams3d");
 
       btnHunt.addEventListener("click", () => {
         uiState.autoHunt = !uiState.autoHunt;
@@ -427,6 +434,22 @@
 
       btnStop.addEventListener("click", () => {
         sendCmd({ action: "stopWalk" });
+      });
+
+      btnEsp2d.addEventListener("click", () => {
+        uiState.esp2d = !uiState.esp2d;
+        btnEsp2d.textContent = `👁️ ESP 2D: ${uiState.esp2d ? "ON" : "OFF"}`;
+        btnEsp2d.style.background = uiState.esp2d ? "#7e22ce" : "rgba(126,34,206,0.18)";
+        btnEsp2d.style.color = uiState.esp2d ? "#fff" : "#e9d5ff";
+        sendCmd({ action: "setWallhack", esp2d: uiState.esp2d, chams3d: uiState.chams3d, filter: uiState.filter });
+      });
+
+      btnChams3d.addEventListener("click", () => {
+        uiState.chams3d = !uiState.chams3d;
+        btnChams3d.textContent = `🩻 Chams 3D: ${uiState.chams3d ? "ON" : "OFF"}`;
+        btnChams3d.style.background = uiState.chams3d ? "#ca8a04" : "rgba(161,98,7,0.18)";
+        btnChams3d.style.color = uiState.chams3d ? "#fff" : "#fef08a";
+        sendCmd({ action: "setWallhack", esp2d: uiState.esp2d, chams3d: uiState.chams3d, filter: uiState.filter });
       });
 
       // Emergency manual override on movement keys

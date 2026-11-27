@@ -598,11 +598,17 @@
   // Perilaku ala manusia (diving-human.js): goyang arah, jeda di jalan, jeda sebelum buka.
   let human = null;
   let motion = null;
+  let humanizeEnabled = true;
 
   function getHuman() {
     if (!human && window.__KS_DIVING_HUMAN) human = window.__KS_DIVING_HUMAN.createHuman();
     return human;
   }
+
+  window.addEventListener("ks_humanize_toggle", (e) => {
+    humanizeEnabled = !!(e.detail && e.detail.enabled);
+    if (!humanizeEnabled) motion = null;
+  });
 
   function resetNav() {
     if (navigator) navigator.reset();
@@ -754,6 +760,10 @@
   window.addEventListener("ks_autopilot_command", (e) => {
     const cmd = e.detail;
     if (cmd.action === "start") {
+      if (typeof cmd.humanize === "boolean") {
+        humanizeEnabled = cmd.humanize;
+        if (!humanizeEnabled) motion = null;
+      }
       autopilot.active = true;
       autopilot.target = cmd.target;
       autopilot.autoOpen = cmd.autoOpen !== false;
@@ -841,7 +851,9 @@
     const OPEN = window.__KS_DIVING_OPEN;
     autopilot.phase = "open";
     if (!autopilot.opener) {
-      autopilot.opener = OPEN.createOpener();
+      autopilot.opener = humanizeEnabled
+        ? OPEN.createOpener()
+        : OPEN.createOpener({ cfg: { settle: [0, 0] } });
       autopilot.opener.begin(now, target.i);
       console.log("[DivingAutopilot] Arrived at kerang #", target.i, "- opening...");
       dlog("arrive", { target: target.i, snap: snapshot(sc, target) });
@@ -1011,12 +1023,12 @@
       }
 
       const nv = getNavigator();
-      const hm = getHuman();
+      const hm = humanizeEnabled ? getHuman() : null;
       if (hm && !motion) motion = hm.createMotion();
 
       // Jeda "manusia" di jalan: diam sebentar sambil menoleh. Navigator diberi tahu supaya
       // diam ini tidak dihitung nyangkut atau tanpa kemajuan.
-      if (nv && motion && motion.paused(performance.now())) {
+      if (nv && humanizeEnabled && motion && motion.paused(performance.now())) {
         const nowH = performance.now();
         nv.hold(nowH);
         const lookYaw = motion.hold(nowH);
@@ -1064,7 +1076,7 @@
       // dalam 8 m, dan tidak sedang dalam pemulihan nyangkut. Selain itu arah navigator
       // dipakai apa adanya (perilaku keselamatan tidak diubah).
       let yaw = out.yaw;
-      if (motion) {
+      if (humanizeEnabled && motion) {
         const nowM = performance.now();
         const calm = (out.mode === "none" || out.mode === "direct") &&
           nv.state.stuckLevel === 0 && nowM >= nv.state.recoverUntil &&

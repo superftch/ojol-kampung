@@ -452,16 +452,298 @@
   function stopAimLock() {
     aimLockState = null;
   }
-  function aimLockLoop() {
+
+  // --- Wallhack: 2D ESP Overlay + 3D Chams (both default OFF) ---
+  const wallhackState = {
+    esp2d: false,
+    chams3d: false,
+    filter: "babi"
+  };
+
+  function matchesWallhackFilter(s, filterMode) {
+    if (!s || s.keadaan === "diambil" || s.keadaan === "sembunyi") return false;
+    if (s.keadaan === "mati") return true; // Always show corpses to loot
+    if (filterMode === "all") return true;
+    if (filterMode === "high-roi") return s.jenis === "babi-hutan" || s.jenis === "ayam-hutan";
+    if (filterMode === "babi") return s.jenis === "babi-hutan";
+    if (filterMode === "ayam") return s.jenis === "ayam-hutan";
+    if (filterMode === "hama") return s.jenis === "tupai-kelapa" || s.jenis === "tikus-sawah";
+    return true;
+  }
+
+  function projectWorldToScreen(inst, worldPos, width, height) {
+    if (!inst?.cam || !worldPos || !inst.cam.position) return null;
+    try {
+      const Ctor = inst.cam.position.constructor;
+      const v = new Ctor(worldPos.x, worldPos.y, worldPos.z);
+      if (typeof v.project !== "function") return null;
+
+      // Check if point is in front of camera
+      if (typeof inst.cam.getWorldDirection === "function") {
+        const dir = new Ctor();
+        inst.cam.getWorldDirection(dir);
+        const dx = worldPos.x - inst.cam.position.x;
+        const dy = worldPos.y - inst.cam.position.y;
+        const dz = worldPos.z - inst.cam.position.z;
+        if (dx * dir.x + dy * dir.y + dz * dir.z <= 0.1) return null;
+      }
+
+      v.project(inst.cam);
+      if (!Number.isFinite(v.x) || !Number.isFinite(v.y) || !Number.isFinite(v.z) || v.z > 1) {
+        return null;
+      }
+      return {
+        x: (v.x * 0.5 + 0.5) * width,
+        y: (-v.y * 0.5 + 0.5) * height
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function ensureEspCanvas(targetCanvas) {
+    let overlay = document.getElementById("ks-berburu-esp-overlay");
+    if (!overlay) {
+      overlay = document.createElement("canvas");
+      overlay.id = "ks-berburu-esp-overlay";
+      overlay.style.cssText = [
+        "position:fixed",
+        "pointer-events:none",
+        "z-index:2147483639",
+        "display:none"
+      ].join(";");
+      document.body.appendChild(overlay);
+    }
+    if (!targetCanvas) {
+      overlay.style.display = "none";
+      return null;
+    }
+    const rect = targetCanvas.getBoundingClientRect();
+    if (rect.width < 10 || rect.height < 10) {
+      overlay.style.display = "none";
+      return null;
+    }
+    overlay.style.display = "block";
+    overlay.style.left = `${rect.left}px`;
+    overlay.style.top = `${rect.top}px`;
+    overlay.style.width = `${rect.width}px`;
+    overlay.style.height = `${rect.height}px`;
+    const w = Math.round(rect.width);
+    const h = Math.round(rect.height);
+    if (overlay.width !== w || overlay.height !== h) {
+      overlay.width = w;
+      overlay.height = h;
+    }
+    return { overlay, w, h };
+  }
+
+  function hideEspCanvas() {
+    const overlay = document.getElementById("ks-berburu-esp-overlay");
+    if (overlay) {
+      const ctx = overlay.getContext("2d");
+      if (ctx) ctx.clearRect(0, 0, overlay.width, overlay.height);
+      overlay.style.display = "none";
+    }
+  }
+
+  function renderEsp2D(inst) {
+    if (!wallhackState.esp2d || !inst || !inst.cam || !Array.isArray(inst.satwa)) {
+      hideEspCanvas();
+      return;
+    }
+    const targetCanvas = inst.renderer?.domElement || document.querySelector("canvas");
+    const info = ensureEspCanvas(targetCanvas);
+    if (!info) return;
+    const { overlay, w, h } = info;
+    const ctx = overlay.getContext("2d");
+    if (!ctx) return;
+    ctx.clearRect(0, 0, w, h);
+
+    if (typeof inst.cam.updateMatrixWorld === "function") {
+      inst.cam.updateMatrixWorld();
+    }
+
+    const snapAnimals = window.__KS_BERBURU_STATE?.animals || [];
+    const losById = new Map();
+    for (const a of snapAnimals) {
+      losById.set(a.i, a.los);
+    }
+
+    for (const s of inst.satwa) {
+      if (!matchesWallhackFilter(s, wallhackState.filter)) continue;
+      if (s.obj && typeof s.obj.updateMatrixWorld === "function") {
+        s.obj.updateMatrixWorld(true);
+      }
+
+      const basePos = { x: s.x, y: s.y || 0, z: s.z };
+      const headPos = (s.m && getWorldPos(s.m.kepala)) || {
+        x: s.x,
+        y: (s.y || 0) + (s.a?.tinggi || 0.4),
+        z: s.z
+      };
+      const topPos = { x: headPos.x, y: headPos.y + 0.25, z: headPos.z };
+
+      const pBase = projectWorldToScreen(inst, basePos, w, h);
+      const pTop = projectWorldToScreen(inst, topPos, w, h);
+      const pHead = projectWorldToScreen(inst, headPos, w, h);
+      if (!pBase && !pHead) continue;
+
+      const anchor = pHead || pBase;
+      const dx = s.x - inst.me.x;
+      const dz = s.z - inst.me.z;
+      const dist = Math.round(Math.hypot(dx, dz));
+      const isDead = s.keadaan === "mati";
+      const los = losById.has(s.i) ? losById.get(s.i) : true;
+
+      let color = "#c084fc";
+      if (isDead) color = "#4ade80";
+      else if (s.keadaan === "seruduk") color = "#ef4444";
+      else if (!los) color = "#f59e0b";
+      else if (s.jenis === "babi-hutan") color = "#22d3ee";
+      else if (s.jenis === "ayam-hutan") color = "#facc15";
+
+      const boxH = pBase && pTop ? Math.max(18, Math.min(180, Math.abs(pBase.y - pTop.y) * 1.25)) : Math.max(16, Math.min(120, 900 / Math.max(4, dist)));
+      const boxW = boxH * 1.15;
+      const bx = anchor.x - boxW / 2;
+      const by = (pTop ? pTop.y : anchor.y - boxH * 0.5);
+
+      ctx.strokeStyle = color;
+      ctx.lineWidth = isDead || s.keadaan === "seruduk" ? 2 : 1.5;
+      ctx.strokeRect(bx, by, boxW, boxH);
+
+      // Head dot
+      if (pHead && !isDead) {
+        ctx.fillStyle = los ? "#4ade80" : "#ef4444";
+        ctx.beginPath();
+        ctx.arc(pHead.x, pHead.y, 3.5, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      // Label
+      const statusTxt = isDead ? "MATI" : s.keadaan === "seruduk" ? "SERUDUK!" : los ? "LOS" : "TERHALANG";
+      const label = `${s.a?.nama || s.jenis} ${dist}m [${statusTxt}]`;
+      ctx.font = "bold 11px -apple-system, BlinkMacSystemFont, sans-serif";
+      const tw = ctx.measureText(label).width;
+      const lx = anchor.x - tw / 2 - 4;
+      const ly = by - 17;
+      ctx.fillStyle = "rgba(6, 17, 26, 0.78)";
+      ctx.fillRect(lx, ly, tw + 8, 15);
+      ctx.fillStyle = color;
+      ctx.fillText(label, lx + 4, ly + 11);
+    }
+  }
+
+  const origObjProps = new WeakMap();
+  const origMatProps = new WeakMap();
+  const chamsModifiedNodes = new Set();
+
+  function restoreChamsNode(node) {
+    const objSaved = origObjProps.get(node);
+    if (objSaved) {
+      node.renderOrder = objSaved.renderOrder;
+      node.frustumCulled = objSaved.frustumCulled;
+      origObjProps.delete(node);
+    }
+    const mats = Array.isArray(node.material) ? node.material : [node.material];
+    for (const mat of mats) {
+      if (!mat) continue;
+      const matSaved = origMatProps.get(mat);
+      if (matSaved) {
+        mat.depthTest = matSaved.depthTest;
+        mat.fog = matSaved.fog;
+        if (mat.emissive && matSaved.emissive && typeof mat.emissive.copy === "function") {
+          mat.emissive.copy(matSaved.emissive);
+        }
+        if (typeof matSaved.emissiveIntensity === "number") {
+          mat.emissiveIntensity = matSaved.emissiveIntensity;
+        }
+        mat.needsUpdate = true;
+        origMatProps.delete(mat);
+      }
+    }
+    chamsModifiedNodes.delete(node);
+  }
+
+  function applyChamsNode(node) {
+    if (!node || !node.isMesh || !node.material) return;
+    if (!origObjProps.has(node)) {
+      origObjProps.set(node, {
+        renderOrder: node.renderOrder,
+        frustumCulled: node.frustumCulled
+      });
+    }
+    node.renderOrder = 999;
+    node.frustumCulled = false;
+
+    const mats = Array.isArray(node.material) ? node.material : [node.material];
+    for (const mat of mats) {
+      if (!mat) continue;
+      if (!origMatProps.has(mat)) {
+        origMatProps.set(mat, {
+          depthTest: mat.depthTest,
+          fog: mat.fog,
+          emissive: mat.emissive && typeof mat.emissive.clone === "function" ? mat.emissive.clone() : null,
+          emissiveIntensity: mat.emissiveIntensity
+        });
+        mat.needsUpdate = true;
+      }
+      mat.depthTest = false;
+      mat.fog = false;
+    }
+    chamsModifiedNodes.add(node);
+  }
+
+  function syncChams3D(inst) {
+    if (!wallhackState.chams3d || !inst || !Array.isArray(inst.satwa)) {
+      if (chamsModifiedNodes.size > 0) {
+        for (const node of Array.from(chamsModifiedNodes)) {
+          restoreChamsNode(node);
+        }
+      }
+      return;
+    }
+
+    const activeNodes = new Set();
+    for (const s of inst.satwa) {
+      if (!s.obj || typeof s.obj.traverse !== "function") continue;
+      if (!matchesWallhackFilter(s, wallhackState.filter)) continue;
+      s.obj.traverse((node) => {
+        if (node.isMesh && node.material) {
+          activeNodes.add(node);
+          applyChamsNode(node);
+        }
+      });
+    }
+
+    for (const node of Array.from(chamsModifiedNodes)) {
+      if (!activeNodes.has(node)) {
+        restoreChamsNode(node);
+      }
+    }
+  }
+
+  function renderFrameLoop() {
     if (aimLockState) {
       aimAt(aimLockState.satwaId, aimLockState.zona, aimLockState.openScope, aimLockState.holdBreath);
     }
-    requestAnimationFrame(aimLockLoop);
+    const inst = window.__KS_BERBURU_INSTANCE;
+    renderEsp2D(inst);
+    syncChams3D(inst);
+    requestAnimationFrame(renderFrameLoop);
   }
-  requestAnimationFrame(aimLockLoop);
+  requestAnimationFrame(renderFrameLoop);
 
   window.addEventListener("ks_berburu_cmd", (e) => {
     const cmd = e.detail || {};
+    if (cmd.action === "setWallhack") {
+      if (typeof cmd.esp2d === "boolean") wallhackState.esp2d = cmd.esp2d;
+      if (typeof cmd.chams3d === "boolean") wallhackState.chams3d = cmd.chams3d;
+      if (typeof cmd.filter === "string") wallhackState.filter = cmd.filter;
+      const curInst = window.__KS_BERBURU_INSTANCE;
+      renderEsp2D(curInst);
+      syncChams3D(curInst);
+      return;
+    }
     const inst = window.__KS_BERBURU_INSTANCE;
     if (!inst) return;
     switch (cmd.action) {
