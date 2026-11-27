@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from contextlib import suppress
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -25,6 +25,7 @@ SNIPER_STATE_FILE = "job-sniper-state.json"
 
 DEFAULT_SNIPER_CONFIG: dict[str, Any] = {
     "enabled": False,
+    "mode": "wait_kosong",
     "interval_seconds": 30,
     "schedule_enabled": False,
     "start_time": "00:00",
@@ -41,6 +42,7 @@ DEFAULT_SNIPER_STATE: dict[str, Any] = {
     "last_check_at": None,
     "last_result": None,
     "last_error": None,
+    "next_check_at": None,
     "next_kosong_at": None,
     "next_kosong_profession": None,
     "last_sniped_job": None,
@@ -88,8 +90,13 @@ def normalize_sniper_config(raw: dict[str, Any] | None) -> dict[str, Any]:
     if source_filter not in {"all", "facility", "business"}:
         source_filter = "all"
 
+    mode = str(data.get("mode") or DEFAULT_SNIPER_CONFIG["mode"]).strip().lower()
+    if mode not in {"wait_kosong", "interval"}:
+        mode = "wait_kosong"
+
     return {
         "enabled": bool(data.get("enabled", False)),
+        "mode": mode,
         "interval_seconds": interval,
         "schedule_enabled": bool(data.get("schedule_enabled", False)),
         "start_time": _parse_hhmm(data.get("start_time"), "00:00"),
@@ -284,15 +291,43 @@ async def run_job_sniper_once(
 
         if best is None:
             current_job = payload.get("current_job")
-            if current_job and not cfg["allow_switch_job"]:
-                msg = f"Sudah bekerja sebagai {current_job.get('profession')}; pindah kerja dinonaktifkan."
-            elif next_kosong:
-                msg = (
-                    f"Belum ada slot kosong sesuai kriteria. "
-                    f"Slot berikutnya: {next_kosong_prof}."
-                )
+            if cfg.get("mode", "wait_kosong") == "wait_kosong":
+                if next_kosong_at and next_kosong_epoch is not None:
+                    next_check_dt = datetime.fromtimestamp(next_kosong_epoch, tz=WIB)
+                    next_check_at = next_check_dt.isoformat()
+                    next_check_epoch = next_kosong_epoch
+                    msg = (
+                        f"Menunggu jadwal kosong {next_kosong_prof} "
+                        f"(hemat resource, tidak polling)."
+                    )
+                else:
+                    next_check_dt = moment + timedelta(minutes=30)
+                    next_check_at = next_check_dt.isoformat()
+                    next_check_epoch = next_check_dt.timestamp()
+                    if current_job and not cfg["allow_switch_job"]:
+                        msg = (
+                            f"Sudah bekerja sebagai {current_job.get('profession')}; "
+                            "pindah kerja dinonaktifkan."
+                        )
+                    else:
+                        msg = "Belum ada slot/jadwal kosong sesuai kriteria; cek ulang 30 menit lagi."
             else:
-                msg = "Belum ada lowongan sesuai skill & kriteria yang tersedia."
+                interval_dt = moment + timedelta(seconds=cfg["interval_seconds"])
+                if next_kosong_epoch is not None and next_kosong_epoch < interval_dt.timestamp():
+                    next_check_epoch = next_kosong_epoch
+                    next_check_at = datetime.fromtimestamp(next_kosong_epoch, tz=WIB).isoformat()
+                else:
+                    next_check_epoch = interval_dt.timestamp()
+                    next_check_at = interval_dt.isoformat()
+                if current_job and not cfg["allow_switch_job"]:
+                    msg = f"Sudah bekerja sebagai {current_job.get('profession')}; pindah kerja dinonaktifkan."
+                elif next_kosong:
+                    msg = (
+                        f"Belum ada slot kosong sesuai kriteria. "
+                        f"Slot berikutnya: {next_kosong_prof}."
+                    )
+                else:
+                    msg = "Belum ada lowongan sesuai skill & kriteria yang tersedia."
             updated_state = save_sniper_state(
                 directory,
                 {
@@ -300,6 +335,7 @@ async def run_job_sniper_once(
                     "last_check_at": moment.isoformat(),
                     "last_result": msg,
                     "last_error": None,
+                    "next_check_at": next_check_at,
                     "next_kosong_at": next_kosong_at,
                     "next_kosong_profession": next_kosong_prof,
                     "checks_count": checks_count,
@@ -309,6 +345,7 @@ async def run_job_sniper_once(
                 "checked": True,
                 "sniped": False,
                 "message": msg,
+                "next_check_epoch": next_check_epoch,
                 "next_kosong_epoch": next_kosong_epoch,
                 "config": cfg,
                 "state": updated_state,
@@ -351,6 +388,7 @@ async def run_job_sniper_once(
                 "last_check_at": moment.isoformat(),
                 "last_result": msg,
                 "last_error": None,
+                "next_check_at": None,
                 "next_kosong_at": next_kosong_at,
                 "next_kosong_profession": next_kosong_prof,
                 "last_sniped_job": {

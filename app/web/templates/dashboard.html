@@ -724,6 +724,13 @@ __ADMIN_NOTIF_PANEL__
                 </div>
                 <div class="jobs-sniper-grid">
                     <label class="jobs-sniper-field">
+                        <span>Mode Cek</span>
+                        <select id="sniperMode" class="jobs-filter-select" onchange="syncSniperModeInputs()">
+                            <option value="wait_kosong">Hemat (Tunggu Jadwal Kosong)</option>
+                            <option value="interval">Interval Rutin (detik)</option>
+                        </select>
+                    </label>
+                    <label class="jobs-sniper-field" id="sniperIntervalField" style="display: none;">
                         <span>Interval Cek (detik)</span>
                         <input type="number" id="sniperInterval" class="jobs-filter-input" min="10" max="3600" value="30">
                     </label>

@@ -15,6 +15,7 @@ from app.modules.jobs.sniper import (
     load_sniper_state,
     run_job_sniper_once,
     save_sniper_config,
+    save_sniper_state,
 )
 from app.web.deps import WebContext, get_ctx, require_user, resolve_account_service
 from app.web.payloads import read_json
@@ -128,11 +129,16 @@ async def update_job_sniper(
     cur_service = _require_account_service(ctx, user, request)
     directory = cur_service.settings.runtime_dir
     config = save_sniper_config(directory, body.model_dump())
+    # Clear next_check_at so a newly enabled or reconfigured sniper checks immediately once.
+    state = save_sniper_state(directory, {**load_sniper_state(directory), "next_check_at": None})
+    supervisor = getattr(getattr(ctx, "manager", None), "supervisor", None)
+    if supervisor is not None and hasattr(supervisor, "_sniper_next_check_ts"):
+        supervisor._sniper_next_check_ts.pop(cur_service.account_id, None)
     return {
         "success": True,
         "message": "Pengaturan Job Sniper disimpan.",
         "config": config,
-        "state": load_sniper_state(directory),
+        "state": state,
     }
 
 

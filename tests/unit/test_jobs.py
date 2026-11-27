@@ -280,3 +280,35 @@ async def test_run_job_sniper_once_applies_and_autostops(tmp_path):
     assert load_sniper_config(tmp_path)["enabled"] is False
     assert res["state"]["snipes_count"] == 1
     assert res["state"]["last_sniped_job"]["profession"] == "Dokter"
+
+
+async def test_run_job_sniper_wait_kosong_sleeps_until_kosong_at(tmp_path):
+    me = _sample_me()
+    # Make all skill-matched open vacancies full with a future kosongAt
+    for v in me["catalog"]["vacancies"]:
+        if v["profession"] == "Dokter":
+            v["filled"] = v["slots"]
+            v["kosongAt"] = "2026-12-03T03:27:00.000Z"
+    save_sniper_config(
+        tmp_path,
+        {
+            "enabled": True,
+            "mode": "wait_kosong",
+            "interval_seconds": 30,
+            "allow_switch_job": True,
+        },
+    )
+    fake_api = SimpleNamespace(
+        fetch_game_me=AsyncMock(return_value=me),
+        fetch_biz_vacancies=AsyncMock(return_value=[]),
+        apply_facility_job=AsyncMock(),
+        apply_biz_vacancy=AsyncMock(),
+    )
+
+    res = await run_job_sniper_once(tmp_path, api=fake_api)
+    assert res["checked"] is True
+    assert res["sniped"] is False
+    assert res["next_kosong_epoch"] == datetime.fromisoformat("2026-12-03T03:27:00+00:00").timestamp()
+    assert res["next_check_epoch"] == res["next_kosong_epoch"]
+    assert res["state"]["next_check_at"] is not None
+    fake_api.apply_facility_job.assert_not_awaited()

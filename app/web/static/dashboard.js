@@ -2388,6 +2388,14 @@ function syncSniperScheduleInputs() {
     if (endEl) endEl.disabled = !enabled;
 }
 
+function syncSniperModeInputs() {
+    const mode = document.getElementById('sniperMode')?.value || 'wait_kosong';
+    const intervalField = document.getElementById('sniperIntervalField');
+    if (intervalField) {
+        intervalField.style.display = mode === 'interval' ? 'flex' : 'none';
+    }
+}
+
 function renderJobSniperPanel() {
     if (!jobSniperData) return;
     const cfg = jobSniperData.config || {};
@@ -2400,7 +2408,8 @@ function renderJobSniperPanel() {
 
     if (badge) {
         badge.className = cfg.enabled ? 'job-badge ok' : 'job-badge muted';
-        badge.textContent = cfg.enabled ? `Aktif · tiap ${cfg.interval_seconds || 30}s` : 'Nonaktif';
+        const modeLabel = cfg.mode === 'interval' ? `tiap ${cfg.interval_seconds || 30}s` : 'Hemat · Tunggu Kosong';
+        badge.textContent = cfg.enabled ? `Aktif · ${modeLabel}` : 'Nonaktif';
     }
     if (toggleBtn) {
         toggleBtn.textContent = cfg.enabled ? 'Matikan Sniper' : 'Aktifkan Sniper';
@@ -2420,6 +2429,7 @@ function renderJobSniperPanel() {
         const el = document.getElementById(id);
         if (el) el.checked = Boolean(val);
     };
+    setVal('sniperMode', cfg.mode || 'wait_kosong');
     setVal('sniperInterval', cfg.interval_seconds ?? 30);
     setVal('sniperSourceFilter', cfg.source_filter || 'all');
     setVal('sniperSkillTrack', cfg.skill_track_id || '');
@@ -2430,12 +2440,16 @@ function renderJobSniperPanel() {
     setCheck('sniperAllowSwitch', cfg.allow_switch_job !== false);
     setCheck('sniperAutoStop', cfg.auto_stop_on_success !== false);
     setCheck('sniperAllowFee', cfg.allow_fee);
+    syncSniperModeInputs();
     syncSniperScheduleInputs();
 
     if (metaRow) {
         const metaParts = [];
         if (st.last_check_at) {
             metaParts.push(`<span>Terakhir cek: <strong>${escapeHtml(formatKosongAt(st.last_check_at))}</strong></span>`);
+        }
+        if (cfg.enabled && st.next_check_at) {
+            metaParts.push(`<span>💤 Cek berikutnya: <strong>${escapeHtml(formatKosongAt(st.next_check_at))}</strong></span>`);
         }
         if (st.next_kosong_at) {
             const prof = st.next_kosong_profession ? ` (${escapeHtml(st.next_kosong_profession)})` : '';
@@ -2456,6 +2470,7 @@ function readJobSniperFormConfig(overrideEnabled = null) {
     const minSalaryKoin = Math.max(0, parseFloat(document.getElementById('sniperMinSalary')?.value || '0') || 0);
     return {
         enabled: overrideEnabled !== null ? Boolean(overrideEnabled) : curEnabled,
+        mode: document.getElementById('sniperMode')?.value || 'wait_kosong',
         interval_seconds: interval,
         schedule_enabled: Boolean(document.getElementById('sniperScheduleEnabled')?.checked),
         start_time: document.getElementById('sniperStartTime')?.value || '00:00',

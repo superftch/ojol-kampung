@@ -19,6 +19,7 @@ class JobSniperConfigRequest(BaseModel):
     """Payload to update scheduled Job Sniper settings."""
 
     enabled: bool = False
+    mode: Literal["wait_kosong", "interval"] = "wait_kosong"
     interval_seconds: int = Field(default=30, ge=10, le=3600)
     schedule_enabled: bool = False
     start_time: str = Field(default="00:00", pattern=r"^\d{2}:\d{2}$")
