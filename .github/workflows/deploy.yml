@@ -142,7 +142,7 @@ jobs:
     if: needs.detect.outputs.target != 'none'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    environment: production
+    environment: prod
     steps:
       - name: Deploy to VPS via SSH
         env:
