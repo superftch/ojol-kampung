@@ -308,6 +308,8 @@ class OjolHttpApi:
                 "/api/kerja-malam",
                 "/api/skills",
                 "/api/chat?toa=0",
+                "/api/jobs/lowongan-usaha",
+                "/api/jobs/start",
             }
             or re.fullmatch(
                 r"/api/world/plots\?v=2&blocks=[A-Z][0-9]{2}(?:,[A-Z][0-9]{2}){0,23}", path
@@ -318,6 +320,7 @@ class OjolHttpApi:
             or minigame_view
             or re.fullmatch(r"/api/world/plots/[A-Z][0-9]{2}-U[0-9]{2}\?t=[0-9]{1,15}", path)
             or re.fullmatch(r"/api/facilities/[a-f0-9-]{36}(?:/(?:use|kuis|kegiatan))?", path)
+            or re.fullmatch(r"/api/jobs/vacancy/[A-Za-z0-9-]+", path)
             or re.fullmatch(r"/api/spbu/[A-Z0-9-]+", path)
             or garden_action
             or re.fullmatch(r"/_next/static/[a-zA-Z0-9_./-]+\.js", path)
@@ -337,8 +340,10 @@ class OjolHttpApi:
                     "/api/kantor",
                     "/api/kerja-malam",
                     "/api/skills",
+                    "/api/jobs/start",
                 }
                 and not garden_action
+                and not re.fullmatch(r"/api/jobs/vacancy/[A-Za-z0-9-]+", path)
                 and not re.fullmatch(r"/api/spbu/[A-Z0-9-]+", path)
                 and not path.endswith(("/buy", "/use", "/kuis", "/bayar", "/kegiatan", "/minigame"))
             )
@@ -817,3 +822,37 @@ class OjolHttpApi:
         from uuid import uuid4
 
         return await self.request("/api/skills", {"requestId": str(uuid4()), "track": track})
+
+    async def fetch_game_me(self) -> dict:
+        """Fetch /api/game/me and persist verified profile and skills when present."""
+        me = await self.request("/api/game/me")
+        if isinstance(me, dict):
+            if (me.get("profile") or {}).get("nickname") is not None:
+                save_profile(self.directory, verified_profile(me))
+            if isinstance(me.get("skill"), dict) and isinstance(me["skill"].get("tracks"), list):
+                save_skills(self.directory, me["skill"]["tracks"])
+            return me
+        return {}
+
+    async def fetch_biz_vacancies(self) -> list[dict]:
+        """Fetch live business vacancies from /api/jobs/lowongan-usaha."""
+        res = await self.request("/api/jobs/lowongan-usaha")
+        if isinstance(res, dict) and isinstance(res.get("items"), list):
+            return [item for item in res["items"] if isinstance(item, dict)]
+        return []
+
+    async def apply_facility_job(
+        self, profession: str, facility_id: str, *, switch_job: bool = False
+    ) -> dict:
+        """Apply to a public/facility job via POST /api/jobs/start."""
+        payload: dict[str, object] = {"profession": profession, "facilityId": facility_id}
+        if switch_job:
+            payload["switchJob"] = True
+        res = await self.request("/api/jobs/start", payload)
+        return res if isinstance(res, dict) else {}
+
+    async def apply_biz_vacancy(self, vacancy_id: str, *, switch_job: bool = False) -> dict:
+        """Apply to a business vacancy via POST /api/jobs/vacancy/{vacancy_id}."""
+        payload: dict[str, object] = {"switchJob": True} if switch_job else {}
+        res = await self.request(f"/api/jobs/vacancy/{vacancy_id}", payload)
+        return res if isinstance(res, dict) else {}

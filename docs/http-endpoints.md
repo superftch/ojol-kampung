@@ -427,3 +427,16 @@ Inspeksi bundle client 25 November 2026 (`29ahj9dqnlzgc.js`, `3eqd4os9qi5gk.js` 
 2. **Pekerjaan Umum / Kerja Malam (`GET/POST /api/kerja-malam`)**:
    - Verifikasi statis bundle `29ahj9dqnlzgc.js`: `GET /api/kerja-malam` mengembalikan status `enabled`, `buka`, `siang` (`enabled`, `buka`, `rumah`, `maks`), `lampuMati[]`, `patroli`, dan `bersihku`.
    - `POST /api/kerja-malam` mendukung `{"action": "mulai"}`, `{"action": "lampu", "key": str}`, `{"action": "bersih", "plotId": str}`, `{"action": "bersih-selesai", "tangkap": int}`, `{"action": "patroli"}`, dan `{"action": "titik", "putaran": int, "titik": int}`.
+
+## Bukti Lowongan Pekerjaan & Lamaran (27 November 2026)
+
+Verifikasi statis bundle client `29ahj9dqnlzgc.js` (25 November 2026) dan inspeksi respons `me.json` historis (`.local/work-audit-20261125/me.json`):
+1. **Daftar Lowongan (`GET /api/game/me` & `GET /api/jobs/lowongan-usaha`)**:
+   - `GET /api/game/me` memuat `catalog.vacancies[]` (lowongan fasum/pemerintah/BUMDes dengan `facilityId`, `facility`, `item`, `profession`, `slots`, `filled`, `kosongAt`, `wageMilliDay`, `minSkillLevel`, `feeMilli`, `desa`, `desaName`, `bumdes`, opsional `gender`, `minAge`), `catalog.bizVacancies[]` (lowongan usaha warga), `catalog.transport` (`jenis`, `nilai`), `ekonomi` (`bonusBps`, `remBps`), `skill` (`level`, `bonusBps`, `tracks[]`), `home` (`desa`), dan `job` (kontrak aktif).
+   - `GET /api/jobs/lowongan-usaha` (HTTP GET) mengembalikan `{items: [...]}` berisi lowongan usaha warga terbaru (`id`, `businessId`, `catalogId`, `name`, `plotId`, `ownerNick`, `profession`, `slots`, `hired`, `rate`, `days`, `desa`, `desaName`, `block`, opsional `mine`).
+2. **Perhitungan Gaji & Multiplier (statis `29ahj9dqnlzgc.js`)**:
+   - Lowongan fasum/pemerintah: `skillAfter = floor(wageMilliDay * (10000 + max(skill.bonusBps, track.bonusBps)) / 10000)`, lalu dipotong transport lintas desa jika `home.desa != vacancy.desa`, lalu jika `feeMilli == 0` ditambah bonus ekonomi `floor(afterTransport * ekonomi.bonusBps / 10000)`.
+   - Lowongan usaha warga: `rate` dipotong transport lintas desa bila berbeda desa, lalu ditambah `floor(net * ekonomi.bonusBps / 10000) + floor(net * ekonomi.remBps / 10000)`.
+3. **Melamar Pekerjaan (`POST /api/jobs/start` & `POST /api/jobs/vacancy/{id}`)**:
+   - Lowongan fasum/pemerintah: `POST /api/jobs/start` dengan payload `{"profession": str, "facilityId": str}` (tambahkan `"switchJob": true` jika akun sedang memiliki kontrak kerja lain).
+   - Lowongan usaha warga: `POST /api/jobs/vacancy/{vacancyId}` dengan payload `{}` atau `{"switchJob": true}` jika pindah pekerjaan.

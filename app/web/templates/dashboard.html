@@ -28,6 +28,7 @@
     <nav class="nav-tabs" aria-label="Navigasi utama">
         <button class="nav-btn active" aria-current="page" onclick="showTab('tab-dashboard')">Ringkasan</button>
         <button class="nav-btn" onclick="showTab('tab-auto')"><span class="nav-label-wide">Pengaturan Auto</span><span class="nav-label-short">Auto</span></button>
+        <button class="nav-btn" onclick="showTab('tab-jobs')"><span class="nav-label-wide">Lowongan Pekerjaan</span><span class="nav-label-short">Lowongan</span></button>
         <button class="nav-btn" onclick="showTab('tab-accounts')">Akun</button>
         <button class="nav-btn" onclick="showTab('tab-notifications')">Notifikasi <span id="notifBadge" class="nav-count" style="display: none;">0</span></button>
         <button class="nav-btn" onclick="showTab('tab-bank-angka')">Bank Angka <span id="bankReviewBadge" class="nav-count" style="display: none; background: var(--danger, #ef4444); color: white;">0</span></button>
@@ -683,6 +684,50 @@ __ADMIN_NOTIF_PANEL__
                     <div style="text-align: center; color: var(--text-muted); padding: 32px 0; grid-column: 1 / -1;">
                         Memuat data bank angka...
                     </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- TAB 6: LOWONGAN PEKERJAAN -->
+        <div id="tab-jobs" class="tab-panel">
+            <div class="page-title">
+                <div>
+                    <h1>Lowongan Pekerjaan</h1>
+                    <p>Cari lowongan dengan gaji tertinggi, rincian multiplier, syarat skill, status slot, dan lamar langsung.</p>
+                </div>
+                <div class="page-title-actions">
+                    <button id="btnRefreshJobs" class="btn btn-utility" type="button" onclick="loadJobVacancies()">Segarkan Lowongan</button>
+                </div>
+            </div>
+
+            <div class="card" style="margin-bottom: 18px;">
+                <div id="jobsAccountSummary" class="jobs-account-summary">
+                    <div style="color: var(--text-muted); font-size: 13px;">Memuat ringkasan akun dan skill...</div>
+                </div>
+            </div>
+
+            <div class="jobs-subtabs" role="tablist" aria-label="Filter tab lowongan">
+                <button type="button" class="jobs-subtab active" data-job-tab="highest" onclick="switchJobsTab('highest')">Gaji Tertinggi <span id="jobsCountHighest" class="jobs-tab-count">0</span></button>
+                <button type="button" class="jobs-subtab" data-job-tab="matching" onclick="switchJobsTab('matching')">Sesuai Skill Akun <span id="jobsCountMatching" class="jobs-tab-count">0</span></button>
+                <button type="button" class="jobs-subtab" data-job-tab="available" onclick="switchJobsTab('available')">Bisa Dilamar <span id="jobsCountAvailable" class="jobs-tab-count">0</span></button>
+                <button type="button" class="jobs-subtab" data-job-tab="business" onclick="switchJobsTab('business')">Usaha Warga <span id="jobsCountBusiness" class="jobs-tab-count">0</span></button>
+            </div>
+
+            <div class="jobs-filter-bar">
+                <input type="search" id="jobsSearchInput" class="jobs-filter-input" placeholder="Cari profesi, tempat, atau desa..." oninput="renderJobVacancies()">
+                <select id="jobsSkillFilter" class="jobs-filter-select" aria-label="Filter bidang skill" onchange="renderJobVacancies()">
+                    <option value="">Semua Bidang Skill</option>
+                </select>
+                <select id="jobsStatusFilter" class="jobs-filter-select" aria-label="Filter status slot" onchange="renderJobVacancies()">
+                    <option value="all">Semua Status (Penuh &amp; Tersedia)</option>
+                    <option value="open">Belum Penuh Saja</option>
+                    <option value="full">Sudah Penuh Saja</option>
+                </select>
+            </div>
+
+            <div id="jobsList" class="jobs-list">
+                <div class="card" style="text-align: center; color: var(--text-muted); padding: 32px;">
+                    Buka tab ini untuk memuat daftar lowongan terbaru dari server game.
                 </div>
             </div>
         </div>
