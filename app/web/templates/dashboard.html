@@ -714,11 +714,10 @@ __ADMIN_NOTIF_PANEL__
                             <span id="sniperStatusBadge" class="job-badge muted">Nonaktif</span>
                         </div>
                         <p id="sniperStatusText" style="margin: 4px 0 0; font-size: 12px; color: var(--text-muted);">
-                            Otomatis melamar saat slot tersedia. Hemat resource: hanya aktif di waktu lowongan kosong.
+                            Pilih rekomendasi gaji tertinggi (opsional gaji minimal) atau pilih lowongan sendiri. Otomatis pindah kerja saat slot kosong &amp; berhenti setelah dapat.
                         </p>
                     </div>
                     <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
-                        <button id="btnSniperRunNow" class="btn btn-utility" type="button" onclick="runJobSniperNow()">Snipe Sekarang</button>
                         <button id="btnSniperToggle" class="btn btn-primary" type="button" onclick="toggleJobSniper()">Aktifkan Sniper</button>
                     </div>
                 </div>
@@ -729,6 +728,10 @@ __ADMIN_NOTIF_PANEL__
                             <option value="highest">Rekomendasi (Gaji tertinggi sesuai skill)</option>
                             <option value="specific">Pilih Lowongan Sendiri</option>
                         </select>
+                    </label>
+                    <label class="jobs-sniper-field" id="sniperMinSalaryField" style="flex: 0.7; min-width: 170px;">
+                        <span>Gaji Minimal (koin/hari, opsional)</span>
+                        <input type="number" id="sniperMinSalary" class="jobs-filter-input" min="0" step="0.5" value="0" placeholder="0">
                     </label>
                     <label class="jobs-sniper-field" id="sniperTargetJobField" style="flex: 1.5; min-width: 240px; display: none;">
                         <span>Lowongan Target</span>

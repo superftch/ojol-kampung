@@ -19,8 +19,7 @@ from app.modules.jobs.sniper import (
     load_sniper_config,
     load_sniper_state,
     run_job_sniper_once,
-    save_sniper_config,
-    save_sniper_state,
+    validate_and_configure_sniper,
 )
 from app.web.deps import WebContext, get_ctx, require_user, resolve_account_service
 from app.web.payloads import read_json
@@ -137,21 +136,41 @@ async def update_job_sniper(
     user: Annotated[dict, Depends(require_user)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    """Update Job Sniper configuration for the selected account."""
+    """Validate target against vacancies and activate or disable Job Sniper."""
     body = await read_json(request, JobSniperConfigRequest)
     cur_service = _require_account_service(ctx, user, request)
     directory = cur_service.settings.runtime_dir
-    config = save_sniper_config(directory, body.model_dump())
-    # Clear next_check_at so a newly enabled or reconfigured sniper checks immediately once.
-    state = save_sniper_state(directory, {**load_sniper_state(directory), "next_check_at": None})
+    try:
+        async with asyncio.timeout(20):
+            res = await validate_and_configure_sniper(
+                directory,
+                body.model_dump(),
+                settings=cur_service.settings,
+            )
+    except HttpCoreError as exc:
+        raise HTTPException(_http_status_for_error(exc), str(exc)) from None
+    except TimeoutError:
+        raise HTTPException(504, "Permintaan Job Sniper ke server game timeout.") from None
+
+    if not res.get("accepted"):
+        raise HTTPException(400, res.get("error") or "Lowongan tidak memenuhi syarat untuk di-sniper.")
+
     supervisor = getattr(getattr(ctx, "manager", None), "supervisor", None)
     if supervisor is not None and hasattr(supervisor, "_sniper_next_check_ts"):
-        supervisor._sniper_next_check_ts.pop(cur_service.account_id, None)
+        if res.get("next_kosong_epoch") is not None:
+            supervisor._sniper_next_check_ts[cur_service.account_id] = float(
+                res["next_kosong_epoch"]
+            )
+        else:
+            supervisor._sniper_next_check_ts.pop(cur_service.account_id, None)
+
     return {
         "success": True,
-        "message": "Pengaturan Job Sniper disimpan.",
-        "config": config,
-        "state": state,
+        "sniped": bool(res.get("sniped")),
+        "message": res.get("message") or "Pengaturan Job Sniper disimpan.",
+        "target_preview": res.get("target_preview"),
+        "config": res["config"],
+        "state": res["state"],
     }
 
 

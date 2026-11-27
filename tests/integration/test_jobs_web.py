@@ -162,31 +162,48 @@ def test_jobs_web_routes_and_dashboard_tab(settings, monkeypatch):
         assert sniper_get.status_code == 200
         assert sniper_get.json()["config"]["enabled"] is False
 
-        sniper_post = client.post(
+        # Reject when min_salary_milli has no matching vacancy
+        sniper_reject = client.post(
             "/api/jobs/sniper",
             json={
                 "enabled": True,
-                "interval_seconds": 15,
-                "schedule_enabled": True,
-                "start_time": "06:00",
-                "end_time": "22:00",
-                "source_filter": "facility",
-                "skill_track_id": "kesehatan",
-                "min_salary_milli": 5000,
-                "allow_switch_job": True,
-                "allow_fee": False,
-                "auto_stop_on_success": True,
+                "target_mode": "highest",
+                "min_salary_milli": 999999,
             },
         )
-        assert sniper_post.status_code == 200
-        assert sniper_post.json()["config"]["enabled"] is True
-        assert sniper_post.json()["config"]["interval_seconds"] == 15
+        assert sniper_reject.status_code == 400
 
-        # Trigger immediate sniper run
+        # When an open eligible vacancy exists, activating sniper immediately snipes it
         apply_fac_mock.reset_mock()
-        sniper_run = client.post("/api/jobs/sniper/run")
-        assert sniper_run.status_code == 200
-        run_data = sniper_run.json()
-        assert run_data["sniped"] is True
-        assert run_data["config"]["enabled"] is False
+        sniper_immediate = client.post(
+            "/api/jobs/sniper",
+            json={
+                "enabled": True,
+                "target_mode": "highest",
+                "min_salary_milli": 5000,
+            },
+        )
+        assert sniper_immediate.status_code == 200
+        imm_data = sniper_immediate.json()
+        assert imm_data["sniped"] is True
+        assert imm_data["config"]["enabled"] is False
         apply_fac_mock.assert_awaited_once_with("Dokter", "fac-rs", switch_job=False)
+
+        # When best matching vacancy is full with kosongAt, sniper activates and returns target_preview
+        sample_me["catalog"]["vacancies"][0]["filled"] = 2
+        sample_me["catalog"]["vacancies"][0]["kosongAt"] = "2026-12-03T03:27:00.000Z"
+        client.get("/api/jobs/vacancies?refresh=1")
+        sniper_wait = client.post(
+            "/api/jobs/sniper",
+            json={
+                "enabled": True,
+                "target_mode": "highest",
+                "min_salary_milli": 10000,
+            },
+        )
+        assert sniper_wait.status_code == 200
+        wait_data = sniper_wait.json()
+        assert wait_data["sniped"] is False
+        assert wait_data["config"]["enabled"] is True
+        assert wait_data["target_preview"]["profession"] == "Dokter"
+        assert wait_data["target_preview"]["kosong_at"] == "2026-12-03T03:27:00.000Z"

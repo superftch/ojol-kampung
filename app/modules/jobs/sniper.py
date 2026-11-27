@@ -17,6 +17,7 @@ from app.integrations.kampung.http_api import OjolHttpApi
 from app.modules.jobs.service import (
     build_job_vacancies_payload,
     invalidate_vacancies_cache,
+    load_vacancies_cache,
     save_vacancies_cache,
 )
 from app.modules.notifications.service import queue_notice
@@ -51,6 +52,7 @@ DEFAULT_SNIPER_STATE: dict[str, Any] = {
     "next_check_at": None,
     "next_kosong_at": None,
     "next_kosong_profession": None,
+    "target_preview": None,
     "last_sniped_job": None,
     "checks_count": 0,
     "snipes_count": 0,
@@ -116,9 +118,9 @@ def normalize_sniper_config(raw: dict[str, Any] | None) -> dict[str, Any]:
         "source_filter": source_filter,
         "skill_track_id": str(data.get("skill_track_id") or "").strip(),
         "min_salary_milli": min_salary,
-        "allow_switch_job": bool(data.get("allow_switch_job", True)),
-        "allow_fee": bool(data.get("allow_fee", False)),
-        "auto_stop_on_success": bool(data.get("auto_stop_on_success", True)),
+        "allow_switch_job": True,
+        "allow_fee": False,
+        "auto_stop_on_success": True,
     }
 
 
@@ -317,6 +319,17 @@ async def run_job_sniper_once(
         next_kosong_at = next_kosong.get("kosong_at") if next_kosong else None
         next_kosong_prof = next_kosong.get("profession") if next_kosong else None
         next_kosong_epoch = _parse_iso_epoch(next_kosong_at)
+        target_preview = (
+            {
+                "id": next_kosong.get("id"),
+                "profession": next_kosong.get("profession"),
+                "place_name": next_kosong.get("place_name"),
+                "net_milli": int((next_kosong.get("salary") or {}).get("net_milli") or 0),
+                "kosong_at": next_kosong_at,
+            }
+            if next_kosong
+            else None
+        )
         checks_count = int(state.get("checks_count") or 0) + 1
 
         if best is None:
@@ -369,6 +382,7 @@ async def run_job_sniper_once(
                     "next_check_at": next_check_at,
                     "next_kosong_at": next_kosong_at,
                     "next_kosong_profession": next_kosong_prof,
+                    "target_preview": target_preview,
                     "checks_count": checks_count,
                 },
             )
@@ -423,6 +437,7 @@ async def run_job_sniper_once(
                 "next_check_at": None,
                 "next_kosong_at": next_kosong_at,
                 "next_kosong_profession": next_kosong_prof,
+                "target_preview": None,
                 "last_sniped_job": {
                     "id": best["id"],
                     "profession": best["profession"],
@@ -473,3 +488,158 @@ async def run_job_sniper_once(
             "config": cfg,
             "state": updated_state,
         }
+
+
+def _rejection_reason_for_sniper(payload: dict[str, Any], cfg: dict[str, Any]) -> str:
+    vacancies = payload.get("vacancies") if isinstance(payload.get("vacancies"), list) else []
+    if cfg.get("target_mode") == "specific":
+        target_id = str(cfg.get("target_job_id") or "").strip()
+        if not target_id:
+            return "Pilih lowongan target terlebih dahulu."
+        target = next((v for v in vacancies if isinstance(v, dict) and v.get("id") == target_id), None)
+        if not target:
+            return "Lowongan target tidak ditemukan."
+        if target.get("is_current_job"):
+            return "Kamu sudah bekerja di lowongan ini."
+        if not target.get("skill_met"):
+            return target.get("blocked_reason") or "Skill akun belum memenuhi syarat lowongan ini."
+        if target.get("fee_milli", 0) > 0:
+            return "Lowongan ini memerlukan sewa lapak berbayar."
+        if target.get("is_full") and not target.get("kosong_at"):
+            return "Lowongan ini sedang penuh dan belum memiliki jadwal kosong."
+        return target.get("blocked_reason") or "Lowongan ini belum bisa di-sniper."
+
+    min_milli = int(cfg.get("min_salary_milli") or 0)
+    current_job = payload.get("current_job") if isinstance(payload.get("current_job"), dict) else None
+    if min_milli > 0:
+        return (
+            f"Tidak ada lowongan sesuai skill dengan gaji minimal {min_milli / 1000:g} koin/hari "
+            "yang tersedia atau memiliki jadwal kosong."
+        )
+    if current_job:
+        return (
+            "Tidak ada lowongan sesuai skill dengan gaji lebih tinggi dari pekerjaanmu saat ini "
+            "yang tersedia atau memiliki jadwal kosong."
+        )
+    return "Belum ada lowongan sesuai skill yang tersedia atau memiliki jadwal kosong."
+
+
+async def validate_and_configure_sniper(
+    directory: Path,
+    raw_config: dict[str, Any],
+    *,
+    api: OjolHttpApi | None = None,
+    settings: Any = None,
+    current_dt: datetime | None = None,
+) -> dict[str, Any]:
+    """Validate target against vacancies; apply immediately if open or schedule for kosong_at."""
+    cfg = normalize_sniper_config(raw_config)
+    state = load_sniper_state(directory)
+    moment = (current_dt or now()).astimezone(WIB)
+
+    if not cfg["enabled"]:
+        saved_cfg = save_sniper_config(directory, cfg)
+        updated_state = save_sniper_state(
+            directory,
+            {
+                **state,
+                "next_check_at": None,
+                "target_preview": None,
+                "last_result": "Job Sniper dimatikan.",
+            },
+        )
+        return {
+            "accepted": True,
+            "sniped": False,
+            "message": "Job Sniper dimatikan.",
+            "config": saved_cfg,
+            "state": updated_state,
+        }
+
+    payload = load_vacancies_cache(directory)
+    if payload is None:
+        if api is not None:
+            me = await api.fetch_game_me()
+            biz_items: list[dict] | None = None
+            with suppress(HttpCoreError):
+                biz_items = await api.fetch_biz_vacancies()
+        else:
+            async with OjolHttpApi(directory) as client:
+                me = await client.fetch_game_me()
+                biz_items = None
+                with suppress(HttpCoreError):
+                    biz_items = await client.fetch_biz_vacancies()
+        payload = save_vacancies_cache(directory, build_job_vacancies_payload(me, biz_items=biz_items))
+
+    best, next_kosong = pick_best_sniper_candidate(payload, cfg)
+
+    if best is not None:
+        # Open slot available right now: save enabled momentarily and execute immediate snipe.
+        save_sniper_config(directory, cfg)
+        run_res = await run_job_sniper_once(
+            directory, api=api, settings=settings, force=True, current_dt=moment
+        )
+        if run_res.get("error"):
+            save_sniper_config(directory, {**cfg, "enabled": False})
+            return {
+                "accepted": False,
+                "sniped": False,
+                "error": run_res["error"],
+                "config": load_sniper_config(directory),
+                "state": run_res["state"],
+            }
+        return {
+            "accepted": True,
+            "sniped": bool(run_res.get("sniped")),
+            "message": run_res.get("message") or "",
+            "target_preview": None,
+            "config": run_res["config"],
+            "state": run_res["state"],
+        }
+
+    if next_kosong is None:
+        reason = _rejection_reason_for_sniper(payload, cfg)
+        return {
+            "accepted": False,
+            "sniped": False,
+            "error": reason,
+            "config": load_sniper_config(directory),
+            "state": state,
+        }
+
+    net_milli = int((next_kosong.get("salary") or {}).get("net_milli") or 0)
+    kosong_at = next_kosong.get("kosong_at")
+    target_preview = {
+        "id": next_kosong.get("id"),
+        "profession": next_kosong.get("profession"),
+        "place_name": next_kosong.get("place_name"),
+        "net_milli": net_milli,
+        "kosong_at": kosong_at,
+    }
+    msg = (
+        f"Target cocok: {next_kosong.get('profession')} di {next_kosong.get('place_name')} "
+        f"({net_milli / 1000:g} koin/hari). Menunggu slot kosong."
+    )
+    saved_cfg = save_sniper_config(directory, cfg)
+    updated_state = save_sniper_state(
+        directory,
+        {
+            **state,
+            "last_check_at": moment.isoformat(),
+            "last_result": msg,
+            "last_error": None,
+            "next_check_at": kosong_at,
+            "next_kosong_at": kosong_at,
+            "next_kosong_profession": next_kosong.get("profession"),
+            "target_preview": target_preview,
+        },
+    )
+    return {
+        "accepted": True,
+        "sniped": False,
+        "message": msg,
+        "target_preview": target_preview,
+        "next_kosong_epoch": _parse_iso_epoch(kosong_at),
+        "config": saved_cfg,
+        "state": updated_state,
+    }
