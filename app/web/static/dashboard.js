@@ -847,7 +847,7 @@ function renderAutomationControls(data) {
         else if (feature === 'Kerja' && data.account && !hasJob) label = 'Belum kerja';
         else if (feature === 'Kerja' && data.account && !isKantorJob) label = 'Bukan kantor';
         if (state) {
-            state.textContent = label;
+            if (state.textContent !== label) state.textContent = label;
             state.dataset.tone = tone;
         }
         const canRun = Boolean(data.account && !pending && !active && !maintenance && !blockedReason);
@@ -880,155 +880,154 @@ function renderAutomationControls(data) {
     }
 
     const kerjaHint = document.getElementById('toolbarKerjaHint');
-    if (kerjaHint) {
-        if (kerjaBlockedReason) {
-            kerjaHint.textContent = kerjaBlockedReason;
-            kerjaHint.style.color = '#f59e0b';
-            kerjaHint.style.display = 'block';
-        } else if (hasJob) {
-            const job = snap.job;
-            const place = job.facility || job.business || '';
-            const prof = job.profession || 'Pekerjaan aktif';
-            kerjaHint.textContent = place ? `${prof} · ${place}` : prof;
-            kerjaHint.style.color = '';
-            kerjaHint.style.display = 'block';
-        } else {
-            kerjaHint.textContent = '';
-            kerjaHint.style.display = 'none';
-        }
+    const job = snap.job;
+    const place = job?.facility || job?.business;
+    const jobLabel = hasJob ? [job.profession || 'Pekerjaan aktif', place].filter(Boolean).join(' · ') : '';
+    kerjaHint.textContent = kerjaBlockedReason || jobLabel;
+    kerjaHint.dataset.blocked = String(Boolean(kerjaBlockedReason));
+    kerjaHint.hidden = !kerjaHint.textContent;
+
+    const input = document.getElementById('kerjaTargetPoinInput');
+    const accountId = String(data.account?.id ?? '');
+    if (input.dataset.accountId !== accountId || !input.form.contains(document.activeElement)) {
+        input.value = data.kerja_target_poin ?? '';
+        input.dataset.accountId = accountId;
+    }
+    input.disabled = !data.account || !isKantorJob;
+    document.getElementById('btnSaveKerjaTarget').disabled = input.disabled;
+
+    renderKantorDetails(data, isKantorJob, kerjaBlockedReason);
+}
+
+function kantorSesiRanges(jam, count, session) {
+    const minutes = value => {
+        const match = /^(\d{1,2}):([0-5]\d)$/.exec(value ?? '');
+        return match && Number(match[1]) < 24 ? Number(match[1]) * 60 + Number(match[2]) : NaN;
+    };
+    const open = minutes(jam?.from);
+    let close = minutes(jam?.to);
+    if (close < open) close += 1440;
+    if (!(close > open) || !Number.isInteger(count) || !Number.isInteger(session) || session < 1 || session > count) return [];
+
+    let breakStart = close;
+    let breakEnd = close;
+    if (jam.istirahat) {
+        breakStart = minutes(jam.istirahat.from);
+        breakEnd = minutes(jam.istirahat.to);
+        if (breakStart < open) breakStart += 1440;
+        if (breakEnd < breakStart) breakEnd += 1440;
+        if (!(open <= breakStart && breakStart <= breakEnd && breakEnd <= close)) return [];
     }
 
-    const kerjaTargetInput = document.getElementById('kerjaTargetPoinInput');
-    if (kerjaTargetInput && document.activeElement !== kerjaTargetInput) {
-        kerjaTargetInput.value = data.kerja_target_poin != null ? String(data.kerja_target_poin) : '';
-        kerjaTargetInput.disabled = !data.account || !isKantorJob;
+    // Sessions divide working minutes. A session can pause and resume around the break.
+    const breakLength = breakEnd - breakStart;
+    if (breakLength === 0) breakStart = close;
+    const workingMinutes = close - open - breakLength;
+    if (count > workingMinutes) return [];
+    const start = open + Math.ceil((session - 1) * workingMinutes / count);
+    const end = open + Math.ceil(session * workingMinutes / count);
+    const spans = [];
+    if (start < breakStart) spans.push([start, Math.min(end, breakStart)]);
+    if (end > breakStart) spans.push([Math.max(start, breakStart) + breakLength, end + breakLength]);
+    return spans;
+}
+
+const kantorClock = new Intl.DateTimeFormat('en-GB', {
+    hour: '2-digit', minute: '2-digit', timeZone: 'UTC',
+});
+
+function kantorSesiTime(minute) {
+    const time = kantorClock.format(minute * 60000);
+    return `<time datetime="${time}">${time}</time>`;
+}
+
+function renderKantorSession(item, ks, jam) {
+    const ke = item?.ke;
+    const urusan = Number(item?.u || 0);
+    const required = ks.sesi_urusan ?? 3;
+    const isCurrent = ks.sesi_ke != null && ks.sesi_ke === ke;
+    let state = 'pending';
+    let label = 'Menunggu';
+    if (item?.beres) {
+        state = 'done';
+        label = 'Selesai';
+    } else if (ks.sesi_ke != null && ke < ks.sesi_ke) {
+        label = 'Terlewat';
+    } else if (isCurrent || urusan > 0 || item?.absen) {
+        const attendance = ks.sesi_absen_enabled === false ? '' : item?.absen ? ' · Sudah absen' : ' · Belum absen';
+        const needsAttendance = !item?.absen && ks.sesi_absen_enabled !== false && urusan >= Math.min(ks.sesi_absen_setelah ?? 1, required);
+        state = needsAttendance ? 'need-absen' : 'active';
+        label = `${urusan}/${required} urusan${attendance}`;
     }
-    const saveKerjaTargetBtn = document.getElementById('btnSaveKerjaTarget');
-    if (saveKerjaTargetBtn) {
-        saveKerjaTargetBtn.disabled = !data.account || !isKantorJob;
+    const times = kantorSesiRanges(jam, ks.sesi_jumlah, ke).map(([from, to]) =>
+        `<span>${kantorSesiTime(from)}–${kantorSesiTime(to)}</span>`
+    ).join('');
+    return `<li class="kantor-sesi-item" data-state="${state}"${isCurrent && !item?.beres ? ' aria-current="step"' : ''}>
+        <span class="kantor-sesi-name">Sesi ${escapeHtml(ke ?? '—')}</span>
+        <strong class="kantor-sesi-time">${times || '—'}</strong>
+        <span class="kantor-sesi-state">${escapeHtml(label)}</span>
+    </li>`;
+}
+
+function renderKantorDetails(data, isKantorJob, blockedReason) {
+    const statusEl = document.getElementById('autoKerjaRealtime');
+    const details = document.getElementById('autoKerjaDetails');
+    const body = document.getElementById('autoKerjaDetailsBody');
+    const ks = data.kerja_status?.kind === 'kantor' ? data.kerja_status : null;
+    const job = data.snapshot?.job;
+    const active = Boolean(data.summary?.active && data.auto_flags?.kerja);
+    let status = '';
+    if (isKantorJob) {
+        if (active && blockedReason) status = 'Tertahan';
+        else status = ks?.state || (active ? 'Menunggu status kantor…' : job?.kantor?.status || '');
+    }
+    if (statusEl.textContent !== status) statusEl.textContent = status;
+    statusEl.hidden = !status;
+    details.hidden = !(isKantorJob && (ks || job?.kantor || active));
+    if (details.hidden) {
+        body.replaceChildren();
+        return;
     }
 
-    const kerjaRtEl = document.getElementById('autoKerjaRealtime');
-    const ks = data.kerja_status || null;
-    const kerjaActive = Boolean(sum.active && flags.kerja);
-    if (kerjaRtEl) {
-        if (ks && ks.kind === 'kantor') {
-            const parts = [];
-            if (ks.state) parts.push(`Status: ${ks.state}`);
-            if (typeof ks.lunas === 'number' && typeof ks.per_hari === 'number') {
-                const lunas = Math.min(ks.lunas, ks.per_hari);
-                parts.push(
-                    lunas >= ks.per_hari
-                        ? `Tugas: ${lunas}/${ks.per_hari} lunas`
-                        : `Tugas: ${lunas}/${ks.per_hari} lunas (${ks.menuju ?? 0}/${ks.per_paket ?? 5} urusan)`
-                );
-            }
-            if (typeof ks.sesi_absen === 'number' && typeof ks.sesi_jumlah === 'number') {
-                parts.push(`Sesi absen: ${Math.min(ks.sesi_absen, ks.sesi_jumlah)}/${ks.sesi_jumlah}`);
-            }
-            if (typeof ks.poin === 'number' && typeof ks.target === 'number') {
-                parts.push(`Kerja penuh: ${ks.poin}/${ks.target} poin`);
-            }
-            if (ks.last_message) parts.push(ks.last_message);
-            kerjaRtEl.textContent = parts.join(' · ');
-            kerjaRtEl.style.display = parts.length ? 'block' : 'none';
-        } else if (snap.job && snap.job.kantor) {
-            const k = snap.job.kantor;
-            const target = data.kerja_target_poin ?? k.target ?? 30;
-            const poin = k.poin ?? 0;
-            kerjaRtEl.textContent = `Kerja penuh: ${poin}/${target} poin · Status: ${k.status || '-'}`;
-            kerjaRtEl.style.display = 'block';
-        } else if (kerjaActive && isKantorJob) {
-            kerjaRtEl.textContent = kerjaBlockedReason
-                ? `Tertahan: ${kerjaBlockedReason}`
-                : 'Status: Menunggu siklus detak kantor…';
-            kerjaRtEl.style.display = 'block';
-        } else {
-            kerjaRtEl.textContent = '';
-            kerjaRtEl.style.display = 'none';
-        }
+    const rows = [];
+    const jam = ks?.jam || job?.jam;
+    if (jam?.from && jam?.to) rows.push(['Jam kerja', `${jam.from}–${jam.to} WIB`]);
+    if (jam?.istirahat?.from && jam?.istirahat?.to) {
+        rows.push(['Istirahat', `${jam.istirahat.from}–${jam.istirahat.to} WIB`]);
     }
-
-    const kerjaDetailsEl = document.getElementById('autoKerjaDetails');
-    const kerjaDetailsBody = document.getElementById('autoKerjaDetailsBody');
-    if (kerjaDetailsEl && kerjaDetailsBody) {
-        const hasKantorDetails = Boolean(
-            isKantorJob && ((ks && ks.kind === 'kantor') || (snap.job && snap.job.kantor) || kerjaActive)
-        );
-        if (!hasKantorDetails) {
-            kerjaDetailsEl.style.display = 'none';
-            kerjaDetailsBody.innerHTML = '';
-        } else {
-            const kSnap = snap.job?.kantor || null;
-            const rows = [];
-            const stateLabel = ks?.state || (kerjaActive ? (kerjaBlockedReason ? 'Tertahan' : 'Menunggu detak pertama') : kSnap?.status || '-');
-            rows.push(['Status', stateLabel]);
-            if (ks?.fase) rows.push(['Fase', ks.fase]);
-            const jam = ks?.jam || snap.job?.jam;
-            if (jam && jam.from && jam.to) {
-                const breakTxt = jam.istirahat?.from && jam.istirahat?.to ? ` (istirahat ${jam.istirahat.from}–${jam.istirahat.to})` : '';
-                rows.push(['Jam kerja', `${jam.from}–${jam.to}${breakTxt}`]);
-            }
-            if (typeof ks?.lunas === 'number' && typeof ks?.per_hari === 'number') {
-                const lunas = Math.min(ks.lunas, ks.per_hari);
-                const tugasVal = lunas >= ks.per_hari
-                    ? `${lunas}/${ks.per_hari} lunas`
-                    : `${lunas}/${ks.per_hari} lunas (${ks.menuju ?? 0}/${ks.per_paket ?? 5} urusan)`;
-                rows.push(['Paket tugas', tugasVal]);
-            }
-            const poinVal = typeof ks?.poin === 'number' ? ks.poin : kSnap?.poin;
-            const targetVal = typeof ks?.target === 'number' ? ks.target : (data.kerja_target_poin ?? kSnap?.target);
-            if (typeof poinVal === 'number' && typeof targetVal === 'number') {
-                rows.push(['Poin kinerja', `${poinVal}/${targetVal}`]);
-            }
-            if (typeof ks?.sesi_jumlah === 'number') {
-                const beresVal = typeof ks.sesi_beres === 'number' ? Math.min(ks.sesi_beres, ks.sesi_jumlah) : 0;
-                const absenVal = typeof ks.sesi_absen === 'number' ? Math.min(ks.sesi_absen, ks.sesi_jumlah) : 0;
-                rows.push(['Ringkasan sesi', `${beresVal}/${ks.sesi_jumlah} beres · Absen ${absenVal}/${ks.sesi_jumlah}`]);
-            }
-            if (ks?.updated_at) {
-                const dt = new Date(ks.updated_at);
-                if (!Number.isNaN(dt.getTime())) {
-                    rows.push(['Pembaruan', dt.toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit', second: '2-digit' })]);
-                }
-            }
-
-            let html = `<div class="kantor-detail-meta">${rows.map(([label, val]) =>
-                `<div class="kantor-detail-row"><span class="kantor-detail-label">${escapeHtml(label)}</span><strong>${escapeHtml(String(val))}</strong></div>`
-            ).join('')}</div>`;
-
-            if (Array.isArray(ks?.sesi_jadwal) && ks.sesi_jadwal.length) {
-                const urusanReq = typeof ks.sesi_urusan === 'number' ? ks.sesi_urusan : 3;
-                const chips = ks.sesi_jadwal.map((item) => {
-                    const ke = item?.ke ?? '?';
-                    const u = Number(item?.u || 0);
-                    const absenDone = Boolean(item?.absen);
-                    const beres = Boolean(item?.beres);
-                    const isCur = ks.sesi_ke === ke;
-                    let stateAttr = 'pending';
-                    let text = 'nanti';
-                    if (beres) {
-                        stateAttr = 'done';
-                        text = 'beres';
-                    } else if (isCur || u > 0 || absenDone) {
-                        const absenTxt = ks.sesi_absen_enabled === false
-                            ? ''
-                            : (absenDone ? ' · sudah absen' : ' · belum absen');
-                        stateAttr = (!absenDone && ks.sesi_absen_enabled !== false && u > 0) ? 'need-absen' : 'active';
-                        text = `${u}/${urusanReq}${absenTxt}`;
-                    }
-                    return `<div class="kantor-sesi-item" data-state="${stateAttr}"><span>Sesi ${escapeHtml(String(ke))}</span><span>${escapeHtml(text)}</span></div>`;
-                }).join('');
-                html += `<div class="kantor-sesi-grid">${chips}</div>`;
-            }
-
-            if (ks?.last_message) {
-                html += `<div class="meta" style="font-size:11px;">Info terakhir: ${escapeHtml(ks.last_message)}</div>`;
-            }
-            kerjaDetailsBody.innerHTML = html;
-            kerjaDetailsEl.style.display = 'block';
-        }
+    if (typeof ks?.lunas === 'number' && typeof ks?.per_hari === 'number') {
+        const lunas = Math.min(ks.lunas, ks.per_hari);
+        const progress = lunas < ks.per_hari ? ` · ${ks.menuju ?? 0}/${ks.per_paket ?? 5} urusan` : '';
+        rows.push(['Paket tugas', `${lunas}/${ks.per_hari} lunas${progress}`]);
     }
+    const poin = ks?.poin ?? job?.kantor?.poin;
+    const target = ks?.target ?? data.kerja_target_poin ?? job?.kantor?.target ?? 30;
+    if (typeof poin === 'number' && typeof target === 'number') rows.push(['Poin kinerja', `${poin}/${target}`]);
+    const jumlah = ks?.sesi_jumlah;
+    if (typeof jumlah === 'number' && typeof ks.sesi_absen === 'number' && ks.sesi_absen_enabled !== false) {
+        rows.push(['Absen sesi', `${Math.min(ks.sesi_absen, jumlah)}/${jumlah}`]);
+    }
+    if (ks?.fase) rows.push(['Fase', ks.fase]);
+
+    const jadwal = Array.isArray(ks?.sesi_jadwal) ? ks.sesi_jadwal : [];
+    const sessions = jadwal.map(item => renderKantorSession(item, ks, jam)).join('');
+    const completed = typeof ks?.sesi_beres === 'number' && typeof jumlah === 'number'
+        ? `<span class="kantor-sesi-total">${escapeHtml(Math.min(ks.sesi_beres, jumlah))}/${escapeHtml(jumlah)} selesai</span>` : '';
+    const updated = ks?.updated_at ? new Date(ks.updated_at) : null;
+    const updatedLabel = updated && !Number.isNaN(updated.getTime()) ? updated.toLocaleTimeString('id-ID', {
+        hour: '2-digit', minute: '2-digit', timeZone: 'Asia/Jakarta',
+    }) + ' WIB' : '';
+
+    body.innerHTML = `
+        <div class="kantor-sesi-heading"><strong>Jadwal sesi <span class="meta">WIB</span></strong>${completed}</div>
+        ${sessions ? `<ol class="kantor-sesi-grid" role="list">${sessions}</ol>` : '<p class="meta">Jadwal sesi belum tersedia.</p>'}
+        ${rows.length ? `<dl class="kantor-detail-meta">${rows.map(([label, value]) =>
+            `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`
+        ).join('')}</dl>` : ''}
+        ${ks?.last_message || updatedLabel ? `<div class="kantor-detail-footer meta">
+            ${ks?.last_message ? `<p>${escapeHtml(ks.last_message)}</p>` : ''}
+            ${updatedLabel ? `<time datetime="${updated.toISOString()}">Diperbarui ${escapeHtml(updatedLabel)}</time>` : ''}
+        </div>` : ''}`;
 }
 
 async function setKerjaTargetPoin() {

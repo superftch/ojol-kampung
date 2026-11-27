@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard · Kampung Ojol Automation</title>
-    <link rel="stylesheet" href="/ui/console.css?v=20261126d">
+    <link rel="stylesheet" href="/ui/console.css?v=20261127a">
 </head>
 <body class="app-shell">
     <header class="app-header">
@@ -153,25 +153,28 @@
                                         <button id="btnStopOjol" class="btn btn-stop" type="button" onclick="controlAction('stop')" aria-label="Hentikan Auto Ojol">Hentikan</button>
                                     </div>
                                 </div>
-                                <div class="control-group">
+                                <div class="control-group kantor-control" role="group" aria-labelledby="kantorTitle">
                                     <div>
-                                        <div><span class="control-group-title">Auto Kantor</span><span id="toolbarKerjaBadge" class="control-state">—</span></div>
-                                        <div id="toolbarKerjaHint" class="meta" style="display:none;margin-top:3px;font-size:12px;"></div>
-                                        <div id="autoKerjaRealtime" class="meta" style="display:none;margin-top:3px;font-size:12px;color:var(--accent,#0f766e);"></div>
-                                        <details id="autoKerjaDetails" class="kantor-details" style="display:none;margin-top:6px;">
-                                            <summary class="kantor-details-summary">Status detail kantor</summary>
-                                            <div id="autoKerjaDetailsBody" class="kantor-details-body"></div>
-                                        </details>
-                                        <div style="display:flex;align-items:center;gap:6px;margin-top:6px;flex-wrap:wrap;">
-                                            <label for="kerjaTargetPoinInput" class="meta" style="font-size:12px;">Target poin:</label>
-                                            <input id="kerjaTargetPoinInput" type="number" min="1" max="999" placeholder="30" aria-label="Target poin kantor" style="width:72px;padding:3px 6px;font-size:12px;border:1px solid var(--border);border-radius:6px;background:var(--surface);color:var(--text);">
-                                            <button id="btnSaveKerjaTarget" class="btn btn-secondary" type="button" onclick="setKerjaTargetPoin()" style="padding:3px 10px;font-size:12px;">Simpan</button>
+                                        <div class="kantor-heading">
+                                            <h3 id="kantorTitle" class="control-group-title">Auto Kantor</h3>
+                                            <span id="toolbarKerjaBadge" class="control-state" role="status">—</span>
                                         </div>
+                                        <p id="toolbarKerjaHint" class="meta kantor-hint" hidden></p>
                                     </div>
                                     <div class="btn-segment-group">
                                         <button id="btnRunKerja" class="btn btn-primary" type="button" onclick="controlAction('run-kerja')" aria-label="Jalankan Auto Kantor">Jalankan</button>
                                         <button id="btnStopKerja" class="btn btn-stop" type="button" onclick="controlAction('stop-kerja')" aria-label="Hentikan Auto Kantor">Hentikan</button>
                                     </div>
+                                    <p id="autoKerjaRealtime" class="kantor-status" role="status" hidden></p>
+                                    <details id="autoKerjaDetails" class="kantor-details" hidden>
+                                        <summary class="kantor-details-summary">Jadwal sesi dan detail kantor</summary>
+                                        <div id="autoKerjaDetailsBody" class="kantor-details-body"></div>
+                                    </details>
+                                    <form class="kantor-target" onsubmit="event.preventDefault(); setKerjaTargetPoin();">
+                                        <label for="kerjaTargetPoinInput" class="meta">Target poin</label>
+                                        <input id="kerjaTargetPoinInput" name="target_poin" type="number" inputmode="numeric" autocomplete="off" min="1" max="999" placeholder="30">
+                                        <button id="btnSaveKerjaTarget" class="btn btn-secondary" type="submit">Simpan target</button>
+                                    </form>
                                 </div>
                                 <div class="control-group">
                                     <div><span class="control-group-title">Auto Kebutuhan</span><span id="toolbarNeedsBadge" class="control-state">—</span></div>
@@ -897,6 +900,6 @@ __ADMIN_NOTIF_PANEL__
     </dialog>
 
     <script>const currentUser = __USER_JSON__;</script>
-    <script src="/ui/dashboard.js?v=20261126d"></script>
+    <script src="/ui/dashboard.js?v=20261127a"></script>
 </body>
 </html>

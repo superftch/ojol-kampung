@@ -1742,7 +1742,7 @@ async def test_kerja_target_poin_api_and_dashboard(admin_web):
     assert 'id="kerjaTargetPoinInput"' in html
     assert 'id="btnSaveKerjaTarget"' in html
     assert 'id="autoKerjaDetails"' in html
-    assert "Status detail kantor" in html
+    assert "Jadwal sesi dan detail kantor" in html
 
     res_bad = client.post(
         f"/api/control/kerja-target?account_id={acc_id}",

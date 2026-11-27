@@ -376,51 +376,96 @@ select.account-select { max-width: 100%; }
 .admin-maintenance-summary { margin-top: 16px; padding: 8px 12px; background: var(--accent-soft); border-radius: 6px; }
 .admin-maintenance-summary h3 { font-size: 14px; font-weight: 600; }
 
+.kantor-control {
+    container: kantor / inline-size;
+    align-items: start;
+    padding-block: 14px;
+}
+.kantor-heading {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+}
+.kantor-heading h3 { font-size: 16px; line-height: 1.25; text-wrap: balance; }
+.kantor-heading .control-state {
+    padding: 2px 7px;
+    border-radius: 4px;
+    background: var(--raised);
+}
+.kantor-heading .control-state[data-tone="active"] { background: var(--accent-soft); color: var(--accent-ink); }
+.kantor-heading .control-state[data-tone="paused"] { background: var(--warning-soft); }
+.kantor-control .kantor-hint { margin-top: 4px; overflow-wrap: anywhere; }
+.kantor-hint[data-blocked="true"] { color: var(--warning); }
+.kantor-status, .kantor-details, .kantor-target { grid-column: 1 / -1; }
+.kantor-status { font-size: 13px; font-weight: 600; overflow-wrap: anywhere; }
 .kantor-details-summary {
+    min-height: 36px;
+    align-content: center;
+    padding-block: 6px;
+    color: var(--text-muted);
     cursor: pointer;
-    font-size: 12px;
+    font-size: 13px;
     font-weight: 600;
-    color: var(--muted);
-    user-select: none;
+    touch-action: manipulation;
 }
-.kantor-details-summary:hover { color: var(--text); }
+.kantor-details-summary:hover { color: var(--primary-hover); }
 .kantor-details-body {
-    margin-top: 6px;
-    padding: 8px 10px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--surface-alt, rgba(128, 128, 128, 0.05));
-    font-size: 12px;
     display: grid;
-    gap: 6px;
+    gap: 12px;
+    padding: 12px;
+    border-radius: var(--radius);
+    background: var(--raised);
+    overflow-wrap: anywhere;
 }
-.kantor-detail-meta {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+.kantor-sesi-heading, .kantor-detail-footer {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: space-between;
+    align-items: baseline;
     gap: 4px 12px;
 }
-.kantor-detail-row { display: flex; justify-content: space-between; gap: 8px; }
-.kantor-detail-label { color: var(--muted); }
-.kantor-sesi-grid {
+.kantor-sesi-heading .meta { margin-inline-start: 4px; font-weight: 400; }
+.kantor-sesi-total { color: var(--accent-ink); font-size: 12px; font-weight: 600; }
+.kantor-sesi-grid, .kantor-detail-meta {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-    gap: 4px;
-    margin-top: 2px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    font-variant-numeric: tabular-nums;
 }
+.kantor-sesi-grid { list-style: none; }
 .kantor-sesi-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    gap: 6px;
-    padding: 3px 7px;
-    border-radius: 6px;
-    border: 1px solid var(--border);
+    display: grid;
+    align-content: start;
+    gap: 4px;
+    padding: 8px;
+    border-radius: 4px;
     background: var(--surface);
-    font-size: 11px;
 }
-.kantor-sesi-item[data-state="done"] { border-color: rgba(16, 185, 129, 0.45); color: #10b981; }
-.kantor-sesi-item[data-state="active"] { border-color: rgba(56, 189, 248, 0.5); }
-.kantor-sesi-item[data-state="need-absen"] { border-color: rgba(245, 158, 11, 0.55); color: #d97706; }
+.kantor-sesi-item[aria-current="step"] { background: var(--accent-soft); }
+.kantor-sesi-item[data-state="need-absen"] { background: var(--warning-soft); }
+.kantor-sesi-name, .kantor-sesi-state { color: var(--text-muted); font-size: 12px; }
+.kantor-sesi-time > span { display: block; }
+.kantor-sesi-item:is([data-state="done"], [data-state="active"]) .kantor-sesi-state { color: var(--accent-ink); }
+.kantor-sesi-item[data-state="need-absen"] .kantor-sesi-state { color: var(--warning); font-weight: 600; }
+.kantor-detail-meta, .kantor-detail-footer { padding-block-start: 10px; border-top: 1px solid var(--border); }
+.kantor-detail-meta dt { color: var(--text-muted); font-size: 12px; }
+.kantor-detail-meta dd { margin: 2px 0 0; font-size: 13px; font-weight: 600; }
+.kantor-target { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.kantor-target input { inline-size: 76px; font-variant-numeric: tabular-nums; }
+.kantor-target .btn { min-height: 40px; }
+.kantor-control .btn { touch-action: manipulation; }
+@container kantor (min-width: 450px) {
+    .kantor-sesi-grid, .kantor-detail-meta { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@container kantor (min-width: 720px) {
+    .kantor-sesi-grid, .kantor-detail-meta { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) {
+    .kantor-control .btn, .kantor-target input, .kantor-details-summary { min-height: 44px; }
+}
 .admin-action {
     display: inline-flex;
     align-items: center;
