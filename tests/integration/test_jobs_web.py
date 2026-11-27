@@ -1,3 +1,4 @@
+from typing import Any
 from unittest.mock import AsyncMock
 
 from starlette.testclient import TestClient
@@ -109,7 +110,7 @@ def test_jobs_web_routes_and_dashboard_tab(settings, monkeypatch):
         assert "Job Sniper" in dash.text
 
         # GET vacancies (first call fetches live, second call uses cache, ?refresh=1 bypasses cache)
-        fetch_me_mock = OjolHttpApi.fetch_game_me
+        fetch_me_mock: Any = OjolHttpApi.fetch_game_me
         res = client.get("/api/jobs/vacancies")
         assert res.status_code == 200
         data = res.json()

@@ -463,9 +463,7 @@ class ControlService:
                         self.auto_start_pending = True
                     raise WorkerCapacityError(error)
                 await self._spawn_local_worker(auto_start, is_ojol, mode)
-            return self._started_message(
-                is_ojol=is_ojol, label=label, waiting_kerja=waiting_kerja
-            )
+            return self._started_message(is_ojol=is_ojol, label=label, waiting_kerja=waiting_kerja)
 
     async def _spawn_local_worker(self, auto_start, is_ojol, mode):
         config_file = os.environ.get("OJOL_CONFIG_FILE")

@@ -26,7 +26,11 @@ SHOPS_BY_VILLAGE = {
                 "8d1714a7-f9e0-4f38-b5a2-dcc0e2834c08", "A27-U06", "SPBU Utara 2", 52, -245
             ),
             ShopLocation(
-                "6b398e0e-989c-43b2-87fd-77b1073c2060", "K36-U04", "SPBU Dusun Barat Atas", -43, -143
+                "6b398e0e-989c-43b2-87fd-77b1073c2060",
+                "K36-U04",
+                "SPBU Dusun Barat Atas",
+                -43,
+                -143,
             ),
             ShopLocation(
                 "0ae0ecbe-5de8-44d0-b6c4-48ab28aece01", "P29-U01", "SPBU Desa Timur 2", 66, -103
@@ -64,24 +68,16 @@ SHOPS_BY_VILLAGE = {
             ShopLocation(
                 "200571c1-9704-4db3-8c06-1f9acf0483f5", "B07-U03", "SPBU Kampung Sebelah", 49, 9
             ),
-            ShopLocation(
-                "ad11ccf0-f220-422f-b0ff-f2ce4da0c26d", "D02-U08", "BUMDes", 10, 30
-            ),
+            ShopLocation("ad11ccf0-f220-422f-b0ff-f2ce4da0c26d", "D02-U08", "BUMDes", 10, 30),
             ShopLocation(
                 "7a9b42eb-848a-4bb2-9691-2c693f27f663", "D03-U03", "SPBU Desa Barat", 17, 25
             ),
-            ShopLocation(
-                "056b88f5-a37c-42b6-9974-420426103ede", "E36-U09", "SPBU Barat", -42, 38
-            ),
+            ShopLocation("056b88f5-a37c-42b6-9974-420426103ede", "E36-U09", "SPBU Barat", -42, 38),
             ShopLocation(
                 "1c7a061c-e2f8-4df4-9484-ab63a59a2543", "K03-U01", "SPBU Desa Timur", 99, 1
             ),
-            ShopLocation(
-                "4d548bce-dbef-4320-abdd-0c7645c4811f", "K07-U08", "SPBU Timur 3", 140, 6
-            ),
-            ShopLocation(
-                "dcb24343-a861-4fe3-96d1-4ef5ae81278b", "O04-U03", "SPBU Timur", 108, 33
-            ),
+            ShopLocation("4d548bce-dbef-4320-abdd-0c7645c4811f", "K07-U08", "SPBU Timur 3", 140, 6),
+            ShopLocation("dcb24343-a861-4fe3-96d1-4ef5ae81278b", "O04-U03", "SPBU Timur", 108, 33),
             ShopLocation(
                 "593ceb28-51c6-427a-a56a-47975275b984", "Q07-U04", "SPBU Timur 2", 141, 60
             ),

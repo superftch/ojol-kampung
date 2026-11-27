@@ -1569,7 +1569,7 @@ def test_dashboard_auto_kerja_location_and_dynamic_ojol_guards(admin_web):
 
     # 1. Dashboard HTML has Auto Kantor in toolbar, NOT in Auto Kebutuhan
     html = client.get("/").text
-    assert 'Auto Kantor' in html
+    assert "Auto Kantor" in html
     assert 'id="btnRunKerja"' in html
     assert 'id="toolbarKerjaHint"' in html
     assert 'id="toolbarOjolHint"' in html
@@ -1595,9 +1595,7 @@ def test_dashboard_auto_kerja_location_and_dynamic_ojol_guards(admin_web):
     )
     res_mitra_ok = client.post(f"/api/control/run?account_id={acc_id}")
     assert res_mitra_ok.status_code == 200
-    assert (
-        client.post(f"/api/control/run-kerja?account_id={acc_id}").status_code == 400
-    )
+    assert client.post(f"/api/control/run-kerja?account_id={acc_id}").status_code == 400
 
     # 3b. Non-kantor job (GENERAL) -> Auto Kantor rejected
     write_private(

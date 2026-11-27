@@ -60,7 +60,9 @@ def test_ojol_jitter_daily_limits_and_midnight_reset(tmp_path: Path) -> None:
     assert state["count_30m"] == 0
 
     # Before trigger time, does not start
-    assert maybe_start_ojol_jitter(runtime, current_time=t0 + timedelta(minutes=10), rng=rng) is None
+    assert (
+        maybe_start_ojol_jitter(runtime, current_time=t0 + timedelta(minutes=10), rng=rng) is None
+    )
 
     # Simulate 4 breaks over the day -> max 2x 60m + 2x 30m
     kinds: list[str] = []

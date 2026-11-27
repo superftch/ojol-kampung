@@ -17,7 +17,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ojol.http_api import OjolHttpApi  # noqa: E402
+from ojol.http_api import OjolHttpApi
 
 
 async def call(api, path, payload=None):

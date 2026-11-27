@@ -14,7 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from ojol.http_api import OjolHttpApi  # noqa: E402
+from ojol.http_api import OjolHttpApi
 
 # ponytail: id fasum dari capture lama; pindai /api/kebutuhan (places) bila berubah
 GYM = "296dc278-b765-4caf-9349-469385d6fc03"
@@ -89,7 +89,7 @@ async def t_minigame_holds(api, out):
         api, out, "C 1 hold sempurna", lambda reps: [round(reps[0]["fill"] * reps[0]["center"])]
     )
     # replay: finish play terakhir dua kali lagi
-    st, info = await call(api, f"/api/minigame?projectId={GYM}&game=gym")
+    st, _info = await call(api, f"/api/minigame?projectId={GYM}&game=gym")
     st, started = await call(
         api,
         "/api/minigame",

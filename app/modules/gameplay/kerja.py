@@ -222,7 +222,7 @@ def _seconds_until_next_open(
     open_dt = _at_wib_time(now_wib, open_hm)
     close_dt = _at_wib_time(now_wib, close_hm) if close_hm else None
 
-    if close_dt is not None and open_hm < close_hm:
+    if close_dt is not None and close_hm is not None and open_hm < close_hm:
         if now_wib < open_dt:
             return max(10.0, (open_dt - now_wib).total_seconds())
         ist = jam.get("istirahat")
@@ -238,7 +238,7 @@ def _seconds_until_next_open(
             return max(60.0, (_at_wib_time(tomorrow, open_hm) - now_wib).total_seconds())
         return None
 
-    if close_dt is not None and open_hm > close_hm:
+    if close_dt is not None and close_hm is not None and open_hm > close_hm:
         if close_dt <= now_wib < open_dt:
             return max(10.0, (open_dt - now_wib).total_seconds())
         return None
@@ -246,9 +246,7 @@ def _seconds_until_next_open(
     return None
 
 
-def _pause_until_tomorrow(
-    c, jam: dict | None = None, server_now_raw: str | None = None
-) -> None:
+def _pause_until_tomorrow(c, jam: dict | None = None, server_now_raw: str | None = None) -> None:
     wait_s = _seconds_until_next_open(jam, server_now_raw, force_tomorrow=True) or 3600.0
     c.kerja_retry_at = time.monotonic() + wait_s + _jitter(5.0, 30.0)
     c.record_event(
@@ -291,10 +289,9 @@ def _sesi_snapshot_fields(sesi_config: dict | None) -> dict:
         if isinstance(item, dict)
     ]
     sesi_absen_done = sum(1 for item in compact_jadwal if item["absen"])
+    raw_beres = sesi_config.get("beres")
     sesi_beres = int(
-        sesi_config.get("beres")
-        if sesi_config.get("beres") is not None
-        else sum(1 for item in compact_jadwal if item["beres"])
+        raw_beres if raw_beres is not None else sum(1 for item in compact_jadwal if item["beres"])
     )
     return {
         "sesi_absen": min(sesi_absen_done, sesi_jumlah),
@@ -385,7 +382,11 @@ async def _perform_sesi_absen(
     ke = sesi_out.get("ke") or sesi_config.get("ke")
     jumlah = int(sesi_config.get("jumlah") or 6)
     _update_sesi_jadwal_entry(status_snapshot, sesi_out)
-    if sesi_out.get("absen") and isinstance(status_snapshot.get("sesi_absen"), int) and not status_snapshot.get("sesi_jadwal"):
+    if (
+        sesi_out.get("absen")
+        and isinstance(status_snapshot.get("sesi_absen"), int)
+        and not status_snapshot.get("sesi_jadwal")
+    ):
         status_snapshot["sesi_absen"] = min(status_snapshot["sesi_absen"] + 1, jumlah)
     if sesi_out.get("jumlahBeres") is not None:
         status_snapshot["sesi_beres"] = min(int(sesi_out["jumlahBeres"]), jumlah)
@@ -424,8 +425,7 @@ def _is_kerja_done_today(
     sesi_met = True
     if isinstance(sesi_jumlah, int) and sesi_jumlah > 0:
         sesi_met = int(saved.get("sesi_beres") or 0) >= sesi_jumlah and (
-            not saved.get("sesi_absen_enabled")
-            or int(saved.get("sesi_absen") or 0) >= sesi_jumlah
+            not saved.get("sesi_absen_enabled") or int(saved.get("sesi_absen") or 0) >= sesi_jumlah
         )
     return target_met and sesi_met
 
@@ -447,7 +447,9 @@ def is_work_active_now(
 
     saved = kerja_status if kerja_status is not None else _load_kerja_status(runtime_dir)
     server_now_raw = _snap_attr(snapshot, "observed_at")
-    jam = (job.get("jam") if isinstance(job, dict) and isinstance(job.get("jam"), dict) else None) or (
+    jam = (
+        job.get("jam") if isinstance(job, dict) and isinstance(job.get("jam"), dict) else None
+    ) or (
         saved.get("jam") if isinstance(saved, dict) and isinstance(saved.get("jam"), dict) else None
     )
     in_hours = _is_within_work_hours(jam, server_now_raw)
@@ -526,8 +528,10 @@ async def _run_kantor(c) -> bool:
         c.kerja_retry_at = time.monotonic() + 300 + _jitter(2.0, 20.0)
         return False
 
-    jam = kantor.get("jam") if isinstance(kantor.get("jam"), dict) else (
-        (getattr(c.observed_state, "job", None) or {}).get("jam")
+    jam = (
+        kantor.get("jam")
+        if isinstance(kantor.get("jam"), dict)
+        else ((getattr(c.observed_state, "job", None) or {}).get("jam"))
     )
 
     if kantor.get("libur") or not kantor.get("buka"):
@@ -545,10 +549,10 @@ async def _run_kantor(c) -> bool:
                 "last_message": kantor.get("alasan") or "Kantor sedang tutup/libur",
             },
         )
-        wait_open = _seconds_until_next_open(
-            jam, kantor.get("sekarang"), libur=is_libur
+        wait_open = _seconds_until_next_open(jam, kantor.get("sekarang"), libur=is_libur)
+        c.kerja_retry_at = (
+            time.monotonic() + (wait_open if wait_open is not None else 300.0) + _jitter(2.0, 15.0)
         )
-        c.kerja_retry_at = time.monotonic() + (wait_open if wait_open is not None else 300.0) + _jitter(2.0, 15.0)
         return False
 
     # 1. Check if daily paket, poin target, and sesi are complete -> auto-stop
@@ -592,7 +596,9 @@ async def _run_kantor(c) -> bool:
     }
     if all_done:
         status_snapshot["completed_date"] = today_wib
-        status_snapshot["last_message"] = "Target maksimal tercapai; lanjut otomatis besok saat kantor buka"
+        status_snapshot["last_message"] = (
+            "Target maksimal tercapai; lanjut otomatis besok saat kantor buka"
+        )
     _save_kerja_status(c.settings.runtime_dir, status_snapshot)
     if _sesi_needs_absen(sesi, cur_sesi):
         if await _perform_sesi_absen(c, sesi, status_snapshot, delay=1.0):
@@ -631,7 +637,10 @@ async def _run_kantor(c) -> bool:
             try:
                 out = await c.ui.kantor_action("bersama", id=item["id"])
                 if isinstance(out, dict) and out.get("ok"):
-                    c.record_event("kerja", f"Ikut {item.get('nama', 'kegiatan kantor')} (+{out.get('poin', 0)} poin)")
+                    c.record_event(
+                        "kerja",
+                        f"Ikut {item.get('nama', 'kegiatan kantor')} (+{out.get('poin', 0)} poin)",
+                    )
                 c.kerja_retry_at = time.monotonic() + 3 + _jitter(2.0, 4.0)
                 return True
             except HttpCoreError as exc:
@@ -650,7 +659,10 @@ async def _run_kantor(c) -> bool:
             try:
                 out = await c.ui.kantor_action("kejadian", idx=item["idx"])
                 if isinstance(out, dict) and out.get("ok"):
-                    c.record_event("kerja", f"{item.get('judul', 'Kejadian kantor')} (+{out.get('poin', 0)} poin)")
+                    c.record_event(
+                        "kerja",
+                        f"{item.get('judul', 'Kejadian kantor')} (+{out.get('poin', 0)} poin)",
+                    )
                 c.kerja_retry_at = time.monotonic() + 3 + _jitter(2.0, 4.0)
                 return True
             except HttpCoreError as exc:
@@ -763,7 +775,9 @@ async def _run_kantor(c) -> bool:
         if reached_max:
             status_snapshot["state"] = "Selesai hari ini"
             status_snapshot["completed_date"] = today_wib
-            status_snapshot["last_message"] = "Target maksimal tercapai; lanjut otomatis besok saat kantor buka"
+            status_snapshot["last_message"] = (
+                "Target maksimal tercapai; lanjut otomatis besok saat kantor buka"
+            )
             _save_kerja_status(c.settings.runtime_dir, status_snapshot)
             _pause_until_tomorrow(c, jam, kantor.get("sekarang"))
             return True
@@ -850,8 +864,7 @@ async def run_kerja(c) -> bool:
     sesi_met = True
     if isinstance(sesi_jumlah, int) and sesi_jumlah > 0:
         sesi_met = int(saved.get("sesi_beres") or 0) >= sesi_jumlah and (
-            not saved.get("sesi_absen_enabled")
-            or int(saved.get("sesi_absen") or 0) >= sesi_jumlah
+            not saved.get("sesi_absen_enabled") or int(saved.get("sesi_absen") or 0) >= sesi_jumlah
         )
     server_now_raw = getattr(c.observed_state, "observed_at", None)
     if (

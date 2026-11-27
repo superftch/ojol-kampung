@@ -1,6 +1,7 @@
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -15,8 +16,8 @@ from app.modules.gameplay.kerja import (
 from app.modules.worker.settings import auto_flags, set_auto_flag
 
 
-def _snapshot(**overrides):
-    defaults = {
+def _snapshot(**overrides: Any) -> Snapshot:
+    defaults: dict[str, Any] = {
         "wallet": Decimal("10.0"),
         "fuel": 100,
         "condition": 100,
@@ -97,9 +98,15 @@ def test_is_work_active_now_transitions_on_pulang_and_selesai(tmp_path):
     # kerja=False, ojol=True, inside jam -> waiting for work to finish
     set_auto_flag(tmp_path, "ojol", True)
     set_auto_flag(tmp_path, "kerja", False)
-    assert is_work_active_now(tmp_path, _snapshot(job=job_with_hours, observed_at=in_hours_utc)) is True
+    assert (
+        is_work_active_now(tmp_path, _snapshot(job=job_with_hours, observed_at=in_hours_utc))
+        is True
+    )
     # After jam.to (pulang) -> ready for ojol
-    assert is_work_active_now(tmp_path, _snapshot(job=job_with_hours, observed_at=after_hours_utc)) is False
+    assert (
+        is_work_active_now(tmp_path, _snapshot(job=job_with_hours, observed_at=after_hours_utc))
+        is False
+    )
 
     # kerja=True, state=Aktif inside jam -> waiting
     set_auto_flag(tmp_path, "kerja", True)
@@ -107,7 +114,10 @@ def test_is_work_active_now_transitions_on_pulang_and_selesai(tmp_path):
         tmp_path / "kerja-status.json",
         {"kind": "kantor", "state": "Aktif", "poin": 10, "target": 30},
     )
-    assert is_work_active_now(tmp_path, _snapshot(job=job_with_hours, observed_at=in_hours_utc)) is True
+    assert (
+        is_work_active_now(tmp_path, _snapshot(job=job_with_hours, observed_at=in_hours_utc))
+        is True
+    )
 
     # kerja=True, state=Selesai hari ini for today -> kerja done, ojol can start!
     write_private(
@@ -120,14 +130,20 @@ def test_is_work_active_now_transitions_on_pulang_and_selesai(tmp_path):
             "target": 30,
         },
     )
-    assert is_work_active_now(tmp_path, _snapshot(job=job_with_hours, observed_at=in_hours_utc)) is False
+    assert (
+        is_work_active_now(tmp_path, _snapshot(job=job_with_hours, observed_at=in_hours_utc))
+        is False
+    )
 
     # kerja=True, state=Libur -> ojol can start!
     write_private(
         tmp_path / "kerja-status.json",
         {"kind": "kantor", "state": "Libur"},
     )
-    assert is_work_active_now(tmp_path, _snapshot(job=job_with_hours, observed_at=in_hours_utc)) is False
+    assert (
+        is_work_active_now(tmp_path, _snapshot(job=job_with_hours, observed_at=in_hours_utc))
+        is False
+    )
 
 
 @pytest.mark.asyncio
@@ -248,7 +264,13 @@ async def test_run_kerja_kantor_caps_status_to_max_and_adds_jitter(tmp_path, mon
                         "libur": False,
                         "sekarang": "2026-11-25T05:00:00.000Z",
                         "kerja": {"status": "penuh", "poin": 29, "target": 30},
-                        "paket": {"berbayar": True, "lunas": 3, "perHari": 3, "menuju": 2, "perPaket": 5},
+                        "paket": {
+                            "berbayar": True,
+                            "lunas": 3,
+                            "perHari": 3,
+                            "menuju": 2,
+                            "perPaket": 5,
+                        },
                         "bersama": [],
                         "kejadian": [],
                         "urusan": None,
@@ -303,7 +325,13 @@ async def test_run_kerja_kantor_pauses_until_tomorrow_and_resumes_next_day(tmp_p
                         "libur": False,
                         "sekarang": "2026-11-25T05:00:00.000Z",
                         "kerja": {"status": "tercapai", "poin": 30, "target": 30},
-                        "paket": {"berbayar": True, "lunas": 3, "perHari": 3, "menuju": 0, "perPaket": 5},
+                        "paket": {
+                            "berbayar": True,
+                            "lunas": 3,
+                            "perHari": 3,
+                            "menuju": 0,
+                            "perPaket": 5,
+                        },
                         "bersama": [{"id": "b1", "dari": 0, "sampai": 1440, "ikut": False}],
                         "kejadian": [{"idx": 0, "dari": 0, "sampai": 1440, "oleh": None}],
                         "urusan": None,
@@ -465,9 +493,7 @@ async def test_run_kerja_auto_sesi_absen_after_urusan_and_from_detak(tmp_path, m
                     "sesi": {"ke": 1, "u": 1, "absen": False, "beres": False, "baru": False},
                 }
             if action == "sesi-absen":
-                return {
-                    "sesi": {"ke": 1, "u": 1, "absen": True, "beres": False, "baru": False}
-                }
+                return {"sesi": {"ke": 1, "u": 1, "absen": True, "beres": False, "baru": False}}
             raise AssertionError(f"Unexpected action: {action}")
 
     c = SimpleNamespace(
@@ -573,7 +599,10 @@ async def test_run_kerja_custom_target_poin_and_sesi_status_fields(tmp_path, mon
                             "absenSetelah": 1,
                             "beres": 5,
                             "jadwal": [
-                                *({"ke": i, "u": 3, "absen": True, "beres": True} for i in range(1, 6)),
+                                *(
+                                    {"ke": i, "u": 3, "absen": True, "beres": True}
+                                    for i in range(1, 6)
+                                ),
                                 {"ke": 6, "u": 2, "absen": False, "beres": False},
                             ],
                         },
@@ -729,7 +758,9 @@ async def test_run_kerja_records_sesi_jadwal_and_absen_failure_visibility(tmp_pa
                     "sesi": {"ke": 2, "u": 2, "absen": False, "beres": False, "baru": False},
                 }
             if action == "sesi-absen":
-                raise HttpCoreError("Transaksi ditolak HTTP428; tidak diulang", category="uncertain")
+                raise HttpCoreError(
+                    "Transaksi ditolak HTTP428; tidak diulang", category="uncertain"
+                )
             raise AssertionError(f"Unexpected action: {action}")
 
     c = SimpleNamespace(
@@ -807,10 +838,10 @@ async def test_controller_ojol_waits_for_kerja_then_starts_automatically(tmp_pat
             job_clicks.append(label)
             cancel.set()
 
-    async def fast_sleep(_seconds):
+    async def fast_sleep(seconds: float = 0):
         return None
 
-    async def fast_human_pause(_low, _high):
+    async def fast_human_pause(low: float = 0, high: float = 0):
         return None
 
     monkeypatch.setattr("app.modules.gameplay.kerja.asyncio.sleep", fast_sleep)
@@ -830,5 +861,3 @@ async def test_controller_ojol_waits_for_kerja_then_starts_automatically(tmp_pat
 
     assert "detak" in kantor_calls
     assert job_clicks == ["Cari order"]
-
-

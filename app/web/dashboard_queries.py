@@ -718,9 +718,7 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
         "kerja_target_poin": kerja_target_poin(directory),
         "ojol_waiting_kerja": bool(
             flags.get("ojol") is True
-            and is_work_active_now(
-                directory, state, flags=flags, kerja_status=kerja_status
-            )
+            and is_work_active_now(directory, state, flags=flags, kerja_status=kerja_status)
         ),
         "kursus_subject": selected_kursus,
         "kursus_cost": kursus_cost_info(skills_list, selected_kursus),

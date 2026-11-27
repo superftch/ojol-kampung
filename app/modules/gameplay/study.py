@@ -392,7 +392,9 @@ def kursus_cost_info(skills: list, track: str | None) -> dict | None:
         "label": SUBJECTS[track],
         "level": info.get("level"),
         "next_level": next_info.get("level") if next_info else None,
-        "cost_milli": int(next_info["courseMilli"]) if next_info and next_info.get("courseMilli") is not None else None,
+        "cost_milli": int(next_info["courseMilli"])
+        if next_info and next_info.get("courseMilli") is not None
+        else None,
         "hours": next_info.get("hours") if next_info else None,
         "pending": bool(pending),
         "ready_at": pending.get("readyAt") if pending else None,
@@ -443,7 +445,9 @@ async def run_kursus(c) -> bool:
             {"track": track, "label": SUBJECTS[track], "state": "Maksimal"},
         )
         set_auto_flag(c.settings.runtime_dir, "kursus", False)
-        c.record_event("kursus", f"Kursus {SUBJECTS[track]} sudah level maksimal; Auto Kursus dimatikan.")
+        c.record_event(
+            "kursus", f"Kursus {SUBJECTS[track]} sudah level maksimal; Auto Kursus dimatikan."
+        )
         return False
 
     pending = track_info.get("pending")
@@ -470,7 +474,11 @@ async def run_kursus(c) -> bool:
     if used >= daily_max:
         _save_kursus_status(
             c.settings.runtime_dir,
-            {"track": track, "label": SUBJECTS[track], "state": f"Kuota habis ({used}/{daily_max})"},
+            {
+                "track": track,
+                "label": SUBJECTS[track],
+                "state": f"Kuota habis ({used}/{daily_max})",
+            },
         )
         c.kursus_retry_at = time.monotonic() + 1800 + random.uniform(5.0, 30.0)  # noqa: S311
         return False

@@ -204,9 +204,9 @@ def record_unknown_glyph(directory, glyph, normalized, trip_id=None, svg_text=No
                         ex_g = ex_data.get("normalized_glyph") or ex_raw
                         if cur_min_x is not None and ex_min_x is not None:
                             # posisi x saja tidak cukup: glyph path selalu mulai di 0
-                            same_shape = not ex_g or _shape_distance(
-                                normalized, _normalize(ex_g)
-                            ) < 0.05
+                            same_shape = (
+                                not ex_g or _shape_distance(normalized, _normalize(ex_g)) < 0.05
+                            )
                             if abs(cur_min_x - ex_min_x) < 5 and same_shape:
                                 touched = force and not ex_data.get("force")
                                 if touched:

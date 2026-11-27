@@ -41,9 +41,7 @@ def _empty_state(today: str) -> dict[str, Any]:
     }
 
 
-def _schedule_next_trigger(
-    moment_wib: datetime, rng: random.Random | random.Random
-) -> str:
+def _schedule_next_trigger(moment_wib: datetime, rng: random.Random | random.Random) -> str:
     delay = rng.uniform(MIN_WORK_INTERVAL_SECONDS, MAX_WORK_INTERVAL_SECONDS)
     return (moment_wib + timedelta(seconds=delay)).isoformat()
 
@@ -114,9 +112,7 @@ def active_ojol_jitter(
     return None
 
 
-def is_ojol_jitter_active(
-    directory: Path, *, current_time: datetime | None = None
-) -> bool:
+def is_ojol_jitter_active(directory: Path, *, current_time: datetime | None = None) -> bool:
     """Return True if the account is currently in an ojol offline jitter break."""
     return active_ojol_jitter(directory, current_time=current_time) is not None
 

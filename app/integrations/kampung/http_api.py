@@ -438,7 +438,7 @@ class OjolHttpApi:
         for _ in range(3):
             # Angka per kunci tetap; gambar cuma digambar ulang. Baca 3 gambar lalu
             # kirim suara terbanyak supaya salah baca tidak dikirim 3x berturut-turut.
-            votes: dict[str, tuple[str, bool]] = {}
+            votes: dict[str, tuple[int, str]] = {}
             for attempt in range(1, 4):
                 image = await self.request(f"/api/cek-manusia?k={kunci}&m={attempt}", text=True)
                 svg = image.strip() if isinstance(image, str) else ""
@@ -790,7 +790,6 @@ class OjolHttpApi:
                         category="rejected",
                     ) from exc
                 raise
-
 
     async def garden_status(self):
         return await self._facilities.garden_status()

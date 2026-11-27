@@ -256,8 +256,12 @@ async def test_maintain_online_presence_respects_kerja_and_kebutuhan_flags(setti
 
     with (
         patch.object(manager, "settings", settings.model_copy(update={"env": "local"})),
-        patch.object(svc_kerja, "fetch_online_status", AsyncMock(return_value=mock_status)) as f_kerja,
-        patch.object(svc_needs, "fetch_online_status", AsyncMock(return_value=mock_status)) as f_needs,
+        patch.object(
+            svc_kerja, "fetch_online_status", AsyncMock(return_value=mock_status)
+        ) as f_kerja,
+        patch.object(
+            svc_needs, "fetch_online_status", AsyncMock(return_value=mock_status)
+        ) as f_needs,
     ):
         await manager.supervisor.maintain_online_presence()
         f_kerja.assert_awaited_once()
@@ -301,9 +305,7 @@ async def test_controller_purchase_need_fetches_online_status(settings, state):
     set_auto_flag(settings.runtime_dir, "kerja", False)
     set_auto_flag(settings.runtime_dir, "makan", True)
 
-    before = state.model_copy(
-        update={"wallet": 100, "needs": {**state.needs, "makan": 30}}
-    )
+    before = state.model_copy(update={"wallet": 100, "needs": {**state.needs, "makan": 30}})
     after = state.model_copy(
         update={
             "wallet": 95,

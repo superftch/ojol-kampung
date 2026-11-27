@@ -891,8 +891,15 @@ class Controller:
             was_waiting_kerja = getattr(self, "_was_ojol_waiting_kerja", False)
             if is_ojol_waiting_kerja and not was_waiting_kerja:
                 self.record_event("ojol", "Auto Ojol menunggu kerja selesai.")
-            elif not is_ojol_waiting_kerja and was_waiting_kerja and flags.get("ojol") is True and not is_ojol_maint:
-                self.record_event("ojol", "Kerja selesai/pulang; Auto Ojol mulai berjalan otomatis.")
+            elif (
+                not is_ojol_waiting_kerja
+                and was_waiting_kerja
+                and flags.get("ojol") is True
+                and not is_ojol_maint
+            ):
+                self.record_event(
+                    "ojol", "Kerja selesai/pulang; Auto Ojol mulai berjalan otomatis."
+                )
             self._was_ojol_waiting_kerja = is_ojol_waiting_kerja
             if (
                 not flags["ojol"]

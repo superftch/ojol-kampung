@@ -141,7 +141,8 @@ def admin_workers(
         owner = owners.get(row["owner"], {})
         directory = registry.runtime_directory(row)
         data, _ = status_record(directory / "status.json")
-        snapshot = data.get("snapshot") if isinstance(data.get("snapshot"), dict) else {}
+        raw_snapshot = data.get("snapshot")
+        snapshot = raw_snapshot if isinstance(raw_snapshot, dict) else {}
         workers.append(
             {
                 "id": row["id"],

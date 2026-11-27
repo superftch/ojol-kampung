@@ -153,7 +153,9 @@ async def update_job_sniper(
         raise HTTPException(504, "Permintaan Job Sniper ke server game timeout.") from None
 
     if not res.get("accepted"):
-        raise HTTPException(400, res.get("error") or "Lowongan tidak memenuhi syarat untuk di-sniper.")
+        raise HTTPException(
+            400, res.get("error") or "Lowongan tidak memenuhi syarat untuk di-sniper."
+        )
 
     supervisor = getattr(getattr(ctx, "manager", None), "supervisor", None)
     if supervisor is not None and hasattr(supervisor, "_sniper_next_check_ts"):

@@ -1,5 +1,6 @@
 from datetime import datetime
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
@@ -230,7 +231,12 @@ def test_pick_best_sniper_candidate_respects_skill_salary_and_kosong_at():
     # Default config: picks Dokter (17500) over Perawat (10500), skips Kepala wilayah bank (skill_met=False)
     best, next_kosong = pick_best_sniper_candidate(
         payload,
-        {"source_filter": "all", "allow_switch_job": True, "allow_fee": False, "min_salary_milli": 0},
+        {
+            "source_filter": "all",
+            "allow_switch_job": True,
+            "allow_fee": False,
+            "min_salary_milli": 0,
+        },
     )
     assert best is not None
     assert best["profession"] == "Dokter"
@@ -241,14 +247,24 @@ def test_pick_best_sniper_candidate_respects_skill_salary_and_kosong_at():
     # When allow_switch_job=False and account already has a job, nothing is eligible
     best_no_switch, _ = pick_best_sniper_candidate(
         payload,
-        {"source_filter": "all", "allow_switch_job": False, "allow_fee": False, "min_salary_milli": 0},
+        {
+            "source_filter": "all",
+            "allow_switch_job": False,
+            "allow_fee": False,
+            "min_salary_milli": 0,
+        },
     )
     assert best_no_switch is None
 
     # When min_salary_milli is higher than Dokter (17500), nothing is eligible
     best_high_min, _ = pick_best_sniper_candidate(
         payload,
-        {"source_filter": "all", "allow_switch_job": True, "allow_fee": False, "min_salary_milli": 20000},
+        {
+            "source_filter": "all",
+            "allow_switch_job": True,
+            "allow_fee": False,
+            "min_salary_milli": 20000,
+        },
     )
     assert best_high_min is None
 
@@ -271,7 +287,7 @@ async def test_run_job_sniper_once_applies_and_autostops(tmp_path):
         apply_biz_vacancy=AsyncMock(return_value={"ok": True}),
     )
 
-    res = await run_job_sniper_once(tmp_path, api=fake_api)
+    res = await run_job_sniper_once(tmp_path, api=cast(Any, fake_api))
     assert res["checked"] is True
     assert res["sniped"] is True
     assert res["job"]["profession"] == "Dokter"
@@ -305,10 +321,12 @@ async def test_run_job_sniper_wait_kosong_sleeps_until_kosong_at(tmp_path):
         apply_biz_vacancy=AsyncMock(),
     )
 
-    res = await run_job_sniper_once(tmp_path, api=fake_api)
+    res = await run_job_sniper_once(tmp_path, api=cast(Any, fake_api))
     assert res["checked"] is True
     assert res["sniped"] is False
-    assert res["next_kosong_epoch"] == datetime.fromisoformat("2026-12-03T03:27:00+00:00").timestamp()
+    assert (
+        res["next_kosong_epoch"] == datetime.fromisoformat("2026-12-03T03:27:00+00:00").timestamp()
+    )
     assert res["next_check_epoch"] == res["next_kosong_epoch"]
     assert res["state"]["next_check_at"] is not None
     fake_api.apply_facility_job.assert_not_awaited()

@@ -219,7 +219,8 @@ def pick_best_sniper_candidate(
     config: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Return (highest_salary_eligible_vacancy, earliest_matching_kosong_vacancy)."""
-    vacancies = payload.get("vacancies") if isinstance(payload.get("vacancies"), list) else []
+    raw_vacancies = payload.get("vacancies")
+    vacancies = raw_vacancies if isinstance(raw_vacancies, list) else []
     target_mode = config.get("target_mode", "highest")
     target_job_id = str(config.get("target_job_id") or "").strip()
 
@@ -238,7 +239,9 @@ def pick_best_sniper_candidate(
             return None, target
         return None, None
 
-    current_job = payload.get("current_job") if isinstance(payload.get("current_job"), dict) else None
+    current_job = (
+        payload.get("current_job") if isinstance(payload.get("current_job"), dict) else None
+    )
     current_net_milli = int(current_job.get("net_milli") or 0) if current_job else None
 
     # Vacancies are already sorted descending by salary.net_milli; re-sort defensively.
@@ -263,7 +266,9 @@ def pick_best_sniper_candidate(
                 net_milli = int((v.get("salary") or {}).get("net_milli") or 0)
                 upcoming_full.append((epoch, -net_milli, v))
 
-    next_kosong = min(upcoming_full, key=lambda item: (item[0], item[1]))[2] if upcoming_full else None
+    next_kosong = (
+        min(upcoming_full, key=lambda item: (item[0], item[1]))[2] if upcoming_full else None
+    )
     return best_eligible, next_kosong
 
 
@@ -354,7 +359,9 @@ async def run_job_sniper_once(
                             "pindah kerja dinonaktifkan."
                         )
                     else:
-                        msg = "Belum ada slot/jadwal kosong sesuai kriteria; cek ulang 30 menit lagi."
+                        msg = (
+                            "Belum ada slot/jadwal kosong sesuai kriteria; cek ulang 30 menit lagi."
+                        )
             else:
                 interval_dt = moment + timedelta(seconds=cfg["interval_seconds"])
                 if next_kosong_epoch is not None and next_kosong_epoch < interval_dt.timestamp():
@@ -491,12 +498,15 @@ async def run_job_sniper_once(
 
 
 def _rejection_reason_for_sniper(payload: dict[str, Any], cfg: dict[str, Any]) -> str:
-    vacancies = payload.get("vacancies") if isinstance(payload.get("vacancies"), list) else []
+    raw_vacancies = payload.get("vacancies")
+    vacancies = raw_vacancies if isinstance(raw_vacancies, list) else []
     if cfg.get("target_mode") == "specific":
         target_id = str(cfg.get("target_job_id") or "").strip()
         if not target_id:
             return "Pilih lowongan target terlebih dahulu."
-        target = next((v for v in vacancies if isinstance(v, dict) and v.get("id") == target_id), None)
+        target = next(
+            (v for v in vacancies if isinstance(v, dict) and v.get("id") == target_id), None
+        )
         if not target:
             return "Lowongan target tidak ditemukan."
         if target.get("is_current_job"):
@@ -510,7 +520,9 @@ def _rejection_reason_for_sniper(payload: dict[str, Any], cfg: dict[str, Any]) -
         return target.get("blocked_reason") or "Lowongan ini belum bisa di-sniper."
 
     min_milli = int(cfg.get("min_salary_milli") or 0)
-    current_job = payload.get("current_job") if isinstance(payload.get("current_job"), dict) else None
+    current_job = (
+        payload.get("current_job") if isinstance(payload.get("current_job"), dict) else None
+    )
     if min_milli > 0:
         return (
             f"Tidak ada lowongan sesuai skill dengan gaji minimal {min_milli / 1000:g} koin/hari "
@@ -569,7 +581,9 @@ async def validate_and_configure_sniper(
                 biz_items = None
                 with suppress(HttpCoreError):
                     biz_items = await client.fetch_biz_vacancies()
-        payload = save_vacancies_cache(directory, build_job_vacancies_payload(me, biz_items=biz_items))
+        payload = save_vacancies_cache(
+            directory, build_job_vacancies_payload(me, biz_items=biz_items)
+        )
 
     best, next_kosong = pick_best_sniper_candidate(payload, cfg)
 

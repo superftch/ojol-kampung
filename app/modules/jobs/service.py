@@ -89,9 +89,7 @@ def _as_float(value: Any, default: float = 0.0) -> float:
         return default
 
 
-def _resolve_skill_for_profession(
-    skill_state: dict[str, Any], profession: str
-) -> dict[str, Any]:
+def _resolve_skill_for_profession(skill_state: dict[str, Any], profession: str) -> dict[str, Any]:
     """Match a profession to the account's skill track and effective bonusBps."""
     global_level = _as_int(skill_state.get("level"), 0)
     global_bonus_bps = _as_int(skill_state.get("bonusBps"), 0)
@@ -155,7 +153,8 @@ def _facility_blocked_reason(
         return str(me["jobBlock"])
     if is_full:
         return "Kuota sedang penuh."
-    profile = me.get("profile") if isinstance(me.get("profile"), dict) else {}
+    raw_profile = me.get("profile")
+    profile = raw_profile if isinstance(raw_profile, dict) else {}
     gender = v.get("gender")
     if gender and profile.get("gender") != gender:
         return f"Khusus warga {'wanita' if gender == 'perempuan' else 'pria'}."
@@ -201,14 +200,20 @@ def build_job_vacancies_payload(
     me: dict[str, Any], biz_items: list[dict[str, Any]] | None = None
 ) -> dict[str, Any]:
     """Normalize facility and business job vacancies with salary multipliers and eligibility."""
-    catalog = me.get("catalog") if isinstance(me.get("catalog"), dict) else {}
-    skill_state = me.get("skill") if isinstance(me.get("skill"), dict) else {}
-    ekonomi = me.get("ekonomi") if isinstance(me.get("ekonomi"), dict) else {}
-    home = me.get("home") if isinstance(me.get("home"), dict) else {}
-    current_job = me.get("job") if isinstance(me.get("job"), dict) else None
+    raw_catalog = me.get("catalog")
+    catalog = raw_catalog if isinstance(raw_catalog, dict) else {}
+    raw_skill = me.get("skill")
+    skill_state = raw_skill if isinstance(raw_skill, dict) else {}
+    raw_ekonomi = me.get("ekonomi")
+    ekonomi = raw_ekonomi if isinstance(raw_ekonomi, dict) else {}
+    raw_home = me.get("home")
+    home = raw_home if isinstance(raw_home, dict) else {}
+    raw_job = me.get("job")
+    current_job = raw_job if isinstance(raw_job, dict) else None
 
     home_desa = home.get("desa")
-    transport = catalog.get("transport") if isinstance(catalog.get("transport"), dict) else None
+    raw_transport = catalog.get("transport")
+    transport = raw_transport if isinstance(raw_transport, dict) else None
     ekonomi_bonus_bps = _as_int(ekonomi.get("bonusBps"), 0)
     ekonomi_rem_bps = _as_int(ekonomi.get("remBps"), 0)
     contract_days_default = _as_int(catalog.get("contractDays"), 7)
@@ -367,9 +372,7 @@ def build_job_vacancies_payload(
         subsidi_milli = (after_transport * ekonomi_rem_bps) // 10000
         net_milli = after_transport + ekonomi_bonus_milli + subsidi_milli
 
-        is_current = bool(
-            current_job and current_job.get("employerId") == v.get("businessId")
-        )
+        is_current = bool(current_job and current_job.get("employerId") == v.get("businessId"))
         blocked_reason = _business_blocked_reason(me, v, is_current, is_full)
 
         normalized.append(
@@ -432,8 +435,9 @@ def build_job_vacancies_payload(
     )
 
     tracks_out = []
-    if isinstance(skill_state.get("tracks"), list):
-        for t in skill_state["tracks"]:
+    raw_tracks = skill_state.get("tracks")
+    if isinstance(raw_tracks, list):
+        for t in raw_tracks:
             if isinstance(t, dict) and t.get("id"):
                 tracks_out.append(
                     {
