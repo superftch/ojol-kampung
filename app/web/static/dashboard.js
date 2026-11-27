@@ -19,6 +19,7 @@ function showTab(tabId) {
     if (tabId === 'tab-notifications') switchNotifTab(currentNotifTab);
     if (tabId === 'tab-admin') loadAdminData();
     if (tabId === 'tab-bank-angka') loadBankAngka();
+    if (tabId === 'tab-jobs') loadJobVacancies();
 }
 
 function openModal(id) {
@@ -1199,6 +1200,7 @@ async function switchAccount(accountId) {
         const applied = await refreshDashboard();
         if (!applied && dashboardData?.account) selector.value = dashboardData.account.id;
         if (document.getElementById('tab-accounts').classList.contains('active')) await loadAccounts();
+        if (document.getElementById('tab-jobs').classList.contains('active')) await loadJobVacancies();
     }
 }
 
@@ -1612,14 +1614,12 @@ async function loadAdminData(refreshSettings = true) {
 
 function renderAdminUsers(users, pending) {
     const pTbody = document.getElementById('pendingTableBody');
-    pTbody.innerHTML = '';
     if (!pending.length) {
         pTbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Tidak ada pengajuan tertunda.</td></tr>';
     } else {
-        pending.forEach(p => {
-            const tr = document.createElement('tr');
+        pTbody.innerHTML = pending.map(p => {
             const dt = new Date(p.created_at * 1000).toLocaleString('id-ID');
-            tr.innerHTML = `
+            return `<tr>
                 <td data-label="ID">#${p.id}</td>
                 <td class="admin-user-name"><strong>${escapeHtml(p.username)}</strong></td>
                 <td data-label="Nama">${escapeHtml(p.name || '—')}</td>
@@ -1628,29 +1628,23 @@ function renderAdminUsers(users, pending) {
                     <button class="btn btn-success" onclick="reviewUser(${p.id}, true)">Setujui</button>
                     <button class="btn btn-danger" onclick="reviewUser(${p.id}, false)">Tolak</button>
                 </td>
-            `;
-            pTbody.appendChild(tr);
-        });
+            </tr>`;
+        }).join('');
     }
 
     const uTbody = document.getElementById('usersTableBody');
-    uTbody.innerHTML = '';
-    users.forEach(u => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td data-label="ID">#${u.id}</td>
-            <td class="admin-user-name"><strong>${escapeHtml(u.username)}</strong></td>
-            <td data-label="Nama">${escapeHtml(u.name || '—')}</td>
-            <td data-label="Peran"><span style="padding: 2px 6px; border-radius: 4px; background: ${u.role === 'admin' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.05)'}; color: ${u.role === 'admin' ? 'var(--primary)' : 'inherit'};">${u.role}</span></td>
-            <td data-label="Status"><span style="color: ${u.status === 'approved' ? 'var(--success)' : u.status === 'pending' ? 'var(--warning)' : 'var(--danger)'};">${u.status}</span></td>
-            <td>
-                ${u.role === 'admin' ? '' : u.status === 'approved' ? `<button class="btn btn-danger" onclick="reviewUser(${u.id}, false)">Nonaktifkan</button>` : `<button class="btn btn-success" onclick="reviewUser(${u.id}, true)">Aktifkan</button>`}
-                ${u.status === 'approved' ? `<button class="btn btn-secondary" type="button" onclick="openAdminUserLimits(${u.id}, this)">Batas pengguna</button>` : ''}
-                ${u.status === 'approved' && u.role !== 'admin' ? `<button class="btn btn-secondary" type="button" onclick="impersonateWebUser(${u.id}, this)">Masuk sebagai</button>` : ''}
-            </td>
-        `;
-        uTbody.appendChild(tr);
-    });
+    uTbody.innerHTML = users.map(u => `<tr>
+        <td data-label="ID">#${u.id}</td>
+        <td class="admin-user-name"><strong>${escapeHtml(u.username)}</strong></td>
+        <td data-label="Nama">${escapeHtml(u.name || '—')}</td>
+        <td data-label="Peran"><span style="padding: 2px 6px; border-radius: 4px; background: ${u.role === 'admin' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.05)'}; color: ${u.role === 'admin' ? 'var(--primary)' : 'inherit'};">${u.role}</span></td>
+        <td data-label="Status"><span style="color: ${u.status === 'approved' ? 'var(--success)' : u.status === 'pending' ? 'var(--warning)' : 'var(--danger)'};">${u.status}</span></td>
+        <td>
+            ${u.role === 'admin' ? '' : u.status === 'approved' ? `<button class="btn btn-danger" onclick="reviewUser(${u.id}, false)">Nonaktifkan</button>` : `<button class="btn btn-success" onclick="reviewUser(${u.id}, true)">Aktifkan</button>`}
+            ${u.status === 'approved' ? `<button class="btn btn-secondary" type="button" onclick="openAdminUserLimits(${u.id}, this)">Batas pengguna</button>` : ''}
+            ${u.status === 'approved' && u.role !== 'admin' ? `<button class="btn btn-secondary" type="button" onclick="impersonateWebUser(${u.id}, this)">Masuk sebagai</button>` : ''}
+        </td>
+    </tr>`).join('');
 }
 
 function renderAdminSettings(s) {
@@ -2283,3 +2277,475 @@ loadNotifications();
 refreshDashboard();
 startLiveStream();
 setInterval(() => { if (!streamConnected) refreshDashboard(); }, 5000);
+
+// ================= LOWONGAN PEKERJAAN =================
+let jobsPayload = null;
+let jobSniperData = null;
+let currentJobsTab = 'highest';
+let pendingSwitchJobId = null;
+let applyingJobId = null;
+
+function formatKoinMilli(milli) {
+    const num = Number(milli || 0) / 1000;
+    return num.toLocaleString('id-ID', { minimumFractionDigits: 0, maximumFractionDigits: 3 });
+}
+
+function formatBpsPct(bps) {
+    const pct = Number(bps || 0) / 100;
+    return pct.toLocaleString('id-ID', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+}
+
+function formatKosongAt(iso) {
+    if (!iso) return '';
+    try {
+        const dt = new Date(iso);
+        return dt.toLocaleString('id-ID', {
+            day: '2-digit',
+            month: 'short',
+            hour: '2-digit',
+            minute: '2-digit',
+            timeZone: 'Asia/Jakarta'
+        }) + ' WIB';
+    } catch (_) {
+        return '';
+    }
+}
+
+function switchJobsTab(tabKey) {
+    currentJobsTab = tabKey || 'highest';
+    pendingSwitchJobId = null;
+    document.querySelectorAll('.jobs-subtab').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.jobTab === currentJobsTab);
+    });
+    renderJobVacancies();
+}
+
+async function loadJobVacancies(forceRefresh = false) {
+    const listEl = document.getElementById('jobsList');
+    const summaryEl = document.getElementById('jobsAccountSummary');
+    const refreshBtn = document.getElementById('btnRefreshJobs');
+    if (refreshBtn) {
+        refreshBtn.disabled = true;
+        refreshBtn.textContent = forceRefresh ? 'Menyegarkan...' : 'Memuat...';
+    }
+    if (listEl && !jobsPayload) {
+        listEl.innerHTML = '<div class="card" style="text-align: center; color: var(--text-muted); padding: 32px;">Mengambil data lowongan...</div>';
+    }
+    try {
+        const url = forceRefresh ? '/api/jobs/vacancies?refresh=1' : '/api/jobs/vacancies';
+        const [vacanciesRes, sniperRes] = await Promise.all([
+            apiFetch(url, { timeoutMs: 25000 }),
+            apiFetch('/api/jobs/sniper', { timeoutMs: 10000 }).catch(() => null),
+        ]);
+        jobsPayload = vacanciesRes;
+        if (sniperRes) {
+            jobSniperData = sniperRes;
+        }
+        pendingSwitchJobId = null;
+        populateJobsSkillFilter(jobsPayload.account_skills || []);
+        populateSniperTargetJobs(jobsPayload.vacancies || []);
+        renderJobsAccountSummary(jobsPayload);
+        renderJobSniperPanel();
+        updateJobsTabCounts(jobsPayload);
+        renderJobVacancies();
+    } catch (e) {
+        const msg = escapeHtml(e.message || 'Gagal memuat lowongan.');
+        if (summaryEl) {
+            summaryEl.innerHTML = `<div style="color: var(--danger); font-size: 13px;">${msg}</div>`;
+        }
+        if (listEl) {
+            listEl.innerHTML = `<div class="card" style="text-align: center; color: var(--danger); padding: 28px;">${msg}</div>`;
+        }
+    } finally {
+        if (refreshBtn) {
+            refreshBtn.disabled = false;
+            refreshBtn.textContent = 'Segarkan Lowongan';
+        }
+    }
+}
+
+function populateJobsSkillFilter(skills) {
+    const sel = document.getElementById('jobsSkillFilter');
+    if (!sel) return;
+    const prev = sel.value;
+    const opts = ['<option value="">Semua Bidang Skill</option>'];
+    for (const sk of skills) {
+        opts.push(`<option value="${escapeHtml(sk.id)}">${escapeHtml(sk.icon)} ${escapeHtml(sk.name)} (⭐${sk.level})</option>`);
+    }
+    sel.innerHTML = opts.join('');
+    if (prev && skills.some(s => s.id === prev)) {
+        sel.value = prev;
+    }
+}
+
+function populateSniperTargetJobs(vacancies) {
+    const sel = document.getElementById('sniperTargetJob');
+    if (!sel) return;
+    const prev = sel.value || jobSniperData?.config?.target_job_id || '';
+    const opts = ['<option value="">-- Pilih lowongan dari daftar --</option>'];
+    const eligible = (vacancies || []).filter(v => !v.is_current_job && v.skill_met && v.fee_milli === 0);
+    for (const v of eligible) {
+        const net = formatKoinMilli(v.salary?.net_milli || 0);
+        const slotTxt = v.is_full
+            ? (v.kosong_at ? `Penuh · Kosong ${formatKosongAt(v.kosong_at)}` : 'Penuh')
+            : `Tersedia (${v.filled}/${v.slots})`;
+        opts.push(`<option value="${escapeHtml(v.id)}">${escapeHtml(v.profession)} · ${escapeHtml(v.place_name)} (${net} koin/hari · ${escapeHtml(slotTxt)})</option>`);
+    }
+    sel.innerHTML = opts.join('');
+    if (prev && eligible.some(v => v.id === prev)) {
+        sel.value = prev;
+    }
+}
+
+function syncSniperTargetInputs() {
+    const targetMode = document.getElementById('sniperTargetMode')?.value || 'highest';
+    const jobField = document.getElementById('sniperTargetJobField');
+    const minSalaryField = document.getElementById('sniperMinSalaryField');
+    if (jobField) {
+        jobField.style.display = targetMode === 'specific' ? 'flex' : 'none';
+    }
+    if (minSalaryField) {
+        minSalaryField.style.display = targetMode === 'highest' ? 'flex' : 'none';
+    }
+}
+
+function renderJobSniperPanel() {
+    if (!jobSniperData) return;
+    const cfg = jobSniperData.config || {};
+    const st = jobSniperData.state || {};
+
+    const badge = document.getElementById('sniperStatusBadge');
+    const toggleBtn = document.getElementById('btnSniperToggle');
+    const statusText = document.getElementById('sniperStatusText');
+    const metaRow = document.getElementById('sniperMetaRow');
+
+    if (badge) {
+        badge.className = cfg.enabled ? 'job-badge ok' : 'job-badge muted';
+        const targetLabel = cfg.target_mode === 'specific' ? 'Target Pilihan' : 'Gaji Tertinggi';
+        badge.textContent = cfg.enabled ? `Aktif · ${targetLabel}` : 'Nonaktif';
+    }
+    if (toggleBtn) {
+        toggleBtn.textContent = cfg.enabled ? 'Matikan Sniper' : 'Aktifkan Sniper';
+        toggleBtn.className = cfg.enabled ? 'btn btn-secondary' : 'btn btn-primary';
+    }
+    if (statusText) {
+        statusText.textContent = st.last_error
+            ? `Error terakhir: ${st.last_error}`
+            : (st.last_result || 'Pilih rekomendasi gaji tertinggi (opsional gaji minimal) atau pilih lowongan sendiri. Otomatis pindah kerja saat slot kosong & berhenti setelah dapat.');
+    }
+
+    const modeEl = document.getElementById('sniperTargetMode');
+    if (modeEl) modeEl.value = cfg.target_mode || 'highest';
+    const minEl = document.getElementById('sniperMinSalary');
+    if (minEl) minEl.value = Number(cfg.min_salary_milli || 0) / 1000;
+    const jobEl = document.getElementById('sniperTargetJob');
+    if (jobEl && cfg.target_job_id) jobEl.value = cfg.target_job_id;
+    syncSniperTargetInputs();
+
+    if (metaRow) {
+        const metaParts = [];
+        const tp = st.target_preview;
+        if (cfg.enabled && tp) {
+            metaParts.push(`<span>🎯 Target paling cocok: <strong>${escapeHtml(tp.profession)}</strong> · ${escapeHtml(tp.place_name)} (${formatKoinMilli(tp.net_milli)} koin/hari)</span>`);
+        }
+        if (cfg.enabled && (tp?.kosong_at || st.next_kosong_at)) {
+            const est = tp?.kosong_at || st.next_kosong_at;
+            metaParts.push(`<span>⏳ Estimasi dapat: <strong>${escapeHtml(formatKosongAt(est))}</strong></span>`);
+        }
+        if (st.last_sniped_job) {
+            const sj = st.last_sniped_job;
+            metaParts.push(`<span>✅ Terakhir dapat: <strong>${escapeHtml(sj.profession)}</strong> (${formatKoinMilli(sj.net_milli)} koin/hari)</span>`);
+        }
+        metaRow.innerHTML = metaParts.join('');
+    }
+}
+
+function readJobSniperFormConfig(overrideEnabled = null) {
+    const curEnabled = Boolean(jobSniperData?.config?.enabled);
+    const targetMode = document.getElementById('sniperTargetMode')?.value || 'highest';
+    const targetJobId = targetMode === 'specific' ? (document.getElementById('sniperTargetJob')?.value || '') : '';
+    const minSalaryKoin = Math.max(0, parseFloat(document.getElementById('sniperMinSalary')?.value || '0') || 0);
+    return {
+        enabled: overrideEnabled !== null ? Boolean(overrideEnabled) : curEnabled,
+        mode: 'wait_kosong',
+        target_mode: targetMode,
+        target_job_id: targetJobId,
+        interval_seconds: 30,
+        schedule_enabled: false,
+        start_time: '00:00',
+        end_time: '23:59',
+        source_filter: 'all',
+        skill_track_id: '',
+        min_salary_milli: targetMode === 'highest' ? Math.round(minSalaryKoin * 1000) : 0,
+        allow_switch_job: true,
+        auto_stop_on_success: true,
+        allow_fee: false,
+    };
+}
+
+async function onSniperTargetChange() {
+    syncSniperTargetInputs();
+    if (jobSniperData?.config?.enabled) {
+        await saveJobSniperConfig();
+    }
+}
+
+async function onSniperTargetJobChange() {
+    if (jobSniperData?.config?.enabled) {
+        await saveJobSniperConfig();
+    }
+}
+
+async function snipeSpecificJob(jobId) {
+    const modeEl = document.getElementById('sniperTargetMode');
+    const jobEl = document.getElementById('sniperTargetJob');
+    if (modeEl) modeEl.value = 'specific';
+    syncSniperTargetInputs();
+    if (jobEl) jobEl.value = jobId;
+    await saveJobSniperConfig(true);
+    document.getElementById('tab-jobs')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function saveJobSniperConfig(overrideEnabled = null) {
+    const payload = readJobSniperFormConfig(overrideEnabled);
+    if (payload.enabled && payload.target_mode === 'specific' && !payload.target_job_id) {
+        showToast('Pilih lowongan target terlebih dahulu.', 'error');
+        return false;
+    }
+    try {
+        const res = await apiFetch('/api/jobs/sniper', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            timeoutMs: 25000,
+        });
+        jobSniperData = { config: res.config, state: res.state };
+        renderJobSniperPanel();
+        showToast(res.message || 'Pengaturan Job Sniper disimpan.', 'success');
+        if (res.sniped) {
+            await Promise.all([loadJobVacancies(true), refreshDashboard()]);
+        }
+        return true;
+    } catch (e) {
+        showToast(e.message || 'Lowongan tidak memenuhi syarat untuk di-sniper.', 'error');
+        return false;
+    }
+}
+
+async function toggleJobSniper() {
+    const nextEnabled = !(jobSniperData?.config?.enabled);
+    await saveJobSniperConfig(nextEnabled);
+}
+
+function renderJobsAccountSummary(data) {
+    const el = document.getElementById('jobsAccountSummary');
+    if (!el) return;
+    const cur = data.current_job;
+    const curText = cur
+        ? `<strong>${escapeHtml(cur.profession)}</strong> di ${escapeHtml(cur.place_name || '-')} · Gaji+Skill ${formatKoinMilli(cur.rate_milli_day)} koin → Total (+multiplier): <strong style="color: #10b981;">${formatKoinMilli(cur.net_milli)} koin/hari</strong>`
+        : '<span style="color: var(--text-muted);">Belum bekerja</span>';
+    const ekBonus = data.ekonomi?.bonus_bps || 0;
+    const ekRem = data.ekonomi?.rem_bps || 0;
+    const ekText = `Multiplier Ekonomi: <strong>+${formatBpsPct(ekBonus)}%</strong>` + (ekRem > 0 ? ` · Subsidi Usaha: +${formatBpsPct(ekRem)}%` : '');
+    const skillsHtml = (data.account_skills || []).map(sk => {
+        const cls = sk.level > 0 ? 'jobs-skill-chip active' : 'jobs-skill-chip';
+        const bonusTxt = sk.bonus_bps > 0 ? ` (+${formatBpsPct(sk.bonus_bps)}%)` : '';
+        return `<span class="${cls}">${escapeHtml(sk.icon)} ${escapeHtml(sk.name)} ⭐${sk.level}${bonusTxt}</span>`;
+    }).join('');
+    const cacheNote = data.cached
+        ? ` · <span style="color: var(--text-muted);">Cache (${Number(data.cache_age_seconds || 0)}d lalu)</span>`
+        : ' · <span style="color: #10b981;">Live</span>';
+    el.innerHTML = `
+        <div class="jobs-summary-top">
+            <div style="font-size: 13px;">Pekerjaan aktif: ${curText}</div>
+            <div style="font-size: 12px; color: var(--text-muted);">${ekText} · Saldo: <strong>${formatKoinMilli(data.balance_milli)} koin</strong>${cacheNote}</div>
+        </div>
+        <div class="jobs-skill-chips">${skillsHtml || '<span style="font-size: 12px; color: var(--text-muted);">Data skill belum tersedia.</span>'}</div>
+    `;
+}
+
+function updateJobsTabCounts(data) {
+    const list = data.vacancies || [];
+    const setTxt = (id, val) => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = String(val);
+    };
+    setTxt('jobsCountHighest', list.length);
+    setTxt('jobsCountMatching', list.filter(v => v.skill_met).length);
+    setTxt('jobsCountAvailable', list.filter(v => v.can_apply).length);
+    setTxt('jobsCountBusiness', list.filter(v => v.kind === 'business').length);
+}
+
+function renderJobVacancies() {
+    const listEl = document.getElementById('jobsList');
+    if (!listEl || !jobsPayload) return;
+    const all = jobsPayload.vacancies || [];
+    const query = (document.getElementById('jobsSearchInput')?.value || '').trim().toLowerCase();
+    const skillTrack = document.getElementById('jobsSkillFilter')?.value || '';
+    const statusFilter = document.getElementById('jobsStatusFilter')?.value || 'all';
+
+    let items = all.filter(v => {
+        if (currentJobsTab === 'matching' && !v.skill_met) return false;
+        if (currentJobsTab === 'available' && !v.can_apply) return false;
+        if (currentJobsTab === 'business' && v.kind !== 'business') return false;
+        if (skillTrack && v.skill_track_id !== skillTrack) return false;
+        if (statusFilter === 'open' && v.is_full) return false;
+        if (statusFilter === 'full' && !v.is_full) return false;
+        if (query) {
+            const hay = `${v.profession} ${v.place_name} ${v.desa_name} ${v.skill_track_name} ${v.owner_nick || ''}`.toLowerCase();
+            if (!hay.includes(query)) return false;
+        }
+        return true;
+    });
+
+    items = [...items].sort((a, b) => (b.salary?.net_milli || 0) - (a.salary?.net_milli || 0));
+
+    if (items.length === 0) {
+        listEl.innerHTML = '<div class="card" style="text-align: center; color: var(--text-muted); padding: 28px;">Tidak ada lowongan yang cocok dengan filter ini.</div>';
+        return;
+    }
+
+    const hasCurrentJob = Boolean(jobsPayload.current_job);
+    const rendered = items.slice(0, 150).map(v => {
+        const s = v.salary || {};
+        const statusBadge = v.is_current_job
+            ? '<span class="job-badge ok">✅ Tempatmu</span>'
+            : v.is_full
+                ? `<span class="job-badge full">Penuh (${v.filled}/${v.slots})</span>`
+                : `<span class="job-badge ok">Tersedia (${v.filled}/${v.slots})</span>`;
+        const kosongText = v.is_full && v.kosong_at ? `<span>⏳ Kosong: ${escapeHtml(formatKosongAt(v.kosong_at))}</span>` : '';
+
+        const parts = [`<span>Pokok: <strong>${formatKoinMilli(s.base_milli)}</strong> koin</span>`];
+        if (s.skill_bonus_bps > 0) {
+            parts.push(`<span>Skill (+${formatBpsPct(s.skill_bonus_bps)}%): <strong>+${formatKoinMilli(s.skill_bonus_milli)}</strong> koin</span>`);
+        }
+        if (s.ekonomi_bonus_bps > 0) {
+            parts.push(`<span>Ekonomi (+${formatBpsPct(s.ekonomi_bonus_bps)}%): <strong>+${formatKoinMilli(s.ekonomi_bonus_milli)}</strong> koin</span>`);
+        }
+        if (s.subsidi_bps > 0) {
+            parts.push(`<span>Subsidi (+${formatBpsPct(s.subsidi_bps)}%): <strong>+${formatKoinMilli(s.subsidi_milli)}</strong> koin</span>`);
+        }
+        if (s.transport_deduct_milli > 0) {
+            parts.push(`<span style="color: #f59e0b;">Transport: -${formatKoinMilli(s.transport_deduct_milli)} koin</span>`);
+        }
+        if (v.fee_milli > 0) {
+            parts.push(`<span style="color: #f59e0b;">Sewa lapak: ${formatKoinMilli(v.fee_milli)} koin</span>`);
+        }
+
+        let skillReqHtml = '<span class="job-badge muted">Tanpa syarat skill</span>';
+        if (v.min_skill_level > 0) {
+            const trackLabel = v.skill_track_name ? `${v.skill_track_icon} ${v.skill_track_name}` : 'Keahlian';
+            const cls = v.skill_met ? 'ok' : 'warn';
+            const mark = v.skill_met ? '✅' : '❌';
+            skillReqHtml = `<span class="job-badge ${cls}">Syarat: ${escapeHtml(trackLabel)} ⭐${v.min_skill_level} (Kamu ⭐${v.account_skill_level} ${mark})</span>`;
+        } else if (v.skill_track_name) {
+            skillReqHtml = `<span class="job-badge muted">${escapeHtml(v.skill_track_icon)} ${escapeHtml(v.skill_track_name)} (Tanpa min ⭐ · Kamu ⭐${v.account_skill_level})</span>`;
+        }
+
+        const isPendingSwitch = pendingSwitchJobId === v.id;
+        const isApplying = applyingJobId === v.id;
+        let btnLabel = v.fee_milli > 0 ? 'Sewa Lapak' : (hasCurrentJob ? (isPendingSwitch ? 'Ya, Pindah Kerja' : 'Pindah') : 'Lamar');
+        if (isApplying) btnLabel = 'Memproses...';
+        if (v.is_current_job) btnLabel = 'Sedang Bekerja';
+
+        const btnClass = isPendingSwitch ? 'btn btn-primary' : (v.can_apply ? 'btn btn-primary' : 'btn btn-secondary');
+        const btnDisabled = !v.can_apply || isApplying || applyingJobId !== null;
+        const placeMeta = [v.place_name, v.desa_name ? `📍 ${v.desa_name}` : '', v.block ? `Blok ${v.block}` : '', v.owner_nick ? `Pemilik: ${v.owner_nick}` : ''].filter(Boolean).join(' · ');
+
+        let compareHtml = '';
+        if (s.comparison) {
+            const cmp = s.comparison;
+            const sign = cmp.diff_milli > 0 ? '+' : '';
+            const pctText = Number(cmp.diff_pct || 0).toLocaleString('id-ID', { minimumFractionDigits: 0, maximumFractionDigits: 1 });
+            if (v.is_current_job) {
+                compareHtml = '<div style="margin-top: 3px;"><span class="job-badge muted">Gaji saat ini (0%)</span></div>';
+            } else if (cmp.diff_milli > 0) {
+                compareHtml = `<div style="margin-top: 3px;"><span class="job-badge ok">▲ +${pctText}% (+${formatKoinMilli(cmp.diff_milli)} koin vs sekarang)</span></div>`;
+            } else if (cmp.diff_milli < 0) {
+                compareHtml = `<div style="margin-top: 3px;"><span class="job-badge full">▼ ${pctText}% (${formatKoinMilli(cmp.diff_milli)} koin vs sekarang)</span></div>`;
+            } else {
+                compareHtml = '<div style="margin-top: 3px;"><span class="job-badge muted">0% (sama dengan sekarang)</span></div>';
+            }
+        }
+
+        return `
+            <article class="card job-card">
+                <div class="job-card-head">
+                    <div>
+                        <div class="job-card-title">
+                            <span>${escapeHtml(v.profession)}</span>
+                            <span class="job-badge muted">${escapeHtml(v.source_label)}</span>
+                            ${statusBadge}
+                        </div>
+                        <div class="job-card-place">${escapeHtml(placeMeta)}</div>
+                    </div>
+                    <div style="text-align: right;">
+                        <div style="font-size: 11px; color: var(--text-muted);">Gaji Bersih / Hari</div>
+                        <div style="font-size: 18px; font-weight: 800; color: #10b981;">${formatKoinMilli(s.net_milli)} koin</div>
+                        ${compareHtml}
+                    </div>
+                </div>
+                <div class="job-salary-box">
+                    <div class="job-salary-breakdown">${parts.join(' · ')}</div>
+                </div>
+                <div class="job-card-foot">
+                    <div class="job-reqs">
+                        ${skillReqHtml}
+                        <span>🗓 Kontrak ${v.contract_days} hari</span>
+                        ${v.gender_req ? `<span>Khusus ${v.gender_req === 'perempuan' ? 'wanita' : 'pria'}</span>` : ''}
+                        ${v.min_age ? `<span>Usia ${v.min_age}+</span>` : ''}
+                        ${kosongText}
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px; flex-wrap: wrap;">
+                        ${!v.can_apply && v.blocked_reason ? `<span style="font-size: 12px; color: var(--text-muted);">${escapeHtml(v.blocked_reason)}</span>` : ''}
+                        ${isPendingSwitch && hasCurrentJob ? `<span style="font-size: 12px; color: #f59e0b;">Kontrak ${escapeHtml(jobsPayload.current_job.profession)} akan berhenti.</span>` : ''}
+                        ${!v.is_current_job && v.skill_met && v.fee_milli === 0 ? `<button type="button" class="btn btn-utility" onclick="snipeSpecificJob('${escapeHtml(v.id)}')">🎯 Sniper</button>` : ''}
+                        <button type="button" class="${btnClass}" ${btnDisabled ? 'disabled' : ''} onclick="applyJobVacancy('${escapeHtml(v.id)}')">${escapeHtml(btnLabel)}</button>
+                    </div>
+                </div>
+            </article>
+        `;
+    }).join('');
+
+    const moreNote = items.length > 150
+        ? `<div style="text-align: center; font-size: 12px; color: var(--text-muted); padding: 8px;">Menampilkan 150 gaji tertinggi dari ${items.length} lowongan. Gunakan pencarian untuk mempersempit hasil.</div>`
+        : '';
+    listEl.innerHTML = rendered + moreNote;
+}
+
+async function applyJobVacancy(jobId) {
+    if (!jobsPayload) return;
+    const vacancy = (jobsPayload.vacancies || []).find(v => v.id === jobId);
+    if (!vacancy || !vacancy.can_apply) return;
+
+    const hasCurrentJob = Boolean(jobsPayload.current_job);
+    if (hasCurrentJob && pendingSwitchJobId !== jobId) {
+        pendingSwitchJobId = jobId;
+        renderJobVacancies();
+        return;
+    }
+
+    applyingJobId = jobId;
+    pendingSwitchJobId = null;
+    renderJobVacancies();
+    try {
+        const res = await apiFetch('/api/jobs/apply', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                kind: vacancy.kind,
+                profession: vacancy.profession,
+                facility_id: vacancy.facility_id,
+                vacancy_id: vacancy.vacancy_id,
+                switch_job: hasCurrentJob
+            })
+        });
+        showToast(res.message || 'Lamaran berhasil dikirim!', 'success');
+        await Promise.all([loadJobVacancies(), refreshDashboard()]);
+    } catch (e) {
+        showToast('Gagal melamar: ' + (e.message || 'Terjadi kesalahan'), 'error');
+    } finally {
+        applyingJobId = null;
+        renderJobVacancies();
+    }
+}

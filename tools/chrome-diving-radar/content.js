@@ -197,7 +197,15 @@
     const autoChain = document.getElementById("ks-auto-chain-check")?.checked ?? true;
     sendAutopilotCommand("start", next, autoOpen, autoChain);
   }
-  let currentFilterMode = "langka"; // "langka" (300 koin), "potensial" (100 & 300 koin), "all" (semua)
+  const ROUTE_MODE_STORAGE_KEY = "ks_diving_route_mode";
+  const VALID_ROUTE_MODES = new Set(["langka", "prioritas_300", "potensial", "all"]);
+  let currentFilterMode = "langka"; // "langka" | "prioritas_300" | "potensial" | "all"
+  try {
+    const savedMode = localStorage.getItem(ROUTE_MODE_STORAGE_KEY);
+    if (savedMode && VALID_ROUTE_MODES.has(savedMode)) {
+      currentFilterMode = savedMode;
+    }
+  } catch (e) {}
 
   let livePlayer = {
     x: LAUT.masuk.x,
@@ -239,6 +247,7 @@
         if (updated) selectedKerang = updated;
       }
 
+      preloadOptimalRoute();
       renderList();
     }
   });
@@ -332,18 +341,76 @@
     sharkDepth = typeof d.depth === "number" ? d.depth : null;
   });
 
-  function sendAutopilotCommand(action, target, autoOpen = true, autoChain = true) {
-    window.dispatchEvent(new CustomEvent("ks_autopilot_command", {
-      detail: { action, target, autoOpen, autoChain }
+  const HUMANIZE_STORAGE_KEY = "ks_diving_humanize";
+  let humanizeEnabled = true;
+  try {
+    if (localStorage.getItem(HUMANIZE_STORAGE_KEY) === "0") {
+      humanizeEnabled = false;
+    }
+  } catch (e) {}
+
+  function setHumanizeEnabled(enabled) {
+    humanizeEnabled = !!enabled;
+    try {
+      localStorage.setItem(HUMANIZE_STORAGE_KEY, humanizeEnabled ? "1" : "0");
+    } catch (e) {}
+    const cb = document.getElementById("ks-humanize-check");
+    if (cb) cb.checked = humanizeEnabled;
+    window.dispatchEvent(new CustomEvent("ks_humanize_toggle", {
+      detail: { enabled: humanizeEnabled }
     }));
   }
 
+  function sendAutopilotCommand(action, target, autoOpen = true, autoChain = true) {
+    window.dispatchEvent(new CustomEvent("ks_autopilot_command", {
+      detail: { action, target, autoOpen, autoChain, humanize: humanizeEnabled }
+    }));
+  }
+
+  const divingRoute = globalThis.__KS_DIVING_ROUTE || null;
+  let preloadedRoute = { mode: currentFilterMode, order: [], rankById: new Map(), totalDist: 0 };
+
+  function preloadOptimalRoute() {
+    const remaining = allKerang.filter(k => !openedSet.has(k.i) && !skippedSet.has(k.i));
+    if (!divingRoute) {
+      preloadedRoute = { mode: currentFilterMode, order: [], rankById: new Map(), totalDist: 0 };
+      return preloadedRoute;
+    }
+    const startPos = { x: livePlayer.x, z: livePlayer.z, d: livePlayer.kedalaman };
+    const plan = divingRoute.planRoute({ mode: currentFilterMode, startPos, shells: remaining });
+    const rankById = new Map();
+    plan.order.forEach((k, idx) => rankById.set(k.i, idx + 1));
+    preloadedRoute = {
+      mode: currentFilterMode,
+      order: plan.order,
+      rankById,
+      totalDist: plan.totalDist
+    };
+    return preloadedRoute;
+  }
+  preloadOptimalRoute();
+
   function getNextNearestShell() {
+    if (preloadedRoute.mode !== currentFilterMode || (preloadedRoute.order.length === 0 && divingRoute)) {
+      preloadOptimalRoute();
+    }
+    for (const planned of preloadedRoute.order) {
+      if (!openedSet.has(planned.i) && !skippedSet.has(planned.i)) {
+        const live = allKerang.find(k => k.i === planned.i);
+        if (live) return live;
+      }
+    }
+
     const px = livePlayer.x, pz = livePlayer.z, pd = livePlayer.kedalaman;
     let candidates = [];
 
     if (currentFilterMode === "langka") {
       candidates = allKerang.filter(k => !openedSet.has(k.i) && !skippedSet.has(k.i) && k.kategori === "langka");
+    } else if (currentFilterMode === "prioritas_300") {
+      const langka = allKerang.filter(k => !openedSet.has(k.i) && !skippedSet.has(k.i) && k.kategori === "langka");
+      candidates = langka.length > 0
+        ? langka
+        : allKerang.filter(k => !openedSet.has(k.i) && !skippedSet.has(k.i) && k.kategori === "biasa");
     } else if (currentFilterMode === "potensial") {
       candidates = allKerang.filter(k => !openedSet.has(k.i) && !skippedSet.has(k.i) && (k.kategori === "biasa" || k.kategori === "langka"));
     } else {
@@ -352,7 +419,7 @@
 
     if (candidates.length === 0) return null;
 
-    candidates.sort((a, b) => Math.hypot(a.x - px, a.z - pz, a.d - pd) - Math.hypot(b.x - px, b.z - pz, b.d - pd));
+    candidates.sort((a, b) => Math.hypot(a.x - px, a.z - pz, a.d - pd) - Math.hypot(b.x - px, a.z - pz, b.d - pd));
     return candidates[0];
   }
 
@@ -361,29 +428,16 @@
   // Tombol "terdekat" di antarmuka tetap memakai getNextNearestShell yang deterministik.
   const human = globalThis.__KS_DIVING_HUMAN ? globalThis.__KS_DIVING_HUMAN.createHuman() : null;
 
-  // Pengaturan urutan kerang di rantai otomatis. true (default) = acak ala manusia
-  // (3 terdekat berbobot + 1-2 kerang dangkal per sesi). false = selalu yang terdekat berurutan
-  // seperti versi awal. Hanya urutan yang berubah; jeda dan gerak ala manusia tetap aktif.
-  const RANDOM_ORDER_KEY = "ks_diving_random_order";
-  let randomOrder = true;
-  try {
-    if (localStorage.getItem(RANDOM_ORDER_KEY) === "0") randomOrder = false;
-  } catch (e) {}
-
-  function setRandomOrder(on) {
-    randomOrder = !!on;
-    try {
-      localStorage.setItem(RANDOM_ORDER_KEY, randomOrder ? "1" : "0");
-    } catch (e) {}
-    console.log("[DivingChain] urutan kerang:", randomOrder ? "acak (humanize)" : "terdekat berurutan");
-  }
-
   function getNextChainShell() {
-    if (!human || !randomOrder) return getNextNearestShell();
+    if (!humanizeEnabled || !human) return getNextNearestShell();
     const open = (k) => !openedSet.has(k.i) && !skippedSet.has(k.i);
     let primary, shallow = [];
     if (currentFilterMode === "langka") {
       primary = allKerang.filter(k => open(k) && k.kategori === "langka");
+      shallow = allKerang.filter(k => open(k) && k.kategori === "kosong");
+    } else if (currentFilterMode === "prioritas_300") {
+      const langka = allKerang.filter(k => open(k) && k.kategori === "langka");
+      primary = langka.length > 0 ? langka : allKerang.filter(k => open(k) && k.kategori === "biasa");
       shallow = allKerang.filter(k => open(k) && k.kategori === "kosong");
     } else if (currentFilterMode === "potensial") {
       primary = allKerang.filter(k => open(k) && (k.kategori === "biasa" || k.kategori === "langka"));
@@ -398,7 +452,7 @@
   }
 
   function chainGapMs() {
-    return human ? human.chainGapMs() : 4200;
+    return (humanizeEnabled && human) ? human.chainGapMs() : 4200;
   }
 
   // Helper: Membuat HUD dapat digeser secara bebas (Free Move / Draggable) dan posisinya disimpan
@@ -992,18 +1046,15 @@
           </div>
         </div>
 
-        <div style="display: flex; gap: 4px; margin-bottom: 6px;">
-          <button id="ks-filter-rare" style="flex: 1.2; padding: 6px 4px; background: #7c3aed; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: bold;">💎 300 Koin</button>
-          <button id="ks-filter-potensial" style="flex: 1; padding: 6px 4px; background: rgba(255,255,255,0.1); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px;">🟡 100 & 300</button>
-          <button id="ks-filter-all" style="flex: 0.8; padding: 6px 4px; background: rgba(255,255,255,0.1); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px;">Semua</button>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 6px;">
+          <button id="ks-filter-rare" style="padding: 6px 4px; background: #7c3aed; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px; font-weight: bold;">💎 Hanya 300</button>
+          <button id="ks-filter-priority" style="padding: 6px 4px; background: rgba(255,255,255,0.1); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px;">👑 Prioritas 300</button>
+          <button id="ks-filter-potensial" style="padding: 6px 4px; background: rgba(255,255,255,0.1); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px;">⚡ Semua Terdekat</button>
+          <button id="ks-filter-all" style="padding: 6px 4px; background: rgba(255,255,255,0.1); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px;">🐚 Semua</button>
         </div>
-
-        <div style="display: flex; align-items: flex-start; gap: 6px; margin-bottom: 8px; padding: 6px 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
-          <input type="checkbox" id="ks-random-order-check" style="cursor: pointer; margin-top: 2px;">
-          <label for="ks-random-order-check" style="font-size: 11px; color: #cbd5e1; cursor: pointer; line-height: 1.3;">
-            🎲 <b>Urutan kerang acak</b> (humanize)
-            <span id="ks-random-order-hint" style="display: block; font-size: 10px; color: #94a3b8;"></span>
-          </label>
+        <div id="ks-route-summary" style="font-size: 10px; color: #38bdf8; background: rgba(56, 189, 248, 0.1); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 4px; padding: 4px 7px; margin-bottom: 6px; display: flex; justify-content: space-between; align-items: center;">
+          <span>🗺️ Rute Optimal: --</span>
+          <span id="ks-route-dist">-- m</span>
         </div>
 
         <!-- Status Kerang Potensi Tersedia -->
@@ -1046,6 +1097,11 @@
         <button id="ks-copy-log-btn" style="width: 100%; padding: 5px; background: rgba(255,255,255,0.08); border: 1px solid rgba(255,255,255,0.2); color: #cbd5e1; border-radius: 6px; cursor: pointer; font-size: 11px; margin-bottom: 8px;">
           📋 Salin Log Diagnostik
         </button>
+
+        <div style="display: flex; align-items: center; gap: 6px; padding: 6px 8px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.12); border-radius: 6px; margin-bottom: 8px;">
+          <input type="checkbox" id="ks-humanize-check" ${humanizeEnabled ? "checked" : ""} style="cursor: pointer;">
+          <label for="ks-humanize-check" style="font-size: 11px; color: #cbd5e1; cursor: pointer;">🧍 <b>Mode Manusia</b> (goyang arah, jeda, acak target)</label>
+        </div>
 
         <div id="ks-target-tracker" style="display: none; background: rgba(0, 229, 255, 0.12); border: 1px dashed #00e5ff; border-radius: 6px; padding: 10px; margin-bottom: 8px;">
           <div style="font-weight: bold; color: #38bdf8; font-size: 12px; margin-bottom: 4px;" id="ks-target-title">Target: Kerang #X</div>
@@ -1091,49 +1147,31 @@
 
     function updateFilterButtons() {
       const btnRare = document.getElementById("ks-filter-rare");
+      const btnPri = document.getElementById("ks-filter-priority");
       const btnPot = document.getElementById("ks-filter-potensial");
       const btnAll = document.getElementById("ks-filter-all");
 
       if (btnRare) btnRare.style.background = currentFilterMode === "langka" ? "#7c3aed" : "rgba(255,255,255,0.1)";
+      if (btnPri) btnPri.style.background = currentFilterMode === "prioritas_300" ? "#d97706" : "rgba(255,255,255,0.1)";
       if (btnPot) btnPot.style.background = currentFilterMode === "potensial" ? "#0284c7" : "rgba(255,255,255,0.1)";
       if (btnAll) btnAll.style.background = currentFilterMode === "all" ? "#475569" : "rgba(255,255,255,0.1)";
     }
 
-    document.getElementById("ks-filter-rare").onclick = () => {
-      currentFilterMode = "langka";
+    function setFilterMode(mode) {
+      currentFilterMode = mode;
+      try {
+        localStorage.setItem(ROUTE_MODE_STORAGE_KEY, mode);
+      } catch (e) {}
+      preloadOptimalRoute();
       updateFilterButtons();
       renderList();
-    };
-
-    document.getElementById("ks-filter-potensial").onclick = () => {
-      currentFilterMode = "potensial";
-      updateFilterButtons();
-      renderList();
-    };
-
-    document.getElementById("ks-filter-all").onclick = () => {
-      currentFilterMode = "all";
-      updateFilterButtons();
-      renderList();
-    };
-
-    const orderCheck = document.getElementById("ks-random-order-check");
-    const orderHint = document.getElementById("ks-random-order-hint");
-    const showOrder = () => {
-      if (orderCheck) orderCheck.checked = randomOrder;
-      if (orderHint) {
-        orderHint.textContent = randomOrder
-          ? "Acak di antara 3 terdekat + 1-2 kerang dangkal per sesi"
-          : "Selalu ke kerang terdekat, berurutan";
-      }
-    };
-    showOrder();
-    if (orderCheck) {
-      orderCheck.onchange = () => {
-        setRandomOrder(orderCheck.checked);
-        showOrder();
-      };
     }
+
+    document.getElementById("ks-filter-rare").onclick = () => setFilterMode("langka");
+    const btnPriority = document.getElementById("ks-filter-priority");
+    if (btnPriority) btnPriority.onclick = () => setFilterMode("prioritas_300");
+    document.getElementById("ks-filter-potensial").onclick = () => setFilterMode("potensial");
+    document.getElementById("ks-filter-all").onclick = () => setFilterMode("all");
 
     document.getElementById("ks-pick-nearest").onclick = () => {
       const next = getNextNearestShell();
@@ -1188,8 +1226,17 @@
         if (confirm("Reset semua tanda kerang yang sudah dibuka untuk sesi baru?")) {
           openedSet.clear();
           saveOpened();
+          preloadOptimalRoute();
           renderList();
         }
+      };
+    }
+
+    const humanizeCheck = document.getElementById("ks-humanize-check");
+    if (humanizeCheck) {
+      humanizeCheck.checked = humanizeEnabled;
+      humanizeCheck.onchange = () => {
+        setHumanizeEnabled(!!humanizeCheck.checked);
       };
     }
 
@@ -1268,13 +1315,29 @@
     if (elOpened) elOpened.textContent = `Sudah dibuka: ${openedSet.size} / ${allKerang.length} kerang`;
 
     const btnRare = document.getElementById("ks-filter-rare");
-    if (btnRare) btnRare.innerHTML = `💎 300 Koin (<b>${stats.langkaAvailable}</b>)`;
+    if (btnRare) btnRare.innerHTML = `💎 Hanya 300 (<b>${stats.langkaAvailable}</b>)`;
+
+    const btnPri = document.getElementById("ks-filter-priority");
+    if (btnPri) btnPri.innerHTML = `👑 Prioritas 300 (<b>${stats.availablePotensi}</b>)`;
 
     const btnPot = document.getElementById("ks-filter-potensial");
-    if (btnPot) btnPot.innerHTML = `🟡 100 & 300 (<b>${stats.availablePotensi}</b>)`;
+    if (btnPot) btnPot.innerHTML = `⚡ Semua Terdekat (<b>${stats.availablePotensi}</b>)`;
 
     const btnAll = document.getElementById("ks-filter-all");
-    if (btnAll) btnAll.innerHTML = `Semua (<b>${stats.totalAvailable}</b>)`;
+    if (btnAll) btnAll.innerHTML = `🐚 Semua (<b>${stats.totalAvailable}</b>)`;
+
+    const routeSummary = document.getElementById("ks-route-summary");
+    if (routeSummary) {
+      const activeCount = preloadedRoute.order.filter(k => !openedSet.has(k.i) && !skippedSet.has(k.i)).length;
+      const modeLabel = {
+        langka: "Hanya 300",
+        prioritas_300: "Prioritas 300",
+        potensial: "Semua Terdekat",
+        all: "Semua"
+      }[currentFilterMode] || currentFilterMode;
+      const distStr = Math.round(preloadedRoute.totalDist || 0);
+      routeSummary.innerHTML = `<span>🗺️ Rute ${modeLabel}: <b>${activeCount}</b> kerang</span><span>~${distStr}m</span>`;
+    }
   }
 
   function renderList() {
@@ -1290,7 +1353,9 @@
 
     let filtered = allKerang.filter(k => {
       if (currentFilterMode === "langka") return k.kategori === "langka";
-      if (currentFilterMode === "potensial") return k.kategori === "biasa" || k.kategori === "langka";
+      if (currentFilterMode === "prioritas_300" || currentFilterMode === "potensial") {
+        return k.kategori === "biasa" || k.kategori === "langka";
+      }
       return true;
     });
 
@@ -1298,6 +1363,11 @@
       let openedA = openedSet.has(a.i) ? 1 : 0;
       let openedB = openedSet.has(b.i) ? 1 : 0;
       if (openedA !== openedB) return openedA - openedB;
+      const rankA = preloadedRoute.rankById.get(a.i);
+      const rankB = preloadedRoute.rankById.get(b.i);
+      if (rankA !== undefined && rankB !== undefined) return rankA - rankB;
+      if (rankA !== undefined) return -1;
+      if (rankB !== undefined) return 1;
       let distA = Math.hypot(a.x - px, a.z - pz, a.d - pd);
       let distB = Math.hypot(b.x - px, b.z - pz, b.d - pd);
       return distA - distB;
@@ -1307,6 +1377,8 @@
       const isOpened = openedSet.has(k.i);
       const isSelected = selectedKerang && selectedKerang.i === k.i;
       const dist = Math.hypot(k.x - px, k.z - pz, k.d - pd).toFixed(1);
+      const rank = !isOpened ? preloadedRoute.rankById.get(k.i) : null;
+      const rankBadge = rank ? `<span style="background: rgba(56,189,248,0.2); color: #38bdf8; padding: 1px 4px; border-radius: 3px; font-size: 10px; margin-right: 4px;">#${rank}</span>` : "";
 
       const item = document.createElement("div");
       item.id = `ks-item-${k.i}`;
@@ -1322,7 +1394,7 @@
 
       item.innerHTML = `
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px;">
-          <span style="font-weight: bold; color: ${isOpened ? "#94a3b8" : k.badgeColor};">Kerang #${k.i}</span>
+          <span style="font-weight: bold; color: ${isOpened ? "#94a3b8" : k.badgeColor};">${rankBadge}Kerang #${k.i}</span>
           <span class="ks-dist-val" style="font-size: 11px; color: #38bdf8; font-weight: bold;">📍 ${dist}m</span>
         </div>
         <div style="font-size: 11px; color: #cbd5e1;">${k.labelKategori}</div>

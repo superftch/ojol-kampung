@@ -22,6 +22,7 @@
       ],
       "js": [
         "diving-human.js",
+        "diving-route.js",
         "content.js",
         "mancing.js",
         "ojol.js",

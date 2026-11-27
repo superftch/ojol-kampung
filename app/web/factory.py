@@ -15,6 +15,7 @@ from app.modules.admin import router as admin
 from app.modules.auth import import_router as cookie_import
 from app.modules.auth import router as auth
 from app.modules.captcha import router as bank_angka
+from app.modules.jobs import router as jobs
 from app.modules.ledger.repository import Journal
 from app.modules.notifications import router as notifications
 from app.modules.worker import router as control
@@ -56,6 +57,7 @@ def register_web_routes(app: FastAPI, settings, manager=None, service=None) -> N
         notifications,
         admin,
         bank_angka,
+        jobs,
     ):
         app.include_router(router_module.router)
 

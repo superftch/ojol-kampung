@@ -6,10 +6,12 @@ import asyncio
 import contextlib
 import time
 from collections.abc import Awaitable, Callable
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from app.core.locks import running
 from app.core.storage import status_record
+from app.modules.jobs.sniper import load_sniper_config, load_sniper_state, run_job_sniper_once
 from app.modules.notifications.service import queue_error, queue_notice
 from app.modules.worker.capacity import WorkerCapacityError, worker_capacity_error
 from app.modules.worker.maintenance import held_window
@@ -27,6 +29,7 @@ class FleetSupervisor:
         self.closing = False
         self.tasks: list[asyncio.Task[None]] = []
         self._last_presence_mono = 0.0
+        self._sniper_next_check_ts: dict[str, float] = {}
 
     def account_running(self, account) -> bool:
         service = self.fleet.services.get(account["id"])
@@ -135,10 +138,48 @@ class FleetSupervisor:
             with contextlib.suppress(Exception):
                 await service.fetch_online_status()
 
+    async def run_job_sniper_cycle(self) -> None:
+        """Run scheduled Job Sniper checks for accounts with Job Sniper enabled."""
+        if self.closing or self.fleet.settings.env == "testing":
+            return
+        for row in self.fleet.registry.list():
+            if not self.fleet.registry.allowed(row["owner"]):
+                continue
+            service = self.fleet.service(row["id"])
+            directory = service.settings.runtime_dir
+            if not (directory / "http-session.json").is_file():
+                continue
+            cfg = load_sniper_config(directory)
+            if not cfg.get("enabled"):
+                continue
+            now_ts = time.time()
+            next_ts = self._sniper_next_check_ts.get(row["id"])
+            if next_ts is None:
+                st = load_sniper_state(directory)
+                next_iso = st.get("next_check_at")
+                if next_iso:
+                    with contextlib.suppress(ValueError, TypeError):
+                        next_ts = datetime.fromisoformat(
+                            str(next_iso).replace("Z", "+00:00")
+                        ).timestamp()
+                        self._sniper_next_check_ts[row["id"]] = next_ts
+            if next_ts is not None and now_ts < next_ts:
+                continue
+            with contextlib.suppress(Exception):
+                res = await run_job_sniper_once(directory, settings=service.settings)
+                if res.get("next_check_epoch") is not None:
+                    self._sniper_next_check_ts[row["id"]] = float(res["next_check_epoch"])
+                elif not res.get("checked"):
+                    # Outside active schedule window: re-evaluate every 60s without hitting game API.
+                    self._sniper_next_check_ts[row["id"]] = now_ts + 60.0
+                else:
+                    self._sniper_next_check_ts.pop(row["id"], None)
+
     async def supervise(self) -> None:
         while not self.closing:
             await self.resume_workers()
             await self.maintain_online_presence()
+            await self.run_job_sniper_cycle()
             if self.fleet.tunnel.take_exit() is not None:
                 queue_error(
                     self.fleet.control_settings,
