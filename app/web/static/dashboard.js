@@ -2320,20 +2320,21 @@ function switchJobsTab(tabKey) {
     renderJobVacancies();
 }
 
-async function loadJobVacancies() {
+async function loadJobVacancies(forceRefresh = false) {
     const listEl = document.getElementById('jobsList');
     const summaryEl = document.getElementById('jobsAccountSummary');
     const refreshBtn = document.getElementById('btnRefreshJobs');
     if (refreshBtn) {
         refreshBtn.disabled = true;
-        refreshBtn.textContent = 'Memuat...';
+        refreshBtn.textContent = forceRefresh ? 'Menyegarkan...' : 'Memuat...';
     }
     if (listEl && !jobsPayload) {
-        listEl.innerHTML = '<div class="card" style="text-align: center; color: var(--text-muted); padding: 32px;">Mengambil data lowongan dari server game...</div>';
+        listEl.innerHTML = '<div class="card" style="text-align: center; color: var(--text-muted); padding: 32px;">Mengambil data lowongan...</div>';
     }
     try {
+        const url = forceRefresh ? '/api/jobs/vacancies?refresh=1' : '/api/jobs/vacancies';
         const [vacanciesRes, sniperRes] = await Promise.all([
-            apiFetch('/api/jobs/vacancies', { timeoutMs: 25000 }),
+            apiFetch(url, { timeoutMs: 25000 }),
             apiFetch('/api/jobs/sniper', { timeoutMs: 10000 }).catch(() => null),
         ]);
         jobsPayload = vacanciesRes;
@@ -2545,10 +2546,13 @@ function renderJobsAccountSummary(data) {
         const bonusTxt = sk.bonus_bps > 0 ? ` (+${formatBpsPct(sk.bonus_bps)}%)` : '';
         return `<span class="${cls}">${escapeHtml(sk.icon)} ${escapeHtml(sk.name)} ⭐${sk.level}${bonusTxt}</span>`;
     }).join('');
+    const cacheNote = data.cached
+        ? ` · <span style="color: var(--text-muted);">Cache (${Number(data.cache_age_seconds || 0)}d lalu)</span>`
+        : ' · <span style="color: #10b981;">Live</span>';
     el.innerHTML = `
         <div class="jobs-summary-top">
             <div style="font-size: 13px;">Pekerjaan aktif: ${curText}</div>
-            <div style="font-size: 12px; color: var(--text-muted);">${ekText} · Saldo: <strong>${formatKoinMilli(data.balance_milli)} koin</strong></div>
+            <div style="font-size: 12px; color: var(--text-muted);">${ekText} · Saldo: <strong>${formatKoinMilli(data.balance_milli)} koin</strong>${cacheNote}</div>
         </div>
         <div class="jobs-skill-chips">${skillsHtml || '<span style="font-size: 12px; color: var(--text-muted);">Data skill belum tersedia.</span>'}</div>
     `;

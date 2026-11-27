@@ -14,7 +14,11 @@ from app.core.exceptions import HttpCoreError
 from app.core.models import now
 from app.core.storage import write_private
 from app.integrations.kampung.http_api import OjolHttpApi
-from app.modules.jobs.service import build_job_vacancies_payload
+from app.modules.jobs.service import (
+    build_job_vacancies_payload,
+    invalidate_vacancies_cache,
+    save_vacancies_cache,
+)
 from app.modules.notifications.service import queue_notice
 
 logger = logging.getLogger(__name__)
@@ -290,6 +294,7 @@ async def run_job_sniper_once(
         checks_count = int(state.get("checks_count") or 0) + 1
 
         if best is None:
+            save_vacancies_cache(directory, payload)
             current_job = payload.get("current_job")
             if cfg.get("mode", "wait_kosong") == "wait_kosong":
                 if next_kosong_at and next_kosong_epoch is not None:
@@ -366,6 +371,7 @@ async def run_job_sniper_once(
 
         with suppress(HttpCoreError):
             await client.fetch_game_me()
+        invalidate_vacancies_cache(directory)
 
         net_milli = int((best.get("salary") or {}).get("net_milli") or 0)
         net_koin = f"{net_milli / 1000:g}"

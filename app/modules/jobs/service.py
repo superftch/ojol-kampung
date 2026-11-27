@@ -2,8 +2,73 @@
 
 from __future__ import annotations
 
+import json
 import math
+import time
+from pathlib import Path
 from typing import Any
+
+from app.core.models import now
+from app.core.storage import write_private
+
+VACANCIES_CACHE_FILE = "jobs-vacancies-cache.json"
+VACANCIES_CACHE_TTL_SECONDS = 180
+
+
+def load_vacancies_cache(
+    directory: Path, *, ttl_seconds: int = VACANCIES_CACHE_TTL_SECONDS
+) -> dict[str, Any] | None:
+    """Return cached vacancies payload if still within TTL, else None."""
+    path = directory / VACANCIES_CACHE_FILE
+    try:
+        record = json.loads(path.read_text())
+    except (FileNotFoundError, OSError, ValueError):
+        return None
+    if not isinstance(record, dict):
+        return None
+    payload = record.get("payload")
+    cached_epoch = record.get("cached_at_epoch")
+    if not isinstance(payload, dict) or not isinstance(cached_epoch, (int, float)):
+        return None
+    age = time.time() - float(cached_epoch)
+    if age < 0 or age > ttl_seconds:
+        return None
+    return {
+        **payload,
+        "cached": True,
+        "cached_at": record.get("cached_at"),
+        "cache_age_seconds": int(age),
+        "cache_ttl_seconds": ttl_seconds,
+    }
+
+
+def save_vacancies_cache(
+    directory: Path,
+    payload: dict[str, Any],
+    *,
+    ttl_seconds: int = VACANCIES_CACHE_TTL_SECONDS,
+) -> dict[str, Any]:
+    """Persist normalized vacancies payload to account cache."""
+    cached_at = now().isoformat()
+    record = {
+        "cached_at_epoch": time.time(),
+        "cached_at": cached_at,
+        "payload": payload,
+    }
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    write_private(directory / VACANCIES_CACHE_FILE, record)
+    return {
+        **payload,
+        "cached": False,
+        "cached_at": cached_at,
+        "cache_age_seconds": 0,
+        "cache_ttl_seconds": ttl_seconds,
+    }
+
+
+def invalidate_vacancies_cache(directory: Path) -> None:
+    """Remove cached vacancies payload so the next view fetches fresh data."""
+    (directory / VACANCIES_CACHE_FILE).unlink(missing_ok=True)
 
 
 def _as_int(value: Any, default: int = 0) -> int:

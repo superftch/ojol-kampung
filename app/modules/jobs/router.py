@@ -9,7 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from app.core.exceptions import HttpCoreError
 from app.integrations.kampung.http_api import OjolHttpApi
 from app.modules.jobs.schemas import JobApplyRequest, JobSniperConfigRequest
-from app.modules.jobs.service import build_job_vacancies_payload
+from app.modules.jobs.service import (
+    build_job_vacancies_payload,
+    invalidate_vacancies_cache,
+    load_vacancies_cache,
+    save_vacancies_cache,
+)
 from app.modules.jobs.sniper import (
     load_sniper_config,
     load_sniper_state,
@@ -45,10 +50,16 @@ async def get_job_vacancies(
     user: Annotated[dict, Depends(require_user)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    """Fetch live job vacancies and skill/salary breakdown for the selected account."""
+    """Fetch job vacancies (cached per account; pass ?refresh=1 to force live fetch)."""
     cur_service = _require_account_service(ctx, user, request)
+    directory = cur_service.settings.runtime_dir
+    force_refresh = request.query_params.get("refresh", "").lower() in {"1", "true", "yes"}
+    if not force_refresh:
+        cached = load_vacancies_cache(directory)
+        if cached is not None:
+            return cached
     try:
-        async with asyncio.timeout(15), OjolHttpApi(cur_service.settings.runtime_dir) as api:
+        async with asyncio.timeout(15), OjolHttpApi(directory) as api:
             me = await api.fetch_game_me()
             biz_items: list[dict] | None = None
             with suppress(HttpCoreError):
@@ -58,7 +69,8 @@ async def get_job_vacancies(
     except TimeoutError:
         raise HTTPException(504, "Permintaan daftar lowongan ke server game timeout.") from None
 
-    return build_job_vacancies_payload(me, biz_items=biz_items)
+    payload = build_job_vacancies_payload(me, biz_items=biz_items)
+    return save_vacancies_cache(directory, payload)
 
 
 @router.post("/api/jobs/apply")
@@ -91,6 +103,7 @@ async def apply_job_vacancy(
                 )
             with suppress(HttpCoreError):
                 await api.fetch_game_me()
+        invalidate_vacancies_cache(cur_service.settings.runtime_dir)
     except HttpCoreError as exc:
         raise HTTPException(_http_status_for_error(exc), str(exc)) from None
     except TimeoutError:

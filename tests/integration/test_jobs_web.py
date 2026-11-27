@@ -108,13 +108,26 @@ def test_jobs_web_routes_and_dashboard_tab(settings, monkeypatch):
         assert "Lowongan Pekerjaan" in dash.text
         assert "Job Sniper" in dash.text
 
-        # GET vacancies
+        # GET vacancies (first call fetches live, second call uses cache, ?refresh=1 bypasses cache)
+        fetch_me_mock = OjolHttpApi.fetch_game_me
         res = client.get("/api/jobs/vacancies")
         assert res.status_code == 200
         data = res.json()
+        assert data["cached"] is False
         assert data["summary"]["total_count"] == 2
         assert data["vacancies"][0]["profession"] == "Dokter"
         assert data["vacancies"][0]["salary"]["net_milli"] == 14500
+        assert fetch_me_mock.await_count == 1
+
+        res_cached = client.get("/api/jobs/vacancies")
+        assert res_cached.status_code == 200
+        assert res_cached.json()["cached"] is True
+        assert fetch_me_mock.await_count == 1
+
+        res_refresh = client.get("/api/jobs/vacancies?refresh=1")
+        assert res_refresh.status_code == 200
+        assert res_refresh.json()["cached"] is False
+        assert fetch_me_mock.await_count == 2
 
         # Apply facility job
         apply_res = client.post(
