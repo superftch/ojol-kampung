@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 const dir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const read = (f) => fs.readFileSync(path.join(dir, f), "utf-8");
 
-function makeEnv() {
+function makeEnv(store = {}) {
   let clock = Date.UTC(2026, 10, 26, 3, 0, 0);
   let seq = 0;
   const timers = [];
@@ -71,7 +71,7 @@ function makeEnv() {
     Date: FakeDate,
     CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
     chrome: { runtime: { getURL: (f) => "chrome-extension://x/" + f } },
-    localStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+    localStorage: { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = String(v); }, removeItem: (k) => { delete store[k]; } },
     confirm: () => true,
     innerWidth: 1280,
     innerHeight: 800,
@@ -127,7 +127,7 @@ function makeEnv() {
   advance(900); // initAll dijadwalkan 800 ms setelah muat
   frame();
 
-  return { win, ids, appended, logs, advance, frame, send, commands, get: (id) => ids.get(id) };
+  return { win, ids, appended, logs, advance, frame, send, commands, store, get: (id) => ids.get(id) };
 }
 
 test("HUD diving: tombol Auto Jalan / STOP", async (t) => {
@@ -252,6 +252,53 @@ test("HUD diving: tombol Auto Jalan / STOP", async (t) => {
     env.send("ks_autopilot_shark", { mode: "clear" });
     env.frame();
     assert.doesNotMatch(title.textContent, /hiu/i);
+  });
+
+  // Kerang yang dipilih rantai otomatis setelah kerang pertama terbuka (filter "Semua").
+  function chainPick(env) {
+    const target = startRun(env);
+    env.send("ks_autopilot_status", { active: false, reason: "arrived", target });
+    env.send("ks_shell_opened_auto", { kerang: target, autoChain: true, ok: true });
+    env.advance(9000);
+    const cmd = env.commands.at(-1);
+    assert.equal(cmd.action, "start");
+    return cmd.target.i;
+  }
+
+  await t.test("urutan kerang: default acak, kotak centang tercentang", () => {
+    const env = makeEnv();
+    assert.equal(env.get("ks-random-order-check").checked, true);
+    assert.match(env.get("ks-random-order-hint").textContent, /Acak/);
+    const picks = new Set();
+    for (let n = 0; n < 40; n++) picks.add(chainPick(makeEnv()));
+    assert.ok(picks.size >= 2, "mode acak harus memberi lebih dari satu pilihan, dapat: " + [...picks].join(","));
+  });
+
+  await t.test("urutan kerang: dimatikan = selalu terdekat, hasil sama tiap kali", () => {
+    const picks = new Set();
+    for (let n = 0; n < 25; n++) picks.add(chainPick(makeEnv({ ks_diving_random_order: "0" })));
+    assert.equal(picks.size, 1, "terdekat berurutan harus deterministik, dapat: " + [...picks].join(","));
+  });
+
+  await t.test("urutan kerang: mengubah kotak centang tersimpan dan berlaku seketika", () => {
+    const env = makeEnv();
+    const box = env.get("ks-random-order-check");
+    box.checked = false;
+    box.onchange();
+    assert.equal(env.store.ks_diving_random_order, "0");
+    assert.match(env.get("ks-random-order-hint").textContent, /terdekat/);
+    const first = chainPick(env);
+    const picks = new Set([first]);
+    for (let n = 0; n < 10; n++) picks.add(chainPick(makeEnv({ ks_diving_random_order: env.store.ks_diving_random_order })));
+    assert.equal(picks.size, 1);
+    box.checked = true;
+    box.onchange();
+    assert.equal(env.store.ks_diving_random_order, "1");
+  });
+
+  await t.test("urutan kerang: pengaturan tersimpan dibaca saat dimuat", () => {
+    assert.equal(makeEnv({ ks_diving_random_order: "0" }).get("ks-random-order-check").checked, false);
+    assert.equal(makeEnv({ ks_diving_random_order: "1" }).get("ks-random-order-check").checked, true);
   });
 
   await t.test("tombol Salin Log memanggil dump dan menyalin hasilnya", async () => {

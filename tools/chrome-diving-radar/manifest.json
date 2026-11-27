@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "KampungSebelah - Diving, Mancing, Ojol, TPU & Berburu",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "description": "Radar & Auto-Pilot Diving Laut, Otomatisasi Mancing Pro, Auto-Ojol, TPU Pusaka Mbah Rukmi, serta Radar & Sniper Balistik Berburu untuk Kampung Sebelah.",
   "permissions": [
     "storage"

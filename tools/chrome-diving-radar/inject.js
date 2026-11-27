@@ -566,7 +566,7 @@
   }
 
   function dumpText() {
-    const head = `KS Diving log | ${new Date().toISOString()} | ext 2.4.0 | ${location.href}\n`;
+    const head = `KS Diving log | ${new Date().toISOString()} | ext 2.6.0 | ${location.href}\n`;
     return head + DLOG.buf.map(e => JSON.stringify(e)).join("\n");
   }
 

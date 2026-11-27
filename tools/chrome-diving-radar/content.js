@@ -361,8 +361,25 @@
   // Tombol "terdekat" di antarmuka tetap memakai getNextNearestShell yang deterministik.
   const human = globalThis.__KS_DIVING_HUMAN ? globalThis.__KS_DIVING_HUMAN.createHuman() : null;
 
+  // Pengaturan urutan kerang di rantai otomatis. true (default) = acak ala manusia
+  // (3 terdekat berbobot + 1-2 kerang dangkal per sesi). false = selalu yang terdekat berurutan
+  // seperti versi awal. Hanya urutan yang berubah; jeda dan gerak ala manusia tetap aktif.
+  const RANDOM_ORDER_KEY = "ks_diving_random_order";
+  let randomOrder = true;
+  try {
+    if (localStorage.getItem(RANDOM_ORDER_KEY) === "0") randomOrder = false;
+  } catch (e) {}
+
+  function setRandomOrder(on) {
+    randomOrder = !!on;
+    try {
+      localStorage.setItem(RANDOM_ORDER_KEY, randomOrder ? "1" : "0");
+    } catch (e) {}
+    console.log("[DivingChain] urutan kerang:", randomOrder ? "acak (humanize)" : "terdekat berurutan");
+  }
+
   function getNextChainShell() {
-    if (!human) return getNextNearestShell();
+    if (!human || !randomOrder) return getNextNearestShell();
     const open = (k) => !openedSet.has(k.i) && !skippedSet.has(k.i);
     let primary, shallow = [];
     if (currentFilterMode === "langka") {
@@ -981,6 +998,14 @@
           <button id="ks-filter-all" style="flex: 0.8; padding: 6px 4px; background: rgba(255,255,255,0.1); color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 11px;">Semua</button>
         </div>
 
+        <div style="display: flex; align-items: flex-start; gap: 6px; margin-bottom: 8px; padding: 6px 8px; background: rgba(255,255,255,0.05); border-radius: 6px;">
+          <input type="checkbox" id="ks-random-order-check" style="cursor: pointer; margin-top: 2px;">
+          <label for="ks-random-order-check" style="font-size: 11px; color: #cbd5e1; cursor: pointer; line-height: 1.3;">
+            🎲 <b>Urutan kerang acak</b> (humanize)
+            <span id="ks-random-order-hint" style="display: block; font-size: 10px; color: #94a3b8;"></span>
+          </label>
+        </div>
+
         <!-- Status Kerang Potensi Tersedia -->
         <div style="background: rgba(15, 23, 42, 0.75); border: 1px solid rgba(56, 189, 248, 0.3); border-radius: 6px; padding: 8px; margin-bottom: 8px;">
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
@@ -1091,6 +1116,24 @@
       updateFilterButtons();
       renderList();
     };
+
+    const orderCheck = document.getElementById("ks-random-order-check");
+    const orderHint = document.getElementById("ks-random-order-hint");
+    const showOrder = () => {
+      if (orderCheck) orderCheck.checked = randomOrder;
+      if (orderHint) {
+        orderHint.textContent = randomOrder
+          ? "Acak di antara 3 terdekat + 1-2 kerang dangkal per sesi"
+          : "Selalu ke kerang terdekat, berurutan";
+      }
+    };
+    showOrder();
+    if (orderCheck) {
+      orderCheck.onchange = () => {
+        setRandomOrder(orderCheck.checked);
+        showOrder();
+      };
+    }
 
     document.getElementById("ks-pick-nearest").onclick = () => {
       const next = getNextNearestShell();
