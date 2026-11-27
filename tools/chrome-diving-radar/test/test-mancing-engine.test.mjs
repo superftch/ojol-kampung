@@ -121,20 +121,29 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     assert.equal(ctrl.reelCoolingDown, false);
   });
 
-  await t.test("Long-hold hysteresis re-presses if DOM drops data-tahan mid-hold, and respects Zero-Loss OFF ceiling (84%)", () => {
-    const ctrl = new MockMancingReelController(false, true);
-    ctrl.isPulling = true;
-    ctrl.reelCoolingDown = false;
+  await t.test("Long-hold hysteresis randomizes pull (29-45%) & release (70-85%) in Natural mode with red-zone anti-snap guard", () => {
+    const minSamples = [];
+    const maxSamples = [];
+    for (let i = 0; i < 120; i++) {
+      const rMin = humanJitter(29, 45);
+      const rMax = humanJitter(70, 85);
+      assert.ok(rMin >= 29 && rMin <= 45, `pull target ${rMin} out of [29, 45]`);
+      assert.ok(rMax >= 70 && rMax <= 85, `release target ${rMax} out of [70, 85]`);
+      minSamples.push(rMin);
+      maxSamples.push(rMax);
+    }
+    assert.ok(new Set(minSamples).size >= 7, "pull targets must vary naturally");
+    assert.ok(new Set(maxSamples).size >= 7, "release targets must vary naturally");
 
-    // Mid-hold at 50%, DOM dropped data-tahan -> re-presses without spamming
-    assert.equal(ctrl.evaluateTension(50, false, false), "PULL");
-    assert.equal(ctrl.isPulling, true);
-
-    // Zero-Loss OFF uses 84% ceiling
-    const loose = new MockMancingReelController(false, false);
-    assert.equal(loose.reelTargetMax, 84);
-    assert.equal(loose.evaluateTension(82, true, true), "PULL");
-    assert.equal(loose.evaluateTension(84, false, true), "RELEASE");
+    // Red-zone anti-snap guard: releases if red persists >= 160ms (well below 600ms snap) or >= 85%
+    function shouldRelease({ tension, reelTargetMax, isRed, redElapsedMs }) {
+      const redGuard = isRed && (tension >= 85 || redElapsedMs >= 160);
+      return tension >= reelTargetMax || redGuard;
+    }
+    assert.equal(shouldRelease({ tension: 81, reelTargetMax: 84, isRed: true, redElapsedMs: 40 }), false);
+    assert.equal(shouldRelease({ tension: 83, reelTargetMax: 84, isRed: true, redElapsedMs: 160 }), true);
+    assert.equal(shouldRelease({ tension: 85, reelTargetMax: 85, isRed: true, redElapsedMs: 0 }), true);
+    assert.equal(shouldRelease({ tension: 72, reelTargetMax: 72, isRed: false, redElapsedMs: 0 }), true);
   });
 
   await t.test("Strike initiates upon sambar phase with human jitter range", () => {
@@ -1005,15 +1014,15 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
       { action: "BUY_NEW", equip: "umpan-cumi" }
     );
 
-    // Batching: collect min(10, sisaSlot) umpan-ikan before switching and sailing to >=30m
+    // Batching: collect min(5, sisaSlot) umpan-ikan before switching and sailing to >=30m
     function shouldSwitchToUmpanIkan({ strategiUmpan, equipped, umpanIkanStok, sisaSlot }) {
       if (strategiUmpan !== "ternak-ikan" || equipped !== "umpan-cacing") return false;
-      const batchTarget = Math.min(10, Math.max(1, sisaSlot));
+      const batchTarget = Math.min(5, Math.max(1, sisaSlot));
       return umpanIkanStok >= batchTarget;
     }
 
-    assert.equal(shouldSwitchToUmpanIkan({ strategiUmpan: "ternak-ikan", equipped: "umpan-cacing", umpanIkanStok: 5, sisaSlot: 20 }), false);
-    assert.equal(shouldSwitchToUmpanIkan({ strategiUmpan: "ternak-ikan", equipped: "umpan-cacing", umpanIkanStok: 10, sisaSlot: 20 }), true);
+    assert.equal(shouldSwitchToUmpanIkan({ strategiUmpan: "ternak-ikan", equipped: "umpan-cacing", umpanIkanStok: 2, sisaSlot: 20 }), false);
+    assert.equal(shouldSwitchToUmpanIkan({ strategiUmpan: "ternak-ikan", equipped: "umpan-cacing", umpanIkanStok: 5, sisaSlot: 20 }), true);
     assert.equal(shouldSwitchToUmpanIkan({ strategiUmpan: "ternak-ikan", equipped: "umpan-cacing", umpanIkanStok: 3, sisaSlot: 3 }), true);
 
     // Area ranking: Tier 4 (5-bar >= 0.78 + meetsDepth) beats Tier 3 (Ramai >= 0.45 + meetsDepth)
@@ -1056,9 +1065,28 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     assert.equal(decideTernakLoot({ isSmallFish: true, sellPrice: 0.42, sisaTas: 15, hasUmpanIkanBtn: true }), "JADIKAN_UMPAN");
   });
 
-  await t.test("Bait-loss accounting, deduplication, consecutive trash, and makan profit correction", () => {
+  await t.test("Bait-loss accounting normalizes cacing/udang/cumi/ikan costs, deduplicates, and corrects makan profit", () => {
     const roundCoin = (v) => Math.round((Number(v) || 0) * 100) / 100;
-    const costOf = (t) => (t === "umpan-ikan" ? 0 : t === "umpan-cumi" ? 0.5 : t === "umpan-udang" ? 0.3 : 0.2);
+    const normalizeUmpan = (raw) => {
+      const s = String(raw || "").toLowerCase().trim();
+      if (s.includes("ikan")) return "umpan-ikan";
+      if (s.includes("cacing")) return "umpan-cacing";
+      if (s.includes("udang")) return "umpan-udang";
+      if (s.includes("cumi")) return "umpan-cumi";
+      return "";
+    };
+    const costOf = (t) => {
+      const norm = normalizeUmpan(t);
+      return norm === "umpan-ikan" ? 0 : norm === "umpan-cumi" ? 0.5 : norm === "umpan-udang" ? 0.3 : norm === "umpan-cacing" ? 0.2 : 0.5;
+    };
+
+    // Short API bait names & labels map to exact coin costs (not hardcoded 0.50 Cumi!)
+    assert.equal(costOf("cacing"), 0.2);
+    assert.equal(costOf("Cacing laut"), 0.2);
+    assert.equal(costOf("umpan-cacing"), 0.2);
+    assert.equal(costOf("udang"), 0.3);
+    assert.equal(costOf("cumi"), 0.5);
+    assert.equal(costOf("ikan"), 0.0);
 
     const stats = { catches: 0, losses: 0, totalLoss: 0, totalProfit: 0, history: [] };
     let lastLossKey = null;
@@ -1077,11 +1105,11 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
       return true;
     }
 
-    // First API loss recorded (-0.50), phase-transition fallback 450ms later deduplicated
-    assert.equal(recordLoss({ id: "c1", reason: "dimakan", umpan: "umpan-cumi" }, 10000), true);
-    assert.equal(recordLoss({ id: "", reason: "dimakan", umpan: "umpan-cumi" }, 10450), false);
+    // Cacing laut dimakan deducts -0.20 (not -0.50); fallback 450ms later deduplicated
+    assert.equal(recordLoss({ id: "c1", reason: "dimakan", umpan: "cacing" }, 10000), true);
+    assert.equal(recordLoss({ id: "", reason: "dimakan", umpan: "cacing" }, 10450), false);
     assert.equal(stats.losses, 1);
-    assert.equal(stats.totalProfit, -0.5);
+    assert.equal(stats.totalProfit, -0.2);
 
     // Consecutive identical trash catches both deduct baitCost once lastCatchId resets after loot click
     let lastCatchId = null;
@@ -1095,15 +1123,15 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
       lastCatchId = null; // reset on click
     }
     assert.equal(stats.losses, 3);
-    assert.equal(stats.totalLoss, 1.5);
-    assert.equal(stats.totalProfit, -1.5);
+    assert.equal(stats.totalLoss, 1.2);
+    assert.equal(stats.totalProfit, -1.2);
 
     // Eating a caught fish ("makan") corrects initial +sellPrice - baitCost down to -baitCost
     const sellPrice = 0.85;
     const baitCost = 0.50;
     stats.totalProfit = roundCoin(stats.totalProfit + (sellPrice - baitCost)); // +0.35 tentative
     stats.totalProfit = roundCoin(stats.totalProfit - sellPrice); // makan correction -> -0.50 net
-    assert.equal(stats.totalProfit, -2.0);
+    assert.equal(stats.totalProfit, -1.7);
   });
 
   await t.test("Last-bait (1 -> 0) grace window waits before stopping or switching owned bait", () => {
@@ -1143,23 +1171,165 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     );
   });
 
-  await t.test("mancing.js defaults keep Auto Beli Umpan, Auto Upgrade, and Selektif Lepas OFF & opt-in", () => {
+  await t.test("mancing.js separates Template presets from Settings, exposes 2-option Hasil & ordered checkboxes, and persists settings", () => {
     const src = fs.readFileSync(path.join(extDir, "mancing.js"), "utf-8");
 
     assert.match(src, /selectiveRelease:\s*false\b/, "selectiveRelease must default to false");
     assert.match(src, /autoUmpan:\s*false\b/, "autoUmpan must default to false");
     assert.match(src, /autoUpgrade:\s*false\b/, "autoUpgrade must default to false");
-    assert.match(src, /baseMinTension:\s*30\b/, "baseMinTension must default to 30 for long-hold hysteresis");
+    assert.match(src, /lootMode:\s*"hybrid"/, "lootMode must default to safe hybrid");
+    assert.match(src, /sellThreshold:\s*1\.00\b/, "sellThreshold must default to 1.00");
+    assert.match(src, /stopRule:\s*"all-full"/, "stopRule must default to all-full (40/40)");
+    assert.match(src, /baseMinTension:\s*35\b/, "baseMinTension must default to 35 for long-hold hysteresis");
+    assert.match(src, /reelMinRange:\s*\[29,\s*45\]/, "reelMinRange must be [29, 45]");
+    assert.match(src, /reelMaxRange:\s*\[70,\s*85\]/, "reelMaxRange must be [70, 85]");
+    assert.match(src, /SETTINGS_KEY\s*=\s*"ks_mancing_settings_v1"/, "HUD settings persistence key must exist");
 
-    // All 3 checkboxes must exist in HUD without `checked` attribute
+    // Spending checkboxes must exist in HUD without `checked` attribute
     assert.match(src, /<input type="checkbox" id="ks-opt-auto-umpan"(?![^>]*\bchecked\b)/);
     assert.match(src, /<input type="checkbox" id="ks-opt-auto-upgrade"(?![^>]*\bchecked\b)/);
-    assert.match(src, /<input type="checkbox" id="ks-opt-selective-release"(?![^>]*\bchecked\b)/);
 
-    // Strategy dropdown onchange must NOT force selectiveRelease = true
-    const dropdownBlock = src.match(/getElementById\("ks-opt-strategi-umpan"\)\.onchange\s*=\s*\(e\)\s*=>\s*\{[\s\S]*?\};/);
-    assert.ok(dropdownBlock, "strategy dropdown onchange handler must exist");
-    assert.doesNotMatch(dropdownBlock[0], /selectiveRelease\s*=\s*true/, "dropdown must never force selectiveRelease = true");
+    // Template section buttons + collapsible Settings section + exactly 2 Hasil options
+    assert.match(src, /id="ks-tpl-just-go"/);
+    assert.match(src, /id="ks-tpl-cumi"/);
+    assert.match(src, /id="ks-tpl-ternak"/);
+    assert.match(src, /VALID_STRATEGIES\s*=\s*new Set\(\["",\s*"just-go",\s*"cumi",\s*"ternak-ikan"\]\)/);
+    assert.match(src, /Plan Just Go/);
+    assert.match(src, /id="ks-settings-toggle"/);
+    assert.match(src, /<select id="ks-opt-loot-mode"/);
+    const hasilBlock = src.match(/<select id="ks-opt-loot-mode"[\s\S]*?<\/select>/);
+    assert.ok(hasilBlock, "Hasil dropdown must exist");
+    const hasilOptions = hasilBlock[0].match(/<option\b/g) || [];
+    assert.equal(hasilOptions.length, 2, "Hasil dropdown must have exactly 2 options (Hybrid & Jual Semua)");
+    assert.match(hasilBlock[0], /value="hybrid"/);
+    assert.match(hasilBlock[0], /value="jual-semua"/);
+    assert.match(src, /<select id="ks-opt-sell-threshold"/);
+    assert.match(src, /<select id="ks-opt-stop-rule"/);
+    assert.match(src, /<option value="all-full" selected>/);
+    assert.match(src, /<input type="checkbox" id="ks-opt-zeroloss" checked/);
+
+    // Exact 2-column checkbox order:
+    // Left: Natural, Auto Celup, Auto Sentak, Auto Gulung
+    // Right: Zero-Loss, Auto Simpan, Autopilot, Jual/Sampah
+    const orderedIds = [
+      'id="ks-opt-natural"',
+      'id="ks-opt-zeroloss"',
+      'id="ks-opt-celup"',
+      'id="ks-opt-simpan"',
+      'id="ks-opt-sentak"',
+      'id="ks-opt-auto-navigasi"',
+      'id="ks-opt-gulung"',
+      'id="ks-opt-jual-penuh"'
+    ];
+    let prevPos = -1;
+    for (const idToken of orderedIds) {
+      const pos = src.indexOf(idToken);
+      assert.ok(pos > prevPos, `Checkbox ${idToken} must appear in exact left/right row order`);
+      prevPos = pos;
+    }
+
+    // 1-Joran Hemat is always ON internally and hidden from HUD
+    assert.match(src, /singleRodProfit:\s*true\b/);
+    assert.doesNotMatch(src, /id="ks-opt-single-rod"/, "1-Joran Hemat checkbox should be hidden since it is always ON");
+
+    // Full daily history without 8-item cap
+    assert.doesNotMatch(src, /history\.slice\(0,\s*8\)/, "daily history must not be capped to 8 items");
+    assert.doesNotMatch(src, /history\.length\s*>\s*8/, "daily history must keep all of today's entries");
+
+    // HUD top layout order: Sonar -> Status -> Hari Ini -> Start button -> Templates -> Settings
+    const sonarIdx = src.indexOf('id="ks-mancing-sonar-info"');
+    const statusIdx = src.indexOf('id="ks-mancing-status"');
+    const countIdx = src.indexOf('id="ks-mancing-count"');
+    const startIdx = src.indexOf('id="ks-mancing-start-btn"');
+    const tplIdx = src.indexOf('id="ks-tpl-cumi"');
+    const settingsIdx = src.indexOf('id="ks-settings-toggle"');
+    assert.ok(
+      sonarIdx > 0 && statusIdx > sonarIdx && countIdx > statusIdx && startIdx > countIdx && tplIdx > startIdx && settingsIdx > tplIdx,
+      "HUD order must be Sonar -> Status -> Hari Ini -> Start -> Template -> Settings"
+    );
+
+    // Hari Ini catch counter shows clean catch count without "-X rugi" suffix
+    assert.doesNotMatch(src, /mancingStats\.losses\} rugi/, "Hari Ini counter must not display rugi suffix");
+
+    // Live-bug regression checks:
+    assert.match(src, /hasilCard\.dataset\?\.ksHandled === "1"/, "handleCatch must guard against re-handling same DOM card");
+    assert.match(src, /releaseLootLockWhenCardCloses/, "lootPending must wait for hasilCard dismissal");
+    assert.match(src, /lastLootClosedTime\s*=\s*performance\.now\(\)/, "loot dismissal must arm post-loot cast cooldown");
+    assert.match(src, /liveShipData\.hasIkanAnim/, "scheduleNaturalCelup must respect ongoing fish-exit animation");
+    assert.match(src, /ks_mancing_recover_cast/, "stuck cast button watchdog must auto-recover without F5");
+    assert.match(src, /lastApiCastBait\s*=\s*\{\s*baitType:\s*norm/, "cast_started must record lastApiCastBait without phantom Dimakan");
+    assert.match(src, /endedCast\.seenInWater/, "phase-transition fallback must require seenInWater");
+    assert.match(src, /curFase === "tunggu"/, "450ms fallback must abort if DOM is currently in active cast phase");
+  });
+
+  await t.test("Phase 2 2-option Hasil modes (Hybrid & Jual Semua) with bait-fish priority and configurable sellThreshold", () => {
+    function decideLoot({
+      isTrash = false,
+      isSmallFish = false,
+      hasUmpanIkanBtn = true,
+      isBigClass = false,
+      sellPrice,
+      baitCost,
+      sisaJual = 20,
+      sisaTas = 20,
+      lootMode = "hybrid",
+      sellThreshold = 1.00
+    }) {
+      if (isTrash) return "BUANG";
+      if (isSmallFish && hasUmpanIkanBtn) return "JADIKAN_UMPAN";
+
+      const isHighValue = sellPrice >= sellThreshold || (sellThreshold <= 1.00 && isBigClass);
+      if (lootMode === "jual-semua") {
+        if (sellPrice > baitCost && sisaJual > 0) return "JUAL";
+        if (sisaTas > 0) return "SIMPAN";
+        if (sisaJual > 0) return "JUAL_TAS_PENUH";
+      } else {
+        if (isHighValue && sisaJual > 0) return "JUAL";
+        if (sisaTas > 0) return "SIMPAN";
+        if (sisaJual > 0) return "JUAL_TAS_PENUH";
+      }
+      return "MAKAN";
+    }
+
+    // 1. Jual Semua: sells any fish worth > baitCost, EXCEPT small fish that can be used as bait!
+    assert.equal(decideLoot({ lootMode: "jual-semua", isSmallFish: true, hasUmpanIkanBtn: true, sellPrice: 0.43, baitCost: 0.20 }), "JADIKAN_UMPAN");
+    assert.equal(decideLoot({ lootMode: "jual-semua", sellPrice: 0.81, baitCost: 0.50 }), "JUAL");
+    assert.equal(decideLoot({ lootMode: "jual-semua", sellPrice: 0.45, baitCost: 0.50 }), "SIMPAN");
+    assert.equal(decideLoot({ lootMode: "jual-semua", sellPrice: 0.81, baitCost: 0.50, sisaJual: 0, sisaTas: 10 }), "SIMPAN");
+
+    // 2. Hybrid (default): sells >= sellThreshold, saves < sellThreshold, never releases
+    assert.equal(decideLoot({ lootMode: "hybrid", sellThreshold: 1.00, sellPrice: 0.85, baitCost: 0.50 }), "SIMPAN");
+    assert.equal(decideLoot({ lootMode: "hybrid", sellThreshold: 1.40, sellPrice: 1.25, isBigClass: true, baitCost: 0.50 }), "SIMPAN");
+    assert.equal(decideLoot({ lootMode: "hybrid", sellThreshold: 1.40, sellPrice: 1.45, isBigClass: true, baitCost: 0.50 }), "JUAL");
+    assert.equal(decideLoot({ lootMode: "hybrid", sellThreshold: 1.00, sellPrice: 0.85, baitCost: 0.50, sisaTas: 0, sisaJual: 5 }), "JUAL_TAS_PENUH");
+  });
+
+  await t.test("Phase 2 configurable Stop Rules (all-full, sell-full, bait-empty) and legacy settings migration", () => {
+    function evaluateStopRule(stopRule, profile) {
+      if (!profile || !profile.loaded) return null;
+      const sisaJual = Math.max(0, profile.jualMaks - profile.jualHariIni);
+      const sisaTas = Math.max(0, profile.tasMaks - profile.tasIkan);
+      if (stopRule === "sell-full" && sisaJual === 0) return "STOP_SELL_FULL";
+      if (stopRule === "all-full" && sisaJual === 0 && sisaTas === 0) return "STOP_ALL_FULL";
+      return null;
+    }
+
+    assert.equal(evaluateStopRule("all-full", { loaded: true, jualHariIni: 20, jualMaks: 20, tasIkan: 5, tasMaks: 20 }), null);
+    assert.equal(evaluateStopRule("all-full", { loaded: true, jualHariIni: 20, jualMaks: 20, tasIkan: 20, tasMaks: 20 }), "STOP_ALL_FULL");
+    assert.equal(evaluateStopRule("sell-full", { loaded: true, jualHariIni: 20, jualMaks: 20, tasIkan: 5, tasMaks: 20 }), "STOP_SELL_FULL");
+    assert.equal(evaluateStopRule("bait-empty", { loaded: true, jualHariIni: 20, jualMaks: 20, tasIkan: 20, tasMaks: 20 }), null);
+
+    // Settings migration & sanitization: legacy cashflow -> jual-semua, quota-saver/whale -> hybrid
+    function normalizeSavedLootMode(raw) {
+      if (raw === "jual-semua" || raw === "cashflow") return "jual-semua";
+      if (raw === "hybrid" || raw === "quota-saver" || raw === "whale") return "hybrid";
+      return null;
+    }
+    assert.equal(normalizeSavedLootMode("cashflow"), "jual-semua");
+    assert.equal(normalizeSavedLootMode("jual-semua"), "jual-semua");
+    assert.equal(normalizeSavedLootMode("quota-saver"), "hybrid");
+    assert.equal(normalizeSavedLootMode("whale"), "hybrid");
+    assert.equal(normalizeSavedLootMode("invalid-mode"), null);
   });
 
   await t.test("inject.js: passive /api/pancing fetch observer, hasSetInput, and analog setInput vs keys isolation", async () => {
@@ -1194,26 +1364,33 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     const ctx = vm.createContext(win);
     vm.runInContext(fs.readFileSync(path.join(extDir, "inject.js"), "utf-8"), ctx, { filename: "inject.js" });
 
+    const castStartedEvents = [];
+    win.addEventListener("ks_mancing_cast_started", (e) => castStartedEvents.push(e.detail));
     win.addEventListener("ks_mancing_bait_lost", (e) => baitLostEvents.push(e.detail));
     win.addEventListener("ks_mancing_data_update", (e) => mancingUpdates.push(e.detail));
 
-    // 1. POST /api/pancing responses: dimakan, tarik fail, batal emit events; tarik dapat does NOT
+    // 1. POST /api/pancing responses: remembers lempar bait ("cacing") for later cek/dimakan even when cek omits umpan
     fetchHandlers.push(
-      () => ({ dimakan: "Umpan dimakan ikan kecil", lemparan: { id: "L1", umpan: "umpan-cumi" } }),
+      () => ({ lemparan: { id: "L0", status: "TUNGGU" } }),
+      () => ({ dimakan: "Umpan dimakan ikan kecil", lemparan: { id: "L0" } }),
       () => ({ hasil: "putus", lemparan: { id: "L2", umpan: "umpan-cumi" } }),
       () => ({ hasil: "dapat", ikan: { nama: "Kuwe" }, lemparan: { id: "L3", umpan: "umpan-cumi" } }),
       () => ({ ok: true })
     );
 
-    await win.fetch("/api/pancing", { method: "POST", body: JSON.stringify({ aksi: "lempar", umpan: "umpan-cumi" }) });
+    await win.fetch("/api/pancing", { method: "POST", body: JSON.stringify({ aksi: "lempar", umpan: "cacing" }) });
+    await win.fetch("/api/pancing", { method: "POST", body: JSON.stringify({ aksi: "cek", id: "L0" }) });
     await win.fetch("/api/pancing", { method: "POST", body: JSON.stringify({ aksi: "tarik", id: "L2", berhasil: false }) });
     await win.fetch("/api/pancing", { method: "POST", body: JSON.stringify({ aksi: "tarik", id: "L3", berhasil: true }) });
     await win.fetch("/api/pancing", { method: "POST", body: JSON.stringify({ aksi: "batal", id: "L4" }) });
     await new Promise((r) => setTimeout(r, 10));
 
+    assert.equal(castStartedEvents.length, 1);
+    assert.equal(castStartedEvents[0].umpan, "cacing");
     assert.equal(baitLostEvents.length, 3);
     assert.deepEqual(baitLostEvents.map((e) => e.reason), ["dimakan", "putus", "batal"]);
-    assert.equal(baitLostEvents[0].umpan, "umpan-cumi");
+    assert.equal(baitLostEvents[0].umpan, "cacing", "dimakan must inherit actual cast bait (cacing), not fallback to cumi");
+    assert.equal(baitLostEvents[1].umpan, "umpan-cumi");
 
     // 2. ks_mancing_steer with setInput clamps values and clears mInst.keys
     const setInputCalls = [];
@@ -1243,5 +1420,141 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     shipObj.posisi();
     assert.equal(win.__KS_MANCING_INSTANCE, shipObj);
     assert.equal(mancingUpdates.at(-1).hasSetInput, true);
+  });
+
+  await t.test("inject.js: prevents buangIkan() mid-cast deadlock and auto-recovers throttled/clobbered lempar promises without F5", async () => {
+    const listeners = {};
+    const timers = [];
+    const intervals = [];
+    let nextTimerId = 1;
+
+    const win = {
+      console: { log() {}, warn() {}, error() {} },
+      performance: { now: () => 5000 },
+      CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
+      setTimeout: (fn, ms) => {
+        const id = nextTimerId++;
+        timers.push({ id, fn, ms, cleared: false });
+        return id;
+      },
+      clearTimeout: (id) => {
+        const t = timers.find((x) => x.id === id);
+        if (t) t.cleared = true;
+      },
+      setInterval: (fn, ms) => {
+        const id = nextTimerId++;
+        intervals.push({ id, fn, ms });
+        return id;
+      },
+      clearInterval: () => {},
+      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+      removeEventListener() {},
+      dispatchEvent(ev) { for (const fn of (listeners[ev.type] || []).slice()) fn(ev); return true; },
+      location: { href: "https://www.kampungsebelah.com/mancing" },
+      document: { hidden: false, visibilityState: "visible", hasFocus: () => true, addEventListener() {}, querySelector: () => null },
+      fetch: () => Promise.resolve({ ok: true, clone: () => ({ json: () => Promise.resolve({}) }), json: () => Promise.resolve({}) })
+    };
+    win.window = win;
+    win.globalThis = win;
+
+    const ctx = vm.createContext(win);
+    vm.runInContext(fs.readFileSync(path.join(extDir, "inject.js"), "utf-8"), ctx, { filename: "inject.js" });
+
+    // Simulate KampungSebelah 3D Mancing scene with the exact buangIkan()/lempar() race bug
+    const sceneInst = vm.runInContext(`(() => {
+      let disposed = 0;
+      let removed = 0;
+      let selesaiGulungCalls = 0;
+      const o = {
+        perahu: true,
+        fase: "jalan",
+        titik: [],
+        scene: { remove() { removed++; } },
+        tali: { visible: false },
+        pelampung: { visible: false, position: { x: 0, z: 0 } },
+        kail: { mode: "lempar", x: 0, z: 0, t: 0, lama: 1.45, terbang: false, resolve: null },
+        ikan: {
+          akhir: { jenis: "makan", t: 0.5 },
+          g: {
+            traverse(cb) {
+              cb({ geometry: { dispose() { disposed++; } }, material: { dispose() { disposed++; } } });
+            }
+          }
+        },
+        selesaiGulung() {
+          selesaiGulungCalls++;
+          this.tali.visible = false;
+          this.pelampung.visible = false;
+          this.fase = "jalan";
+        },
+        buangIkan() {
+          if (this.ikan) {
+            this.scene.remove(this.ikan.g);
+            this.ikan.g.traverse((n) => { n.geometry.dispose(); n.material.dispose(); });
+            this.ikan = null;
+            this.tali.visible = false;
+            this.selesaiGulung();
+          }
+        },
+        lempar(mode, target) {
+          this.fase = "lempar";
+          this.kail.mode = mode;
+          this.kail.x = target.x;
+          this.kail.z = target.z;
+          this.kail.t = 0;
+          this.kail.lama = mode === "celup" ? 1.4 : 1.45;
+          this.kail.terbang = true;
+          this.tali.visible = true;
+          this.pelampung.visible = false;
+          return new Promise((r) => { this.kail.resolve = r; });
+        },
+        getMetrics: () => ({ disposed, removed, selesaiGulungCalls })
+      };
+      o.posisi = function () { return { x: -10, z: -120, h: 3.14, laju: 0 }; };
+      return o;
+    })()`, ctx);
+
+    // Hooking via posisi() patches lempar() and buangIkan() immediately
+    sceneInst.posisi();
+    assert.equal(sceneInst.__ks_cast_guard_patched, true);
+
+    // 1. Casting while old fish exit animation (this.ikan) is still running flushes old fish BEFORE cast starts
+    const p1 = sceneInst.lempar("lempar", { x: -12, z: -125 });
+    assert.equal(sceneInst.ikan, null, "old fish must be cleared before cast starts");
+    assert.equal(sceneInst.tali.visible, true, "tali must remain visible for the new cast");
+    assert.equal(sceneInst.kail.terbang, true);
+    assert.equal(sceneInst.getMetrics().selesaiGulungCalls, 1, "selesaiGulung ran before new cast, not mid-cast");
+
+    // 2. If buangIkan() is ever invoked mid-cast anyway, it removes fish WITHOUT killing tali.visible or calling selesaiGulung()
+    sceneInst.ikan = { g: { traverse() {} } };
+    sceneInst.buangIkan();
+    assert.equal(sceneInst.ikan, null);
+    assert.equal(sceneInst.tali.visible, true, "mid-cast buangIkan must NOT hide tali.visible");
+    assert.equal(sceneInst.fase, "lempar", "mid-cast buangIkan must NOT reset fase to jalan");
+    assert.equal(sceneInst.getMetrics().selesaiGulungCalls, 1, "mid-cast buangIkan must NOT call selesaiGulung");
+
+    // 3. If rAF is paused (unfocused Chrome), the fallback timer resolves await l.lempar() cleanly
+    const activeFallback = timers.find((t) => !t.cleared && t.ms >= 3200);
+    assert.ok(activeFallback, "lempar must arm an unfocused-rAF fallback timer");
+    activeFallback.fn();
+    const resolved1 = await p1;
+    assert.equal(resolved1.x, -12);
+    assert.equal(resolved1.z, -125);
+    assert.equal(sceneInst.fase, "tunggu");
+    assert.equal(sceneInst.kail.terbang, false);
+    assert.equal(sceneInst.kail.resolve, null);
+    assert.equal(sceneInst.pelampung.visible, true);
+
+    // 4. Explicit ks_mancing_recover_cast event recovers an already-clobbered cast promise without F5
+    const p2 = sceneInst.lempar("celup", { x: 5, z: -300 });
+    sceneInst.tali.visible = false;
+    sceneInst.fase = "jalan";
+    win.dispatchEvent(new win.CustomEvent("ks_mancing_recover_cast"));
+    const resolved2 = await p2;
+    assert.equal(resolved2.x, 5);
+    assert.equal(resolved2.z, -300);
+    assert.equal(sceneInst.fase, "tunggu");
+    assert.equal(sceneInst.tali.visible, true);
+    assert.equal(sceneInst.pelampung.visible, true);
   });
 });

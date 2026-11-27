@@ -4,10 +4,12 @@
 (function () {
   console.log("[DivingRadar] Injector v1.8.0 initializing in page context...");
 
-  // 0. Passive fetch observer untuk /api/pancing (deteksi umpan dimakan ikan kecil / lepas / putus)
+  // 0. Passive fetch observer untuk /api/pancing (deteksi umpan aktif per lemparan & umpan dimakan / lepas / putus)
   if (!window.__KS_PANCING_FETCH_HOOKED && typeof window.fetch === "function") {
     window.__KS_PANCING_FETCH_HOOKED = true;
     const origFetch = window.fetch;
+    const castUmpanById = Object.create(null);
+    let lastCastUmpan = "";
     window.fetch = function (input, init) {
       const fetchPromise = origFetch.apply(this, arguments);
       try {
@@ -26,9 +28,20 @@
             res.clone().json().then((data) => {
               if (!data || typeof data !== "object") return;
               const aksi = String(reqBody.aksi || "").toLowerCase();
-              const umpan = reqBody.umpan || data.lemparan?.umpan || "";
               const castId = data.lemparan?.id || reqBody.id || "";
+              const rawUmpan = reqBody.umpan || data.lemparan?.umpan || "";
+              if (rawUmpan) {
+                lastCastUmpan = rawUmpan;
+                if (castId) castUmpanById[castId] = rawUmpan;
+              }
+              const umpan = rawUmpan || (castId && castUmpanById[castId]) || lastCastUmpan || "";
               const statusUpper = String(data.lemparan?.status || "").toUpperCase();
+
+              if (aksi === "lempar" && umpan) {
+                window.dispatchEvent(new CustomEvent("ks_mancing_cast_started", {
+                  detail: { id: castId, umpan }
+                }));
+              }
 
               if (data.dimakan) {
                 window.dispatchEvent(new CustomEvent("ks_mancing_bait_lost", {
@@ -72,6 +85,123 @@
       } catch (_) {}
       return fetchPromise;
     };
+  }
+
+  // 0b. Proteksi anti-macet "⏳ Lempar/Celup" (race condition buangIkan() & rAF throttled saat tab tidak fokus)
+  function recoverDeadlockedMancingCast(mInst, { force = false } = {}) {
+    if (!mInst || !mInst.kail || typeof mInst.kail.resolve !== "function") return false;
+    const isClobbered = !!(
+      mInst.kail.terbang &&
+      ((mInst.tali && !mInst.tali.visible) || mInst.fase === "jalan")
+    );
+    if (!force && !isClobbered) return false;
+
+    try {
+      const resolveFn = mInst.kail.resolve;
+      mInst.kail.resolve = null;
+      mInst.kail.terbang = false;
+      if (typeof mInst.kail.lama === "number" && mInst.kail.lama > 0) {
+        mInst.kail.t = mInst.kail.lama;
+      }
+      if (mInst.tali) mInst.tali.visible = true;
+      if (mInst.pelampung) {
+        if (mInst.pelampung.position && typeof mInst.kail.x === "number" && typeof mInst.kail.z === "number") {
+          mInst.pelampung.position.x = mInst.kail.x;
+          mInst.pelampung.position.z = mInst.kail.z;
+        }
+        mInst.pelampung.visible = true;
+      }
+      mInst.fase = "tunggu";
+      resolveFn({ x: mInst.kail.x, z: mInst.kail.z });
+      console.warn("[AutoMancing] Memulihkan promise lempar/celup macet tanpa F5", {
+        clobbered: isClobbered,
+        forced: force,
+        mode: mInst.kail.mode
+      });
+      return true;
+    } catch (err) {
+      console.warn("[AutoMancing] Gagal memulihkan lempar macet:", err);
+      return false;
+    }
+  }
+
+  function patchMancingCastGuard(mInst) {
+    if (!mInst || mInst.__ks_cast_guard_patched) return;
+    const origBuangIkan = typeof mInst.buangIkan === "function" ? mInst.buangIkan : null;
+    const origLempar = typeof mInst.lempar === "function" ? mInst.lempar : null;
+    if (!origBuangIkan && !origLempar) return;
+    mInst.__ks_cast_guard_patched = true;
+
+    if (origBuangIkan) {
+      mInst.buangIkan = function (...args) {
+        // Cegah bug game: saat selesaiIkan() selesai di tengah lemparan baru,
+        // buangIkan() tidak boleh menyembunyikan tali & memanggil selesaiGulung() yang menggantung await l.lempar() selamanya.
+        const castInFlight = !!(
+          this.kail &&
+          (this.kail.terbang || typeof this.kail.resolve === "function")
+        );
+        if (castInFlight) {
+          if (this.ikan) {
+            try {
+              if (this.scene && this.ikan.g && typeof this.scene.remove === "function") {
+                this.scene.remove(this.ikan.g);
+              }
+              if (this.ikan.g && typeof this.ikan.g.traverse === "function") {
+                this.ikan.g.traverse((node) => {
+                  try {
+                    if (node.geometry && typeof node.geometry.dispose === "function") {
+                      node.geometry.dispose();
+                    }
+                    if (Array.isArray(node.material)) {
+                      node.material.forEach((m) => m && typeof m.dispose === "function" && m.dispose());
+                    } else if (node.material && typeof node.material.dispose === "function") {
+                      node.material.dispose();
+                    }
+                  } catch (_) {}
+                });
+              }
+            } catch (_) {}
+            this.ikan = null;
+          }
+          return;
+        }
+        return origBuangIkan.apply(this, args);
+      };
+    }
+
+    if (origLempar) {
+      mInst.lempar = function (...args) {
+        // Selesaikan pembersihan objek ikan sebelumnya sebelum lemparan baru dimulai
+        // agar tidak bentrok terutama saat Chrome tidak fokus (rAF diperlambat).
+        if (this.ikan && origBuangIkan) {
+          try {
+            origBuangIkan.call(this);
+          } catch (_) {}
+        }
+        const promise = origLempar.apply(this, args);
+        try {
+          const expectedResolve = this.kail && typeof this.kail.resolve === "function"
+            ? this.kail.resolve
+            : null;
+          const lamaMs = typeof this.kail?.lama === "number" && this.kail.lama > 0
+            ? this.kail.lama * 1000
+            : 1450;
+          if (expectedResolve) {
+            if (this.__ks_lempar_fallback_timer) {
+              clearTimeout(this.__ks_lempar_fallback_timer);
+            }
+            const fallbackDelayMs = Math.max(3200, Math.round(lamaMs + 1800));
+            this.__ks_lempar_fallback_timer = setTimeout(() => {
+              this.__ks_lempar_fallback_timer = null;
+              if (this.kail && this.kail.resolve === expectedResolve) {
+                recoverDeadlockedMancingCast(this, { force: true });
+              }
+            }, fallbackDelayMs);
+          }
+        } catch (_) {}
+        return promise;
+      };
+    }
   }
 
   window.__KS_DIVING_DATA = {
@@ -198,13 +328,15 @@
             }
             if (typeof res.h === "number" || this.perahu) {
               window.__KS_MANCING_INSTANCE = this;
+              patchMancingCastGuard(this);
               const mancingData = {
                 x: res.x,
                 z: res.z,
                 h: typeof res.h === "number" ? res.h : 0,
                 laju: typeof res.laju === "number" ? res.laju : 0,
                 titik: Array.isArray(this.titik) ? this.titik : [],
-                hasSetInput: typeof this.setInput === "function"
+                hasSetInput: typeof this.setInput === "function",
+                hasIkanAnim: !!this.ikan
               };
               window.__KS_MANCING_DATA = mancingData;
               window.dispatchEvent(new CustomEvent("ks_mancing_data_update", {
@@ -389,6 +521,7 @@
               // 2. Mancing Ship Engine (Class H) Instance
               if (!window.__KS_MANCING_INSTANCE && typeof inst.posisi === "function" && (inst.perahu || typeof inst.laju === "number" || typeof inst.h === "number")) {
                 window.__KS_MANCING_INSTANCE = inst;
+                patchMancingCastGuard(inst);
                 const pos = inst.posisi();
                 const mancingData = {
                   x: pos.x,
@@ -396,7 +529,8 @@
                   h: pos.h,
                   laju: pos.laju,
                   titik: Array.isArray(inst.titik) ? inst.titik : [],
-                  hasSetInput: typeof inst.setInput === "function"
+                  hasSetInput: typeof inst.setInput === "function",
+                  hasIkanAnim: !!inst.ikan
                 };
                 window.__KS_MANCING_DATA = mancingData;
                 window.dispatchEvent(new CustomEvent("ks_mancing_data_update", {
@@ -463,6 +597,8 @@
     if (window.__KS_MANCING_INSTANCE) {
       try {
         const mInst = window.__KS_MANCING_INSTANCE;
+        patchMancingCastGuard(mInst);
+        recoverDeadlockedMancingCast(mInst, { force: false });
         const pos = mInst.posisi();
         const mData = {
           x: pos.x,
@@ -470,7 +606,8 @@
           h: pos.h,
           laju: pos.laju,
           titik: Array.isArray(mInst.titik) ? mInst.titik : (window.__KS_MANCING_DATA?.titik || []),
-          hasSetInput: typeof mInst.setInput === "function"
+          hasSetInput: typeof mInst.setInput === "function",
+          hasIkanAnim: !!mInst.ikan
         };
         window.__KS_MANCING_DATA = mData;
         window.dispatchEvent(new CustomEvent("ks_mancing_data_update", {
@@ -540,6 +677,14 @@
           }
         }
       } catch (err) {}
+    }
+  });
+
+  // 3c-2. Pemulihan otomatis saat tombol Lempar/Celup terkunci karena animasi 3D macet / rAF dijeda
+  window.addEventListener("ks_mancing_recover_cast", () => {
+    const mInst = window.__KS_MANCING_INSTANCE;
+    if (mInst) {
+      recoverDeadlockedMancingCast(mInst, { force: true });
     }
   });
 
