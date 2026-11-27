@@ -1,3 +1,29 @@
+const btnToggleKeb = document.getElementById("btn-toggle-kebutuhan-hud");
+function renderKebToggle(visible) {
+  if (!btnToggleKeb) return;
+  btnToggleKeb.textContent = visible
+    ? "🧼 Panel Auto-Kebutuhan: Tampil (Klik untuk Hide)"
+    : "🧼 Panel Auto-Kebutuhan: Tersembunyi (Klik untuk Open)";
+  btnToggleKeb.style.background = visible ? "#059669" : "#334155";
+}
+
+if (chrome.storage?.local) {
+  chrome.storage.local.get(["ks_kebutuhan_hud_visible"], (res) => {
+    renderKebToggle(Boolean(res?.ks_kebutuhan_hud_visible));
+  });
+}
+
+if (btnToggleKeb) {
+  btnToggleKeb.onclick = () => {
+    chrome.storage.local.get(["ks_kebutuhan_hud_visible"], (res) => {
+      const next = !res?.ks_kebutuhan_hud_visible;
+      chrome.storage.local.set({ ks_kebutuhan_hud_visible: next }, () => {
+        renderKebToggle(next);
+      });
+    });
+  };
+}
+
 const btnToggleOjol = document.getElementById("btn-toggle-ojol-hud");
 function renderOjolToggle(visible) {
   if (!btnToggleOjol) return;
