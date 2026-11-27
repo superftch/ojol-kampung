@@ -8,8 +8,14 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.core.exceptions import HttpCoreError
 from app.integrations.kampung.http_api import OjolHttpApi
-from app.modules.jobs.schemas import JobApplyRequest
+from app.modules.jobs.schemas import JobApplyRequest, JobSniperConfigRequest
 from app.modules.jobs.service import build_job_vacancies_payload
+from app.modules.jobs.sniper import (
+    load_sniper_config,
+    load_sniper_state,
+    run_job_sniper_once,
+    save_sniper_config,
+)
 from app.web.deps import WebContext, get_ctx, require_user, resolve_account_service
 from app.web.payloads import read_json
 
@@ -94,3 +100,67 @@ async def apply_job_vacancy(
     if tidur:
         msg += f" Jam tidur otomatis pindah ke {tidur}."
     return {"success": True, "message": msg, "result": result}
+
+
+@router.get("/api/jobs/sniper")
+async def get_job_sniper(
+    request: Request,
+    user: Annotated[dict, Depends(require_user)],
+    ctx: Annotated[WebContext, Depends(get_ctx)],
+):
+    """Return Job Sniper configuration and runtime state for the selected account."""
+    cur_service = _require_account_service(ctx, user, request)
+    directory = cur_service.settings.runtime_dir
+    return {
+        "config": load_sniper_config(directory),
+        "state": load_sniper_state(directory),
+    }
+
+
+@router.post("/api/jobs/sniper")
+async def update_job_sniper(
+    request: Request,
+    user: Annotated[dict, Depends(require_user)],
+    ctx: Annotated[WebContext, Depends(get_ctx)],
+):
+    """Update Job Sniper configuration for the selected account."""
+    body = await read_json(request, JobSniperConfigRequest)
+    cur_service = _require_account_service(ctx, user, request)
+    directory = cur_service.settings.runtime_dir
+    config = save_sniper_config(directory, body.model_dump())
+    return {
+        "success": True,
+        "message": "Pengaturan Job Sniper disimpan.",
+        "config": config,
+        "state": load_sniper_state(directory),
+    }
+
+
+@router.post("/api/jobs/sniper/run")
+async def run_job_sniper_now(
+    request: Request,
+    user: Annotated[dict, Depends(require_user)],
+    ctx: Annotated[WebContext, Depends(get_ctx)],
+):
+    """Run one immediate Job Sniper check and apply if an eligible job is found."""
+    cur_service = _require_account_service(ctx, user, request)
+    directory = cur_service.settings.runtime_dir
+    try:
+        async with asyncio.timeout(20):
+            res = await run_job_sniper_once(
+                directory,
+                settings=cur_service.settings,
+                force=True,
+            )
+    except TimeoutError:
+        raise HTTPException(504, "Permintaan Job Sniper ke server game timeout.") from None
+
+    if res.get("error"):
+        raise HTTPException(502, res["error"])
+    return {
+        "success": True,
+        "sniped": bool(res.get("sniped")),
+        "message": res.get("message") or "",
+        "config": res.get("config"),
+        "state": res.get("state"),
+    }

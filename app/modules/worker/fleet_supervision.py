@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 
 from app.core.locks import running
 from app.core.storage import status_record
+from app.modules.jobs.sniper import load_sniper_config, run_job_sniper_once
 from app.modules.notifications.service import queue_error, queue_notice
 from app.modules.worker.capacity import WorkerCapacityError, worker_capacity_error
 from app.modules.worker.maintenance import held_window
@@ -27,6 +28,8 @@ class FleetSupervisor:
         self.closing = False
         self.tasks: list[asyncio.Task[None]] = []
         self._last_presence_mono = 0.0
+        self._sniper_last_check_mono: dict[str, float] = {}
+        self._sniper_next_kosong_ts: dict[str, float] = {}
 
     def account_running(self, account) -> bool:
         service = self.fleet.services.get(account["id"])
@@ -135,10 +138,39 @@ class FleetSupervisor:
             with contextlib.suppress(Exception):
                 await service.fetch_online_status()
 
+    async def run_job_sniper_cycle(self) -> None:
+        """Run scheduled Job Sniper checks for accounts with Job Sniper enabled."""
+        if self.closing or self.fleet.settings.env == "testing":
+            return
+        for row in self.fleet.registry.list():
+            if not self.fleet.registry.allowed(row["owner"]):
+                continue
+            service = self.fleet.service(row["id"])
+            directory = service.settings.runtime_dir
+            if not (directory / "http-session.json").is_file():
+                continue
+            cfg = load_sniper_config(directory)
+            if not cfg.get("enabled"):
+                continue
+            now_mono = time.monotonic()
+            last_mono = self._sniper_last_check_mono.get(row["id"], 0.0)
+            next_kosong_ts = self._sniper_next_kosong_ts.get(row["id"])
+            kosong_due = next_kosong_ts is not None and time.time() >= next_kosong_ts
+            if not kosong_due and (now_mono - last_mono < cfg["interval_seconds"]):
+                continue
+            self._sniper_last_check_mono[row["id"]] = now_mono
+            with contextlib.suppress(Exception):
+                res = await run_job_sniper_once(directory, settings=service.settings)
+                if res.get("next_kosong_epoch") is not None:
+                    self._sniper_next_kosong_ts[row["id"]] = float(res["next_kosong_epoch"])
+                else:
+                    self._sniper_next_kosong_ts.pop(row["id"], None)
+
     async def supervise(self) -> None:
         while not self.closing:
             await self.resume_workers()
             await self.maintain_online_presence()
+            await self.run_job_sniper_cycle()
             if self.fleet.tunnel.take_exit() is not None:
                 queue_error(
                     self.fleet.control_settings,

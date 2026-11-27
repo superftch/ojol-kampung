@@ -101,11 +101,12 @@ def test_jobs_web_routes_and_dashboard_tab(settings, monkeypatch):
     with TestClient(app, base_url="http://localhost:6080") as client:
         client.cookies.set("ojol_web_session", token)
 
-        # Dashboard HTML has Lowongan Pekerjaan tab
+        # Dashboard HTML has Lowongan Pekerjaan tab and Job Sniper panel
         dash = client.get("/")
         assert dash.status_code == 200
         assert "tab-jobs" in dash.text
         assert "Lowongan Pekerjaan" in dash.text
+        assert "Job Sniper" in dash.text
 
         # GET vacancies
         res = client.get("/api/jobs/vacancies")
@@ -142,3 +143,37 @@ def test_jobs_web_routes_and_dashboard_tab(settings, monkeypatch):
         assert apply_biz_res.status_code == 200
         assert apply_biz_res.json()["success"] is True
         apply_biz_mock.assert_awaited_once_with("biz-1", switch_job=True)
+
+        # GET & POST Job Sniper config
+        sniper_get = client.get("/api/jobs/sniper")
+        assert sniper_get.status_code == 200
+        assert sniper_get.json()["config"]["enabled"] is False
+
+        sniper_post = client.post(
+            "/api/jobs/sniper",
+            json={
+                "enabled": True,
+                "interval_seconds": 15,
+                "schedule_enabled": True,
+                "start_time": "06:00",
+                "end_time": "22:00",
+                "source_filter": "facility",
+                "skill_track_id": "kesehatan",
+                "min_salary_milli": 5000,
+                "allow_switch_job": True,
+                "allow_fee": False,
+                "auto_stop_on_success": True,
+            },
+        )
+        assert sniper_post.status_code == 200
+        assert sniper_post.json()["config"]["enabled"] is True
+        assert sniper_post.json()["config"]["interval_seconds"] == 15
+
+        # Trigger immediate sniper run
+        apply_fac_mock.reset_mock()
+        sniper_run = client.post("/api/jobs/sniper/run")
+        assert sniper_run.status_code == 200
+        run_data = sniper_run.json()
+        assert run_data["sniped"] is True
+        assert run_data["config"]["enabled"] is False
+        apply_fac_mock.assert_awaited_once_with("Dokter", "fac-rs", switch_job=False)

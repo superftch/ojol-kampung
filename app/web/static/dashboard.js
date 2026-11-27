@@ -2280,6 +2280,7 @@ setInterval(() => { if (!streamConnected) refreshDashboard(); }, 5000);
 
 // ================= LOWONGAN PEKERJAAN =================
 let jobsPayload = null;
+let jobSniperData = null;
 let currentJobsTab = 'highest';
 let pendingSwitchJobId = null;
 let applyingJobId = null;
@@ -2331,10 +2332,18 @@ async function loadJobVacancies() {
         listEl.innerHTML = '<div class="card" style="text-align: center; color: var(--text-muted); padding: 32px;">Mengambil data lowongan dari server game...</div>';
     }
     try {
-        jobsPayload = await apiFetch('/api/jobs/vacancies', { timeoutMs: 25000 });
+        const [vacanciesRes, sniperRes] = await Promise.all([
+            apiFetch('/api/jobs/vacancies', { timeoutMs: 25000 }),
+            apiFetch('/api/jobs/sniper', { timeoutMs: 10000 }).catch(() => null),
+        ]);
+        jobsPayload = vacanciesRes;
+        if (sniperRes) {
+            jobSniperData = sniperRes;
+        }
         pendingSwitchJobId = null;
         populateJobsSkillFilter(jobsPayload.account_skills || []);
         renderJobsAccountSummary(jobsPayload);
+        renderJobSniperPanel();
         updateJobsTabCounts(jobsPayload);
         renderJobVacancies();
     } catch (e) {
@@ -2355,15 +2364,154 @@ async function loadJobVacancies() {
 
 function populateJobsSkillFilter(skills) {
     const sel = document.getElementById('jobsSkillFilter');
-    if (!sel) return;
-    const prev = sel.value;
+    const sniperSel = document.getElementById('sniperSkillTrack');
     const opts = ['<option value="">Semua Bidang Skill</option>'];
     for (const sk of skills) {
         opts.push(`<option value="${escapeHtml(sk.id)}">${escapeHtml(sk.icon)} ${escapeHtml(sk.name)} (⭐${sk.level})</option>`);
     }
-    sel.innerHTML = opts.join('');
-    if (prev && skills.some(s => s.id === prev)) {
-        sel.value = prev;
+    const html = opts.join('');
+    for (const target of [sel, sniperSel]) {
+        if (!target) continue;
+        const prev = target.value;
+        target.innerHTML = html;
+        if (prev && skills.some(s => s.id === prev)) {
+            target.value = prev;
+        }
+    }
+}
+
+function syncSniperScheduleInputs() {
+    const enabled = Boolean(document.getElementById('sniperScheduleEnabled')?.checked);
+    const startEl = document.getElementById('sniperStartTime');
+    const endEl = document.getElementById('sniperEndTime');
+    if (startEl) startEl.disabled = !enabled;
+    if (endEl) endEl.disabled = !enabled;
+}
+
+function renderJobSniperPanel() {
+    if (!jobSniperData) return;
+    const cfg = jobSniperData.config || {};
+    const st = jobSniperData.state || {};
+
+    const badge = document.getElementById('sniperStatusBadge');
+    const toggleBtn = document.getElementById('btnSniperToggle');
+    const statusText = document.getElementById('sniperStatusText');
+    const metaRow = document.getElementById('sniperMetaRow');
+
+    if (badge) {
+        badge.className = cfg.enabled ? 'job-badge ok' : 'job-badge muted';
+        badge.textContent = cfg.enabled ? `Aktif · tiap ${cfg.interval_seconds || 30}s` : 'Nonaktif';
+    }
+    if (toggleBtn) {
+        toggleBtn.textContent = cfg.enabled ? 'Matikan Sniper' : 'Aktifkan Sniper';
+        toggleBtn.className = cfg.enabled ? 'btn btn-secondary' : 'btn btn-primary';
+    }
+    if (statusText) {
+        statusText.textContent = st.last_error
+            ? `Error terakhir: ${st.last_error}`
+            : (st.last_result || 'Otomatis mengambil lowongan dengan gaji bersih tertinggi sesuai skill saat slot tersedia di jadwal.');
+    }
+
+    const setVal = (id, val) => {
+        const el = document.getElementById(id);
+        if (el) el.value = val;
+    };
+    const setCheck = (id, val) => {
+        const el = document.getElementById(id);
+        if (el) el.checked = Boolean(val);
+    };
+    setVal('sniperInterval', cfg.interval_seconds ?? 30);
+    setVal('sniperSourceFilter', cfg.source_filter || 'all');
+    setVal('sniperSkillTrack', cfg.skill_track_id || '');
+    setVal('sniperMinSalary', Number(cfg.min_salary_milli || 0) / 1000);
+    setCheck('sniperScheduleEnabled', cfg.schedule_enabled);
+    setVal('sniperStartTime', cfg.start_time || '00:00');
+    setVal('sniperEndTime', cfg.end_time || '23:59');
+    setCheck('sniperAllowSwitch', cfg.allow_switch_job !== false);
+    setCheck('sniperAutoStop', cfg.auto_stop_on_success !== false);
+    setCheck('sniperAllowFee', cfg.allow_fee);
+    syncSniperScheduleInputs();
+
+    if (metaRow) {
+        const metaParts = [];
+        if (st.last_check_at) {
+            metaParts.push(`<span>Terakhir cek: <strong>${escapeHtml(formatKosongAt(st.last_check_at))}</strong></span>`);
+        }
+        if (st.next_kosong_at) {
+            const prof = st.next_kosong_profession ? ` (${escapeHtml(st.next_kosong_profession)})` : '';
+            metaParts.push(`<span>⏳ Jadwal slot kosong berikutnya${prof}: <strong>${escapeHtml(formatKosongAt(st.next_kosong_at))}</strong></span>`);
+        }
+        if (st.last_sniped_job) {
+            const sj = st.last_sniped_job;
+            metaParts.push(`<span>🎯 Terakhir dapat: <strong>${escapeHtml(sj.profession)}</strong> (${formatKoinMilli(sj.net_milli)} koin/hari)</span>`);
+        }
+        metaParts.push(`<span>Total cek: ${Number(st.checks_count || 0)} · Berhasil: ${Number(st.snipes_count || 0)}</span>`);
+        metaRow.innerHTML = metaParts.join('');
+    }
+}
+
+function readJobSniperFormConfig(overrideEnabled = null) {
+    const curEnabled = Boolean(jobSniperData?.config?.enabled);
+    const interval = Math.max(10, Math.min(3600, parseInt(document.getElementById('sniperInterval')?.value || '30', 10) || 30));
+    const minSalaryKoin = Math.max(0, parseFloat(document.getElementById('sniperMinSalary')?.value || '0') || 0);
+    return {
+        enabled: overrideEnabled !== null ? Boolean(overrideEnabled) : curEnabled,
+        interval_seconds: interval,
+        schedule_enabled: Boolean(document.getElementById('sniperScheduleEnabled')?.checked),
+        start_time: document.getElementById('sniperStartTime')?.value || '00:00',
+        end_time: document.getElementById('sniperEndTime')?.value || '23:59',
+        source_filter: document.getElementById('sniperSourceFilter')?.value || 'all',
+        skill_track_id: document.getElementById('sniperSkillTrack')?.value || '',
+        min_salary_milli: Math.round(minSalaryKoin * 1000),
+        allow_switch_job: Boolean(document.getElementById('sniperAllowSwitch')?.checked),
+        auto_stop_on_success: Boolean(document.getElementById('sniperAutoStop')?.checked),
+        allow_fee: Boolean(document.getElementById('sniperAllowFee')?.checked),
+    };
+}
+
+async function saveJobSniperConfig(overrideEnabled = null) {
+    const payload = readJobSniperFormConfig(overrideEnabled);
+    try {
+        const res = await apiFetch('/api/jobs/sniper', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+        });
+        jobSniperData = { config: res.config, state: res.state };
+        renderJobSniperPanel();
+        showToast(res.message || 'Pengaturan Job Sniper disimpan.', 'success');
+    } catch (e) {
+        showToast('Gagal menyimpan Job Sniper: ' + (e.message || 'Terjadi kesalahan'), 'error');
+    }
+}
+
+async function toggleJobSniper() {
+    const nextEnabled = !(jobSniperData?.config?.enabled);
+    await saveJobSniperConfig(nextEnabled);
+}
+
+async function runJobSniperNow() {
+    const btn = document.getElementById('btnSniperRunNow');
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = 'Memeriksa...';
+    }
+    try {
+        await saveJobSniperConfig();
+        const res = await apiFetch('/api/jobs/sniper/run', { method: 'POST', timeoutMs: 25000 });
+        jobSniperData = { config: res.config, state: res.state };
+        renderJobSniperPanel();
+        showToast(res.message || 'Pemeriksaan Job Sniper selesai.', res.sniped ? 'success' : 'info');
+        if (res.sniped) {
+            await Promise.all([loadJobVacancies(), refreshDashboard()]);
+        }
+    } catch (e) {
+        showToast('Gagal menjalankan Job Sniper: ' + (e.message || 'Terjadi kesalahan'), 'error');
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = 'Snipe Sekarang';
+        }
     }
 }
 

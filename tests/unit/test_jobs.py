@@ -1,4 +1,16 @@
+from datetime import datetime
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+from zoneinfo import ZoneInfo
+
 from app.modules.jobs.service import build_job_vacancies_payload
+from app.modules.jobs.sniper import (
+    is_within_schedule,
+    load_sniper_config,
+    pick_best_sniper_candidate,
+    run_job_sniper_once,
+    save_sniper_config,
+)
 
 
 def _sample_me() -> dict:
@@ -158,3 +170,113 @@ def test_build_job_vacancies_sorts_by_highest_salary_and_computes_multipliers():
     # Dokter: 17500 vs 6600 -> +10900 (+165.2%)
     assert dokter["salary"]["comparison"]["diff_milli"] == 10900
     assert dokter["salary"]["comparison"]["diff_pct"] == 165.2
+
+
+def test_sniper_schedule_windows_wib():
+    wib = ZoneInfo("Asia/Jakarta")
+    assert is_within_schedule({"schedule_enabled": False}, datetime(2026, 11, 27, 3, 0, tzinfo=wib))
+
+    daytime = {"schedule_enabled": True, "start_time": "08:00", "end_time": "17:00"}
+    assert is_within_schedule(daytime, datetime(2026, 11, 27, 8, 0, tzinfo=wib)) is True
+    assert is_within_schedule(daytime, datetime(2026, 11, 27, 16, 59, tzinfo=wib)) is True
+    assert is_within_schedule(daytime, datetime(2026, 11, 27, 17, 0, tzinfo=wib)) is False
+    assert is_within_schedule(daytime, datetime(2026, 11, 27, 7, 59, tzinfo=wib)) is False
+
+    overnight = {"schedule_enabled": True, "start_time": "22:00", "end_time": "06:00"}
+    assert is_within_schedule(overnight, datetime(2026, 11, 27, 23, 30, tzinfo=wib)) is True
+    assert is_within_schedule(overnight, datetime(2026, 11, 27, 5, 59, tzinfo=wib)) is True
+    assert is_within_schedule(overnight, datetime(2026, 11, 27, 12, 0, tzinfo=wib)) is False
+
+
+def test_pick_best_sniper_candidate_respects_skill_salary_and_kosong_at():
+    me = _sample_me()
+    # Add a lower-paying eligible job to verify highest-paying eligible is picked
+    me["catalog"]["vacancies"].append(
+        {
+            "facilityId": "fac-puskesmas",
+            "facility": "Puskesmas",
+            "item": "puskesmas",
+            "profession": "Perawat",
+            "slots": 3,
+            "filled": 0,
+            "wageMilliDay": 3000,
+            "minSkillLevel": 1,
+            "feeMilli": 0,
+            "bumdes": False,
+            "desa": "desa-utara",
+            "desaName": "Desa Utara",
+        }
+    )
+    # Add a skill-met full vacancy with kosongAt
+    me["catalog"]["vacancies"].append(
+        {
+            "facilityId": "fac-rs-vip",
+            "facility": "RS Provinsi",
+            "item": "rs",
+            "profession": "Dokter",
+            "slots": 1,
+            "filled": 1,
+            "kosongAt": "2026-11-28T05:00:00.000Z",
+            "wageMilliDay": 9000,
+            "minSkillLevel": 5,
+            "feeMilli": 0,
+            "bumdes": True,
+            "desa": "desa-utara",
+            "desaName": "Desa Utara",
+        }
+    )
+    payload = build_job_vacancies_payload(me, biz_items=[])
+
+    # Default config: picks Dokter (17500) over Perawat (10500), skips Kepala wilayah bank (skill_met=False)
+    best, next_kosong = pick_best_sniper_candidate(
+        payload,
+        {"source_filter": "all", "allow_switch_job": True, "allow_fee": False, "min_salary_milli": 0},
+    )
+    assert best is not None
+    assert best["profession"] == "Dokter"
+    assert best["salary"]["net_milli"] == 17500
+    assert next_kosong is not None
+    assert next_kosong["facility_id"] == "fac-rs-vip"
+
+    # When allow_switch_job=False and account already has a job, nothing is eligible
+    best_no_switch, _ = pick_best_sniper_candidate(
+        payload,
+        {"source_filter": "all", "allow_switch_job": False, "allow_fee": False, "min_salary_milli": 0},
+    )
+    assert best_no_switch is None
+
+    # When min_salary_milli is higher than Dokter (17500), nothing is eligible
+    best_high_min, _ = pick_best_sniper_candidate(
+        payload,
+        {"source_filter": "all", "allow_switch_job": True, "allow_fee": False, "min_salary_milli": 20000},
+    )
+    assert best_high_min is None
+
+
+async def test_run_job_sniper_once_applies_and_autostops(tmp_path):
+    me = _sample_me()
+    save_sniper_config(
+        tmp_path,
+        {
+            "enabled": True,
+            "interval_seconds": 30,
+            "auto_stop_on_success": True,
+            "allow_switch_job": True,
+        },
+    )
+    fake_api = SimpleNamespace(
+        fetch_game_me=AsyncMock(return_value=me),
+        fetch_biz_vacancies=AsyncMock(return_value=[]),
+        apply_facility_job=AsyncMock(return_value={"ok": True}),
+        apply_biz_vacancy=AsyncMock(return_value={"ok": True}),
+    )
+
+    res = await run_job_sniper_once(tmp_path, api=fake_api)
+    assert res["checked"] is True
+    assert res["sniped"] is True
+    assert res["job"]["profession"] == "Dokter"
+    fake_api.apply_facility_job.assert_awaited_once_with("Dokter", "fac-rs", switch_job=True)
+    # Auto-stopped after success
+    assert load_sniper_config(tmp_path)["enabled"] is False
+    assert res["state"]["snipes_count"] == 1
+    assert res["state"]["last_sniped_job"]["profession"] == "Dokter"
