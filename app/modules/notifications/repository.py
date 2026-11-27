@@ -1,7 +1,9 @@
 """Web and in-app notification manager for ojol-automation."""
 
+import heapq
 import json
 import logging
+import os
 import sqlite3
 import time
 from collections.abc import Iterator
@@ -105,7 +107,7 @@ def _notification_scopes(
 ) -> Iterator[_NotificationScope]:
     if registry is not None:
         try:
-            accounts = registry.list(archived=False) + registry.list(archived=True)
+            accounts = registry.list(archived=None)
         except sqlite3.Error as exc:
             logger.warning("Could not list notification accounts (%s)", type(exc).__name__)
             accounts = []
@@ -224,47 +226,58 @@ def list_all_admin_notifications(
     limit: int = 200,
 ) -> list[dict[str, Any]]:
     """List recent notifications across all users, accounts, and system runtime directories."""
+    if limit <= 0:
+        return []
     users = _notification_users(registry)
-    results: list[dict[str, Any]] = []
+    # Scan directory metadata first so we only read and parse the newest `limit` JSON files.
+    candidates: dict[tuple[str, str], tuple[float, str, _NotificationScope]] = {}
     for scope in _fleet_notification_dirs(settings, registry):
-        user = _notification_user(scope, users)
-        for path in scope.directory.glob("*.json"):
-            try:
-                data = json.loads(path.read_text(encoding="utf-8"))
-                context = data.get("context") or {}
-                mtime = path.stat().st_mtime
-                results.append(
-                    {
-                        "id": path.stem,
-                        "text": data.get("text", ""),
-                        "time": data.get("created_at")
-                        or time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime)),
-                        "timestamp": mtime,
-                        "is_error": bool(context.get("stage") or context.get("error_id")),
-                        "error_id": context.get("error_id"),
-                        "event": context.get("event"),
-                        "read": bool(data.get("read", False)),
-                        "account_id": scope.account_id,
-                        "account_name": scope.account_name,
-                        "account_archived": scope.archived,
-                        "owner": scope.owner,
-                        "user": user,
-                    }
-                )
-            except (OSError, ValueError, AttributeError):
-                continue
+        try:
+            with os.scandir(scope.directory) as entries:
+                for entry in entries:
+                    if not entry.name.endswith(".json") or not entry.is_file(follow_symlinks=False):
+                        continue
+                    try:
+                        mtime = entry.stat(follow_symlinks=False).st_mtime
+                    except OSError:
+                        continue
+                    stem = entry.name[:-5]
+                    key = (scope.account_id, stem)
+                    prev = candidates.get(key)
+                    if prev is None or mtime > prev[0]:
+                        candidates[key] = (mtime, entry.path, scope)
+        except OSError:
+            continue
 
-    # Deduplicate by (account_id, id)
-    seen_keys = set()
-    deduped = []
-    for item in results:
-        key = (item["account_id"], item["id"])
-        if key not in seen_keys:
-            seen_keys.add(key)
-            deduped.append(item)
+    top_entries = heapq.nlargest(limit, candidates.items(), key=lambda item: item[1][0])
+    results: list[dict[str, Any]] = []
+    for (account_id, stem), (mtime, path_str, scope) in top_entries:
+        try:
+            with open(path_str, encoding="utf-8") as fh:
+                data = json.load(fh)
+            context = data.get("context") or {}
+            results.append(
+                {
+                    "id": stem,
+                    "text": data.get("text", ""),
+                    "time": data.get("created_at")
+                    or time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime)),
+                    "timestamp": mtime,
+                    "is_error": bool(context.get("stage") or context.get("error_id")),
+                    "error_id": context.get("error_id"),
+                    "event": context.get("event"),
+                    "read": bool(data.get("read", False)),
+                    "account_id": account_id,
+                    "account_name": scope.account_name,
+                    "account_archived": scope.archived,
+                    "owner": scope.owner,
+                    "user": _notification_user(scope, users),
+                }
+            )
+        except (OSError, ValueError, AttributeError):
+            continue
 
-    deduped.sort(key=lambda x: x.get("timestamp", 0), reverse=True)
-    return deduped[:limit]
+    return results
 
 
 def mark_all_admin_notifications_read(

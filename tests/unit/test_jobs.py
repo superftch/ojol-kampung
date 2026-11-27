@@ -34,7 +34,7 @@ def _sample_me() -> dict:
             "profession": "Teller bank",
             "facility": "Bank Desa",
             "employerType": "PUBLIC",
-            "rateMilliDay": 3000,
+            "rateMilliDay": 3300,
             "ekonomiBps": 10000,
         },
         "catalog": {
@@ -147,7 +147,14 @@ def test_build_job_vacancies_sorts_by_highest_salary_and_computes_multipliers():
     assert warung["salary"]["subsidi_milli"] == 760
     assert warung["can_apply"] is True
 
-    # Current job marker
+    # Current job marker & salary comparison
     teller = next(v for v in vacancies if v["profession"] == "Teller bank")
     assert teller["is_current_job"] is True
     assert teller["can_apply"] is False
+    # Current job: rate 3300 + ekonomi 100% (3300) = 6600
+    assert payload["current_job"]["net_milli"] == 6600
+    assert teller["salary"]["comparison"]["diff_milli"] == 0
+    assert teller["salary"]["comparison"]["diff_pct"] == 0.0
+    # Dokter: 17500 vs 6600 -> +10900 (+165.2%)
+    assert dokter["salary"]["comparison"]["diff_milli"] == 10900
+    assert dokter["salary"]["comparison"]["diff_pct"] == 165.2

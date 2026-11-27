@@ -153,6 +153,39 @@ def build_job_vacancies_payload(
     raw_biz = biz_items if biz_items is not None else catalog.get("bizVacancies")
     biz_vacancies = raw_biz if isinstance(raw_biz, list) else []
 
+    current_job_summary: dict[str, Any] | None = None
+    cur_net_milli = 0
+    if current_job:
+        cur_rate = _as_int(current_job.get("rateMilliDay"), 0)
+        cur_ek_bps = _as_int(current_job.get("ekonomiBps"), ekonomi_bonus_bps)
+        cur_ek_milli = (cur_rate * cur_ek_bps) // 10000
+        cur_sub_bps = ekonomi_rem_bps if current_job.get("employerType") == "BUSINESS" else 0
+        cur_sub_milli = (cur_rate * cur_sub_bps) // 10000
+        cur_net_milli = cur_rate + cur_ek_milli + cur_sub_milli
+        current_job_summary = {
+            "profession": current_job.get("profession"),
+            "place_name": current_job.get("facility") or current_job.get("business") or "",
+            "employer_type": current_job.get("employerType"),
+            "rate_milli_day": cur_rate,
+            "ekonomi_bps": cur_ek_bps,
+            "ekonomi_milli": cur_ek_milli,
+            "subsidi_bps": cur_sub_bps,
+            "subsidi_milli": cur_sub_milli,
+            "net_milli": cur_net_milli,
+            "end_at": current_job.get("endAt"),
+        }
+
+    def _salary_comparison(net_milli: int) -> dict[str, Any] | None:
+        if not current_job_summary or cur_net_milli <= 0:
+            return None
+        diff_milli = net_milli - cur_net_milli
+        diff_pct = round((diff_milli / cur_net_milli) * 100, 1)
+        return {
+            "current_net_milli": cur_net_milli,
+            "diff_milli": diff_milli,
+            "diff_pct": diff_pct,
+        }
+
     normalized: list[dict[str, Any]] = []
 
     for v in fac_vacancies:
@@ -239,6 +272,7 @@ def build_job_vacancies_payload(
                     "subsidi_bps": 0,
                     "subsidi_milli": 0,
                     "net_milli": net_milli,
+                    "comparison": _salary_comparison(net_milli),
                 },
                 "is_current_job": is_current,
                 "can_apply": blocked_reason is None,
@@ -315,6 +349,7 @@ def build_job_vacancies_payload(
                     "subsidi_bps": ekonomi_rem_bps,
                     "subsidi_milli": subsidi_milli,
                     "net_milli": net_milli,
+                    "comparison": _salary_comparison(net_milli),
                 },
                 "is_current_job": is_current,
                 "can_apply": blocked_reason is None,
@@ -346,16 +381,7 @@ def build_job_vacancies_payload(
                 )
 
     return {
-        "current_job": {
-            "profession": current_job.get("profession"),
-            "place_name": current_job.get("facility") or current_job.get("business") or "",
-            "employer_type": current_job.get("employerType"),
-            "rate_milli_day": _as_int(current_job.get("rateMilliDay"), 0),
-            "ekonomi_bps": _as_int(current_job.get("ekonomiBps"), 0),
-            "end_at": current_job.get("endAt"),
-        }
-        if current_job
-        else None,
+        "current_job": current_job_summary,
         "has_home": bool(home),
         "home_desa": home_desa,
         "home_desa_name": home.get("desaName") or "",

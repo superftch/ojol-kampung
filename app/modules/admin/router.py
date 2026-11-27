@@ -1,5 +1,6 @@
 """Admin user approval, fleet notifications, limits, and server settings routes."""
 
+import asyncio
 from contextlib import nullcontext
 from typing import Annotated
 
@@ -165,7 +166,9 @@ async def admin_notifications(
     user: Annotated[dict, Depends(require_admin)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    notices = list_all_admin_notifications(ctx.settings, registry=ctx.registry, limit=limit)
+    notices = await asyncio.to_thread(
+        list_all_admin_notifications, ctx.settings, registry=ctx.registry, limit=limit
+    )
     return {"notifications": notices}
 
 
@@ -174,7 +177,9 @@ async def admin_notifications_mark_read(
     user: Annotated[dict, Depends(require_admin)],
     ctx: Annotated[WebContext, Depends(get_ctx)],
 ):
-    count = mark_all_admin_notifications_read(ctx.settings, registry=ctx.registry)
+    count = await asyncio.to_thread(
+        mark_all_admin_notifications_read, ctx.settings, registry=ctx.registry
+    )
     return {"success": True, "marked_count": count}
 
 

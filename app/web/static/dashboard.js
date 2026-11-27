@@ -1614,14 +1614,12 @@ async function loadAdminData(refreshSettings = true) {
 
 function renderAdminUsers(users, pending) {
     const pTbody = document.getElementById('pendingTableBody');
-    pTbody.innerHTML = '';
     if (!pending.length) {
         pTbody.innerHTML = '<tr><td colspan="5" style="text-align: center; color: var(--text-muted);">Tidak ada pengajuan tertunda.</td></tr>';
     } else {
-        pending.forEach(p => {
-            const tr = document.createElement('tr');
+        pTbody.innerHTML = pending.map(p => {
             const dt = new Date(p.created_at * 1000).toLocaleString('id-ID');
-            tr.innerHTML = `
+            return `<tr>
                 <td data-label="ID">#${p.id}</td>
                 <td class="admin-user-name"><strong>${escapeHtml(p.username)}</strong></td>
                 <td data-label="Nama">${escapeHtml(p.name || '—')}</td>
@@ -1630,29 +1628,23 @@ function renderAdminUsers(users, pending) {
                     <button class="btn btn-success" onclick="reviewUser(${p.id}, true)">Setujui</button>
                     <button class="btn btn-danger" onclick="reviewUser(${p.id}, false)">Tolak</button>
                 </td>
-            `;
-            pTbody.appendChild(tr);
-        });
+            </tr>`;
+        }).join('');
     }
 
     const uTbody = document.getElementById('usersTableBody');
-    uTbody.innerHTML = '';
-    users.forEach(u => {
-        const tr = document.createElement('tr');
-        tr.innerHTML = `
-            <td data-label="ID">#${u.id}</td>
-            <td class="admin-user-name"><strong>${escapeHtml(u.username)}</strong></td>
-            <td data-label="Nama">${escapeHtml(u.name || '—')}</td>
-            <td data-label="Peran"><span style="padding: 2px 6px; border-radius: 4px; background: ${u.role === 'admin' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.05)'}; color: ${u.role === 'admin' ? 'var(--primary)' : 'inherit'};">${u.role}</span></td>
-            <td data-label="Status"><span style="color: ${u.status === 'approved' ? 'var(--success)' : u.status === 'pending' ? 'var(--warning)' : 'var(--danger)'};">${u.status}</span></td>
-            <td>
-                ${u.role === 'admin' ? '' : u.status === 'approved' ? `<button class="btn btn-danger" onclick="reviewUser(${u.id}, false)">Nonaktifkan</button>` : `<button class="btn btn-success" onclick="reviewUser(${u.id}, true)">Aktifkan</button>`}
-                ${u.status === 'approved' ? `<button class="btn btn-secondary" type="button" onclick="openAdminUserLimits(${u.id}, this)">Batas pengguna</button>` : ''}
-                ${u.status === 'approved' && u.role !== 'admin' ? `<button class="btn btn-secondary" type="button" onclick="impersonateWebUser(${u.id}, this)">Masuk sebagai</button>` : ''}
-            </td>
-        `;
-        uTbody.appendChild(tr);
-    });
+    uTbody.innerHTML = users.map(u => `<tr>
+        <td data-label="ID">#${u.id}</td>
+        <td class="admin-user-name"><strong>${escapeHtml(u.username)}</strong></td>
+        <td data-label="Nama">${escapeHtml(u.name || '—')}</td>
+        <td data-label="Peran"><span style="padding: 2px 6px; border-radius: 4px; background: ${u.role === 'admin' ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255, 255, 255, 0.05)'}; color: ${u.role === 'admin' ? 'var(--primary)' : 'inherit'};">${u.role}</span></td>
+        <td data-label="Status"><span style="color: ${u.status === 'approved' ? 'var(--success)' : u.status === 'pending' ? 'var(--warning)' : 'var(--danger)'};">${u.status}</span></td>
+        <td>
+            ${u.role === 'admin' ? '' : u.status === 'approved' ? `<button class="btn btn-danger" onclick="reviewUser(${u.id}, false)">Nonaktifkan</button>` : `<button class="btn btn-success" onclick="reviewUser(${u.id}, true)">Aktifkan</button>`}
+            ${u.status === 'approved' ? `<button class="btn btn-secondary" type="button" onclick="openAdminUserLimits(${u.id}, this)">Batas pengguna</button>` : ''}
+            ${u.status === 'approved' && u.role !== 'admin' ? `<button class="btn btn-secondary" type="button" onclick="impersonateWebUser(${u.id}, this)">Masuk sebagai</button>` : ''}
+        </td>
+    </tr>`).join('');
 }
 
 function renderAdminSettings(s) {
@@ -2380,7 +2372,7 @@ function renderJobsAccountSummary(data) {
     if (!el) return;
     const cur = data.current_job;
     const curText = cur
-        ? `<strong>${escapeHtml(cur.profession)}</strong> di ${escapeHtml(cur.place_name || '-')} · Pokok ${formatKoinMilli(cur.rate_milli_day)} koin/hari`
+        ? `<strong>${escapeHtml(cur.profession)}</strong> di ${escapeHtml(cur.place_name || '-')} · Gaji+Skill ${formatKoinMilli(cur.rate_milli_day)} koin → Total (+multiplier): <strong style="color: #10b981;">${formatKoinMilli(cur.net_milli)} koin/hari</strong>`
         : '<span style="color: var(--text-muted);">Belum bekerja</span>';
     const ekBonus = data.ekonomi?.bonus_bps || 0;
     const ekRem = data.ekonomi?.rem_bps || 0;
@@ -2487,6 +2479,22 @@ function renderJobVacancies() {
         const btnDisabled = !v.can_apply || isApplying || applyingJobId !== null;
         const placeMeta = [v.place_name, v.desa_name ? `📍 ${v.desa_name}` : '', v.block ? `Blok ${v.block}` : '', v.owner_nick ? `Pemilik: ${v.owner_nick}` : ''].filter(Boolean).join(' · ');
 
+        let compareHtml = '';
+        if (s.comparison) {
+            const cmp = s.comparison;
+            const sign = cmp.diff_milli > 0 ? '+' : '';
+            const pctText = Number(cmp.diff_pct || 0).toLocaleString('id-ID', { minimumFractionDigits: 0, maximumFractionDigits: 1 });
+            if (v.is_current_job) {
+                compareHtml = '<div style="margin-top: 3px;"><span class="job-badge muted">Gaji saat ini (0%)</span></div>';
+            } else if (cmp.diff_milli > 0) {
+                compareHtml = `<div style="margin-top: 3px;"><span class="job-badge ok">▲ +${pctText}% (+${formatKoinMilli(cmp.diff_milli)} koin vs sekarang)</span></div>`;
+            } else if (cmp.diff_milli < 0) {
+                compareHtml = `<div style="margin-top: 3px;"><span class="job-badge full">▼ ${pctText}% (${formatKoinMilli(cmp.diff_milli)} koin vs sekarang)</span></div>`;
+            } else {
+                compareHtml = '<div style="margin-top: 3px;"><span class="job-badge muted">0% (sama dengan sekarang)</span></div>';
+            }
+        }
+
         return `
             <article class="card job-card">
                 <div class="job-card-head">
@@ -2501,6 +2509,7 @@ function renderJobVacancies() {
                     <div style="text-align: right;">
                         <div style="font-size: 11px; color: var(--text-muted);">Gaji Bersih / Hari</div>
                         <div style="font-size: 18px; font-weight: 800; color: #10b981;">${formatKoinMilli(s.net_milli)} koin</div>
+                        ${compareHtml}
                     </div>
                 </div>
                 <div class="job-salary-box">
