@@ -280,12 +280,21 @@ async def test_jaga_leaves_other_business_guarded_in_game_alone(game):
         return {**original_shop, "dijaga": key == SECOND}
 
     game.controller.ui.shop_info.side_effect = shop
-    game.remote.active = True
+
+    async def status(key):
+        return {"jaga": key == SECOND, "menit": 11 if key == SECOND else 0}
+
+    game.controller.ui.jaga_status.side_effect = status
     await start(game)
     await game.worker.start_step(game.controller, game.flags())
     assert game.calls == []
     assert game.worker.data.message == "Usaha sedang dijaga di game."
-    game.controller.ui.jaga_status.assert_awaited_once_with(SECOND)
+    assert [call.args[0] for call in game.controller.ui.jaga_status.await_args_list] == [
+        FIRST,
+        SECOND,
+        SECOND,
+    ]
+    assert game.worker.data.businesses[1].minutes == 11
 
 
 async def test_jaga_publishes_scan_progress_before_all_businesses_are_read(game):
@@ -339,3 +348,20 @@ async def test_controller_uses_scan_pause_instead_of_normal_idle_poll(game):
         await controller.run()
     controller.wait.assert_awaited_once_with(SCAN_PAUSE_SECONDS)
     assert game.calls == []
+
+
+async def test_jaga_scan_distinguishes_worked_zero_and_unknown_minutes(game):
+    third = "00000000-0000-4000-8000-000000000003"
+    game.controller.ui.businesses_semua.return_value["usaha"].extend(
+        [{"id": SECOND}, {"id": third}]
+    )
+    game.controller.ui.jaga_status.side_effect = [
+        {"jaga": False, "menit": 15},
+        {"jaga": False, "menit": 0},
+        HttpCoreError("Gagal membaca menit", category="transport"),
+    ]
+    for _ in range(3):
+        assert await game.worker.start_step(game.controller, game.flags())
+    observed = {business.id: business.minutes for business in game.worker.data.businesses}
+    assert observed == {FIRST: 15, SECOND: 0, third: None}
+    assert not game.calls

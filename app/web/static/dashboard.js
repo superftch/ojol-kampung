@@ -932,6 +932,7 @@ function renderJaga(data) {
     stop.disabled = pending;
 
     renderJagaActivity(status, enabled, waiting, workerActive, pending, capacityHint);
+    renderJagaToday(status, data.jaga_today, workerActive);
 
     const settings = data.jaga_settings;
     const summary = document.getElementById('jagaSummary');
@@ -974,10 +975,50 @@ function renderJaga(data) {
             item.rivals == null ? null : `${item.rivals} pesaing`,
             item.score == null ? null : `+${jagaNumber.format(item.score)} estimasi pembeli`,
             item.net_week_milli == null ? null : `Laba 7 hari ${jagaNumber.format(item.net_week_milli / 1000)} koin`,
-            live.target ? `${live.minutes ?? 'Belum dibaca'}/${live.target} menit` : null,
+            live.target ? `Target ${live.target} menit` : null,
             item.reason,
         ];
         element.textContent = pieces.filter(Boolean).join(' · ');
+    }
+}
+
+function renderJagaToday(status, today, workerActive) {
+    const sameDay = Boolean(today && status.day === today);
+    const session = today && status.session?.day === today ? status.session : null;
+    const tally = { active: 0, guarded: 0, waiting: 0, unknown: 0 };
+    const rows = (status.businesses || []).map(business => {
+        const current = session?.business_id === business.id ? session : null;
+        const minutes = current?.minutes ?? (sameDay ? business.minutes : null);
+        const target = current?.target ?? business.target;
+        const active = current && workerActive && status.state === 'Jaga';
+        const bucket = active ? 'active' : minutes == null ? 'unknown' : minutes > 0 ? 'guarded' : 'waiting';
+        tally[bucket]++;
+        const label = {
+            active: 'Sedang dijaga',
+            guarded: 'Sudah dijaga',
+            waiting: 'Belum dijaga',
+            unknown: 'Belum diperiksa',
+        }[bucket];
+        const progress = minutes == null ? '' : target > 0 ? `${minutes}/${target} menit` : `${minutes} menit`;
+        const result = [label, progress, target > 0 && minutes >= target ? 'Target tercapai' : '']
+            .filter(Boolean).join(' · ');
+        return `<li><span>${escapeHtml(business.name)}</span><span class="meta">${escapeHtml(result)}</span></li>`;
+    });
+
+    const subtitle = rows.length ? [
+        tally.active ? `${tally.active} sedang` : '',
+        `${tally.guarded} sudah`,
+        `${tally.waiting} belum`,
+        tally.unknown ? `${tally.unknown} belum diperiksa` : '',
+    ].filter(Boolean).join(' · ') : '';
+    const count = document.getElementById('jagaTodayCount');
+    if (count.textContent !== subtitle) count.textContent = subtitle;
+    const content = rows.length ? `<ul class="jaga-today-list">${rows.join('')}</ul>`
+        : '<p class="meta">Daftar tampil setelah worker memeriksa usaha.</p>';
+    const panel = document.getElementById('jagaTodayBusinesses');
+    if (panel.dataset.content !== content) {
+        panel.innerHTML = content;
+        panel.dataset.content = content;
     }
 }
 

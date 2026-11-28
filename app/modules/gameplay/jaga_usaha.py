@@ -299,6 +299,15 @@ class JagaWorker:
                         raise
                     report = None
                 business = read_business(item, shop, report)
+            c.check_cancel()
+            self.update("Menyusun rencana", "Membaca menit jaga hari ini.")
+            try:
+                active, minutes = status_values(await c.ui.jaga_status(key))
+            except (HttpCoreError, ValueError):
+                pass
+            else:
+                business.minutes = minutes
+                business.guarded_in_game = active
             self.scanned.append(business)
             progress.checked = len(self.scanned)
             progress.business = None
@@ -311,7 +320,8 @@ class JagaWorker:
                 self.scanned, settings, day, self.data.last_guarded, str(self.path.parent)
             )
             for business in self.data.businesses:
-                business.minutes = previous.get(business.id)
+                if business.minutes is None:
+                    business.minutes = previous.get(business.id)
             self.data.refresh_at = now() + REFRESH
             self.scan_pending = None
             self.data.scan = None
@@ -326,7 +336,9 @@ class JagaWorker:
     async def start_next(self, c, settings: JagaSettings, day: date) -> None:
         for item in self.data.businesses:
             if item.guarded_in_game:
-                active, _ = status_values(await c.ui.jaga_status(item.id))
+                active, minutes = status_values(await c.ui.jaga_status(item.id))
+                if minutes is not None:
+                    item.minutes = minutes
                 if active:
                     self.data.retry_at = now() + RECHECK
                     self.update("Menunggu", "Usaha sedang dijaga di game.")
@@ -368,6 +380,8 @@ class JagaWorker:
             return
         raw = await c.ui.jaga_status(business.id)
         active, minutes = status_values(raw)
+        if minutes is not None:
+            business.minutes = minutes
         if active:
             business.guarded_in_game = True
             self.data.retry_at = now() + RECHECK
@@ -384,7 +398,6 @@ class JagaWorker:
             self.update("Menunggu", business.reason)
             return
         target = min(business.target, maximum)
-        business.minutes = minutes
         business.target = target
         if not settings.auto_pindah and self.data.first_business is None:
             self.data.first_business = business.id

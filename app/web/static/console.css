@@ -585,3 +585,10 @@ select.account-select { max-width: 100%; }
 }
 .jaga-live { display: grid; gap: 4px; }
 .jaga-live progress { inline-size: min(100%, 22rem); block-size: 8px; accent-color: var(--primary); }
+
+#jagaTodayCount { font-weight: 400; margin-inline-start: 6px; }
+.jaga-today-list { list-style: none; margin: 0; padding: 0; }
+.jaga-today-list li { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0 12px; padding: 8px 0; }
+.jaga-today-list li:first-child { padding-top: 0; }
+.jaga-today-list li:last-child { padding-bottom: 0; }
+.jaga-today-list li + li { border-top: 1px solid var(--border); }

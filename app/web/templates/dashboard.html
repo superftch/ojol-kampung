@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard · Kampung Ojol Automation</title>
-    <link rel="stylesheet" href="/ui/console.css?v=20261128b">
+    <link rel="stylesheet" href="/ui/console.css?v=20261128c">
 </head>
 <body class="app-shell">
     <header class="app-header">
@@ -199,6 +199,10 @@
                                         <progress id="jagaProgress" aria-label="Progres jaga usaha"></progress>
                                         <p id="jagaLiveDetail" class="meta"></p>
                                     </div>
+                                    <details class="jaga-details">
+                                        <summary class="kantor-details-summary">Jaga hari ini <span id="jagaTodayCount" class="meta"></span></summary>
+                                        <div id="jagaTodayBusinesses" class="kantor-details-body"></div>
+                                    </details>
                                     <p id="jagaSummary" class="jaga-details meta"></p>
                                     <p class="jaga-details meta">Anda bisa memantau dari dashboard. Sebelum membuka panel Jaga untuk usaha yang sama di game, tekan <strong>Hentikan</strong> dan tunggu sesi berakhir.</p>
                                     <details class="jaga-details">
@@ -957,6 +961,6 @@ __ADMIN_NOTIF_PANEL__
     </dialog>
 
     <script>const currentUser = __USER_JSON__;</script>
-    <script src="/ui/dashboard.js?v=20261128d"></script>
+    <script src="/ui/dashboard.js?v=20261128e"></script>
 </body>
 </html>
