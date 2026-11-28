@@ -1288,6 +1288,7 @@
     h: Math.PI,
     laju: 0,
     titik: [],
+    others: [],
     synced: false,
     hasSetInput: false,
     hasIkanAnim: false,
@@ -1707,6 +1708,113 @@
       `</div>`;
   }
 
+  // Hitung kepadatan (rame) & kedalaman persis seperti rumus game (1218nyygvbivb.js module 816407)
+  function calcSpotRameAt(px, pz, spots) {
+    const depth = calcDepth(px, pz);
+    let rame = 0.35 * (0.7 + 0.6 * Math.min(1, depth / 30));
+    if (Array.isArray(spots)) {
+      for (const o of spots) {
+        if (!o || typeof o.x !== "number" || typeof o.z !== "number") continue;
+        const r = o.r || 30;
+        const ratio = Math.hypot(o.x - px, o.z - pz) / r;
+        if (ratio >= 1) continue;
+        rame += (o.kaya || 0) * (1 - ratio * ratio);
+      }
+    }
+    return { depth, rame: Math.min(1, rame) };
+  }
+
+  function getNearestOtherBoatDist(px, pz, others = liveShipData.others) {
+    if (!Array.isArray(others) || others.length === 0) return Infinity;
+    let best = Infinity;
+    for (const o of others) {
+      if (!o || typeof o.x !== "number" || typeof o.z !== "number") continue;
+      const d = Math.hypot(o.x - px, o.z - pz);
+      if (d < best) best = d;
+    }
+    return best;
+  }
+
+  let spotOffsetLock = null; // { key, x, z, pickedAt }
+  let lastPlayerNudgeAt = 0;
+  const PLAYER_CROWD_DIST = 9;     // Jarak < 9m dianggap terlalu dempet dengan pemain lain
+  const PLAYER_SAFE_DIST = 15;     // Target jarak aman dari pemain lain saat geser posisi
+  const PLAYER_NUDGE_COOLDOWN_MS = 15000;
+
+  function getSpotLockKey(spot) {
+    if (!spot) return "";
+    return spot.id !== undefined ? String(spot.id) : `${Math.round(spot.x)}:${Math.round(spot.z)}`;
+  }
+
+  // Pilih titik posisi agak acak di dalam zona spot yang tetap mempertahankan tier kedalaman & kepadatan (5/5 Ramai),
+  // sekaligus menjauh sedikit dari posisi perahu pemain lain bila ada yang berdekatan.
+  function pickOffsetPointInSpot(spot, spots, otherBoats, target, bounds, { forceRepick = false, rng = Math.random } = {}) {
+    if (!spot) return null;
+    const key = getSpotLockKey(spot);
+    const others = Array.isArray(otherBoats) ? otherBoats : [];
+
+    if (!forceRepick && spotOffsetLock && spotOffsetLock.key === key) {
+      const lockedDist = getNearestOtherBoatDist(spotOffsetLock.x, spotOffsetLock.z, others);
+      if (lockedDist >= PLAYER_CROWD_DIST) {
+        return { x: spotOffsetLock.x, z: spotOffsetLock.z, movedForPlayer: false };
+      }
+    }
+
+    const basePt = clampPointToSafeBounds(spot.x, spot.z, pancingProfile.lepasM || 0);
+    if (spot.isSyntheticDepthPoint) {
+      const jitterX = (rng() - 0.5) * 40;
+      const jitterZ = (rng() - 0.5) * 16;
+      const pt = clampPointToSafeBounds(basePt.x + jitterX, basePt.z + jitterZ, pancingProfile.lepasM || 0);
+      spotOffsetLock = { key, x: pt.x, z: pt.z, pickedAt: performance.now() };
+      return { x: pt.x, z: pt.z, movedForPlayer: false };
+    }
+
+    const centerEval = calcSpotRameAt(basePt.x, basePt.z, spots);
+    const radius = Math.max(12, spot.r || 30);
+    const wantsDeep30 = target && target.maxDepth == null && centerEval.depth >= 30;
+    const reqMinDepth = wantsDeep30 ? 30 : (target?.minDepth || 0);
+    const reqMaxDepth = target?.maxDepth ?? null;
+    // Pertahankan 5/5 Ramai bila pusat spot 5/5, atau tetap Ramai
+    const minRame = centerEval.rame >= 0.85
+      ? Math.min(0.85, centerEval.rame - 0.03)
+      : Math.max(0.65, centerEval.rame - 0.05);
+
+    const candidates = [{ x: basePt.x, z: basePt.z, rame: centerEval.rame, depth: centerEval.depth }];
+    const sampleCount = 20;
+    for (let i = 0; i < sampleCount; i++) {
+      const angle = (i / sampleCount) * Math.PI * 2 + rng() * 0.35;
+      const frac = 0.16 + rng() * 0.46; // 16%–62% dari radius spot
+      const rawX = spot.x + Math.cos(angle) * radius * frac;
+      const rawZ = spot.z + Math.sin(angle) * radius * frac;
+      const pt = clampPointToSafeBounds(rawX, rawZ, pancingProfile.lepasM || 0);
+      if (pt.x < bounds.safeX0 || pt.x > bounds.safeX1 || pt.z < bounds.safeZ0 || pt.z > bounds.safeZ1) continue;
+      const ev = calcSpotRameAt(pt.x, pt.z, spots);
+      if (ev.depth < reqMinDepth) continue;
+      if (reqMaxDepth != null && ev.depth > reqMaxDepth) continue;
+      if (ev.rame < minRame) continue;
+      candidates.push({ x: pt.x, z: pt.z, rame: ev.rame, depth: ev.depth });
+    }
+
+    let best = candidates[0];
+    let bestScore = -Infinity;
+    for (const c of candidates) {
+      const playerDist = getNearestOtherBoatDist(c.x, c.z, others);
+      const crowdPenalty = playerDist < PLAYER_CROWD_DIST ? -500 : (playerDist < PLAYER_SAFE_DIST ? -120 : 0);
+      const spacingBonus = Math.min(28, Number.isFinite(playerDist) ? playerDist : 28) * 6;
+      const rameBonus = c.rame * 120;
+      const randomJitter = rng() * 34; // Variasi posisi natural di dalam tier yang sama
+      const score = crowdPenalty + spacingBonus + rameBonus + randomJitter;
+      if (score > bestScore) {
+        bestScore = score;
+        best = c;
+      }
+    }
+
+    const movedForPlayer = forceRepick && others.length > 0;
+    spotOffsetLock = { key, x: best.x, z: best.z, pickedAt: performance.now() };
+    return { x: best.x, z: best.z, movedForPlayer };
+  }
+
   // Batas resmi game untuk status "Ramai": rame >= 0.45 (5 bar penuh sekitar >= 0.78)
   const RAMAI_MIN_KAYA = 0.45;
   const FIVE_BAR_MIN_KAYA = 0.78;
@@ -1730,12 +1838,26 @@
       const meetsDepth = d >= minDepth && (maxDepth === null || d <= maxDepth);
       const isRamai = (s.kaya || 0) >= RAMAI_MIN_KAYA;
       const isFiveBar = (s.kaya || 0) >= FIVE_BAR_MIN_KAYA;
-      const tier = (meetsDepth && isFiveBar) ? 4 : (meetsDepth && isRamai) ? 3 : meetsDepth ? 2 : isRamai ? 1 : 0;
+      // Untuk target laut dalam (tanpa maxDepth), SELALU prioritaskan spot 30m+ Ramai di atas spot <30m
+      const isDeep30 = maxDepth === null && d >= 30;
+      const tier = (isDeep30 && isFiveBar)
+        ? 6
+        : (isDeep30 && isRamai)
+        ? 5
+        : (meetsDepth && isFiveBar)
+        ? 4
+        : (meetsDepth && isRamai)
+        ? 3
+        : meetsDepth
+        ? 2
+        : isRamai
+        ? 1
+        : 0;
       const depthBonus = maxDepth !== null
         ? Math.max(0, 60 - Math.abs(d - (activeTarget.optimalDepth || 5)) * 8)
         : (d >= 34 ? 140 : d >= 30 ? 120 : d >= 24 ? 80 : d >= 15 ? 40 : d);
       const score = (tier * 1000) + ((s.kaya || 0) * 600) + depthBonus - (dist * 0.08);
-      return { ...s, depth: d, dist, tier, isRamai, isFiveBar, meetsDepth, score };
+      return { ...s, depth: d, dist, tier, isRamai, isFiveBar, isDeep30, meetsDepth, score };
     });
 
     ranked.sort((a, b) => b.score - a.score);
@@ -4158,31 +4280,71 @@
           : bestSpot;
 
         if (navTarget && liveShipData.synced) {
-          const safeSpotCoords = clampPointToSafeBounds(navTarget.x, navTarget.z, pancingProfile.lepasM || 0);
+          const bounds = getBoatSafeBounds(pancingProfile.lepasM || 0);
+          const offsetPt = pickOffsetPointInSpot(navTarget, spots, liveShipData.others, target, bounds);
+          const safeSpotCoords = offsetPt
+            ? clampPointToSafeBounds(offsetPt.x, offsetPt.z, pancingProfile.lepasM || 0)
+            : clampPointToSafeBounds(navTarget.x, navTarget.z, pancingProfile.lepasM || 0);
           const dx = safeSpotCoords.x - liveShipData.x;
           const dz = safeSpotCoords.z - liveShipData.z;
           const dist = Math.hypot(dx, dz);
 
-          // Prioritas utama: langsung berhenti begitu Sonar mencapai 5/5 bar (tidak perlu paksa dead center).
-          // Jika spot terbaik tidak bisa 5 bar (mis. kaya < 0.78), tetap melaju menuju inti spot (~5-8m dari pusat)
+          // Bila target terbaik adalah spot 30m+ Ramai, jangan berhenti prematur di spot 25–29m di tengah jalan
+          const wantsDeep30Target = Boolean(
+            !navTarget.isSyntheticDepthPoint &&
+            target.maxDepth == null &&
+            navTarget.depth >= 30 &&
+            navTarget.isRamai
+          );
+          const arrivalDepthOk = wantsDeep30Target ? sonar.depth >= 30 : inDepthRange;
+
+          // Anti-dempet pemain lain: bila sedang idle & ada perahu pemain lain terlalu dekat (<9m),
+          // geser sedikit ke titik acak lain yang masih 5/5 Ramai di dalam spot (dengan jeda 15 detik agar tidak bolak-balik).
+          const nearestPlayerDist = getNearestOtherBoatDist(liveShipData.x, liveShipData.z, liveShipData.others);
+          const targetPlayerDist = getNearestOtherBoatDist(safeSpotCoords.x, safeSpotCoords.z, liveShipData.others);
+          const hasBetterClearSpot = targetPlayerDist > nearestPlayerDist + 2 && dist > 4;
+          const tooCloseToPlayer = nearestPlayerDist < PLAYER_CROWD_DIST && hasBetterClearSpot;
+          const nowNudge = performance.now();
+          let nudgingForPlayer = false;
+          if (nearestPlayerDist < PLAYER_CROWD_DIST && !isNavigating && nowNudge - lastPlayerNudgeAt >= PLAYER_NUDGE_COOLDOWN_MS) {
+            const altPt = pickOffsetPointInSpot(navTarget, spots, liveShipData.others, target, bounds, { forceRepick: true });
+            if (altPt && Math.hypot(altPt.x - liveShipData.x, altPt.z - liveShipData.z) >= 5 && getNearestOtherBoatDist(altPt.x, altPt.z, liveShipData.others) > nearestPlayerDist + 2) {
+              lastPlayerNudgeAt = nowNudge;
+              nudgingForPlayer = true;
+            }
+          }
+
+          const navSteerSpot = { ...navTarget, x: safeSpotCoords.x, z: safeSpotCoords.z };
+
+          // Prioritas utama: langsung berhenti begitu Sonar mencapai 5/5 bar di kedalaman target (dan tidak terlalu dempet pemain lain).
+          // Jika spot terbaik tidak bisa 5 bar (mis. kaya < 0.78), tetap melaju menuju titik acak di inti spot (~5-8m)
           // agar dapat sinyal tertinggi tanpa berhenti prematur di pinggiran Ramai (3-4 bar).
           // Jika tidak ada spot di kedalaman target (synthetic waypoint), langsung berhenti begitu inDepthRange tercapai.
           const coreRadius = Math.min(8, Math.max(5, (navTarget.r || 30) * 0.25));
-          const reachedFiveBars = typeof sonar.bars === "number" && sonar.bars >= 5 && inDepthRange;
-          const reachedSpotCore = dist <= coreRadius && inDepthRange;
+          const reachedFiveBars = !tooCloseToPlayer && typeof sonar.bars === "number" && sonar.bars >= 5 && arrivalDepthOk && dist <= Math.max(coreRadius + 6, 12);
+          const reachedSpotCore = !tooCloseToPlayer && dist <= coreRadius && arrivalDepthOk;
           const reachedSyntheticDepth =
+            !tooCloseToPlayer &&
             Boolean(navTarget.isSyntheticDepthPoint) &&
             inDepthRange &&
             sonar.crowd !== "Sepi";
-          const reachedLumayanFallback = !navTarget.isRamai && sonar.crowd === "Lumayan" && inDepthRange;
+          const reachedLumayanFallback = !tooCloseToPlayer && !navTarget.isRamai && sonar.crowd === "Lumayan" && inDepthRange;
           const reachedOptimalDepth =
+            !tooCloseToPlayer &&
             !navTarget.isRamai &&
             sonar.depth >= target.optimalDepth &&
             (target.maxDepth == null || sonar.depth <= target.maxDepth) &&
             sonar.crowd !== "Sepi";
 
-          if (!reachedFiveBars && !reachedSpotCore && !reachedSyntheticDepth && !reachedLumayanFallback && !reachedOptimalDepth) {
-            startAutopilotToSpot(navTarget, liveShipData.x, liveShipData.z, liveShipData.h, liveShipData.laju || 0);
+          if (nudgingForPlayer || (!reachedFiveBars && !reachedSpotCore && !reachedSyntheticDepth && !reachedLumayanFallback && !reachedOptimalDepth)) {
+            startAutopilotToSpot(navSteerSpot, liveShipData.x, liveShipData.z, liveShipData.h, liveShipData.laju || 0);
+            if (tooCloseToPlayer) {
+              updateStatusMsg(
+                "↔️ Geser Sedikit (Ada Pemain)...",
+                `Menjauh dari perahu lain (${Math.round(nearestPlayerDist)}m) sambil tetap 5/5 Ramai...`,
+                "#00e5ff"
+              );
+            }
             // Safety timeout guard (maks 60 detik berlayar)
             if (performance.now() - navStartTime > 60000) {
               stopAutopilot(`Spot dicapai: ${formatSonarText(sonar)}`);

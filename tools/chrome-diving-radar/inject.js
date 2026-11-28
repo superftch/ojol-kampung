@@ -101,6 +101,30 @@
     };
   }
 
+  function extractOtherMancingBoats(mInst) {
+    const out = [];
+    if (!mInst) return out;
+    const sources = [mInst.teman, mInst.warga, mInst.lain, mInst.pemain];
+    for (const src of sources) {
+      if (!src) continue;
+      const items = src instanceof Map
+        ? Array.from(src.values())
+        : Array.isArray(src)
+        ? src
+        : (typeof src === "object" ? Object.values(src) : []);
+      for (const item of items) {
+        if (!item || typeof item !== "object") continue;
+        const bx = typeof item.x === "number" ? item.x : item.g?.position?.x;
+        const bz = typeof item.z === "number" ? item.z : item.g?.position?.z;
+        if (typeof bx === "number" && Number.isFinite(bx) && typeof bz === "number" && Number.isFinite(bz)) {
+          out.push({ x: bx, z: bz });
+        }
+      }
+      if (out.length > 0) break;
+    }
+    return out;
+  }
+
   // 0b. Proteksi anti-macet "⏳ Lempar/Celup" (race condition buangIkan() & rAF throttled saat tab tidak fokus)
   function recoverDeadlockedMancingCast(mInst, { force = false } = {}) {
     if (!mInst || !mInst.kail || typeof mInst.kail.resolve !== "function") return false;
@@ -349,6 +373,7 @@
                 h: typeof res.h === "number" ? res.h : 0,
                 laju: typeof res.laju === "number" ? res.laju : 0,
                 titik: Array.isArray(this.titik) ? this.titik : [],
+                others: extractOtherMancingBoats(this),
                 hasSetInput: typeof this.setInput === "function",
                 hasIkanAnim: !!this.ikan
               };
@@ -543,6 +568,7 @@
                   h: pos.h,
                   laju: pos.laju,
                   titik: Array.isArray(inst.titik) ? inst.titik : [],
+                  others: extractOtherMancingBoats(inst),
                   hasSetInput: typeof inst.setInput === "function",
                   hasIkanAnim: !!inst.ikan
                 };
@@ -620,6 +646,7 @@
           h: pos.h,
           laju: pos.laju,
           titik: Array.isArray(mInst.titik) ? mInst.titik : (window.__KS_MANCING_DATA?.titik || []),
+          others: extractOtherMancingBoats(mInst),
           hasSetInput: typeof mInst.setInput === "function",
           hasIkanAnim: !!mInst.ikan
         };

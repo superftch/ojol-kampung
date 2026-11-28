@@ -1807,4 +1807,75 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     assert.equal(hitWall, false, `max-speed boat must brake & turn away before x=-320 (final x=${x.toFixed(1)})`);
     assert.ok(x > bounds.x0 + 10, `boat must stay safely inside West wall (x=${x.toFixed(1)})`);
   });
+
+  await t.test("autopilot strictly prioritizes 30m+ Ramai over <30m spots and does not stop early en route", () => {
+    const mancingSrc = fs.readFileSync(path.join(extDir, "mancing.js"), "utf-8");
+    assert.match(mancingSrc, /const isDeep30 = maxDepth === null && d >= 30;/);
+    assert.match(mancingSrc, /\(isDeep30 && isFiveBar\)\s*\?\s*6\s*:\s*\(isDeep30 && isRamai\)\s*\?\s*5/);
+    assert.match(mancingSrc, /const wantsDeep30Target = Boolean\(/);
+    assert.match(mancingSrc, /const arrivalDepthOk = wantsDeep30Target \? sonar\.depth >= 30 : inDepthRange;/);
+
+    // Verify 34m Ramai (kaya 0.60, tier 5) strictly outranks 26m 5/5 (kaya 0.95, tier 4)
+    const RAMAI_MIN_KAYA = 0.45;
+    const FIVE_BAR_MIN_KAYA = 0.78;
+    function scoreSpot(d, kaya, dist = 100, minDepth = 25, maxDepth = null) {
+      const meetsDepth = d >= minDepth && (maxDepth === null || d <= maxDepth);
+      const isRamai = kaya >= RAMAI_MIN_KAYA;
+      const isFiveBar = kaya >= FIVE_BAR_MIN_KAYA;
+      const isDeep30 = maxDepth === null && d >= 30;
+      const tier = (isDeep30 && isFiveBar) ? 6 : (isDeep30 && isRamai) ? 5 : (meetsDepth && isFiveBar) ? 4 : (meetsDepth && isRamai) ? 3 : meetsDepth ? 2 : isRamai ? 1 : 0;
+      const depthBonus = d >= 34 ? 140 : d >= 30 ? 120 : d >= 24 ? 80 : d >= 15 ? 40 : d;
+      return tier * 1000 + kaya * 600 + depthBonus - dist * 0.08;
+    }
+
+    const spot34Ramai = scoreSpot(34, 0.60, 220);
+    const spot26FiveBar = scoreSpot(26, 0.95, 40);
+    const spot35FiveBar = scoreSpot(35, 0.85, 250);
+    assert.ok(spot34Ramai > spot26FiveBar, "34m Ramai must always beat 26m 5/5");
+    assert.ok(spot35FiveBar > spot34Ramai, "35m 5/5 must beat 34m non-5/5 Ramai");
+    // Shallow mode (maxDepth=10) does NOT trigger isDeep30
+    const shallow5FiveBar = scoreSpot(5, 0.90, 20, 2, 10);
+    const deep35InShallowMode = scoreSpot(35, 0.95, 200, 2, 10);
+    assert.ok(shallow5FiveBar > deep35InShallowMode, "shallow mode must stay in 2-10m");
+  });
+
+  await t.test("randomized in-spot positioning & player-avoidance shift stays 5/5 Ramai and ≥30m", () => {
+    const mancingSrc = fs.readFileSync(path.join(extDir, "mancing.js"), "utf-8");
+    const injectSrc = fs.readFileSync(path.join(extDir, "inject.js"), "utf-8");
+
+    assert.match(injectSrc, /function extractOtherMancingBoats\(/, "inject.js must extract nearby player boats");
+    assert.match(injectSrc, /others:\s*extractOtherMancingBoats\(/, "inject.js must broadcast others[] in ks_mancing_data_update");
+    assert.match(mancingSrc, /function calcSpotRameAt\(/);
+    assert.match(mancingSrc, /function getNearestOtherBoatDist\(/);
+    assert.match(mancingSrc, /function pickOffsetPointInSpot\(/);
+    assert.match(mancingSrc, /PLAYER_CROWD_DIST\s*=\s*9/);
+    assert.match(mancingSrc, /Geser Sedikit \(Ada Pemain\)/);
+
+    // Behavioral check: when another player sits at dead center of a 35m 5/5 spot (0, -580, r=35, kaya=0.88),
+    // candidate selection shifts away from the player (>= 10m away) while preserving depth >= 30m and 5/5 Ramai (>= 0.85)!
+    function calcDepth(x, z) {
+      const n = Math.min(1, Math.max(0, (-z - 10) / 630));
+      return Math.max(1.5, 2 + n * n * 18 + 20 * n + Math.sin(0.021 * x + 1.3) * Math.cos(0.017 * z) * 3 * n + Math.max(0, -640 - z) * 0.05);
+    }
+    const spot = { x: 0, z: -580, r: 35, kaya: 0.88 };
+    const others = [{ x: 0, z: -580 }];
+    let picked = null;
+    let bestScore = -Infinity;
+    for (let i = 0; i < 20; i++) {
+      const angle = (i / 20) * Math.PI * 2;
+      const px = spot.x + Math.cos(angle) * spot.r * 0.45;
+      const pz = spot.z + Math.sin(angle) * spot.r * 0.45;
+      const d = calcDepth(px, pz);
+      const ratio = Math.hypot(px - spot.x, pz - spot.z) / spot.r;
+      const rame = Math.min(1, 0.35 * (0.7 + 0.6 * Math.min(1, d / 30)) + spot.kaya * (1 - ratio * ratio));
+      if (d < 30 || rame < 0.85) continue;
+      const pDist = Math.hypot(px - others[0].x, pz - others[0].z);
+      const score = (pDist < 9 ? -500 : 0) + Math.min(28, pDist) * 6 + rame * 120;
+      if (score > bestScore) { bestScore = score; picked = { x: px, z: pz, d, rame, pDist }; }
+    }
+    assert.ok(picked, "must find a valid 5/5 Ramai offset point away from player");
+    assert.ok(picked.pDist >= 14, `shifted point must keep spacing from other player (dist=${picked.pDist.toFixed(1)}m)`);
+    assert.ok(picked.d >= 30, `shifted point must stay ≥30m (depth=${picked.d.toFixed(1)}m)`);
+    assert.ok(picked.rame >= 0.85, `shifted point must stay 5/5 Ramai (rame=${picked.rame.toFixed(2)})`);
+  });
 });
