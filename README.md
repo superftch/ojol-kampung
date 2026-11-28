@@ -80,6 +80,14 @@ Pengguna masuk dengan username dan password. Akun web pertama menjadi admin pada
 
 Untuk user lama yang sebelumnya hanya masuk lewat bot, operator server dapat memulihkan password web dengan `python -m ojol.control set-web-password USERNAME`. Perintah meminta password lewat prompt dan mencabut sesi sebelumnya. ID kepemilikan lama tetap dipakai untuk akun yang sudah tertaut ke pengguna web.
 
+### Auto Jaga Usaha
+
+Pilih akun dan buka **Dashboard → Auto Jaga Usaha → Pengaturan jaga**. Tekan **Jalankan** untuk memulai. Hentikan Auto Ojol agar sesi jaga dapat dimulai setelah aktivitas game selesai. Pilih **Terbaik** untuk estimasi tambahan pembeli, **Rotasi** untuk mendahulukan usaha yang sudah lama belum dijaga, atau **Manual** untuk memilih usaha satu per satu setelah daftar terbaca.
+
+Anggaran harian membatasi durasi sesi worker. Target per usaha mengikuti menit yang dilaporkan game. Status menampilkan jumlah usaha yang sudah diperiksa, progres target dari game, dan alasan menunggu. Jika game meminta verifikasi, selesaikan di game sebelum menekan **Hentikan**, lalu **Jalankan** kembali di dashboard. Status penutupan yang belum pasti ditampilkan sampai server mengonfirmasi sesi berakhir. Bukti dan keterbatasan API dicatat di [inventaris HTTP](docs/http-endpoints.md#bukti-jaga-usaha-28-november-2026-update-249).
+
+Membuka dashboard hanya membaca status. Sebelum membuka panel Jaga untuk usaha yang sedang dijaga di game, tekan **Hentikan** dan tunggu sesi berakhir. Browser game dapat ikut mengirim detak, dan menutup panel Jaga dapat mengakhiri sesi worker.
+
 ## Development lokal
 
 Gunakan [panduan Docker lokal](docs/local-development.md) untuk pengujian sebelum deploy. Compose lokal memakai port 6081 dan volume development sendiri.

@@ -17,6 +17,7 @@ from app.modules.gameplay.kerja import is_work_active_now, kerja_target_poin
 from app.modules.gameplay.study import cached_skills, kursus_cost_info, kursus_subject, subjects
 from app.modules.ledger.finance import WIB, day_bounds, report_date
 from app.modules.notifications.repository import list_notifications
+from app.modules.worker.jaga_settings import JAGA_PRESETS, JAGA_STATUS_FILE, load_jaga_settings
 from app.modules.worker.settings import auto_flags
 from app.web.deps import WebContext, get_all_fleet_directories, resolve_account_service
 
@@ -696,6 +697,25 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
     directory = cur_service.settings.runtime_dir
     data, _ = status_record(directory / "status.json")
     state = dashboard_snapshot(directory, data)
+    jaga_record, _ = status_record(directory / JAGA_STATUS_FILE)
+    jaga_status = {
+        key: jaga_record[key]
+        for key in (
+            "day",
+            "state",
+            "message",
+            "session",
+            "businesses",
+            "used_seconds",
+            "scan",
+            "updated_at",
+            "retry_at",
+        )
+        if key in jaga_record
+    }
+    jaga_settings = None
+    with suppress(ValueError):
+        jaga_settings = load_jaga_settings(directory).model_dump(mode="json")
     kerja_status, _ = status_record(directory / "kerja-status.json")
     kursus_status, _ = status_record(directory / "kursus-status.json")
     skills_list = cached_skills(directory)
@@ -745,6 +765,9 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
         "summary": summary,
         "snapshot": state,
         "kerja_status": kerja_status or None,
+        "jaga_status": jaga_status or None,
+        "jaga_settings": jaga_settings,
+        "jaga_presets": JAGA_PRESETS,
         "kerja_target_poin": kerja_target_poin(directory),
         "ojol_waiting_kerja": bool(
             flags.get("ojol") is True

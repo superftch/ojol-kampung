@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard · Kampung Ojol Automation</title>
-    <link rel="stylesheet" href="/ui/console.css?v=20261127a">
+    <link rel="stylesheet" href="/ui/console.css?v=20261128b">
 </head>
 <body class="app-shell">
     <header class="app-header">
@@ -182,6 +182,63 @@
                                         <button id="btnRunNeeds" class="btn btn-primary" type="button" onclick="controlAction('run-needs')" aria-label="Jalankan Auto Kebutuhan">Jalankan</button>
                                         <button id="btnStopNeeds" class="btn btn-stop" type="button" onclick="controlAction('stop-needs')" aria-label="Hentikan Auto Kebutuhan">Hentikan</button>
                                     </div>
+                                </div>
+                                <div id="jagaControl" class="control-group jaga-control" role="group" aria-labelledby="jagaTitle" hidden>
+                                    <div>
+                                        <div class="kantor-heading">
+                                            <h3 id="jagaTitle" class="control-group-title">Auto Jaga Usaha</h3>
+                                            <span id="jagaState" class="control-state" role="status"></span>
+                                        </div>
+                                        <p id="jagaHint" class="meta"></p>
+                                    </div>
+                                    <div class="btn-segment-group">
+                                        <button id="btnRunJaga" type="button" class="btn btn-primary" onclick="setJagaRunning(true)" aria-label="Jalankan Auto Jaga Usaha">Jalankan</button>
+                                        <button id="btnStopJaga" type="button" class="btn btn-stop" onclick="setJagaRunning(false)" aria-label="Hentikan Auto Jaga Usaha" hidden>Hentikan</button>
+                                    </div>
+                                    <div id="jagaLive" class="jaga-details jaga-live" hidden>
+                                        <progress id="jagaProgress" aria-label="Progres jaga usaha"></progress>
+                                        <p id="jagaLiveDetail" class="meta"></p>
+                                    </div>
+                                    <p id="jagaSummary" class="jaga-details meta"></p>
+                                    <p class="jaga-details meta">Anda bisa memantau dari dashboard. Sebelum membuka panel Jaga untuk usaha yang sama di game, tekan <strong>Hentikan</strong> dan tunggu sesi berakhir.</p>
+                                    <details class="jaga-details">
+                                        <summary class="kantor-details-summary">Pengaturan jaga</summary>
+                                        <form id="jagaSettingsForm" class="jaga-form kantor-details-body" oninput="this.dataset.dirty = 'true'" onsubmit="event.preventDefault(); saveJagaSettings();">
+                                            <div class="jaga-fields">
+                                                <label>Cara memilih usaha
+                                                    <select name="mode" onchange="updateJagaMode(this.form)" aria-describedby="jagaModeHint">
+                                                        <option value="terbaik">Peluang pembeli tertinggi</option>
+                                                        <option value="rotasi">Giliran usaha</option>
+                                                        <option value="manual">Pilih sendiri</option>
+                                                    </select>
+                                                </label>
+                                                <label>Batas jaga per hari
+                                                    <select name="preset" onchange="applyJagaPreset(this)"></select>
+                                                </label>
+                                                <label id="jagaCustomBudget">Batas kustom (jam)
+                                                    <input name="budget_jam" type="number" min="0.01" max="10" step="any" required>
+                                                </label>
+                                            </div>
+                                            <p id="jagaModeHint" class="meta"></p>
+                                            <details id="jagaBusinessSettings">
+                                                <summary class="kantor-details-summary">Pilihan dan aturan per usaha</summary>
+                                                <div id="jagaBusinesses" class="jaga-businesses"></div>
+                                            </details>
+                                            <details>
+                                                <summary class="kantor-details-summary">Pengaturan lanjutan</summary>
+                                                <div class="jaga-fields">
+                                                    <label>Mulai (WIB)<input name="active_start" type="time" required></label>
+                                                    <label>Selesai (WIB)<input name="active_end" type="time" required></label>
+                                                    <label>Target minimum (menit)<input name="target_min" type="number" min="1" max="240" required></label>
+                                                    <label>Target maksimum (menit)<input name="target_max" type="number" min="1" max="240" required></label>
+                                                    <label>Minimal pelanggan kemarin<input name="min_pelanggan" type="number" min="0" required></label>
+                                                    <label>Minimal estimasi tambahan pembeli<input name="min_skor" type="number" min="0" step="any" placeholder="Opsional"></label>
+                                                </div>
+                                                <label class="jaga-checkbox"><input name="auto_pindah" type="checkbox"> Lanjut ke usaha berikutnya saat target tercapai</label>
+                                            </details>
+                                            <div><button type="submit" class="btn btn-secondary">Simpan pengaturan</button></div>
+                                        </form>
+                                    </details>
                                 </div>
                             </div>
                         </section>
@@ -900,6 +957,6 @@ __ADMIN_NOTIF_PANEL__
     </dialog>
 
     <script>const currentUser = __USER_JSON__;</script>
-    <script src="/ui/dashboard.js?v=20261127a"></script>
+    <script src="/ui/dashboard.js?v=20261128c"></script>
 </body>
 </html>

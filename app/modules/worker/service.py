@@ -22,6 +22,7 @@ from app.modules.gameplay.kerja import is_work_active_now
 from app.modules.ledger.finance import WIB, report_date
 from app.modules.notifications.service import queue_error, queue_notice
 from app.modules.worker.capacity import WorkerCapacityError
+from app.modules.worker.jaga_settings import wake_jaga_worker
 from app.modules.worker.maintenance import GAME_COMMANDS, SCHEDULE_FILE, held_window
 from app.modules.worker.settings import auto_flags, set_auto_flag
 from app.modules.worker.status import (
@@ -322,6 +323,8 @@ class ControlService:
             active = (self.worker and self.worker.returncode is None) or running(
                 self.settings.runtime_dir
             )
+            if flags["jaga"]:
+                return await self.ensure_jaga_worker()
             has_kebutuhan = any(flags[k] for k in flags if k != "ojol")
             if active and has_kebutuhan:
                 return (
@@ -337,6 +340,9 @@ class ControlService:
             active = (self.worker and self.worker.returncode is None) or running(
                 self.settings.runtime_dir
             )
+            if active and flags["jaga"]:
+                wake_jaga_worker(self.settings.runtime_dir)
+                return "⏹ Auto kebutuhan dihentikan. Auto Jaga tetap tersedia."
             if active and flags["ojol"]:
                 return (
                     "⏹ Auto kebutuhan dihentikan.\n\n"
@@ -350,6 +356,9 @@ class ControlService:
             active = (self.worker and self.worker.returncode is None) or running(
                 self.settings.runtime_dir
             )
+            if active and flags["jaga"]:
+                wake_jaga_worker(self.settings.runtime_dir)
+                return "⏹ Auto Kantor dihentikan. Auto Jaga tetap tersedia."
             if active and (flags.get("ojol") or any(flags.get(k) for k in NEEDS)):
                 return "⏹ Auto Kantor dihentikan. Aktivitas auto lain tetap berjalan."
             await self.stop_worker()
@@ -370,8 +379,19 @@ class ControlService:
             return await self._start_worker(auto_start=auto_start, needs_only=False, mode=mode)
         return "Pilih aktivitas lewat tombol di bawah. Buka Akun Saya untuk mengganti akun."
 
+    async def ensure_jaga_worker(self) -> str:
+        wake_jaga_worker(self.settings.runtime_dir)
+        if auto_flags(self.settings.runtime_dir)["ojol"] is not False:
+            return "Auto Jaga menunggu Auto Ojol dinonaktifkan."
+        return await self._start_worker(auto_start=True, needs_only=False, jaga_only=True)
+
     async def _start_worker(
-        self, *, auto_start: bool, needs_only: bool, mode: str | None = None
+        self,
+        *,
+        auto_start: bool,
+        needs_only: bool,
+        mode: str | None = None,
+        jaga_only: bool = False,
     ) -> str:
         async with self.lock:
             if self.closing:
@@ -384,6 +404,8 @@ class ControlService:
                 set_auto_flag(self.settings.runtime_dir, "ojol", True)
 
             flags = auto_flags(self.settings.runtime_dir)
+            if jaga_only and (not flags["jaga"] or flags["ojol"] is not False):
+                return "Auto Jaga menunggu pengaturan aktivitas akun."
             is_ojol = False if needs_only else bool(flags.get("ojol"))
             label = "Berkendara" if mode == "kendara" else "Otomatis" if mode == "otomatis" else ""
             status_data, _ = status_record(self.settings.runtime_dir / "status.json")
@@ -397,6 +419,8 @@ class ControlService:
             if (self.worker and self.worker.returncode is None) or running(
                 self.settings.runtime_dir
             ):
+                if jaga_only:
+                    return "Auto Jaga aktif untuk akun ini."
                 if not is_ojol:
                     return (
                         "🟢 Auto kebutuhan aktif. Bot sedang memantau dan mengisi kebutuhan karakter.\n\n"
@@ -416,7 +440,7 @@ class ControlService:
             if not self.settings.operator_authorized:
                 msg = (
                     "Akun ini belum diizinkan menjalankan bot oleh admin."
-                    if needs_only
+                    if needs_only or jaga_only
                     else "Akun ini belum diizinkan menjalankan Ojol oleh admin."
                 )
                 raise RuntimeError(msg)
@@ -453,6 +477,8 @@ class ControlService:
                         raise WorkerCapacityError(worker_resp["error"])
                     raise RuntimeError(worker_resp.get("error") or worker_resp["message"])
                 self.expected_stop = False
+                if jaga_only:
+                    return "Worker Auto Jaga sedang dimulai."
                 return self._started_message(
                     is_ojol=is_ojol, label=label, waiting_kerja=waiting_kerja
                 )
@@ -463,6 +489,8 @@ class ControlService:
                         self.auto_start_pending = True
                     raise WorkerCapacityError(error)
                 await self._spawn_local_worker(auto_start, is_ojol, mode)
+            if jaga_only:
+                return "Worker Auto Jaga sedang dimulai."
             return self._started_message(is_ojol=is_ojol, label=label, waiting_kerja=waiting_kerja)
 
     async def _spawn_local_worker(self, auto_start, is_ojol, mode):

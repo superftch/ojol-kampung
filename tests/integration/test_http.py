@@ -2896,3 +2896,37 @@ async def test_cek_manusia_unsolved_goes_to_bank_angka(settings, monkeypatch):
     assert len(reviews) == 2
     assert all(r["trip_id"] == "kunci-1" and r["svg_text"] == svg for r in reviews)
     assert (settings.runtime_dir / "cek-samples" / "kunci-1.svg").read_text() == svg
+
+
+async def test_jaga_adapter_validates_paths_uses_browser_headers_and_preserves_rejection(settings):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        if request.method == "POST" and json.loads(request.content)["aksi"] == "mulai":
+            return httpx.Response(409, json={"error": {"message": "Sedang jam kerja"}})
+        if request.method == "POST" and json.loads(request.content)["aksi"] == "detak":
+            return httpx.Response(428, json={"error": {"code": "CEK_MANUSIA"}})
+        return httpx.Response(200, json={"jaga": False, "menit": 0})
+
+    async with httpx.AsyncClient(base_url=ORIGIN, transport=httpx.MockTransport(handle)) as client:
+        api = OjolHttpApi(settings.runtime_dir, client=client)
+        await api.businesses_semua()
+        await api.business_report(SHOP)
+        await api.shop_info(SHOP)
+        await api.jaga_status(SHOP)
+        with pytest.raises(HttpCoreError, match="Sedang jam kerja") as rejected:
+            await api.jaga_action(SHOP, "mulai")
+        assert rejected.value.category == "rejected"
+        with pytest.raises(HttpCoreError, match="Verifikasi pengguna diperlukan") as challenged:
+            await api.jaga_action(SHOP, "detak")
+        assert challenged.value.category == "verification"
+        with pytest.raises(HttpCoreError, match="ID usaha"):
+            await api.jaga_status("../x")
+        with pytest.raises(HttpCoreError, match="Endpoint di luar izin"):
+            await api.request(f"/api/businesses/{SHOP}/jaga", {"aksi": "hapus"})
+        assert len(requests) == 6
+        for request in requests:
+            assert request.headers["user-agent"] == api.browser_identity["user_agent"]
+            assert request.headers["sec-fetch-site"] == "same-origin"
+            assert request.headers["origin"] == ORIGIN

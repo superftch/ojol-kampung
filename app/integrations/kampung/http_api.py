@@ -11,6 +11,7 @@ import secrets
 import time
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 import httpx
 
@@ -56,6 +57,7 @@ from app.integrations.kampung.trip_orders import TripOrders
 from app.modules.gameplay.study import (
     save_skills,
 )
+from app.modules.worker.jaga_settings import BUSINESS_ID, BUSINESS_ID_PATTERN
 from app.modules.worker.settings import auto_flags
 
 __all__ = [
@@ -281,8 +283,11 @@ class OjolHttpApi:
         manusia_cek_image = bool(
             re.fullmatch(r"/api/cek-manusia\?k=[A-Za-z0-9_%.~:-]{1,160}&m=[0-9]{1,3}", path)
         )
+        jaga_action = re.fullmatch(rf"/api/businesses/{BUSINESS_ID_PATTERN}/jaga", path)
         allowed = (
-            ojol_cek_image
+            jaga_action
+            or re.fullmatch(rf"/api/businesses/{BUSINESS_ID_PATTERN}/report", path)
+            or ojol_cek_image
             or manusia_cek_image
             or path
             in {
@@ -305,6 +310,7 @@ class OjolHttpApi:
                 "/api/diving",
                 "/api/diving/realtime",
                 "/api/kantor",
+                "/api/businesses/semua",
                 "/api/kerja-malam",
                 "/api/skills",
                 "/api/chat?toa=0",
@@ -327,6 +333,7 @@ class OjolHttpApi:
         )
         if (
             not allowed
+            or (jaga_action and payload is not None and not self._valid_jaga_action(payload))
             or (after is not None and (path != "/api/me/koin" or not self.valid_cursor(after)))
             or ".." in path.split("/")
             or "//" in path
@@ -343,6 +350,7 @@ class OjolHttpApi:
                     "/api/jobs/start",
                 }
                 and not garden_action
+                and not jaga_action
                 and not re.fullmatch(r"/api/jobs/vacancy/[A-Za-z0-9-]+", path)
                 and not re.fullmatch(r"/api/spbu/[A-Z0-9-]+", path)
                 and not path.endswith(("/buy", "/use", "/kuis", "/bayar", "/kegiatan", "/minigame"))
@@ -382,9 +390,15 @@ class OjolHttpApi:
                         return response.text if text else response.json()
                     except ValueError:
                         raise HttpCoreError(
-                            "Respons API bukan JSON valid", recoverable=payload is None
+                            "Respons API bukan JSON valid",
+                            category="uncertain"
+                            if jaga_action and payload is not None
+                            else "schema",
+                            recoverable=payload is None,
                         ) from None
                 if payload is not None:
+                    if jaga_action:
+                        raise self._jaga_rejection(response, path)
                     if response.status_code == 428:
                         answered = await self._answer_manusia(response, path, payload)
                         if answered is not None:
@@ -796,6 +810,62 @@ class OjolHttpApi:
 
     async def garden_action(self, garden_id: str, action: str):
         return await self._facilities.garden_action(garden_id, action)
+
+    @staticmethod
+    def _valid_jaga_action(payload) -> bool:
+        return (
+            isinstance(payload, dict)
+            and payload.keys() == {"aksi"}
+            and payload["aksi"] in ("mulai", "detak", "selesai")
+        )
+
+    @staticmethod
+    def _jaga_rejection(response: httpx.Response, path: str) -> HttpCoreError:
+        status = response.status_code
+        if status == 428:
+            return HttpCoreError(
+                "Verifikasi pengguna diperlukan di game.", category="verification", path=path
+            )
+        if status >= 500 or status in (408, 429):
+            return HttpCoreError(
+                f"Hasil aksi jaga belum pasti (HTTP {status}).", category="uncertain", path=path
+            )
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        error = body.get("error") if isinstance(body, dict) else None
+        if isinstance(error, dict):
+            error = error.get("message") or error.get("code")
+        message = " ".join(error.split())[:240] if isinstance(error, str) else ""
+        return HttpCoreError(
+            message or f"Aksi jaga ditolak (HTTP {status}).", category="rejected", path=path
+        )
+
+    @staticmethod
+    def _jaga_path(business_id: str, suffix: str) -> str:
+        if not BUSINESS_ID.fullmatch(business_id):
+            raise HttpCoreError("ID usaha tidak valid.", category="blocked")
+        return f"/api/{suffix.format(id=business_id)}"
+
+    async def businesses_semua(self) -> dict:
+        return await self.request("/api/businesses/semua")
+
+    async def jaga_status(self, business_id: str) -> dict:
+        return await self.request(self._jaga_path(business_id, "businesses/{id}/jaga"))
+
+    async def jaga_action(
+        self, business_id: str, aksi: Literal["mulai", "detak", "selesai"]
+    ) -> dict:
+        return await self.request(
+            self._jaga_path(business_id, "businesses/{id}/jaga"), {"aksi": aksi}
+        )
+
+    async def business_report(self, business_id: str) -> dict:
+        return await self.request(self._jaga_path(business_id, "businesses/{id}/report"))
+
+    async def shop_info(self, business_id: str) -> dict:
+        return await self.request(self._jaga_path(business_id, "shops/{id}"))
 
     async def kantor_action(self, action: str, **fields):
         """Send an action payload to /api/kantor."""

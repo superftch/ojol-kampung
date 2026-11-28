@@ -15,12 +15,14 @@ from app.core.exceptions import HttpCoreError, StopRequested
 from app.core.models import NEEDS, Resource, Snapshot, Step, now
 from app.modules.gameplay.garden import run_garden
 from app.modules.gameplay.gym import run_gym
+from app.modules.gameplay.jaga_usaha import SCAN_PAUSE_SECONDS, JagaWorker
 from app.modules.gameplay.kerja import is_work_active_now, run_kerja
 from app.modules.gameplay.study import run_learning
 from app.modules.ledger.finance import completion_evidence
 from app.modules.ledger.reconciliation import reconcile, wait_until_resolved
 from app.modules.ledger.repository import load_journal_snapshot
 from app.modules.notifications.service import event_text, queue_error, queue_notice, redact
+from app.modules.worker.jaga_settings import JAGA_STATUS_FILE
 from app.modules.worker.maintenance import SCHEDULE_FILE, held_window
 from app.modules.worker.ojol_jitter import (
     active_ojol_jitter,
@@ -60,6 +62,7 @@ class Controller:
         self.need_retry_at = {}
         self.study_retry_at = {}
         self.garden_retry_at = 0
+        self.jaga: JagaWorker | None = None
         self.gym_retry_at = 0
         self.spbu_reminded_vehicle = None
         self.claim_failures = {}
@@ -779,22 +782,50 @@ class Controller:
             await self.wait(self.settings.idle_poll_seconds)
 
     async def run(self, dry_run=False, *, auto_start=False):
+        try:
+            await self._run(dry_run=dry_run, auto_start=auto_start)
+        finally:
+            if not dry_run and self.jaga is not None:
+                await self.jaga.shutdown(self)
+
+    async def _run(self, *, dry_run: bool, auto_start: bool):
+        directory = self.settings.runtime_dir
         while True:
             self.check_cancel()
+            flags = auto_flags(directory)
+            if not dry_run:
+                if self.jaga is None and (
+                    flags["jaga"] or (directory / JAGA_STATUS_FILE).is_file()
+                ):
+                    self.jaga = JagaWorker(directory)
+                if self.jaga is not None:
+                    maintenance = held_window(self.maintenance_file)
+                    if await self.jaga.before_waits(
+                        self, flags, maintenance=bool(maintenance and maintenance.target == "all")
+                    ):
+                        continue
             await self.wait_for_maintenance()
             self.check_cancel()
-            flags = auto_flags(self.settings.runtime_dir)
+            flags = auto_flags(directory)
+            if not dry_run and self.jaga is None and flags["jaga"]:
+                continue
             if (
                 not dry_run
                 and flags.get("ojol") is True
+                and not (self.jaga and self.jaga.data.session)
                 and (ongoing_jitter := active_ojol_jitter(self.settings.runtime_dir))
             ):
                 await self.run_ojol_jitter_break(ongoing_jitter)
                 continue
             previous = self.state
             previous_received_at = self.snapshot_received_at
-            if not any(flags.values()) and (
-                previous is None or previous.phase not in {"searching", "delivering", "complete"}
+            if (
+                not any(flags.values())
+                and not (self.jaga and self.jaga.data.session)
+                and (
+                    previous is None
+                    or previous.phase not in {"searching", "delivering", "complete"}
+                )
             ):
                 if dry_run:
                     self.report("dry_run", reason="Semua fitur Auto nonaktif.")
@@ -858,6 +889,12 @@ class Controller:
             if is_global_maint:
                 self.state = previous
                 self.snapshot_received_at = previous_received_at
+                continue
+            if (
+                not dry_run
+                and self.jaga is not None
+                and await self.jaga.observe(self, auto_flags(directory))
+            ):
                 continue
             if (
                 previous
@@ -1061,6 +1098,12 @@ class Controller:
                 continue
             if self.observed_state.phase == "idle" and await run_kerja(self):
                 continue
+            if self.jaga is not None and flags["jaga"]:
+                if await self.jaga.start_step(self, flags):
+                    await self.wait(SCAN_PAUSE_SECONDS)
+                    continue
+                if self.jaga.data.session is not None:
+                    continue
             if step.action == "wait":
                 if self.observed_state.phase in {"idle", "sleeping"}:
                     await self.wait(step.wait_seconds)

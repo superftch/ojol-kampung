@@ -15,6 +15,7 @@ AUTO_LABELS = {
     "rumah": "Kondisi rumah",
     "kebun": "Kebun & kolam",
     "kerja": "Auto Kerja",
+    "jaga": "Auto Jaga Usaha",
     "kursus": "Auto Kursus",
     **STUDY_LABELS,
 }
@@ -38,7 +39,7 @@ def auto_flags(directory):
     ):
         raise ValueError("Pengaturan Auto akun tidak valid.")
     return {
-        key: saved.get(key, key not in STUDY_LABELS and key not in {"kerja", "kursus"})
+        key: saved.get(key, key not in STUDY_LABELS and key not in {"kerja", "kursus", "jaga"})
         for key in AUTO_LABELS
     }
 

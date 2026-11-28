@@ -471,3 +471,9 @@ Konfigurasi server `jaga` (bundle yang sama, "angka usulan", disetujui 28 Novemb
 - Panel client menampilkan "4 menit hari ini" dan "56 menit lagi supaya pembeli sekitar lebih memilih usahamu", jadi `menit` sama dengan hitungan menit harian dan target bonus 60.
 - Pengguna melaporkan (tanpa artefak): memulai jaga di usaha ke-2 langsung menonaktifkan jaga usaha ke-1. Jadi hanya satu usaha aktif sekaligus; `mulai` di usaha lain berarti pindah.
 - Tidak ada tantangan `428 CEK_MANUSIA` pada `mulai` dalam observasi ini (satu sampel).
+
+### Penajaman bukti statis untuk planner Auto Jaga
+
+Pemeriksaan ulang atas chunk dan hash yang sama pada 28 November 2026 WIB. Komponen daftar menampilkan `kas7.masukMilli` dan `kas7.keluarMilli` sebagai uang masuk dan keluar tujuh hari. Komponen laporan memisahkan `week.netMilli` sebagai laba bersih tujuh hari, dan menyebut `today.rivals` sebagai pesaing sejenis. Keduanya berbeda dari `customersYesterday` pada detail toko.
+
+Komponen daftar memperlakukan `bahan` yang kosong sebagai tidak ada ringkasan bahan dan `bahan.habis > 0` sebagai jumlah bahan yang habis. Konfigurasi bundle juga menuliskan `kelola_semua_usaha.min_usaha: 2`. Jika daftar tidak tersedia untuk akun, worker menampilkan kendala dan menunggu. Bentuk lengkap respons daftar, toko, laporan, dan konfirmasi `selesai` belum direkam langsung. Sampel pengujian otomatis untuk bentuk ini bersifat sintetis.

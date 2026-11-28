@@ -568,3 +568,20 @@ select.account-select { max-width: 100%; }
 .jobs-sniper-simple-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; }
 .jobs-sniper-field { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--text-muted); }
 .jobs-sniper-meta { display: flex; flex-wrap: wrap; gap: 8px 16px; font-size: 12px; color: var(--text-muted); }
+
+.jaga-control { align-items: start; }
+.jaga-control .meta { margin: 4px 0 0; overflow-wrap: anywhere; }
+.jaga-details { grid-column: 1 / -1; min-width: 0; }
+.jaga-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 9rem), 1fr)); gap: 10px; }
+.jaga-fields label { display: grid; align-content: start; gap: 4px; min-width: 0; font-size: 13px; }
+.jaga-fields :is(input, select) { width: 100%; min-width: 0; min-height: 40px; }
+.jaga-checkbox { display: flex; align-items: center; gap: 8px; min-height: 44px; font-size: 13px; }
+.jaga-checkbox input { width: 18px; height: 18px; flex: 0 0 auto; }
+.jaga-business { border-top: 1px solid var(--border); }
+.jaga-business .jaga-fields { padding: 8px 0 12px; }
+.jaga-business .kantor-details-summary { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+    .jaga-control :is(button, input:not([type="checkbox"]), select, summary) { min-height: 44px; }
+}
+.jaga-live { display: grid; gap: 4px; }
+.jaga-live progress { inline-size: min(100%, 22rem); block-size: 8px; accent-color: var(--primary); }

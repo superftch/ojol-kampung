@@ -1792,3 +1792,51 @@ def test_dashboard_salary_profit_from_job_snapshot(admin_web):
     assert dash["finance"]["salary_profit_num"] == 6.6
     assert dash["all_accounts_summary"]["total_salary_profit"] == "6,6"
     assert dash["all_accounts_summary"]["total_salary_profit_num"] == 6.6
+
+
+def test_jaga_settings_dashboard_and_worker_toggle_are_account_scoped(admin_web, monkeypatch):
+    from app.modules.worker.service import ControlService
+
+    client, manager = admin_web
+    one = client.post("/api/accounts/create", json={"name": "Jaga satu"}).json()["account"]["id"]
+    two = client.post("/api/accounts/create", json={"name": "Jaga dua"}).json()["account"]["id"]
+    directory = manager.service(one).settings.runtime_dir
+    other_directory = manager.service(two).settings.runtime_dir
+    settings_url = f"/api/control/jaga-settings?account_id={one}"
+    toggle_url = f"/api/control/toggle-auto?account_id={one}"
+    start = AsyncMock(return_value="Worker Auto Jaga sedang dimulai.")
+    monkeypatch.setattr(ControlService, "_start_worker", start)
+    assert client.get(settings_url).json()["settings"]["budget_jam"] == 6
+    assert client.post(settings_url, json={"target_min": 76}).status_code == 400
+    assert client.post(settings_url, json={"budget_jam": 11}).status_code == 400
+    updated = client.post(settings_url, json={"budget_jam": 4, "mode": "rotasi"})
+    assert updated.status_code == 200
+    assert updated.json()["settings"]["mode"] == "rotasi"
+    assert (directory / "WAKE").is_file()
+    assert not (other_directory / "jaga-settings.json").exists()
+
+    assert client.post("/api/accounts/select", json={"account_id": one}).status_code == 200
+    assert client.get("/api/dashboard").json()["auto_flags"]["jaga"] is False
+    assert client.post(toggle_url, json={"flag": "jaga", "enabled": True}).status_code == 200
+    start.assert_not_awaited()
+    assert client.post(toggle_url, json={"flag": "ojol", "enabled": False}).status_code == 200
+    start.assert_awaited_once_with(auto_start=True, needs_only=False, jaga_only=True)
+
+    write_private(
+        directory / "jaga-status.json",
+        {
+            "state": "Menyusun rencana",
+            "message": "Kedai fixture",
+            "scan": {"checked": 4, "total": 18, "business": "Kedai fixture"},
+            "updated_at": now().isoformat(),
+        },
+    )
+    one_dash = client.get("/api/dashboard").json()
+    assert client.post("/api/accounts/select", json={"account_id": two}).status_code == 200
+    two_dash = client.get("/api/dashboard").json()
+    assert one_dash["auto_flags"]["jaga"] and not two_dash["auto_flags"]["jaga"]
+    assert one_dash["jaga_status"]["message"] == "Kedai fixture"
+    assert one_dash["jaga_status"]["scan"]["checked"] == 4
+    assert one_dash["jaga_status"]["updated_at"]
+    assert two_dash["jaga_status"] is None and two_dash["jaga_settings"]["budget_jam"] == 6
+    assert 'id="jagaSettingsForm"' in client.get("/").text

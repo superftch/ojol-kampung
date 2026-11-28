@@ -11,6 +11,13 @@ from app.integrations.kampung import session_transfer
 from app.modules.gameplay.kerja import set_kerja_target_poin
 from app.modules.gameplay.study import set_subject
 from app.modules.ledger.finance import report_date
+from app.modules.worker.jaga_settings import (
+    JAGA_PRESETS,
+    JagaSettings,
+    load_jaga_settings,
+    save_jaga_settings,
+    wake_jaga_worker,
+)
 from app.modules.worker.maintenance import held_window
 from app.modules.worker.schemas import (
     AutoFlagChange,
@@ -19,7 +26,7 @@ from app.modules.worker.schemas import (
     OjolModeChange,
     StudySubjectChange,
 )
-from app.modules.worker.settings import set_auto_flag
+from app.modules.worker.settings import auto_flags, set_auto_flag
 from app.modules.worker.status import status_record
 from app.web.dashboard_queries import dashboard_snapshot
 from app.web.deps import WebContext, get_ctx, require_user, resolve_account_service
@@ -216,10 +223,47 @@ async def toggle_auto_api(
         else:
             if flag == "ojol" and enabled:
                 _validate_ojol_eligible(cur_service)
-            set_auto_flag(cur_service.settings.runtime_dir, flag, enabled)
+            directory = cur_service.settings.runtime_dir
+            set_auto_flag(directory, flag, enabled)
+            if flag in {"ojol", "jaga"} and (flag == "jaga" or auto_flags(directory)["jaga"]):
+                if (flag == "jaga" and enabled) or (flag == "ojol" and not enabled):
+                    try:
+                        message = await cur_service.ensure_jaga_worker()
+                    except (RuntimeError, ValueError, OSError) as exc:
+                        message = str(exc)
+                    return {"success": True, "flag": flag, "enabled": enabled, "message": message}
+                wake_jaga_worker(directory)
         return {"success": True, "flag": flag, "enabled": enabled}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
+
+
+@router.get("/api/control/jaga-settings")
+async def get_jaga_settings_api(
+    request: Request,
+    user: Annotated[dict, Depends(require_user)],
+    ctx: Annotated[WebContext, Depends(get_ctx)],
+):
+    service = _require_account_service(ctx, user, request)
+    try:
+        settings = load_jaga_settings(service.settings.runtime_dir)
+    except ValueError:
+        raise HTTPException(400, "Pengaturan Auto Jaga tersimpan tidak valid.") from None
+    return {"settings": settings.model_dump(mode="json"), "presets": JAGA_PRESETS}
+
+
+@router.post("/api/control/jaga-settings")
+async def set_jaga_settings_api(
+    request: Request,
+    user: Annotated[dict, Depends(require_user)],
+    ctx: Annotated[WebContext, Depends(get_ctx)],
+):
+    settings = await read_json(request, JagaSettings)
+    service = _require_account_service(ctx, user, request)
+    directory = service.settings.runtime_dir
+    save_jaga_settings(directory, settings)
+    wake_jaga_worker(directory)
+    return {"success": True, "settings": settings.model_dump(mode="json"), "presets": JAGA_PRESETS}
 
 
 @router.post("/api/control/kerja-target")

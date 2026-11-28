@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Coroutine
 from decimal import Decimal
-from typing import Any, TypeVar
+from typing import Any, Literal, TypeVar
 from uuid import uuid4
 
 from app.core.models import Product, Settings, ShopPreview, Snapshot
@@ -86,6 +86,23 @@ class HttpUI:
 
     async def study_status(self, mode):
         return await self.api.study_status(mode)
+
+    async def businesses_semua(self) -> dict:
+        return await self.api.businesses_semua()
+
+    async def shop_info(self, business_id: str) -> dict:
+        return await self.api.shop_info(business_id)
+
+    async def business_report(self, business_id: str) -> dict:
+        return await self.api.business_report(business_id)
+
+    async def jaga_status(self, business_id: str) -> dict:
+        return await self.api.jaga_status(business_id)
+
+    async def jaga_action(
+        self, business_id: str, aksi: Literal["mulai", "detak", "selesai"]
+    ) -> dict:
+        return await self.api.jaga_action(business_id, aksi)
 
     async def kantor_action(self, action, **fields):
         return await self.api.kantor_action(action, **fields)

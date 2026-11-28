@@ -897,6 +897,246 @@ function renderAutomationControls(data) {
     document.getElementById('btnSaveKerjaTarget').disabled = input.disabled;
 
     renderKantorDetails(data, isKantorJob, kerjaBlockedReason);
+    renderJaga(data);
+}
+
+const jagaNumber = new Intl.NumberFormat('id-ID', { maximumFractionDigits: 1 });
+const jagaFields = ['mode', 'budget_jam', 'active_start', 'active_end', 'target_min', 'target_max', 'min_pelanggan', 'min_skor'];
+
+function renderJaga(data) {
+    const panel = document.getElementById('jagaControl');
+    const form = document.getElementById('jagaSettingsForm');
+    const accountId = String(data.account?.id ?? '');
+    panel.hidden = !accountId;
+    if (!accountId) {
+        delete form.dataset.account;
+        return;
+    }
+    const status = data.jaga_status || {};
+    const session = status.session;
+    const enabled = Boolean(data.auto_flags?.jaga);
+    const ojolEnabled = data.auto_flags?.ojol !== false;
+    const waiting = enabled && ojolEnabled && !session;
+    const workerActive = Boolean(data.summary?.active);
+    const pending = pendingControls.has('Jaga');
+    const run = document.getElementById('btnRunJaga');
+    const stop = document.getElementById('btnStopJaga');
+    run.hidden = Boolean((session && workerActive) || (enabled && (workerActive || waiting)));
+    run.disabled = pending;
+    stop.hidden = !enabled;
+    stop.disabled = pending;
+
+    renderJagaActivity(status, enabled, waiting, workerActive, pending);
+
+    const settings = data.jaga_settings;
+    const summary = document.getElementById('jagaSummary');
+    summary.textContent = settings
+        ? `${jagaModes[settings.mode].label} · Maks. ${jagaNumber.format(settings.budget_jam)} jam/hari · ${settings.active_start.replace(':', '.')}–${settings.active_end.replace(':', '.')} WIB`
+        : 'Pengaturan tersimpan tidak valid.';
+    const businesses = status.businesses || [];
+    const rows = new Map(businesses.map(item => [item.id, item]));
+    const signature = JSON.stringify([settings, businesses.map(item => [item.id, item.name])]);
+    const accountChanged = form.dataset.account !== accountId;
+    const editing = form.dataset.dirty === 'true' || form.contains(document.activeElement);
+    form.hidden = !settings;
+    if (!settings) return;
+    if (accountChanged || (!editing && form.dataset.signature !== signature)) {
+        form.dataset.account = accountId;
+        form.dataset.signature = signature;
+        form.dataset.dirty = 'false';
+        for (const field of jagaFields) form.elements[field].value = settings[field] ?? '';
+        form.elements.auto_pindah.checked = Boolean(settings.auto_pindah);
+        const presets = Object.values(data.jaga_presets || {});
+        form.elements.preset.replaceChildren(...presets.map(hours => new Option(`${hours} jam`, hours)),
+            new Option('Durasi lain', ''));
+        form.elements.preset.value = presets.includes(settings.budget_jam) ? String(settings.budget_jam) : '';
+        applyJagaPreset(form.elements.preset);
+        updateJagaMode(form);
+        const ids = new Set([...rows.keys(), ...Object.keys(settings.override || {})]);
+        const list = document.getElementById('jagaBusinesses');
+        list.innerHTML = ids.size ? Array.from(ids, id => jagaBusinessRow(id, rows.get(id), settings.override?.[id])).join('')
+            : '<p class="meta">Daftar usaha tampil setelah worker membacanya dari game.</p>';
+    }
+    for (const element of form.querySelectorAll('[data-jaga-progress]')) {
+        const item = rows.get(element.closest('[data-business-id]').dataset.businessId);
+        if (!item) {
+            element.textContent = 'Belum ada data usaha.';
+            continue;
+        }
+        const live = session?.business_id === item.id ? session : item;
+        const pieces = [
+            item.customers == null ? null : `${item.customers} pelanggan kemarin`,
+            item.rivals == null ? null : `${item.rivals} pesaing`,
+            item.score == null ? null : `+${jagaNumber.format(item.score)} estimasi pembeli`,
+            item.net_week_milli == null ? null : `Laba 7 hari ${jagaNumber.format(item.net_week_milli / 1000)} koin`,
+            live.target ? `${live.minutes ?? 'Belum dibaca'}/${live.target} menit` : null,
+            item.reason,
+        ];
+        element.textContent = pieces.filter(Boolean).join(' · ');
+    }
+}
+
+function jagaBusinessRow(id, business, override) {
+    const choice = override ? (override.aktif ? 'on' : 'off') : 'default';
+    return `<details class="jaga-business" data-business-id="${escapeHtml(id)}">
+        <summary class="kantor-details-summary">${escapeHtml(business?.name || id)}</summary>
+        <p class="meta" data-jaga-progress></p>
+        <div class="jaga-fields">
+            <label>Pilihan usaha
+                <select data-field="choice">
+                    <option value="default"${choice === 'default' ? ' selected' : ''}>Ikuti mode</option>
+                    <option value="on"${choice === 'on' ? ' selected' : ''}>Pilih usaha</option>
+                    <option value="off"${choice === 'off' ? ' selected' : ''}>Lewati usaha</option>
+                </select>
+            </label>
+            <label>Prioritas<input data-field="prioritas" type="number" min="0" max="999" value="${override?.prioritas ?? 0}"></label>
+            <label>Target minimum<input data-field="target_min" type="number" min="1" max="240" value="${override?.target_min ?? ''}"></label>
+            <label>Target maksimum<input data-field="target_max" type="number" min="1" max="240" value="${override?.target_max ?? ''}"></label>
+            <label>Batas menit harian<input data-field="maks_menit" type="number" min="1" max="240" value="${override?.maks_menit ?? ''}"></label>
+        </div>
+    </details>`;
+}
+
+function applyJagaPreset(select) {
+    select.form.querySelector('#jagaCustomBudget').hidden = Boolean(select.value);
+    if (select.value) select.form.elements.budget_jam.value = select.value;
+}
+
+function updateJagaMode(form) {
+    const mode = form.elements.mode.value;
+    form.querySelector('#jagaModeHint').textContent = jagaModes[mode].hint;
+    if (mode === 'manual') form.querySelector('#jagaBusinessSettings').open = true;
+}
+
+const jagaModes = {
+    terbaik: { label: 'Peluang pembeli tertinggi', hint: 'Dahulukan usaha dengan potensi tambahan pembeli terbesar.' },
+    rotasi: { label: 'Giliran usaha', hint: 'Dahulukan usaha yang paling lama belum dijaga.' },
+    manual: { label: 'Pilih sendiri', hint: 'Buka nama usaha di bawah, lalu pilih “Pilih usaha” untuk memasukkannya ke rencana.' },
+};
+const jagaClock = new Intl.DateTimeFormat('id-ID', {
+    hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Jakarta',
+});
+
+function renderJagaActivity(status, enabled, waiting, workerActive, pending) {
+    const session = status.session;
+    const stopping = workerActive && !enabled && session && ['Jaga', 'Memulai'].includes(status.state);
+    const state = pending ? 'Memproses…' : !workerActive && session ? 'Status sesi belum pasti'
+        : stopping ? 'Menghentikan' : session ? status.state : !enabled ? 'Nonaktif' : waiting ? 'Menunggu Ojol'
+        : !workerActive ? 'Worker belum berjalan' : status.state || 'Menunggu';
+    const label = document.getElementById('jagaState');
+    if (label.textContent !== state) label.textContent = state;
+    label.dataset.tone = state === 'Jaga' ? 'active' : enabled || session ? 'paused' : '';
+
+    const scan = state === 'Menyusun rencana' ? status.scan : null;
+    const hint = document.getElementById('jagaHint');
+    let message = '';
+    if (session) {
+        message = !workerActive ? 'Worker berhenti sebelum akhir sesi terkonfirmasi.'
+            : state === 'Jaga' ? `${session.name} · ${session.minutes} dari ${session.target} menit target`
+            : stopping ? 'Menunggu game mengonfirmasi sesi sudah berakhir.'
+            : `${session.name} · ${status.message || 'Memeriksa status sesi.'}`;
+    } else if (waiting) {
+        message = 'Hentikan Auto Ojol agar Jaga Usaha bisa mulai.';
+    } else if (enabled && workerActive) {
+        message = scan?.total == null ? status.message || ''
+            : `${scan.checked} dari ${scan.total} usaha diperiksa. ${status.message || ''} ${scan.business || ''}`.trim();
+    }
+    if (hint.textContent !== message) hint.textContent = message;
+
+    const live = document.getElementById('jagaLive');
+    const progress = document.getElementById('jagaProgress');
+    const detail = document.getElementById('jagaLiveDetail');
+    const guarding = state === 'Jaga' && Boolean(session);
+    live.hidden = !workerActive || waiting || (!session && !enabled)
+        || (!scan && !session && !status.updated_at && !status.retry_at);
+    progress.hidden = !scan && !guarding;
+    if (scan?.total > 0 || (guarding && session.target > 0)) {
+        progress.max = scan ? scan.total : session.target;
+        progress.value = scan ? scan.checked : session.minutes;
+    } else {
+        progress.removeAttribute('value');
+    }
+    const time = value => `${jagaClock.format(new Date(value))} WIB`;
+    const notes = [];
+    if (guarding && session.last_confirmed && session.next_at) {
+        notes.push(`Terakhir dikonfirmasi game ${time(session.last_confirmed)}`, `Cek sesi berikutnya ${time(session.next_at)}`);
+    } else if (status.updated_at && !waiting) {
+        notes.push(`Pembaruan terakhir ${time(status.updated_at)}`);
+    }
+    if (scan && Date.now() - Date.parse(status.updated_at) > 45000) {
+        notes.push('Pemeriksaan belum mendapat pembaruan.');
+    }
+    if (!session && !waiting && Date.parse(status.retry_at) > Date.now()) {
+        notes.push(`Coba lagi ${time(status.retry_at)}`);
+    }
+    detail.textContent = notes.join(' · ');
+}
+
+async function setJagaRunning(enabled) {
+    if (pendingControls.has('Jaga')) return;
+    const accountId = dashboardData?.account?.id;
+    if (!accountId) return;
+    pendingControls.add('Jaga');
+    renderJaga(dashboardData);
+    try {
+        const response = await apiFetch('/api/control/toggle-auto?account_id=' + encodeURIComponent(accountId), {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ flag: 'jaga', enabled }),
+        });
+        showToast(response.message || (enabled ? 'Auto Jaga diminta berjalan.' : 'Penghentian Auto Jaga diminta.'), 'info');
+    } catch (error) {
+        showToast(error.message, 'error');
+    } finally {
+        pendingControls.delete('Jaga');
+        await refreshDashboard();
+    }
+}
+
+async function saveJagaSettings() {
+    const form = document.getElementById('jagaSettingsForm');
+    const account = String(dashboardData?.account?.id ?? '');
+    if (!account || form.dataset.account !== account) return;
+    const value = name => form.elements[name].value;
+    const settings = {
+        mode: value('mode'),
+        budget_jam: Number(value('budget_jam')),
+        active_start: value('active_start'),
+        active_end: value('active_end'),
+        target_min: Number(value('target_min')),
+        target_max: Number(value('target_max')),
+        min_pelanggan: Number(value('min_pelanggan')),
+        min_skor: value('min_skor') === '' ? null : Number(value('min_skor')),
+        auto_pindah: form.elements.auto_pindah.checked,
+        override: {},
+    };
+    for (const row of form.querySelectorAll('[data-business-id]')) {
+        const field = name => row.querySelector(`[data-field="${name}"]`).value;
+        const choice = field('choice');
+        const fields = ['target_min', 'target_max', 'maks_menit'];
+        const prioritas = Number(field('prioritas')) || 0;
+        if (choice === 'default' && !prioritas && !fields.some(field)) continue;
+        settings.override[row.dataset.businessId] = {
+            aktif: choice !== 'off', prioritas,
+            ...Object.fromEntries(fields.map(key => [key, field(key) === '' ? null : Number(field(key))])),
+        };
+    }
+    const submit = form.querySelector('[type="submit"]');
+    if (submit.disabled) return;
+    submit.disabled = true;
+    try {
+        await apiFetch('/api/control/jaga-settings?account_id=' + encodeURIComponent(account), {
+            method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(settings),
+        });
+        if (form.dataset.account === account) {
+            form.dataset.dirty = 'false';
+            delete form.dataset.signature;
+        }
+        showToast('Pengaturan Auto Jaga tersimpan.', 'info');
+        await refreshDashboard();
+    } catch (error) {
+        showToast(error.message, 'error');
+    } finally {
+        submit.disabled = false;
+    }
 }
 
 function kantorSesiRanges(jam, count, session) {
