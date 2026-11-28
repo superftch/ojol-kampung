@@ -1171,14 +1171,14 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     );
   });
 
-  await t.test("mancing.js separates Template presets from Settings, exposes 2-option Hasil & ordered checkboxes, and persists settings", () => {
+  await t.test("mancing.js uses compact 3-tab HUD, full Jual Semua (except Ternak), Just Go bait/cast options, and always-on Zero-Loss in Auto Gulung", () => {
     const src = fs.readFileSync(path.join(extDir, "mancing.js"), "utf-8");
 
     assert.match(src, /selectiveRelease:\s*false\b/, "selectiveRelease must default to false");
     assert.match(src, /autoUmpan:\s*false\b/, "autoUmpan must default to false");
     assert.match(src, /autoUpgrade:\s*false\b/, "autoUpgrade must default to false");
-    assert.match(src, /lootMode:\s*"hybrid"/, "lootMode must default to safe hybrid");
-    assert.match(src, /sellThreshold:\s*1\.00\b/, "sellThreshold must default to 1.00");
+    assert.match(src, /lootMode:\s*"jual-semua"/, "lootMode must always be jual-semua");
+    assert.match(src, /zeroLossGuard:\s*true\b/, "zeroLossGuard must always be true internally");
     assert.match(src, /stopRule:\s*"all-full"/, "stopRule must default to all-full (40/40)");
     assert.match(src, /baseMinTension:\s*35\b/, "baseMinTension must default to 35 for long-hold hysteresis");
     assert.match(src, /reelMinRange:\s*\[29,\s*45\]/, "reelMinRange must be [29, 45]");
@@ -1189,44 +1189,53 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     assert.match(src, /<input type="checkbox" id="ks-opt-auto-umpan"(?![^>]*\bchecked\b)/);
     assert.match(src, /<input type="checkbox" id="ks-opt-auto-upgrade"(?![^>]*\bchecked\b)/);
 
-    // Template section buttons + collapsible Settings section + exactly 2 Hasil options
+    // Hasil dropdowns and Zero-Loss checkbox must be removed from UI
+    assert.doesNotMatch(src, /id="ks-opt-loot-mode"/, "Hasil dropdown must be removed");
+    assert.doesNotMatch(src, /id="ks-opt-sell-threshold"/, "sellThreshold dropdown must be removed");
+    assert.doesNotMatch(src, /id="ks-opt-zeroloss"/, "Zero-Loss checkbox must be removed (always active internally)");
+
+    // Template section buttons + Just Go inline bait & Celup/Lempar options + 3-tab HUD switcher
     assert.match(src, /id="ks-tpl-just-go"/);
     assert.match(src, /id="ks-tpl-cumi"/);
     assert.match(src, /id="ks-tpl-ternak"/);
+    assert.match(src, /id="ks-just-go-opts"/);
+    assert.match(src, /id="ks-justgo-umpan"/);
+    assert.match(src, /id="ks-justgo-mode-celup"/);
+    assert.match(src, /id="ks-justgo-mode-lempar"/);
     assert.match(src, /VALID_STRATEGIES\s*=\s*new Set\(\["",\s*"just-go",\s*"cumi",\s*"ternak-ikan"\]\)/);
+    assert.match(src, /VALID_TABS\s*=\s*new Set\(\["main",\s*"history",\s*"settings"\]\)/);
     assert.match(src, /Plan Just Go/);
-    assert.match(src, /id="ks-settings-toggle"/);
-    assert.match(src, /<select id="ks-opt-loot-mode"/);
-    const hasilBlock = src.match(/<select id="ks-opt-loot-mode"[\s\S]*?<\/select>/);
-    assert.ok(hasilBlock, "Hasil dropdown must exist");
-    const hasilOptions = hasilBlock[0].match(/<option\b/g) || [];
-    assert.equal(hasilOptions.length, 2, "Hasil dropdown must have exactly 2 options (Hybrid & Jual Semua)");
-    assert.match(hasilBlock[0], /value="hybrid"/);
-    assert.match(hasilBlock[0], /value="jual-semua"/);
-    assert.match(src, /<select id="ks-opt-sell-threshold"/);
+    assert.match(src, /id="ks-tab-main"/);
+    assert.match(src, /id="ks-tab-history"/);
+    assert.match(src, /id="ks-tab-settings"/);
+    assert.match(src, /id="ks-mancing-reel-bars"/);
+    assert.match(src, /id="ks-mancing-ramai-spots"/, "Sonar card must show live Ramai spots depth list");
+    assert.doesNotMatch(src, /id="ks-mancing-target-info"/, "Redundant Target Joran line must be removed from Sonar card");
+    assert.match(src, /function getReachableRamaiSpots\(/);
+    assert.match(src, /function renderSonarRamaiSpots\(/);
     assert.match(src, /<select id="ks-opt-stop-rule"/);
     assert.match(src, /<option value="all-full" selected>/);
-    assert.match(src, /<input type="checkbox" id="ks-opt-zeroloss" checked/);
 
-    // Exact 2-column checkbox order:
-    // Left: Natural, Auto Celup, Auto Sentak, Auto Gulung
-    // Right: Zero-Loss, Auto Simpan, Autopilot, Jual/Sampah
-    const orderedIds = [
+    // Exact 7 core checkboxes kept + Zero-Loss combined into Auto Gulung description
+    const keptCoreIds = [
       'id="ks-opt-natural"',
-      'id="ks-opt-zeroloss"',
-      'id="ks-opt-celup"',
       'id="ks-opt-simpan"',
-      'id="ks-opt-sentak"',
+      'id="ks-opt-celup"',
       'id="ks-opt-auto-navigasi"',
-      'id="ks-opt-gulung"',
-      'id="ks-opt-jual-penuh"'
+      'id="ks-opt-sentak"',
+      'id="ks-opt-jual-penuh"',
+      'id="ks-opt-gulung"'
     ];
-    let prevPos = -1;
-    for (const idToken of orderedIds) {
-      const pos = src.indexOf(idToken);
-      assert.ok(pos > prevPos, `Checkbox ${idToken} must appear in exact left/right row order`);
-      prevPos = pos;
+    for (const idToken of keptCoreIds) {
+      assert.ok(src.includes(idToken), `Core checkbox ${idToken} must exist in Settings`);
     }
+    assert.match(src, /Zero-Loss aktif permanen[\s\S]*?id="ks-opt-gulung"/, "Zero-Loss description must be combined into Auto Gulung");
+
+    // Always save to umpan if option is available, otherwise sell (and default max sell is 30 -> 50 total)
+    assert.match(src, /jualMaks:\s*30\b/, "default jualMaks must be 30");
+    assert.match(src, /Jual \+ Tas Penuh \(50\/50\)/, "all-full default label must reflect 30 sell + 20 bag = 50/50");
+    assert.match(src, /Jatah Jual Habis \(30\/30\)/, "sell-full default label must reflect 30/30");
+    assert.match(src, /if \(config\.autoUmpanIkan !== false && !isTrash && availableButtons\.umpanIkan\) \{\s*return "JADIKAN_UMPAN";\s*\}\s*if \(sisaJual > 0 && availableButtons\.jual\) \{\s*return "JUAL";/);
 
     // 1-Joran Hemat is always ON internally and hidden from HUD
     assert.match(src, /singleRodProfit:\s*true\b/);
@@ -1236,16 +1245,25 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     assert.doesNotMatch(src, /history\.slice\(0,\s*8\)/, "daily history must not be capped to 8 items");
     assert.doesNotMatch(src, /history\.length\s*>\s*8/, "daily history must keep all of today's entries");
 
-    // HUD top layout order: Sonar -> Status -> Hari Ini -> Start button -> Templates -> Settings
-    const sonarIdx = src.indexOf('id="ks-mancing-sonar-info"');
+    // Compact tabbed HUD layout order: Pinned Hero (Status + Start) -> 3 Tabs -> Main (Sonar, Hari Ini, Templates) -> Riwayat -> Settings
     const statusIdx = src.indexOf('id="ks-mancing-status"');
-    const countIdx = src.indexOf('id="ks-mancing-count"');
     const startIdx = src.indexOf('id="ks-mancing-start-btn"');
+    const tabsIdx = src.indexOf('id="ks-tab-main"');
+    const sonarIdx = src.indexOf('id="ks-mancing-sonar-info"');
+    const countIdx = src.indexOf('id="ks-mancing-count"');
     const tplIdx = src.indexOf('id="ks-tpl-cumi"');
-    const settingsIdx = src.indexOf('id="ks-settings-toggle"');
+    const histPanelIdx = src.indexOf('id="ks-panel-history"');
+    const settingsPanelIdx = src.indexOf('id="ks-panel-settings"');
     assert.ok(
-      sonarIdx > 0 && statusIdx > sonarIdx && countIdx > statusIdx && startIdx > countIdx && tplIdx > startIdx && settingsIdx > tplIdx,
-      "HUD order must be Sonar -> Status -> Hari Ini -> Start -> Template -> Settings"
+      statusIdx > 0 &&
+        startIdx > statusIdx &&
+        tabsIdx > startIdx &&
+        sonarIdx > tabsIdx &&
+        countIdx > sonarIdx &&
+        tplIdx > countIdx &&
+        histPanelIdx > tplIdx &&
+        settingsPanelIdx > histPanelIdx,
+      "HUD order must be Pinned Hero (Status -> Start) -> Tabs -> Main Panel (Sonar -> Count -> Templates) -> History Panel -> Settings Panel"
     );
 
     // Hari Ini catch counter shows clean catch count without "-X rugi" suffix
@@ -1556,5 +1574,237 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     assert.equal(sceneInst.fase, "tunggu");
     assert.equal(sceneInst.tali.visible, true);
     assert.equal(sceneInst.pelampung.visible, true);
+  });
+
+  await t.test("anti-Ikan Lepas hardening: clean Space reel (no setPointerCapture crash), safe Sentak, anti-slack/surge guards, and KOSONG/berhasil diagnostics", async () => {
+    const mancingSrc = fs.readFileSync(path.join(extDir, "mancing.js"), "utf-8");
+
+    // 1. holdGulung() & releaseGulung() must NOT dispatch synthetic PointerEvent on pancing-gulung (avoids MAIN-world setPointerCapture NotFoundError)
+    const holdBlock = mancingSrc.match(/function holdGulung\(\)[\s\S]*?function releaseGulung\(\)[\s\S]*?\n  \}/);
+    assert.ok(holdBlock, "holdGulung/releaseGulung block must exist");
+    const holdCodeOnly = holdBlock[0].replace(/\/\/.*$/gm, "");
+    assert.doesNotMatch(holdCodeOnly, /setPointerCapture/, "holdGulung must not try isolated-world setPointerCapture stub");
+    assert.doesNotMatch(holdCodeOnly, /new PointerEvent/, "holdGulung/releaseGulung must use keyboard Space, not synthetic PointerEvent");
+    assert.match(holdCodeOnly, /code:\s*"Space"/, "holdGulung/releaseGulung must dispatch Space keydown/keyup");
+
+    // 2. scheduleNaturalSentak() must NOT fire keyup Space (which cancels reel hold after sambar -> tarik)
+    const sentakBlock = mancingSrc.match(/function scheduleNaturalSentak\(\)[\s\S]*?\n  \}/);
+    assert.ok(sentakBlock, "scheduleNaturalSentak block must exist");
+    assert.doesNotMatch(sentakBlock[0], /code:\s*"Space"/, "scheduleNaturalSentak must never dispatch Space keydown/keyup");
+    assert.match(sentakBlock[0], /code:\s*"Enter"/, "scheduleNaturalSentak fallback must use Enter");
+    assert.match(sentakBlock[0], /getSentakRemainingSec/, "scheduleNaturalSentak must check remaining strike countdown for urgent strike");
+
+    // 3. Tarik loop must include immediate red-zone protection (no 160ms delay), anti-slack floor (<=15%), and HUD focus blur
+    assert.match(mancingSrc, /redGuardTriggered\s*=\s*mancingConfig\.zeroLossGuard\s*&&\s*\(isRed\s*\|\|\s*tension\s*>=\s*82\)/);
+    assert.match(mancingSrc, /slackGuardTriggered\s*=\s*!isRed\s*&&\s*tension\s*<=\s*15/);
+    assert.match(mancingSrc, /activeEl\.closest\("#ks-mancing-hud"\)/);
+
+    // 4. inject.js classifies cek status=KOSONG as dimakan, cek status=LEPAS as lepas_cek, and passes berhasil + source on tarik
+    const listeners = {};
+    const baitLostEvents = [];
+    const fetchHandlers = [
+      () => ({ lemparan: { id: "K1", status: "TUNGGU" } }),
+      () => ({ lemparan: { id: "K1", status: "KOSONG", sambar: null, ikan: null } }),
+      () => ({ lemparan: { id: "K2", status: "LEPAS", sambar: null, ikan: null } }),
+      () => ({ hasil: "lepas", lemparan: { id: "K3", umpan: "umpan-cacing" } }),
+      () => ({ hasil: "lepas", lemparan: { id: "K4", umpan: "umpan-cacing" } })
+    ];
+    const win = {
+      console: { log() {}, warn() {}, error() {} },
+      performance: { now: () => 1000 },
+      CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
+      setTimeout: () => 1,
+      clearTimeout: () => {},
+      setInterval: () => 1,
+      clearInterval: () => {},
+      addEventListener(type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+      removeEventListener() {},
+      dispatchEvent(ev) { for (const fn of (listeners[ev.type] || []).slice()) fn(ev); return true; },
+      location: { href: "https://www.kampungsebelah.com/mancing" },
+      document: { hidden: false, visibilityState: "visible", hasFocus: () => true, addEventListener() {}, querySelector: () => null },
+      fetch: (url, init) => {
+        const next = fetchHandlers.shift();
+        const payload = next ? next(url, init) : {};
+        const makeRes = () => ({ ok: true, clone: () => makeRes(), json: () => Promise.resolve(payload) });
+        return Promise.resolve(makeRes());
+      }
+    };
+    win.window = win;
+    win.globalThis = win;
+    const ctx = vm.createContext(win);
+    vm.runInContext(fs.readFileSync(path.join(extDir, "inject.js"), "utf-8"), ctx, { filename: "inject.js" });
+    win.addEventListener("ks_mancing_bait_lost", (e) => baitLostEvents.push(e.detail));
+
+    await win.fetch("/api/pancing", { method: "POST", body: JSON.stringify({ aksi: "lempar", umpan: "umpan-cacing" }) });
+    await win.fetch("/api/pancing", { method: "POST", body: JSON.stringify({ aksi: "cek", id: "K1" }) });
+    await win.fetch("/api/pancing", { method: "POST", body: JSON.stringify({ aksi: "cek", id: "K2" }) });
+    await win.fetch("/api/pancing", { method: "POST", body: JSON.stringify({ aksi: "tarik", id: "K3", berhasil: false }) });
+    await win.fetch("/api/pancing", { method: "POST", body: JSON.stringify({ aksi: "tarik", id: "K4", berhasil: true }) });
+    await new Promise((r) => setTimeout(r, 10));
+
+    assert.equal(baitLostEvents.length, 4);
+    assert.equal(baitLostEvents[0].reason, "dimakan");
+    assert.equal(baitLostEvents[0].source, "cek");
+    assert.equal(baitLostEvents[0].umpan, "umpan-cacing");
+    assert.equal(baitLostEvents[1].reason, "lepas_cek");
+    assert.equal(baitLostEvents[1].source, "cek");
+    assert.equal(baitLostEvents[2].reason, "lepas");
+    assert.equal(baitLostEvents[2].source, "tarik");
+    assert.equal(baitLostEvents[2].berhasil, false);
+    assert.equal(baitLostEvents[3].reason, "lepas");
+    assert.equal(baitLostEvents[3].source, "tarik");
+    assert.equal(baitLostEvents[3].berhasil, true);
+  });
+
+  await t.test("boundary avoidance & synthetic deep-water waypoint prevent 'Batas area mancing, putar balik ya'", () => {
+    const mancingSrc = fs.readFileSync(path.join(extDir, "mancing.js"), "utf-8");
+
+    // 1. Exact game map bounds constants must be present (x ∈ [-320, 320], z ∈ [-640 - lepasM, -14])
+    assert.match(mancingSrc, /LAUT_BOUNDS\s*=\s*\{[\s\S]*x0:\s*-320[\s\S]*x1:\s*320[\s\S]*z0:\s*-640[\s\S]*z1:\s*-14/);
+    assert.match(mancingSrc, /findSafeWaypointForDepth/);
+    assert.match(mancingSrc, /clampPointToSafeBounds/);
+    assert.match(mancingSrc, /readBoundaryToastState/);
+    assert.match(mancingSrc, /headingOutward/);
+    assert.match(mancingSrc, /Math\.max\(0,\s*-640\s*-\s*z\)\s*\*\s*0\.05/, "calcDepth must include offshore depth term");
+
+    // 2. Simulate real rotation giliran 166283 (Perahu jukung lepasM=0, target ≥30m, 0 in-bay spots ≥30m)
+    const LAUT = { x0: -320, x1: 320, z0: -640, z1: -14, margin: 18 };
+    function calcDepth(x, z) {
+      const n = Math.min(1, Math.max(0, (-z - 10) / 630));
+      return Math.max(
+        1.5,
+        2 + n * n * 18 + 20 * n +
+          Math.sin(0.021 * x + 1.3) * Math.cos(0.017 * z) * 3 * n +
+          Math.max(0, -640 - z) * 0.05
+      );
+    }
+    function findSafeWaypoint(target, shipX, lepasM = 0) {
+      const safeX0 = LAUT.x0 + LAUT.margin;
+      const safeX1 = LAUT.x1 - LAUT.margin;
+      const safeZ0 = LAUT.z0 - lepasM + LAUT.margin;
+      const safeZ1 = LAUT.z1 - LAUT.margin;
+      const safeX = Math.max(safeX0 + 12, Math.min(safeX1 - 12, shipX));
+      let bestZ = safeZ0;
+      let bestErr = Infinity;
+      for (let z = safeZ1; z >= safeZ0; z -= 5) {
+        const d = calcDepth(safeX, z);
+        const inRange = d >= (target.minDepth || 0) && (target.maxDepth == null || d <= target.maxDepth);
+        const err = Math.abs(d - (target.optimalDepth || target.minDepth)) + (inRange ? 0 : 100);
+        if (err < bestErr) {
+          bestErr = err;
+          bestZ = z;
+        }
+      }
+      return { x: safeX, z: bestZ, depth: calcDepth(safeX, bestZ) };
+    }
+
+    // Even starting right next to the West wall (x = -318), synthetic deep waypoint stays strictly inside safe bounds and reaches ≥25m
+    const wp = findSafeWaypoint({ minDepth: 25, optimalDepth: 28, maxDepth: null }, -318, 0);
+    assert.ok(wp.x >= LAUT.x0 + 30 && wp.x <= LAUT.x1 - 30, `waypoint x=${wp.x} must stay well inside [-290, 290]`);
+    assert.ok(wp.z >= LAUT.z0 + LAUT.margin && wp.z <= LAUT.z1 - LAUT.margin, `waypoint z=${wp.z} must stay inside bay bounds`);
+    assert.ok(wp.depth >= 25, `waypoint depth=${wp.depth} must satisfy ≥25m target`);
+    assert.match(mancingSrc, /minDepth:\s*25,\s*\n\s*optimalDepth:\s*hasOffshoreAccess\s*\?\s*35\s*:\s*28,\s*\n\s*allowCrowdStopAt:\s*25/, "deep bay target must use minDepth 25m");
+  });
+
+  await t.test("path-aware autopilot: speed-scaled lookahead, pier detour, and reverse steering compensation (gerakPerahu physics)", () => {
+    const mancingSrc = fs.readFileSync(path.join(extDir, "mancing.js"), "utf-8");
+
+    assert.match(mancingSrc, /PIER_OBSTACLE\s*=\s*\{[\s\S]*xMin:\s*-11[\s\S]*xMax:\s*11[\s\S]*zMin:\s*-58/);
+    assert.match(mancingSrc, /function segmentIntersectsBox\(/);
+    assert.match(mancingSrc, /function planPierSafeWaypoint\(/);
+    assert.match(mancingSrc, /function predictPathOutOfBounds\(/);
+    assert.match(mancingSrc, /reverseSteerSign\s*=\s*isReversing\s*\?\s*-1\s*:\s*1/);
+
+    // Simulate exact gerakPerahu() physics on a max-speed boat (lajuKali = 2.0, top speed ~11.13 m/s)
+    // heading straight toward West wall x = -320 from x = -280 at 10 m/s!
+    const bounds = { x0: -320, x1: 320, z0: -640, z1: -14, safeX0: -302, safeX1: 302, safeZ0: -622, safeZ1: -32 };
+    const PIER = { xMin: -11, xMax: 11, zMin: -58, zMax: -14, clearZ: -64 };
+
+    function segmentIntersectsBox(x1, z1, x2, z2, box) {
+      const dx = x2 - x1;
+      const dz = z2 - z1;
+      let tMin = 0, tMax = 1;
+      if (Math.abs(dx) < 1e-6) { if (x1 < box.xMin || x1 > box.xMax) return false; }
+      else {
+        let tx1 = (box.xMin - x1) / dx, tx2 = (box.xMax - x1) / dx;
+        if (tx1 > tx2) [tx1, tx2] = [tx2, tx1];
+        tMin = Math.max(tMin, tx1); tMax = Math.min(tMax, tx2);
+        if (tMin > tMax) return false;
+      }
+      if (Math.abs(dz) < 1e-6) { if (z1 < box.zMin || z1 > box.zMax) return false; }
+      else {
+        let tz1 = (box.zMin - z1) / dz, tz2 = (box.zMax - z1) / dz;
+        if (tz1 > tz2) [tz1, tz2] = [tz2, tz1];
+        tMin = Math.max(tMin, tz1); tMax = Math.min(tMax, tz2);
+        if (tMin > tMax) return false;
+      }
+      return tMax >= 0 && tMin <= 1;
+    }
+
+    function predictPathOutOfBounds(shipX, shipZ, shipH, shipLaju, b) {
+      const speed = Math.max(0, shipLaju);
+      const lookaheadSec = Math.max(1.2, Math.min(3.0, 1.0 + speed * 0.22));
+      const projSpeed = Math.max(speed, 1.4);
+      const vx = Math.sin(shipH) * projSpeed;
+      const vz = Math.cos(shipH) * projSpeed;
+      for (let s = 1; s <= 6; s++) {
+        const t = (lookaheadSec * s) / 6;
+        const px = shipX + vx * t;
+        const pz = shipZ + vz * t;
+        if (px < b.safeX0) return { willExit: true, exitWall: "west", timeToExit: t };
+        if (px > b.safeX1) return { willExit: true, exitWall: "east", timeToExit: t };
+        if (pz < b.safeZ0) return { willExit: true, exitWall: "north", timeToExit: t };
+        if (pz > b.safeZ1) return { willExit: true, exitWall: "south", timeToExit: t };
+      }
+      return { willExit: false, exitWall: "", timeToExit: Infinity };
+    }
+
+    // 1. Fast boat heading West at 10 m/s from x=-280 is detected BEFORE hitting safeX0 (-302) or wall (-320)
+    const predWest = predictPathOutOfBounds(-280, -300, -Math.PI / 2, 10, bounds);
+    assert.equal(predWest.willExit, true);
+    assert.equal(predWest.exitWall, "west");
+
+    // 2. Pier intersection check catches West->East crossing near shore (-25, -38) -> (25, -38)
+    assert.equal(segmentIntersectsBox(-25, -38, 25, -38, PIER), true, "cross-pier path must be detected");
+    assert.equal(segmentIntersectsBox(-25, -90, 25, -90, PIER), false, "deep open-water path must not trigger pier detour");
+
+    // 3. Closed-loop physics simulation (gerakPerahu): fast boat (lajuKali=2.0, laju=10 m/s) heading straight at West wall (-320)
+    //    must brake & turn toward target (0, -300) WITHOUT EVER hitting x <= -320!
+    let x = -280, z = -300, h = -Math.PI / 2, laju = 10;
+    const lajuKali = 2.0;
+    const dt = 0.05;
+    let hitWall = false;
+    for (let step = 0; step < 200; step++) {
+      const pred = predictPathOutOfBounds(x, z, h, laju, bounds);
+      const nearWest = x <= bounds.x0 + 18 || pred.exitWall === "west";
+      const steerX = nearWest ? Math.max(0, bounds.x0 + 38) : 0;
+      const steerZ = -300;
+      const targetH = Math.atan2(steerX - x, steerZ - z);
+      let diff = (targetH - h + Math.PI) % (2 * Math.PI);
+      if (diff < 0) diff += 2 * Math.PI;
+      diff -= Math.PI;
+      const absDiff = Math.abs(diff);
+      const reverseSteerSign = laju < -0.1 ? -1 : 1;
+      const headingOutward = nearWest && Math.sin(h) < -0.12;
+      let belok = absDiff > 0.04 ? Math.max(-1, Math.min(1, diff / 0.45)) * reverseSteerSign : 0;
+      let gas = 1.0;
+      if ((pred.willExit && absDiff > 0.35) || (headingOutward && absDiff > 0.55)) {
+        gas = laju > 0.4 ? -0.85 : 0;
+        belok = (diff >= 0 ? 1 : -1) * reverseSteerSign;
+      } else if (absDiff > 1.05) {
+        gas = laju > 2.2 ? -0.35 : 0.15;
+      }
+      // Exact gerakPerahu physics
+      const s = (gas > 0 ? 2.4 * gas : 3.2 * gas) * lajuKali;
+      laju += s * dt;
+      laju -= laju * (0.32 + (0.02 * Math.abs(laju)) / lajuKali) * dt;
+      laju = Math.min(7.5 * lajuKali, Math.max(-2.2, laju));
+      h += 0.7 * belok * dt * Math.min(1, Math.max(0.3, Math.abs(laju) / 2.5)) * (laju < -0.1 ? -1 : 1);
+      x += Math.sin(h) * laju * dt;
+      z += Math.cos(h) * laju * dt;
+      if (x <= bounds.x0) { hitWall = true; break; }
+    }
+    assert.equal(hitWall, false, `max-speed boat must brake & turn away before x=-320 (final x=${x.toFixed(1)})`);
+    assert.ok(x > bounds.x0 + 10, `boat must stay safely inside West wall (x=${x.toFixed(1)})`);
   });
 });

@@ -48,6 +48,7 @@
                   detail: {
                     id: castId,
                     reason: "dimakan",
+                    source: aksi || "cek",
                     message: typeof data.dimakan === "string"
                       ? data.dimakan
                       : (data.dimakan?.pesan || data.dimakan?.nama || ""),
@@ -59,6 +60,17 @@
                   detail: {
                     id: castId,
                     reason: String(data.hasil).toLowerCase(),
+                    source: "tarik",
+                    berhasil: typeof reqBody.berhasil === "boolean" ? reqBody.berhasil : undefined,
+                    umpan
+                  }
+                }));
+              } else if (aksi === "cek" && statusUpper === "KOSONG") {
+                window.dispatchEvent(new CustomEvent("ks_mancing_bait_lost", {
+                  detail: {
+                    id: castId,
+                    reason: "dimakan",
+                    source: "cek",
                     umpan
                   }
                 }));
@@ -66,7 +78,8 @@
                 window.dispatchEvent(new CustomEvent("ks_mancing_bait_lost", {
                   detail: {
                     id: castId,
-                    reason: statusUpper.toLowerCase(),
+                    reason: statusUpper === "DIMAKAN" ? "dimakan" : "lepas_cek",
+                    source: "cek",
                     umpan
                   }
                 }));
@@ -75,6 +88,7 @@
                   detail: {
                     id: castId,
                     reason: "batal",
+                    source: "batal",
                     umpan
                   }
                 }));

@@ -8,16 +8,20 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+import pytest
 from defusedxml import ElementTree as ET
 
 from app.web.extension_crx import (
+    EXTENSION_DIR,
     build_extension_crx3,
+    build_extension_zip,
     build_linux_policy_json,
     build_macos_mobileconfig,
     build_update_xml,
     build_windows_reg,
     derive_extension_id,
     get_extension_identity,
+    read_extension_version,
     resolve_public_origin,
 )
 
@@ -51,7 +55,8 @@ def _parse_protobuf_fields(buf: bytes) -> dict[int, list[bytes]]:
 def test_build_extension_crx3_and_verify_signature(tmp_path: Path):
     crx_bytes, ext_id, version = build_extension_crx3(tmp_path)
     assert re.fullmatch(r"[a-p]{32}", ext_id)
-    assert version == "2.2.0"
+    assert version == read_extension_version(EXTENSION_DIR)
+    assert re.fullmatch(r"\d+\.\d+\.\d+", version)
 
     # Header magic + version + header_len
     assert crx_bytes[:4] == b"Cr24"
@@ -72,12 +77,23 @@ def test_build_extension_crx3_and_verify_signature(tmp_path: Path):
 
     assert derive_extension_id(pub_der) == ext_id
 
-    # Verify ZIP payload has manifest.json at root (required for CRX)
+    # Verify ZIP payload has manifest.json at root (required for CRX) and all manifest scripts
     with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
-        names = zf.namelist()
+        names = set(zf.namelist())
         assert "manifest.json" in names
         assert "ojol.js" in names
+        assert "diving-route.js" in names
         assert not any(name.startswith("kampungsebelah-extension/") for name in names)
+        manifest = json.loads(zf.read("manifest.json").decode("utf-8"))
+        for entry in manifest.get("content_scripts", []):
+            for script in entry.get("js", []):
+                assert script in names, f"Missing content_script in CRX ZIP: {script}"
+        for entry in manifest.get("web_accessible_resources", []):
+            for resource in entry.get("resources", []):
+                assert resource in names, f"Missing web_accessible_resource in CRX ZIP: {resource}"
+        popup = manifest.get("action", {}).get("default_popup")
+        if popup:
+            assert popup in names
 
     # Verify RSA-SHA256 signature with OpenSSL
     openssl = shutil.which("openssl")
@@ -122,6 +138,40 @@ def test_build_extension_crx3_and_verify_signature(tmp_path: Path):
     ext_id_2, version_2 = get_extension_identity(tmp_path)
     assert ext_id_2 == ext_id
     assert version_2 == version
+
+
+def test_build_extension_zip_includes_manifest_scripts_and_fails_on_missing(tmp_path: Path):
+    ext_dir = tmp_path / "ext"
+    ext_dir.mkdir()
+    manifest = {
+        "manifest_version": 3,
+        "name": "Test Ext",
+        "version": "1.0.0",
+        "action": {"default_popup": "popup.html"},
+        "content_scripts": [
+            {"matches": ["https://example.com/*"], "js": ["custom-feature.js"]}
+        ],
+        "web_accessible_resources": [
+            {"resources": ["custom-inject.js"], "matches": ["https://example.com/*"]}
+        ],
+    }
+    (ext_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (ext_dir / "popup.html").write_text("<html></html>", encoding="utf-8")
+    (ext_dir / "custom-feature.js").write_text("console.log('feature');", encoding="utf-8")
+
+    # Missing custom-inject.js must raise loudly instead of building a broken ZIP
+    with pytest.raises(FileNotFoundError, match="custom-inject.js"):
+        build_extension_zip(ext_dir)
+
+    # Once present, scripts referenced only in manifest.json are packaged automatically
+    (ext_dir / "custom-inject.js").write_text("console.log('inject');", encoding="utf-8")
+    zip_bytes = build_extension_zip(ext_dir)
+    with zipfile.ZipFile(io.BytesIO(zip_bytes), "r") as zf:
+        names = set(zf.namelist())
+        assert "kampungsebelah-extension/manifest.json" in names
+        assert "kampungsebelah-extension/popup.html" in names
+        assert "kampungsebelah-extension/custom-feature.js" in names
+        assert "kampungsebelah-extension/custom-inject.js" in names
 
 
 def test_policy_and_update_xml_generators():

@@ -193,6 +193,7 @@ def test_web_routes_and_dashboard_api(settings, monkeypatch):
             assert "kampungsebelah-extension/diving-avoid.js" in namelist
             assert "kampungsebelah-extension/diving-human.js" in namelist
             assert "kampungsebelah-extension/diving-open.js" in namelist
+            assert "kampungsebelah-extension/diving-route.js" in namelist
             assert "kampungsebelah-extension/diving-shark.js" in namelist
 
         dl_alias = client.get("/download/extension.zip")

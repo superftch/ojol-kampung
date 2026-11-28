@@ -27,6 +27,7 @@ EXTENSION_FILES = (
     "diving-avoid.js",
     "diving-human.js",
     "diving-open.js",
+    "diving-route.js",
     "diving-shark.js",
     "ojol.js",
     "mancing.js",
@@ -131,22 +132,100 @@ def read_extension_version(extension_dir: Path = EXTENSION_DIR) -> str:
     return version
 
 
+def _manifest_referenced_files(manifest: dict[str, object]) -> list[str]:
+    """Collect relative file paths referenced by a Chrome extension manifest."""
+    refs: list[str] = []
+
+    def _add(val: object) -> None:
+        if isinstance(val, str):
+            cleaned = val.strip().lstrip("./")
+            if cleaned and "*" not in cleaned and cleaned not in refs:
+                refs.append(cleaned)
+
+    action = manifest.get("action")
+    if isinstance(action, dict):
+        _add(action.get("default_popup"))
+
+    background = manifest.get("background")
+    if isinstance(background, dict):
+        _add(background.get("service_worker"))
+
+    content_scripts = manifest.get("content_scripts")
+    if isinstance(content_scripts, list):
+        for entry in content_scripts:
+            if not isinstance(entry, dict):
+                continue
+            for key in ("js", "css"):
+                items = entry.get(key)
+                if isinstance(items, list):
+                    for item in items:
+                        _add(item)
+
+    web_resources = manifest.get("web_accessible_resources")
+    if isinstance(web_resources, list):
+        for entry in web_resources:
+            if isinstance(entry, dict):
+                resources = entry.get("resources")
+                if isinstance(resources, list):
+                    for item in resources:
+                        _add(item)
+            else:
+                _add(entry)
+
+    icons = manifest.get("icons")
+    if isinstance(icons, dict):
+        for item in icons.values():
+            _add(item)
+
+    return refs
+
+
+def list_extension_files(extension_dir: Path = EXTENSION_DIR) -> tuple[str, ...]:
+    """Return ordered list of files to package, ensuring all manifest references exist."""
+    manifest_path = extension_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise FileNotFoundError("manifest.json ekstensi tidak ditemukan")
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    resolved_root = extension_dir.resolve()
+    manifest_refs = _manifest_referenced_files(manifest)
+
+    missing: list[str] = []
+    for rel in manifest_refs:
+        candidate = (extension_dir / rel).resolve()
+        if not candidate.is_relative_to(resolved_root) or not candidate.is_file():
+            missing.append(rel)
+    if missing:
+        raise FileNotFoundError(
+            f"File ekstensi yang dirujuk manifest.json tidak ditemukan: {', '.join(missing)}"
+        )
+
+    ordered: list[str] = []
+    for rel in (*EXTENSION_FILES, *manifest_refs):
+        if rel in ordered:
+            continue
+        candidate = (extension_dir / rel).resolve()
+        if candidate.is_relative_to(resolved_root) and candidate.is_file():
+            ordered.append(rel)
+    return tuple(ordered)
+
+
 def build_extension_zip(
     extension_dir: Path = EXTENSION_DIR,
     *,
     root_prefix: str = "kampungsebelah-extension/",
 ) -> bytes:
     """Build deterministic ZIP archive of extension files."""
+    files = list_extension_files(extension_dir)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        for fname in EXTENSION_FILES:
+        for fname in files:
             fpath = extension_dir / fname
-            if fpath.is_file():
-                arcname = f"{root_prefix}{fname}" if root_prefix else fname
-                info = zipfile.ZipInfo(filename=arcname, date_time=(2026, 1, 1, 0, 0, 0))
-                info.compress_type = zipfile.ZIP_DEFLATED
-                info.external_attr = 0o644 << 16
-                zf.writestr(info, fpath.read_bytes())
+            arcname = f"{root_prefix}{fname}" if root_prefix else fname
+            info = zipfile.ZipInfo(filename=arcname, date_time=(2026, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            zf.writestr(info, fpath.read_bytes())
     return buf.getvalue()
 
 
@@ -181,7 +260,7 @@ def _extension_cache_fingerprint(
     stats: list[tuple[str, int]] = []
     if key_path.is_file():
         stats.append(("__key__", key_path.stat().st_mtime_ns))
-    for fname in EXTENSION_FILES:
+    for fname in list_extension_files(extension_dir):
         fpath = extension_dir / fname
         if fpath.is_file():
             stats.append((fname, fpath.stat().st_mtime_ns))
