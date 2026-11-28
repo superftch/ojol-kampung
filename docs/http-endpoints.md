@@ -440,3 +440,34 @@ Verifikasi statis bundle client `29ahj9dqnlzgc.js` (25 November 2026) dan inspek
 3. **Melamar Pekerjaan (`POST /api/jobs/start` & `POST /api/jobs/vacancy/{id}`)**:
    - Lowongan fasum/pemerintah: `POST /api/jobs/start` dengan payload `{"profession": str, "facilityId": str}` (tambahkan `"switchJob": true` jika akun sedang memiliki kontrak kerja lain).
    - Lowongan usaha warga: `POST /api/jobs/vacancy/{vacancyId}` dengan payload `{}` atau `{"switchJob": true}` jika pindah pekerjaan.
+
+## Bukti Jaga Usaha (28 November 2026, update #249)
+
+**Status bukti: temuan statis dari bundle client, belum ada probe live.** Chunk `18uuo-evq2c2i.js` (SHA256 `4c30da914f461910cf2b5263f391b07892575490c04cf34ccc96d773d8fa3071`) diambil 28 November 2026 11.45 WIB lewat `GET /kampung` dan `GET /_next/static/...` dengan header browser resmi tanpa cookie akun. Salinan mentah ada di `.local/jaga-usaha-2026-11-28/` (diabaikan Git). Bentuk respons di bawah disimpulkan dari kode komponen `l_`; nama field belum dicocokkan dengan respons server.
+
+| Endpoint | Pemakaian | Bukti |
+|---|---|---|
+| GET `/api/businesses/{businessId}/jaga` | Status jaga milik pemilik: `jaga` (bool), `menit` (total hari ini), `maksMenit`, `minMenitBonus`, `isiPersen`, `detakDetik`, `open`, `jam` | Statis, komponen `l_`. Tombol tampil bila `GET /api/shops/{id}` memberi `mine` dan bukan `village`, dan akun punya `me.home`. |
+| POST `/api/businesses/{businessId}/jaga` `{"aksi":"mulai"}` | Mulai jaga; respons dipakai langsung sebagai status baru | Statis. Galat tampil sebagai teks di bawah tombol; contoh dari tangkapan layar pengguna: "Kamu sedang narik ojol (mungkin di tab lain). Selesaikan dulu, baru menjaga usaha." |
+| POST `.../jaga` `{"aksi":"detak"}` | Detak tiap `detakDetik` detik selama panel terbuka; respons memuat `jaga`, `menit`, opsional `alasan` | Statis. Bila `jaga` false, client menampilkan `alasan` lalu membaca ulang GET. |
+| POST `.../jaga` `{"aksi":"selesai"}` | Selesai jaga; client juga mengirimnya dengan `keepalive` saat panel ditutup | Statis. |
+| GET `/api/shops/{businessId}` | Sudah ada di adapter. Field relevan: `mine`, `village`, `open`, `dijaga` (pembeli melihat "Pemiliknya sedang jaga"), `customersYesterday` | Statis, komponen `rW`. |
+| GET `/api/businesses/semua` | Daftar usaha milik akun ("Semua usahaku"): `usaha[]` (`id`, `plang`, `jenis`, `status`, `plotId`, `x`, `y`, `kasMilli`, `kas7`, `bahan{habis,cukupHari,isiMilli}`), `total`, `rekap` | Statis, komponen `tG`. Config `kelola_semua_usaha.min_usaha: 2`. |
+| GET `/api/businesses/{businessId}/report` | Laba usaha: `today{customers,rivals,shopCount,netMilli}`, `week{netMilli}`, `days[]`, `openHours` | Statis, fungsi `nG` dan `nL`. |
+
+Konfigurasi server `jaga` (bundle yang sama, "angka usulan", disetujui 28 November 2026): `aktif: true`, `detak_detik: 60`, `maks_per_detak_menit: 2`, `hidup_menit: 3`, `maks_menit_per_hari: 240` (per usaha per hari WIB), `min_menit_bonus: 60`, `pilihan_bps: 12000` (bobot pembeli sekitar x1,2 keesokan hari bila jaga minimal 60 menit; hanya menggeser pembeli dari usaha sejenis), `isi_bps: 12500` (pembeli yang dilayani langsung mendapat isi kebutuhan +25%). Jaga adalah satu kegiatan berhadiah: tidak bisa bersamaan dengan ojol, mancing, atau diving. Akun dengan kontrak kerja hanya boleh jaga di luar jam kerja atau saat istirahat. Belum terbukti live: apakah dua usaha bisa dijaga bersamaan, apakah `menit` dihitung dari waktu nyata atau per detak, dan apakah `mulai` dapat memicu `428 CEK_MANUSIA`.
+
+### Observasi manual pengguna (28 November 2026 ±11.56 WIB)
+
+**Status bukti: observasi historis dari DevTools browser milik pengguna (akun Adisti Kirana, usaha "Akademis.ai Venture", kapal nelayan, 251 pelanggan kemarin). Bukan probe worker. Tangkapan layar dan teks disalin pengguna; belum ada artefak mentah di `.local/`.**
+
+| Langkah | Request | Hasil |
+|---|---|---|
+| 1 | POST `/api/businesses/{id}/jaga` `{"aksi":"mulai"}` | 200. `{"jaga":true,"menit":1,"maksMenit":240,"minMenitBonus":60,"isiPersen":25,"pilihanPersen":20,"detakDetik":60,"open":true,"jam":"24 jam"}` |
+| 2 | POST `/api/businesses/{id}/jaga` `{"aksi":"detak"}` | 200. `{"jaga":true,"menit":2}` |
+
+- Field baru yang tidak ada di dugaan statis: `pilihanPersen: 20` (cocok dengan `pilihan_bps: 12000` = bobot x1,2; ini inferensi, belum dikonfirmasi server).
+- Satu detak setelah `mulai` menaikkan `menit` dari 1 ke 2 (+1, bukan +2). Satu sampel; belum diketahui apakah +1 per detak atau per waktu nyata.
+- Panel client menampilkan "4 menit hari ini" dan "56 menit lagi supaya pembeli sekitar lebih memilih usahamu", jadi `menit` sama dengan hitungan menit harian dan target bonus 60.
+- Pengguna melaporkan (tanpa artefak): memulai jaga di usaha ke-2 langsung menonaktifkan jaga usaha ke-1. Jadi hanya satu usaha aktif sekaligus; `mulai` di usaha lain berarti pindah.
+- Tidak ada tantangan `428 CEK_MANUSIA` pada `mulai` dalam observasi ini (satu sampel).
