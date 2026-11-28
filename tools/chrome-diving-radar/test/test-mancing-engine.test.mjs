@@ -1833,6 +1833,13 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     const spot35FiveBar = scoreSpot(35, 0.85, 250);
     assert.ok(spot34Ramai > spot26FiveBar, "34m Ramai must always beat 26m 5/5");
     assert.ok(spot35FiveBar > spot34Ramai, "35m 5/5 must beat 34m non-5/5 Ramai");
+    // Real rame consistency: a 34m spot with kaya=0.42 has rame = 0.455 + 0.42 = 0.875 (5/5 Ramai!) and MUST beat 24m (kaya=0.80)
+    assert.match(mancingSrc, /const ev = calcSpotRameAt\(s\.x,\s*s\.z,\s*spots\);/);
+    assert.match(mancingSrc, /const isRamai = kaya >= RAMAI_MIN_KAYA \|\| rame >= 0\.65;/);
+    assert.match(mancingSrc, /const isFiveBar = kaya >= FIVE_BAR_MIN_KAYA \|\| rame >= 0\.85;/);
+    // Progress-based nav watchdog must NOT cut off a 100s jukung trip to 34m at 60s
+    assert.match(mancingSrc, /nowNav - navStartTime > 180000/);
+    assert.match(mancingSrc, /nowNav - navLastProgressTime > 25000/);
     // Shallow mode (maxDepth=10) does NOT trigger isDeep30
     const shallow5FiveBar = scoreSpot(5, 0.90, 20, 2, 10);
     const deep35InShallowMode = scoreSpot(35, 0.95, 200, 2, 10);

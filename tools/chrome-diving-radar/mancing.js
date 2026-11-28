@@ -1833,11 +1833,16 @@
     if (pool.length === 0) return [];
 
     const ranked = pool.map(s => {
-      const d = calcDepth(s.x, s.z);
+      const ev = calcSpotRameAt(s.x, s.z, spots);
+      const d = ev.depth;
+      const rame = ev.rame;
+      const kaya = s.kaya || 0;
       const dist = Math.hypot(s.x - shipX, s.z - shipZ);
       const meetsDepth = d >= minDepth && (maxDepth === null || d <= maxDepth);
-      const isRamai = (s.kaya || 0) >= RAMAI_MIN_KAYA;
-      const isFiveBar = (s.kaya || 0) >= FIVE_BAR_MIN_KAYA;
+      // Pakai rumus rame resmi game (konsisten dengan Sonar & daftar 🗺️ Ramai):
+      // di 30m+, kepadatan dasar sudah 0.455 sehingga kaya 0.40 pun mencapai rame 0.855 (5/5 Ramai)!
+      const isRamai = kaya >= RAMAI_MIN_KAYA || rame >= 0.65;
+      const isFiveBar = kaya >= FIVE_BAR_MIN_KAYA || rame >= 0.85;
       // Untuk target laut dalam (tanpa maxDepth), SELALU prioritaskan spot 30m+ Ramai di atas spot <30m
       const isDeep30 = maxDepth === null && d >= 30;
       const tier = (isDeep30 && isFiveBar)
@@ -1856,8 +1861,8 @@
       const depthBonus = maxDepth !== null
         ? Math.max(0, 60 - Math.abs(d - (activeTarget.optimalDepth || 5)) * 8)
         : (d >= 34 ? 140 : d >= 30 ? 120 : d >= 24 ? 80 : d >= 15 ? 40 : d);
-      const score = (tier * 1000) + ((s.kaya || 0) * 600) + depthBonus - (dist * 0.08);
-      return { ...s, depth: d, dist, tier, isRamai, isFiveBar, isDeep30, meetsDepth, score };
+      const score = (tier * 1000) + (rame * 450) + (kaya * 200) + depthBonus - (dist * 0.08);
+      return { ...s, depth: d, rame, dist, tier, isRamai, isFiveBar, isDeep30, meetsDepth, score };
     });
 
     ranked.sort((a, b) => b.score - a.score);
@@ -1890,6 +1895,8 @@
   let wrongTurnStreak = 0;
   let navTurnSign = 1;
   let kbGasDown = false;
+  let navBestDist = Infinity;
+  let navLastProgressTime = 0;
 
   function releaseKeyboardSteer() {
     if (activeTurnPulseTimer) {
@@ -1974,13 +1981,15 @@
     if (!isNavigating) {
       isNavigating = true;
       navStartTime = performance.now();
+      navBestDist = Infinity;
+      navLastProgressTime = navStartTime;
       lastRecordedShipH = shipH;
       shipHStuckCount = 0;
       lastCommandedBelok = 0;
       lastAbsHeadingDiff = null;
       wrongTurnStreak = 0;
     }
-    currentTargetSpot = spot;
+    currentTargetSpot = spot._origSpot || spot;
 
     const bounds = getBoatSafeBounds(pancingProfile.lepasM || 0);
     const clampedTarget = clampPointToSafeBounds(spot.x, spot.z, pancingProfile.lepasM || 0);
@@ -4314,7 +4323,7 @@
             }
           }
 
-          const navSteerSpot = { ...navTarget, x: safeSpotCoords.x, z: safeSpotCoords.z };
+          const navSteerSpot = { ...navTarget, x: safeSpotCoords.x, z: safeSpotCoords.z, _origSpot: navTarget };
 
           // Prioritas utama: langsung berhenti begitu Sonar mencapai 5/5 bar di kedalaman target (dan tidak terlalu dempet pemain lain).
           // Jika spot terbaik tidak bisa 5 bar (mis. kaya < 0.78), tetap melaju menuju titik acak di inti spot (~5-8m)
@@ -4338,6 +4347,11 @@
 
           if (nudgingForPlayer || (!reachedFiveBars && !reachedSpotCore && !reachedSyntheticDepth && !reachedLumayanFallback && !reachedOptimalDepth)) {
             startAutopilotToSpot(navSteerSpot, liveShipData.x, liveShipData.z, liveShipData.h, liveShipData.laju || 0);
+            const nowNav = performance.now();
+            if (dist < navBestDist - 3) {
+              navBestDist = dist;
+              navLastProgressTime = nowNav;
+            }
             if (tooCloseToPlayer) {
               updateStatusMsg(
                 "↔️ Geser Sedikit (Ada Pemain)...",
@@ -4345,8 +4359,11 @@
                 "#00e5ff"
               );
             }
-            // Safety timeout guard (maks 60 detik berlayar)
-            if (performance.now() - navStartTime > 60000) {
+            // Watchdog berbasis progres: jangan potong pelayaran jauh jukung (550m @ 5.57 m/s ≈ 100 dtk) di 60 dtk!
+            // Hentikan hanya bila tidak maju >=3m selama 25 detik (benar-benar macet) atau melewati batas keras 180 detik.
+            const stuckNoProgress = navLastProgressTime > 0 && (nowNav - navLastProgressTime > 25000);
+            const hitHardCap = (nowNav - navStartTime > 180000);
+            if (stuckNoProgress || hitHardCap) {
               stopAutopilot(`Spot dicapai: ${formatSonarText(sonar)}`);
             }
             return;
