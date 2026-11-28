@@ -1840,3 +1840,44 @@ def test_jaga_settings_dashboard_and_worker_toggle_are_account_scoped(admin_web,
     assert one_dash["jaga_status"]["updated_at"]
     assert two_dash["jaga_status"] is None and two_dash["jaga_settings"]["budget_jam"] == 6
     assert 'id="jagaSettingsForm"' in client.get("/").text
+
+
+def test_jaga_full_worker_slot_is_visible_and_failed_start_does_not_enable_it(
+    admin_web, monkeypatch
+):
+    from app.modules.worker.settings import auto_flags, set_auto_flag
+
+    client, manager = admin_web
+    manager.registry.update_settings({"max_active_workers": 1})
+    running_account = client.post("/api/accounts/create", json={"name": "Worker aktif"}).json()[
+        "account"
+    ]["id"]
+    waiting_account = client.post("/api/accounts/create", json={"name": "Akun Jaga"}).json()[
+        "account"
+    ]["id"]
+    running_directory = manager.service(running_account).settings.runtime_dir
+    service = manager.service(waiting_account)
+    directory = service.settings.runtime_dir
+    set_auto_flag(directory, "ojol", False)
+    monkeypatch.setattr(manager.registry.settings, "operator_authorized", True)
+    monkeypatch.setattr(service, "ensure_backend", AsyncMock())
+    monkeypatch.setattr(service, "start_tunnel", AsyncMock())
+    monkeypatch.setattr(
+        "app.modules.worker.supervisor.send_worker_command",
+        AsyncMock(return_value={"ok": False, "capacity": True, "error": "Slot worker penuh."}),
+    )
+
+    with exclusive_lock(running_directory):
+        dashboard = client.get("/api/dashboard").json()
+        assert dashboard["account"]["id"] == waiting_account
+        assert "Slot worker penuh" in dashboard["jaga_capacity_error"]
+        assert dashboard["jaga_slot_accounts"] == ["Worker aktif"]
+
+        response = client.post(
+            f"/api/control/toggle-auto?account_id={waiting_account}",
+            json={"flag": "jaga", "enabled": True},
+        )
+        assert response.status_code == 409, response.json()
+        assert response.json()["detail"] == "Slot worker penuh."
+        assert not auto_flags(directory)["jaga"]
+        assert not service.auto_start_pending

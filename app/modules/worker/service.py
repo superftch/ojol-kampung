@@ -48,6 +48,7 @@ class ControlService:
         self.tasks = []
         self.lock = asyncio.Lock()
         self.worker_start_lock = asyncio.Lock()
+        self.jaga_control_lock = asyncio.Lock()
         self.worker_capacity_error = None
         self.url_prefix = ""
         self.account_id = None
@@ -379,6 +380,23 @@ class ControlService:
             return await self._start_worker(auto_start=auto_start, needs_only=False, mode=mode)
         return "Pilih aktivitas lewat tombol di bawah. Buka Akun Saya untuk mengganti akun."
 
+    async def set_jaga_enabled(self, enabled: bool) -> str | None:
+        directory = self.settings.runtime_dir
+        async with self.jaga_control_lock:
+            previous = auto_flags(directory)["jaga"]
+            set_auto_flag(directory, "jaga", enabled)
+            if not enabled:
+                if not any(auto_flags(directory).values()):
+                    self.auto_start_pending = False
+                wake_jaga_worker(directory)
+                return None
+            try:
+                return await self.ensure_jaga_worker()
+            except (RuntimeError, ValueError, OSError):
+                set_auto_flag(directory, "jaga", previous)
+                wake_jaga_worker(directory)
+                raise
+
     async def ensure_jaga_worker(self) -> str:
         wake_jaga_worker(self.settings.runtime_dir)
         if auto_flags(self.settings.runtime_dir)["ojol"] is not False:
@@ -472,7 +490,7 @@ class ControlService:
             if worker_resp is not None:
                 if not worker_resp.get("ok"):
                     if worker_resp.get("capacity"):
-                        if auto_start:
+                        if auto_start and not jaga_only:
                             self.auto_start_pending = True
                         raise WorkerCapacityError(worker_resp["error"])
                     raise RuntimeError(worker_resp.get("error") or worker_resp["message"])
@@ -485,7 +503,7 @@ class ControlService:
 
             async with self.worker_start_lock:
                 if self.worker_capacity_error and (error := self.worker_capacity_error()):
-                    if auto_start:
+                    if auto_start and not jaga_only:
                         self.auto_start_pending = True
                     raise WorkerCapacityError(error)
                 await self._spawn_local_worker(auto_start, is_ojol, mode)

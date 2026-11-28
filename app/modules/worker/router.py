@@ -11,6 +11,7 @@ from app.integrations.kampung import session_transfer
 from app.modules.gameplay.kerja import set_kerja_target_poin
 from app.modules.gameplay.study import set_subject
 from app.modules.ledger.finance import report_date
+from app.modules.worker.capacity import WorkerCapacityError
 from app.modules.worker.jaga_settings import (
     JAGA_PRESETS,
     JagaSettings,
@@ -220,13 +221,21 @@ async def toggle_auto_api(
                     "Fitur Auto Kursus sedang dinonaktifkan.",
                 )
             set_auto_flag(cur_service.settings.runtime_dir, "kursus", False)
+        elif flag == "jaga":
+            try:
+                message = await cur_service.set_jaga_enabled(enabled)
+            except WorkerCapacityError as exc:
+                raise HTTPException(409, str(exc)) from None
+            except (RuntimeError, OSError) as exc:
+                raise HTTPException(400, str(exc)) from None
+            return {"success": True, "flag": flag, "enabled": enabled, "message": message}
         else:
             if flag == "ojol" and enabled:
                 _validate_ojol_eligible(cur_service)
             directory = cur_service.settings.runtime_dir
             set_auto_flag(directory, flag, enabled)
-            if flag in {"ojol", "jaga"} and (flag == "jaga" or auto_flags(directory)["jaga"]):
-                if (flag == "jaga" and enabled) or (flag == "ojol" and not enabled):
+            if flag == "ojol" and auto_flags(directory)["jaga"]:
+                if not enabled:
                     try:
                         message = await cur_service.ensure_jaga_worker()
                     except (RuntimeError, ValueError, OSError) as exc:

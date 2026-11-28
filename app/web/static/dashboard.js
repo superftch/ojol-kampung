@@ -919,14 +919,19 @@ function renderJaga(data) {
     const waiting = enabled && ojolEnabled && !session;
     const workerActive = Boolean(data.summary?.active);
     const pending = pendingControls.has('Jaga');
+    const capacity = data.jaga_capacity_error;
+    const activeAccounts = data.jaga_slot_accounts || [];
+    const capacityHint = activeAccounts.length
+        ? `${capacity} Worker aktif di akun Anda: ${activeAccounts.join(', ')}.`
+        : capacity;
     const run = document.getElementById('btnRunJaga');
     const stop = document.getElementById('btnStopJaga');
-    run.hidden = Boolean((session && workerActive) || (enabled && (workerActive || waiting)));
-    run.disabled = pending;
+    run.hidden = Boolean((session && workerActive) || (enabled && (workerActive || waiting || capacity)));
+    run.disabled = pending || Boolean(capacity);
     stop.hidden = !enabled;
     stop.disabled = pending;
 
-    renderJagaActivity(status, enabled, waiting, workerActive, pending);
+    renderJagaActivity(status, enabled, waiting, workerActive, pending, capacityHint);
 
     const settings = data.jaga_settings;
     const summary = document.getElementById('jagaSummary');
@@ -1017,15 +1022,16 @@ const jagaClock = new Intl.DateTimeFormat('id-ID', {
     hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'Asia/Jakarta',
 });
 
-function renderJagaActivity(status, enabled, waiting, workerActive, pending) {
+function renderJagaActivity(status, enabled, waiting, workerActive, pending, capacityHint) {
     const session = status.session;
     const stopping = workerActive && !enabled && session && ['Jaga', 'Memulai'].includes(status.state);
     const state = pending ? 'Memproses…' : !workerActive && session ? 'Status sesi belum pasti'
-        : stopping ? 'Menghentikan' : session ? status.state : !enabled ? 'Nonaktif' : waiting ? 'Menunggu Ojol'
+        : stopping ? 'Menghentikan' : session ? status.state : capacityHint ? 'Slot penuh'
+        : !enabled ? 'Nonaktif' : waiting ? 'Menunggu Ojol'
         : !workerActive ? 'Worker belum berjalan' : status.state || 'Menunggu';
     const label = document.getElementById('jagaState');
     if (label.textContent !== state) label.textContent = state;
-    label.dataset.tone = state === 'Jaga' ? 'active' : enabled || session ? 'paused' : '';
+    label.dataset.tone = state === 'Jaga' ? 'active' : enabled || session || capacityHint ? 'paused' : '';
 
     const scan = state === 'Menyusun rencana' ? status.scan : null;
     const hint = document.getElementById('jagaHint');
@@ -1035,6 +1041,8 @@ function renderJagaActivity(status, enabled, waiting, workerActive, pending) {
             : state === 'Jaga' ? `${session.name} · ${session.minutes} dari ${session.target} menit target`
             : stopping ? 'Menunggu game mengonfirmasi sesi sudah berakhir.'
             : `${session.name} · ${status.message || 'Memeriksa status sesi.'}`;
+    } else if (capacityHint) {
+        message = capacityHint;
     } else if (waiting) {
         message = 'Hentikan Auto Ojol agar Jaga Usaha bisa mulai.';
     } else if (enabled && workerActive) {

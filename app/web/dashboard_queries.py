@@ -746,6 +746,22 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
         or "Batas narik" in str(summary.get("status_text") or "")
     )
 
+    jaga_capacity_error = None
+    jaga_slot_accounts = []
+    if flags["ojol"] is False and not summary.get("active"):
+        if ctx.manager is not None:
+            supervisor = ctx.manager.supervisor
+            if not supervisor.account_running(selected):
+                jaga_capacity_error = supervisor.capacity_error(owner)
+            if jaga_capacity_error:
+                jaga_slot_accounts = [
+                    account["name"]
+                    for account in accounts_list
+                    if supervisor.account_running(account)
+                ]
+        elif cur_service.worker_capacity_error:
+            jaga_capacity_error = cur_service.worker_capacity_error()
+
     finance_payload = {
         **(selected_finance_info or empty_finance),
         "expense_history": get_account_expense_history(directory, limit=50),
@@ -766,6 +782,8 @@ def build_dashboard_payload(ctx: WebContext, user: dict[str, Any]) -> dict[str, 
         "snapshot": state,
         "kerja_status": kerja_status or None,
         "jaga_status": jaga_status or None,
+        "jaga_capacity_error": jaga_capacity_error,
+        "jaga_slot_accounts": jaga_slot_accounts,
         "jaga_settings": jaga_settings,
         "jaga_presets": JAGA_PRESETS,
         "kerja_target_poin": kerja_target_poin(directory),
