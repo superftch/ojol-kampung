@@ -1245,25 +1245,25 @@ test("Auto-Mancing Engine & Smart Tension Controller", async (t) => {
     assert.doesNotMatch(src, /history\.slice\(0,\s*8\)/, "daily history must not be capped to 8 items");
     assert.doesNotMatch(src, /history\.length\s*>\s*8/, "daily history must keep all of today's entries");
 
-    // Compact tabbed HUD layout order: Pinned Hero (Status + Start) -> 3 Tabs -> Main (Sonar, Hari Ini, Templates) -> Riwayat -> Settings
+    // Compact tabbed HUD layout order: Pinned Hero (Status + Start) -> 3 Tabs -> Main (Templates -> Sonar -> Count) -> Riwayat -> Settings
     const statusIdx = src.indexOf('id="ks-mancing-status"');
     const startIdx = src.indexOf('id="ks-mancing-start-btn"');
     const tabsIdx = src.indexOf('id="ks-tab-main"');
+    const tplIdx = src.indexOf('id="ks-tpl-cumi"');
     const sonarIdx = src.indexOf('id="ks-mancing-sonar-info"');
     const countIdx = src.indexOf('id="ks-mancing-count"');
-    const tplIdx = src.indexOf('id="ks-tpl-cumi"');
     const histPanelIdx = src.indexOf('id="ks-panel-history"');
     const settingsPanelIdx = src.indexOf('id="ks-panel-settings"');
     assert.ok(
       statusIdx > 0 &&
         startIdx > statusIdx &&
         tabsIdx > startIdx &&
-        sonarIdx > tabsIdx &&
+        tplIdx > tabsIdx &&
+        sonarIdx > tplIdx &&
         countIdx > sonarIdx &&
-        tplIdx > countIdx &&
-        histPanelIdx > tplIdx &&
+        histPanelIdx > countIdx &&
         settingsPanelIdx > histPanelIdx,
-      "HUD order must be Pinned Hero (Status -> Start) -> Tabs -> Main Panel (Sonar -> Count -> Templates) -> History Panel -> Settings Panel"
+      "HUD order must be Pinned Hero (Status -> Start) -> Tabs -> Main Panel (Templates -> Sonar -> Count) -> History Panel -> Settings Panel"
     );
 
     // Hari Ini catch counter shows clean catch count without "-X rugi" suffix

@@ -3027,6 +3027,35 @@
         <div class="ks-body ks-scroll">
           <!-- PANEL 1: MAIN (Compact, Zero-Scroll) -->
           <div id="ks-panel-main" data-panel="main">
+            <!-- 1-Click Templates -->
+            <div class="ks-card" style="background: rgba(14, 165, 233, 0.08); border-color: rgba(0, 229, 255, 0.26);">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
+                <span style="font-weight: 800; color: #67e8f9; font-size: 10px;">🎯 Template</span>
+                <span id="ks-tpl-badge" style="font-size: 9.5px; color: #94a3b8; font-weight: 700;">Pilih preset</span>
+              </div>
+              <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;">
+                <button type="button" id="ks-tpl-just-go" data-template="just-go" class="ks-tpl-btn" title="Preset Just Go: pilih umpan &amp; gaya Celup/Lempar sendiri, full Jual Semua.">🚀 Just Go</button>
+                <button type="button" id="ks-tpl-cumi" data-template="cumi" class="ks-tpl-btn" title="Preset Langsung Cumi: langsung ke laut dalam ≥25m (Celup), full Jual Semua.">🦑 Cumi</button>
+                <button type="button" id="ks-tpl-ternak" data-template="ternak-ikan" class="ks-tpl-btn" title="Preset Ternak Umpan: Cacing di dangkal (2–10m) kumpul 5 umpan-ikan (2.3×), lalu Celup di ≥25m &amp; Jual Semua.">🐟 Ternak</button>
+              </div>
+              <!-- Inline Options untuk Just Go (hanya tampil saat Just Go aktif) -->
+              <div id="ks-just-go-opts" style="display: none; margin-top: 6px; padding-top: 5px; border-top: 1px solid rgba(0, 229, 255, 0.16); gap: 4px; align-items: center;">
+                <select id="ks-justgo-umpan" class="ks-select" title="Pilih umpan untuk mode Just Go (Auto Umpan juga membeli umpan ini)." style="flex: 1; min-width: 0;">
+                  <option value="umpan-cacing">🪱 Cacing</option>
+                  <option value="umpan-udang">🦐 Udang</option>
+                  <option value="umpan-cumi" selected>🦑 Cumi</option>
+                  <option value="umpan-ikan">🐟 Ikan</option>
+                </select>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 3px; flex-shrink: 0;">
+                  <button type="button" id="ks-justgo-mode-celup" data-cast-mode="celup" class="ks-tpl-btn" title="Mode Celup: turunkan kail lurus ke bawah (ikan besar di laut dalam)." style="padding: 4px 6px; font-size: 9.5px;">⬇️ Celup</button>
+                  <button type="button" id="ks-justgo-mode-lempar" data-cast-mode="lempar" class="ks-tpl-btn" title="Mode Lempar: lempar kail jauh (ikan kecil–sedang)." style="padding: 4px 6px; font-size: 9.5px;">🎣 Lempar</button>
+                </div>
+              </div>
+              <div id="ks-tpl-desc" style="font-size: 9.3px; color: #94a3b8; margin-top: 4px; line-height: 1.3;">
+                Pilih template di atas untuk langsung mengisi Settings.
+              </div>
+            </div>
+
             <!-- Sonar & Plan -->
             <div class="ks-card" style="background: rgba(14, 165, 233, 0.1); border-color: rgba(0, 229, 255, 0.28);">
               <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -3058,7 +3087,7 @@
             </div>
 
             <!-- Gear & Profit Summary -->
-            <div class="ks-card">
+            <div class="ks-card" style="margin-bottom: 0;">
               <div class="ks-kv">
                 <span style="color: #94a3b8;">🪙 Koin · Joran</span>
                 <span style="text-align: right;"><b id="ks-stat-saldo" style="color: #f1f5f9;">...</b> · <b id="ks-stat-joran" style="color: #c084fc;">...</b></span>
@@ -3078,35 +3107,6 @@
               <div id="ks-main-profit-row" title="Klik untuk buka tab Riwayat" style="display: flex; justify-content: space-between; align-items: center; margin-top: 5px; padding-top: 5px; border-top: 1px solid rgba(255, 255, 255, 0.08); cursor: pointer;">
                 <span style="font-size: 10px; color: #cbd5e1;">Hari Ini: <b id="ks-mancing-count" style="color: #4ade80;">0 ekor</b></span>
                 <span id="ks-mancing-profit" style="color: #4ade80; font-weight: 800; font-size: 10.5px;">💰 +0.00 koin</span>
-              </div>
-            </div>
-
-            <!-- 1-Click Templates -->
-            <div class="ks-card" style="background: rgba(14, 165, 233, 0.08); border-color: rgba(0, 229, 255, 0.26); margin-bottom: 0;">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 5px;">
-                <span style="font-weight: 800; color: #67e8f9; font-size: 10px;">🎯 Template</span>
-                <span id="ks-tpl-badge" style="font-size: 9.5px; color: #94a3b8; font-weight: 700;">Pilih preset</span>
-              </div>
-              <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px;">
-                <button type="button" id="ks-tpl-just-go" data-template="just-go" class="ks-tpl-btn" title="Preset Just Go: pilih umpan &amp; gaya Celup/Lempar sendiri, full Jual Semua.">🚀 Just Go</button>
-                <button type="button" id="ks-tpl-cumi" data-template="cumi" class="ks-tpl-btn" title="Preset Langsung Cumi: langsung ke laut dalam ≥25m (Celup), full Jual Semua.">🦑 Cumi</button>
-                <button type="button" id="ks-tpl-ternak" data-template="ternak-ikan" class="ks-tpl-btn" title="Preset Ternak Umpan: Cacing di dangkal (2–10m) kumpul 5 umpan-ikan (2.3×), lalu Celup di ≥25m &amp; Jual Semua.">🐟 Ternak</button>
-              </div>
-              <!-- Inline Options untuk Just Go (hanya tampil saat Just Go aktif) -->
-              <div id="ks-just-go-opts" style="display: none; margin-top: 6px; padding-top: 5px; border-top: 1px solid rgba(0, 229, 255, 0.16); gap: 4px; align-items: center;">
-                <select id="ks-justgo-umpan" class="ks-select" title="Pilih umpan untuk mode Just Go (Auto Umpan juga membeli umpan ini)." style="flex: 1; min-width: 0;">
-                  <option value="umpan-cacing">🪱 Cacing</option>
-                  <option value="umpan-udang">🦐 Udang</option>
-                  <option value="umpan-cumi" selected>🦑 Cumi</option>
-                  <option value="umpan-ikan">🐟 Ikan</option>
-                </select>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 3px; flex-shrink: 0;">
-                  <button type="button" id="ks-justgo-mode-celup" data-cast-mode="celup" class="ks-tpl-btn" title="Mode Celup: turunkan kail lurus ke bawah (ikan besar di laut dalam)." style="padding: 4px 6px; font-size: 9.5px;">⬇️ Celup</button>
-                  <button type="button" id="ks-justgo-mode-lempar" data-cast-mode="lempar" class="ks-tpl-btn" title="Mode Lempar: lempar kail jauh (ikan kecil–sedang)." style="padding: 4px 6px; font-size: 9.5px;">🎣 Lempar</button>
-                </div>
-              </div>
-              <div id="ks-tpl-desc" style="font-size: 9.3px; color: #94a3b8; margin-top: 4px; line-height: 1.3;">
-                Pilih template di atas untuk langsung mengisi Settings.
               </div>
             </div>
           </div>
